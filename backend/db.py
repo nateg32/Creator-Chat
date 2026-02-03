@@ -29,7 +29,14 @@ class Database:
             try:
                 cur.execute(query, params)
                 return cur.fetchall()
-            except Exception:
+            except Exception as e:
+                print(f"[DB] execute_query error: {e}")
+                print(f"[DB] Query: {query}")
+                print(f"[DB] Params type: {type(params)}")
+                if params:
+                    # Print shallow inspect of params to find dicts
+                    p_types = [type(p).__name__ for p in params] if isinstance(params, (list, tuple)) else str(type(params))
+                    print(f"[DB] Params types: {p_types}")
                 self.conn.rollback()
                 raise
     
@@ -45,7 +52,12 @@ class Database:
                 cur.execute(query, params)
                 self.conn.commit()
                 return cur.rowcount
-            except Exception:
+            except Exception as e:
+                print(f"[DB] execute_update error: {e}")
+                print(f"[DB] Query: {query}")
+                if params:
+                    p_types = [type(p).__name__ for p in params] if isinstance(params, (list, tuple)) else str(type(params))
+                    print(f"[DB] Params types: {p_types}")
                 self.conn.rollback()
                 raise
     
@@ -57,7 +69,12 @@ class Database:
                 self.conn.commit()
                 result = cur.fetchone()
                 return result[list(result.keys())[0]] if result else None
-            except Exception:
+            except Exception as e:
+                print(f"[DB] execute_insert error: {e}")
+                print(f"[DB] Query: {query}")
+                if params:
+                    p_types = [type(p).__name__ for p in params] if isinstance(params, (list, tuple)) else str(type(params))
+                    print(f"[DB] Params types: {p_types}")
                 self.conn.rollback()
                 raise
     

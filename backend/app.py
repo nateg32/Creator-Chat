@@ -1535,9 +1535,9 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
         # Fetch approved items
         fetch_query = """
             SELECT id, creator_handle, source_url, caption, transcript, 
-                   transcript_status, published_at, metadata
+                   transcript_status, published_at, metadata, content_type
             FROM scrape_items
-            WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s AND review_status = 'pending_review'
+            WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s
         """
         items = db.execute_query(fetch_query, (approved_item_ids, sid))
         
@@ -1579,9 +1579,9 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                                 update_query = """
                                     UPDATE scrape_items
                                     SET transcript = %s, transcript_status = 'present'
-                                    WHERE id = %s
+                                    WHERE id = %s::uuid
                                 """
-                                db.execute_update(update_query, (transcript, item_id))
+                                db.execute_update(update_query, (str(transcript), str(item_id)))
                             else:
                                 transcript_status = "error"
                         except Exception as e:
@@ -1657,7 +1657,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 
                 doc_query = """
                     INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (source, source_id) DO UPDATE SET
                         title = EXCLUDED.title,
                         content = EXCLUDED.content,
@@ -1717,7 +1717,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                         chunk_id = db.execute_insert(
                             """
                             INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
-                            VALUES (%s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s::jsonb)
                             RETURNING id
                             """,
                             (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata, default=str))
@@ -1742,9 +1742,9 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 update_status_query = """
                     UPDATE scrape_items
                     SET review_status = 'approved'
-                    WHERE id = %s
+                    WHERE id = %s::uuid
                 """
-                db.execute_update(update_status_query, (item_id,))
+                db.execute_update(update_status_query, (str(item_id),))
                 
                 ingested.append(
                     ApproveIngestItem(
@@ -1759,9 +1759,9 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 error_query = """
                     UPDATE scrape_items
                     SET review_status = 'denied', transcript_status = 'error'
-                    WHERE id = %s
+                    WHERE id = %s::uuid
                 """
-                db.execute_update(error_query, (item_id,))
+                db.execute_update(error_query, (str(item_id),))
                 continue
         
         return ApproveIngestResponseNew(approved=len(approved_item_ids), ingested=ingested)

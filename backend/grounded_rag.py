@@ -684,7 +684,7 @@ Rules:
     final_system_prompt = (
         CREATOR_BASE_SYSTEM_PROMPT
         .replace(PLACEHOLDER_PERSONA, persona or "")
-        .replace(PLACEHOLDER_PRODUCT_RULES, product_rules)
+        .replace(PLACEHOLDER_PRODUCT_RULES, product_rules + "\n- Use the specific phrasing and energy described in the <creator_persona> above.")
     )
 
     messages = [{"role": "system", "content": final_system_prompt}]
