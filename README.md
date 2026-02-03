@@ -99,7 +99,9 @@ Failure Modes:
 - 404 on Root: `GET /` on the backend is not a defined endpoint and returns 404 by design. Use `/health` or `/creators` to verify backend status.
 - Pydantic 422 Errors: Occur if the frontend `scrape_id` does not match the backend `search_id` field in ingestion models. Backend `models.py` now supports both as aliases.
 - Dual .env Confusion: If API tokens work in one place but fail in another, verify that BOTH the root `.env` and `backend/.env` have the correct keys. The backend service prioritized `backend/.env`.
-- Satya Nadella Default: In the `apimaestro/linkedin-profile-posts` scraper, if the input key is unrecognized, it defaults to Satya Nadella. The correct JSON field name is `username`. The system now uses this key specifically to ensure the correct creator is fetched.
+- Satya Nadella Default: In the `apimaestro/linkedin-profile-posts` scraper, if the input key is unrecognized, it defaults to Satya Nadella. The correct JSON field name is `username`.
+- OpenAI Proxies Error (`TypeError: Client.__init__() got an unexpected keyword argument 'proxies'`): This is caused by an old `openai` library version (e.g. 1.3.0) being used with a newer `httpx` version (0.28.x). Fixed by upgrading `openai` to version `1.40.0+`.
+- JSON Serialization (`Object of type datetime is not JSON serializable`): Occurs when database objects (datetimes, UUIDs) are passed to `json.dumps`. Fixed by using `default=str` in all serialization calls.
 
 ## 9. How to Run the Project
 Backend:

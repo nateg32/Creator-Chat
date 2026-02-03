@@ -112,7 +112,7 @@ def _set_search_progress(search_id: str, data: Dict[str, Any]):
                 progress_data = EXCLUDED.progress_data,
                 updated_at = NOW()
             """,
-            (search_id, json.dumps(data)),
+            (search_id, json.dumps(data, default=str)),
         )
     except Exception as e:
         print(f"[SEARCH] Could not persist progress to DB: {e}")
@@ -1024,7 +1024,7 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
         if not isinstance(base_meta, dict):
             base_meta = {}
         meta = {**base_meta, "platform": item.get("platform"), "matched_time_filter": item.get("matched_time_filter", True)}
-        metadata_json = json.dumps(meta)
+        metadata_json = json.dumps(meta, default=str)
         published_at_raw = item.get("published_at")
         published_at = _normalize_timestamp(published_at_raw)
         insert_query = """
@@ -1671,7 +1671,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 
                 document_id = db.execute_insert(
                     doc_query,
-                    (creator_id, title, text_content, source_platform, source_id, json.dumps(doc_metadata))
+                    (creator_id, title, text_content, source_platform, source_id, json.dumps(doc_metadata, default=str))
                 )
                 
                 if not document_id:
@@ -1720,7 +1720,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                             VALUES (%s, %s, %s, %s, %s)
                             RETURNING id
                             """,
-                            (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata))
+                            (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata, default=str))
                         )
                     except Exception:
                         # Legacy schema fallback
