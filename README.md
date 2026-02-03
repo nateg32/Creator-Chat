@@ -69,8 +69,8 @@ Communication:
 - Implements cache-busting on polling requests using timestamp parameters (`_t=...`).
 
 ## 6. Environment Variables
-Stored in `.env` at the project root:
-- `APIFY_TOKEN`: Required for all scraping operations.
+Stored in `.env` (Root) and `backend/.env`:
+- `APIFY_TOKEN`: Required for all scraping operations. **Must be consistent in both .env files.**
 - `OPENAI_API_KEY`: Required for generating embeddings and chat responses.
 - `DB_PASSWORD`: Password for the PostgreSQL instance.
 - `DATABASE_URL`: Full connection string if not using discrete components.
@@ -85,7 +85,7 @@ The `run_search_router` checks the `enabled` flag and presence of a valid URL/ha
 
 Platform Specifics:
 - Instagram: Uses a reels-only scraper. Normal posts are currently ignored.
-- LinkedIn: Uses the `apimaestro` actor which requires a full profile URL (`urls` array in input).
+- LinkedIn: Uses the `apimaestro/linkedin-profile-posts` actor. It requires the input to be passed via specific keys (`profileUrl`, `urls`, and `profileUrls`) as lists/strings depending on version. The system automatically normalizes handles like `dmartell` into full `linkedin.com/in/...` URLs to ensure accuracy.
 - TikTok: Uses `clockworks` scraper; input is passed via a `profiles` list.
 
 Failure Modes:
@@ -98,6 +98,8 @@ Failure Modes:
 - Schema Mismatches: The database uses `scrape_run_id` as the foreign key in `scrape_items`. Historical code incorrectly used `search_run_id`, which was fixed to maintain referential integrity.
 - 404 on Root: `GET /` on the backend is not a defined endpoint and returns 404 by design. Use `/health` or `/creators` to verify backend status.
 - Pydantic 422 Errors: Occur if the frontend `scrape_id` does not match the backend `search_id` field in ingestion models. Backend `models.py` now supports both as aliases.
+- Dual .env Confusion: If API tokens work in one place but fail in another, verify that BOTH the root `.env` and `backend/.env` have the correct keys. The backend service prioritized `backend/.env`.
+- Satya Nadella Default: In the `apimaestro/linkedin-profile-posts` scraper, if the input key is unrecognized, it defaults to Satya Nadella. The correct JSON field name is `username`. The system now uses this key specifically to ensure the correct creator is fetched.
 
 ## 9. How to Run the Project
 Backend:

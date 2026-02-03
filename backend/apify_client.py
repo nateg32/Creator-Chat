@@ -442,15 +442,16 @@ def search_linkedin_posts(
     if not APIFY_AVAILABLE:
         raise ImportError("apify-client package is not installed. Run: pip install apify-client")
     
-    # The apimaestro/linkedin-profile-posts actor expects 'urls' as a list of strings.
-    # We must also ensure it's a full URL rather than just a handle to avoid defaulting to examples.
+    # Ensure full URL normalization to prevent defaulting to examples.
     normalized_url = url
     if "linkedin.com" not in url:
         handle = url.strip("/")
         normalized_url = f"https://www.linkedin.com/in/{handle}/"
 
+    # The apimaestro/linkedin-profile-posts actor expects 'username' according to the UI help.
+    # To ensure it doesn't fall back to the default (Satya Nadella), we use 'username'.
     run_input = {
-        "urls": [normalized_url],
+        "username": url,
         "totalPostsToScrape": limit,
     }
     
