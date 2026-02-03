@@ -1664,14 +1664,14 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                         metadata = EXCLUDED.metadata
                     RETURNING id
                 """
-                title = title_from_meta
-                source_id = content_id or f"search_item_{item_id}"
+                title = str(title_from_meta) if title_from_meta else "Untitled"
+                source_id = str(content_id) if content_id else f"search_item_{item_id}"
                 # Use platform as source for documents table
-                source_platform = platform
+                source_platform = str(platform) if platform else "unknown"
                 
                 document_id = db.execute_insert(
                     doc_query,
-                    (creator_id, title, text_content, source_platform, source_id, json.dumps(doc_metadata, default=str))
+                    (creator_id, title, text_content, source_platform, str(source_id), json.dumps(doc_metadata, default=str))
                 )
                 
                 if not document_id:
@@ -1748,7 +1748,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 
                 ingested.append(
                     ApproveIngestItem(
-                        queue_id=item_id,  # Using item_id as queue_id for compatibility
+                        queue_id=str(item_id),  # Using item_id as queue_id for compatibility
                         document_id=document_id,
                         chunks_inserted=len(chunk_ids)
                     )

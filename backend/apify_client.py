@@ -494,7 +494,10 @@ def search_linkedin_posts(
             stats = item.get("stats") or {}
             
             # Extract content_id and title
-            content_id = item.get("urn") or extract_content_id(source_url, "linkedin")
+            raw_urn = item.get("urn")
+            if raw_urn and not isinstance(raw_urn, str):
+                raw_urn = str(raw_urn)
+            content_id = raw_urn or extract_content_id(source_url, "linkedin")
             title = extract_title_from_metadata(item, "linkedin", source_url)
             
             metadata = {
