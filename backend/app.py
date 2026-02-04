@@ -1454,28 +1454,20 @@ async def approve_ingest(request: ApproveIngestRequestNew):
                     document_id=document_id,
                 )
 
-                # store chunks (prefer newer schema, fall back to legacy schema)
+                # store chunks (no fallback needed, using correct schema)
                 chunk_ids = []
                 for chunk in chunks:
-                    try:
-                        chunk_id = db.execute_insert(
-                            """
-                            INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text)
-                            VALUES (%s, %s, %s, %s)
-                            RETURNING id
-                            """,
-                            (request.creator_id, document_id, chunk["index"], chunk["text"]),
-                        )
-                    except Exception:
-                        # legacy schema fallback
-                        chunk_id = db.execute_insert(
-                            """
-                            INSERT INTO chunks (document_id, chunk_index, content)
-                            VALUES (%s, %s, %s)
-                            RETURNING id
-                            """,
-                            (document_id, chunk["index"], chunk["text"]),
-                        )
+                    chunk_id = db.execute_insert(
+                        """
+                        INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (document_id, chunk_index) DO UPDATE SET
+                            chunk_text = EXCLUDED.chunk_text,
+                            creator_id = EXCLUDED.creator_id
+                        RETURNING id
+                        """,
+                        (request.creator_id, document_id, chunk["index"], chunk["text"]),
+                    )
                     if chunk_id:
                         chunk_ids.append(chunk_id)
 
@@ -1568,7 +1560,21 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                     metadata = item.get("metadata") or {}
                     if isinstance(metadata, str):
                         metadata = json.loads(metadata) if metadata else {}
-                    video_url = metadata.get("video_url") or metadata.get("videoUrl", "")
+                    
+                    # Try various keys for video media link
+                    video_url = metadata.get("video_url") or metadata.get("videoUrl") or metadata.get("video") or ""
+                    
+                    # If it's a YouTube item and we have a videoId, construct the watch URL
+                    # Note: transcribe_video needs a direct media file, but Whisper might work 
+                    # better with different inputs in the future. For now, prioritize media file.
+                    if not video_url:
+                        vid = metadata.get("videoId") or metadata.get("id")
+                        if metadata.get("platform") == "youtube" and vid:
+                            video_url = f"https://www.youtube.com/watch?v={vid}"
+                    
+                    # Fallback to source_url if still no video_url
+                    if not video_url:
+                        video_url = item.get("source_url") or ""
                     
                     if video_url:
                         try:
@@ -1659,6 +1665,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                     INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
                     VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (source, source_id) DO UPDATE SET
+                        creator_id = EXCLUDED.creator_id,
                         title = EXCLUDED.title,
                         content = EXCLUDED.content,
                         metadata = EXCLUDED.metadata
@@ -1713,25 +1720,18 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                         "source_ref": source_ref,  # Full source reference for linking
                     }
                     
-                    try:
-                        chunk_id = db.execute_insert(
-                            """
-                            INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
-                            VALUES (%s, %s, %s, %s, %s::jsonb)
-                            RETURNING id
-                            """,
-                            (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata, default=str))
-                        )
-                    except Exception:
-                        # Legacy schema fallback
-                        chunk_id = db.execute_insert(
-                            """
-                            INSERT INTO chunks (document_id, chunk_index, content)
-                            VALUES (%s, %s, %s)
-                            RETURNING id
-                            """,
-                            (document_id, chunk["index"], chunk["text"])
-                        )
+                    chunk_id = db.execute_insert(
+                        """
+                        INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
+                        VALUES (%s, %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (document_id, chunk_index) DO UPDATE SET
+                            chunk_text = EXCLUDED.chunk_text,
+                            metadata = EXCLUDED.metadata,
+                            creator_id = EXCLUDED.creator_id
+                        RETURNING id
+                        """,
+                        (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata, default=str))
+                    )
                     if chunk_id:
                         chunk_ids.append(chunk_id)
                 

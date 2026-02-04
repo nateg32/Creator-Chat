@@ -56,7 +56,7 @@ class ApproveIngestRequestV2(BaseModel):
 
 class ApproveIngestItem(BaseModel):
     # Legacy response uses integer queue_id; Instagram Reels v2 uses UUID item ids.
-    queue_id: Union[int, str]
+    queue_id: Union[int, str, Any]
     document_id: int
     chunks_inserted: int
 

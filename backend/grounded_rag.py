@@ -41,8 +41,8 @@ def _platform_from_url(url: str) -> str:
 
 # Algorithm settings
 K_RETRIEVE = 25  # Broad retrieval
-K_FINAL = 6  # Final support set after re-ranking
-MIN_SUPPORT = 2  # Minimum chunks supporting key claims
+K_FINAL = 12  # Final support set after re-ranking
+MIN_SUPPORT = 1  # Minimum chunks supporting key claims
 MAX_REPAIR = 1  # Max repair attempts
 
 # Source quality weights (higher = better)
@@ -341,7 +341,7 @@ _INTENT_PATTERNS = [
     (["start a business", "start business", "starting a business", "want to start", "want to start a business", "i want to start"], "start_business"),
     (["how do i", "how to", "how can i", "steps to", "guide to", "tutorial"], "how_to"),
     (["strategy", "strategies", "framework", "breakdown", "explain ", "deep dive"], "deep_strategy"),
-    (["link", "source", "which post", "which video", "show me", "send me", "url", "proof", "best video", "best reel", "best post", "video link", "post link", "whats the video", "that video", "that reel", "that post", "any other videos", "more videos", "other videos", "any more videos", "what else can i watch", "what else to watch", "any other video", "give me the links", "links for"], "request_sources"),
+    (["link", "source", "which post", "which video", "show me", "send me", "url", "proof", "best video", "best reel", "best post", "video link", "post link", "whats the video", "that video", "that reel", "that post", "any other videos", "more videos", "other videos", "any more videos", "what else can i watch", "what else to watch", "any other video", "give me the links", "links for", "tools", "recommend"], "request_sources"),
 ]
 
 
@@ -365,14 +365,17 @@ def response_length_instruction(intent: str) -> str:
     if intent == "start_business":
         return "Ask 2 short clarifying questions (e.g. what kind of business, what skill they have). Do NOT give a long list, framework, or steps yet."
     if intent == "how_to":
-        return "Give concise steps or pointers only if they asked how/steps/strategy. Max ~10 lines. No long frameworks unless asked."
+        return "Give concise steps or pointers only if they asked how/steps/strategy. Max ~25 lines. No long frameworks unless asked."
     if intent == "deep_strategy":
         return "You may give a longer, structured answer. Still be clear and actionable."
     if intent == "request_sources":
         return (
-            "Recommend 1–3 sources most relevant to their question (only one if just one fits). "
-            "For each: (a) a brief summary of the video/post from the transcript or captions in the retrieved chunks, "
-            "(b) how it helps their specific request, and (c) the link. Inline the links with your summaries; do not add a separate 'Sources:' block."
+            "Recommend 1–3 sources most relevant to their question. "
+            "For each: (a) a brief summary of the video/post (look for tool names or specific advice in the retrieved content), "
+            "(b) how it helps their specific request, and (c) the link. "
+            "IMPORTANT: If the source title implies specific tools (e.g. 'Top 5 AI tools') but you cannot find the actual names in the provided text, do NOT make them up. "
+            "Instead, honestly state that you have the source but don't have the specific details from the transcript yet. "
+            "Inline the links with your summaries."
         )
     return "Keep the response short to medium length."
 

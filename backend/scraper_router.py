@@ -95,7 +95,7 @@ def _map_instagram(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _map_youtube(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Search YouTube channel using streamers/youtube-scraper."""
+    """Search YouTube channel using apidojo/youtube-scraper."""
     url = (ctx.get("url") or "").strip()
     handle = ctx.get("handle")
     if not url:
@@ -107,6 +107,22 @@ def _map_youtube(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     for it in items:
         it["creator_handle"] = creator_handle
         it["platform"] = "youtube"
+    return _apply_time_filter(items, tf)
+
+
+def _map_youtube_shorts(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Search YouTube Shorts using apidojo/youtube-scraper with shorts_only=True."""
+    url = (ctx.get("url") or "").strip()
+    handle = ctx.get("handle")
+    if not url:
+        return []
+    creator_handle = ctx.get("creator_handle") or handle or "youtube"
+    max_items = min(int(ctx.get("max_items") or 10), 50)
+    tf = ctx.get("time_filter") or {}
+    items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf, youtube_shorts_only=True)
+    for it in items:
+        it["creator_handle"] = creator_handle
+        it["platform"] = "youtube_shorts"
     return _apply_time_filter(items, tf)
 
 
@@ -200,6 +216,7 @@ def _map_tiktok(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
 PLATFORM_MAPPERS: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = {
     "instagram": _map_instagram,
     "youtube": _map_youtube,
+    "youtube_shorts": _map_youtube_shorts,
     "twitter": _map_twitter,
     "linkedin": _map_linkedin,
     "reddit": _map_reddit,

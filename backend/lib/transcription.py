@@ -4,7 +4,10 @@ Transcription fallback using OpenAI Whisper API
 import os
 import requests
 from typing import Optional
-from .settings import settings
+try:
+    from .settings import settings
+except ImportError:
+    from ..settings import settings
 
 def transcribe_video(video_url: str) -> Optional[str]:
     """
@@ -19,9 +22,20 @@ def transcribe_video(video_url: str) -> Optional[str]:
     if not settings.OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is not set")
     
+    # Skip transcription if it's a platform URL but not a direct media link
+    # These URLs return HTML and cause OpenAI "Invalid file format" 400 errors.
+    if "youtube.com" in video_url or "youtu.be" in video_url or "instagram.com" in video_url:
+        # We only transcribe if we have a direct media link (later enrichment might add these)
+        if not (".mp4" in video_url or ".mp3" in video_url or ".wav" in video_url):
+            print(f"[TRANSCRIPTION] Skipping platform URL {video_url} - requires specialized scraper")
+            return None
+
     try:
-        # Download video/audio file
-        response = requests.get(video_url, timeout=30)
+        # Download video/audio file with a User-Agent to avoid blocks
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(video_url, headers=headers, timeout=30)
         response.raise_for_status()
         
         # Save to temporary file

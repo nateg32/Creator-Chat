@@ -176,13 +176,13 @@ def ingest_document(
         
         # Insert chunk
         chunk_query = """
-            INSERT INTO chunks (document_id, chunk_index, content)
-            VALUES (%s, %s, %s)
+            INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text)
+            VALUES (%s, %s, %s, %s)
             RETURNING id
         """
         chunk_id = db.execute_insert(
             chunk_query,
-            (doc_id, idx, chunk_text_content)
+            (creator_id, doc_id, idx, chunk_text_content)
         )
         
         if not chunk_id:
