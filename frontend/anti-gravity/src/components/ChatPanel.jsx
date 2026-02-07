@@ -1,24 +1,22 @@
 import { useState, useRef, useEffect } from "react";
 import { ask } from "../api/client";
+import { resizeImage } from "../utils/image";
+import { formatCreatorName, formatMessageText } from "../utils/format";
 import "./ChatPanel.css";
 
 // Icons 
 const SparkleIcon = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" fill="url(#sparkle-gradient)" />
-    <defs>
-      <linearGradient id="sparkle-gradient" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
-        <stop stopColor="#4285F4" />
-        <stop offset="1" stopColor="#9B72CB" />
-      </linearGradient>
-    </defs>
+    <circle cx="12" cy="12" r="11" fill="#4285F4" fillOpacity="0.1" />
+    <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" fill="#4285F4" />
   </svg>
 );
 
 const UserIcon = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="#5f6368" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="12" cy="8" r="4" />
-    <path d="M4 20C4 16 8 14 12 14C16 14 20 16 20 20" stroke="#5f6368" strokeWidth="2" strokeLinecap="round" />
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="12" r="11" fill="#5f6368" fillOpacity="0.1" />
+    <circle cx="12" cy="9" r="4" fill="#5f6368" />
+    <path d="M5 19C5 15.134 8.134 12 12 12C15.866 12 19 15.134 19 19" stroke="#5f6368" strokeWidth="2" strokeLinecap="round" />
   </svg>
 );
 
@@ -48,12 +46,18 @@ export function ChatPanel({
   onResetChat,
   onChangePersona,
   onRescrape,
+  creatorAvatarUrl = "",
+  userAvatarUrl = "",
+  onUpdateCreatorAvatar,
+  onUpdateUserAvatar,
   debug = false,
 }) {
   const [input, setInput] = useState("");
   const [error, setError] = useState(null);
   const [debugInfo, setDebugInfo] = useState(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [activeAvatarEdit, setActiveAvatarEdit] = useState(null); // 'creator' or 'user'
 
   // Auto-scroll to the latest message
   useEffect(() => {
@@ -128,13 +132,53 @@ export function ChatPanel({
     }
   }
 
+  const handleAvatarClick = (type) => {
+    setActiveAvatarEdit(type);
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const processImageUpdate = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) {
+      setActiveAvatarEdit(null);
+      return;
+    }
+
+    try {
+      const base64 = await resizeImage(file);
+      if (activeAvatarEdit === "creator") {
+        if (onUpdateCreatorAvatar) onUpdateCreatorAvatar(creatorId, base64);
+      } else if (activeAvatarEdit === "user") {
+        if (onUpdateUserAvatar) onUpdateUserAvatar(base64);
+      }
+    } catch (err) {
+      setError("Failed to process image: " + err.message);
+    } finally {
+      setActiveAvatarEdit(null);
+      // Reset input so the same file can be picked again
+      e.target.value = "";
+    }
+  };
+
   return (
     <div className="gemini-layout">
       {/* Header */}
       <header className="gemini-header">
         <div className="gemini-title">
-          <span className="title-text">{creatorDisplayName}</span>
-          <span className="badge-pro">PRO</span>
+          <div
+            className="header-avatar clickable"
+            title="Change bot avatar"
+            onClick={() => handleAvatarClick("creator")}
+          >
+            {creatorAvatarUrl ? (
+              <img src={creatorAvatarUrl} alt={creatorDisplayName} className="header-avatar-img" />
+            ) : (
+              <SparkleIcon />
+            )}
+          </div>
+          <span className="title-text">{formatCreatorName(creatorDisplayName)}</span>
         </div>
         <div className="gemini-actions">
           <button onClick={onResetChat} title="Reset Chat">New Chat</button>
@@ -149,20 +193,28 @@ export function ChatPanel({
           {messages.length === 0 ? (
             <div className="welcome-message">
               <SparkleIcon />
-              <h1>Hello, I'm {creatorDisplayName}.</h1>
+              <h1>Hello, I'm {formatCreatorName(creatorDisplayName)}.</h1>
               <p>Ask me anything about my content, or how I can help you today.</p>
             </div>
           ) : (
             messages.map((m, idx) => (
               <div key={m.id ?? idx} className={`msg-row msg-${m.role}`}>
-                <div className="msg-avatar">
-                  {m.role === "assistant" ? <SparkleIcon /> : <UserIcon />}
+                <div
+                  className="msg-avatar clickable"
+                  title={`Change ${m.role === "assistant" ? "bot" : "your"} avatar`}
+                  onClick={() => handleAvatarClick(m.role === "assistant" ? "creator" : "user")}
+                >
+                  {m.role === "assistant" ? (
+                    creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />
+                  ) : (
+                    userAvatarUrl ? <img src={userAvatarUrl} alt="You" className="avatar-img" /> : <UserIcon />
+                  )}
                 </div>
                 <div className="msg-bubble">
                   <div className="msg-sender">
-                    {m.role === "assistant" ? creatorDisplayName : "You"}
+                    {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : "You"}
                   </div>
-                  <div className="msg-text">{m.content ?? m.text}</div>
+                  <div className="msg-text">{formatMessageText(m.content ?? m.text, creatorDisplayName)}</div>
                 </div>
               </div>
             ))
@@ -170,9 +222,19 @@ export function ChatPanel({
 
           {loading && (
             <div className="msg-row msg-assistant">
-              <div className="msg-avatar"><SparkleIcon /></div>
+              <div
+                className="msg-avatar clickable"
+                title="Change bot avatar"
+                onClick={() => handleAvatarClick("creator")}
+              >
+                {creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />}
+              </div>
               <div className="msg-bubble">
-                <div className="typing-flashing" />
+                <div className="msg-sender">{formatCreatorName(creatorDisplayName)}</div>
+                <div className="thinking-indicator">
+                  <span>Thinking</span>
+                  <span className="thinking-dots">...</span>
+                </div>
               </div>
             </div>
           )}
@@ -188,7 +250,7 @@ export function ChatPanel({
         <div className="input-pill">
           <input
             className="gemini-input"
-            placeholder="Enter your prompt here"
+            placeholder={`Message ${formatCreatorName(creatorDisplayName)}`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -205,8 +267,17 @@ export function ChatPanel({
           </button>
         </div>
         <div className="gemini-footer-note">
-          {creatorDisplayName} may display inaccurate info, so double-check its responses.
+          AI-generated demo trained on publicly available creator content. Not affiliated with or endorsed by the creator.
         </div>
+
+        {/* Hidden file input for avatar updates */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={processImageUpdate}
+          accept="image/*"
+          hidden
+        />
       </div>
     </div>
   );

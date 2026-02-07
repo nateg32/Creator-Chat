@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatCreatorName } from "../utils/format";
 import "./ChatSidebar.css";
 
 export function ChatSidebar({
@@ -9,7 +10,7 @@ export function ChatSidebar({
     onCloseChat,
     onToggleSidebar
 }) {
-    const [isCollapsed, setIsCollapsed] = useState(false);
+    const [isCollapsed, setIsCollapsed] = useState(true); // Start collapsed by default
 
     const handleToggle = () => {
         setIsCollapsed(!isCollapsed);
@@ -45,9 +46,6 @@ export function ChatSidebar({
                     {chats.length === 0 ? (
                         <div className="empty-state">
                             <p>No chats yet</p>
-                            <button onClick={onNewChat} className="start-chat-button">
-                                Start a chat
-                            </button>
                         </div>
                     ) : (
                         chats.map((chat) => (
@@ -66,15 +64,24 @@ export function ChatSidebar({
                                 }}
                                 style={{ textDecoration: 'none', color: 'inherit', display: 'flex' }}
                             >
+                                <div className="chat-avatar-mini">
+                                    {chat.creatorAvatarUrl ? (
+                                        <img src={chat.creatorAvatarUrl} alt="" className="mini-avatar-img" />
+                                    ) : (
+                                        <div className="mini-avatar-placeholder">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" fill="#4285F4" />
+                                            </svg>
+                                        </div>
+                                    )}
+                                </div>
                                 <div className="chat-info">
                                     <div className="chat-name">
-                                        {chat.creatorName || chat.handle || "Unknown Creator"}
+                                        {formatCreatorName(chat.creatorName || chat.handle || "Unknown Creator")}
                                     </div>
-                                    <div className="chat-preview">
-                                        {chat.messages.length > 1
-                                            ? chat.messages[chat.messages.length - 1].text.substring(0, 50) + "..."
-                                            : "New conversation"}
-                                    </div>
+                                    <div className="chat-preview">{chat.messages.length > 1
+                                        ? chat.messages[chat.messages.length - 1].text.substring(0, 50) + "..."
+                                        : "New conversation"}</div>
                                     {chat.isTemporary && (
                                         <span className="temp-badge">Temporary</span>
                                     )}

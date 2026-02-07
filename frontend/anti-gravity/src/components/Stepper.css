@@ -1,7 +1,7 @@
 .global-nav-stepper {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 4px;
   padding: 8px 16px;
   background: #f8f9fa;
@@ -9,6 +9,23 @@
   position: sticky;
   top: 0;
   z-index: 50;
+}
+
+.app-branding {
+  font-size: 15px;
+  font-weight: 600;
+  color: #202124;
+  padding-left: 8px;
+  letter-spacing: -0.3px;
+}
+
+.nav-steps-container {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .nav-step {
@@ -26,12 +43,34 @@
   transition: all 0.2s ease;
 }
 
-.nav-step:hover {
+.nav-step:hover:not(.disabled) {
   background: #e8eaed;
   color: #1f1f1f;
 }
 
-.nav-step.active {
+.nav-step.disabled {
+  cursor: not-allowed;
+}
+
+.nav-step.disabled:hover {
+  background: transparent;
+  color: #5f6368;
+}
+
+.nav-step.active:not(.disabled) .nav-step-label {
+  color: #007aff;
+  font-weight: 700;
+}
+
+.step-progress-inline {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+.nav-step.active:not(.disabled) {
   background: #e8f0fe;
   color: #1a73e8;
 }

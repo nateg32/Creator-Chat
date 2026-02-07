@@ -50,49 +50,76 @@
   justify-content: center;
   padding: 48px 24px;
   text-align: center;
-  background: radial-gradient(circle at 50% 40%, rgba(255, 255, 255, 0.8) 0%, rgba(240, 244, 249, 0.4) 100%);
+  background: white;
   position: relative;
   overflow: hidden;
+  z-index: 1;
+  animation: fadeIn 0.6s ease-out;
 }
 
-/* Background animated blobs for "alive" feel */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Animated gradient blobs for vibrant, engaging feel */
 .empty-creator-state::before,
 .select-chat-state::before {
   content: "";
   position: absolute;
-  top: -20%;
+  top: -10%;
   left: -10%;
-  width: 50vw;
-  height: 50vw;
-  background: radial-gradient(circle, rgba(66, 133, 244, 0.05) 0%, transparent 70%);
+  width: 70vw;
+  height: 70vw;
+  background: radial-gradient(circle, rgba(66, 133, 244, 0.2) 0%, rgba(66, 133, 244, 0.08) 40%, transparent 70%);
   border-radius: 50%;
-  animation: float-blob 20s infinite alternate ease-in-out;
+  animation: float-blob-1 20s infinite alternate ease-in-out;
   pointer-events: none;
-  z-index: 0;
+  z-index: -1;
+  filter: blur(60px);
 }
 
 .empty-creator-state::after,
 .select-chat-state::after {
   content: "";
   position: absolute;
-  bottom: -20%;
+  bottom: -10%;
   right: -10%;
-  width: 60vw;
-  height: 60vw;
-  background: radial-gradient(circle, rgba(155, 114, 203, 0.05) 0%, transparent 70%);
+  width: 70vw;
+  height: 70vw;
+  background: radial-gradient(circle, rgba(155, 114, 203, 0.2) 0%, rgba(155, 114, 203, 0.08) 40%, transparent 70%);
   border-radius: 50%;
-  animation: float-blob 25s infinite alternate-reverse ease-in-out;
+  animation: float-blob-2 25s infinite alternate-reverse ease-in-out;
   pointer-events: none;
-  z-index: 0;
+  z-index: -1;
+  filter: blur(60px);
 }
 
-@keyframes float-blob {
+/* Third Blob via pseudo-element on inner container or just reuse the class for keyframes */
+@keyframes float-blob-1 {
   0% {
     transform: translate(0, 0) scale(1);
   }
 
   100% {
-    transform: translate(5%, 10%) scale(1.1);
+    transform: translate(10%, 15%) scale(1.1);
+  }
+}
+
+@keyframes float-blob-2 {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+
+  100% {
+    transform: translate(-10%, -15%) scale(1.1);
   }
 }
 
@@ -101,7 +128,7 @@
   opacity: 1;
   position: relative;
   z-index: 1;
-  animation: bounce-s 3s infinite ease-in-out;
+  animation: bounce-s 3s infinite ease-in-out, fadeIn 0.8s ease-out;
 }
 
 @keyframes bounce-s {
@@ -119,12 +146,12 @@
 .empty-title {
   font-size: 32px;
   font-weight: 500;
-  /* Bolder for modern look */
   color: #1f1f1f;
   margin: 0 0 12px 0;
   position: relative;
   z-index: 1;
   letter-spacing: -0.5px;
+  animation: fadeIn 0.8s ease-out 0.2s both;
 }
 
 .empty-subtitle {
@@ -135,6 +162,7 @@
   z-index: 1;
   max-width: 400px;
   line-height: 1.5;
+  animation: fadeIn 0.8s ease-out 0.4s both;
 }
 
 .create-creator-btn {
@@ -149,12 +177,26 @@
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s, box-shadow 0.2s;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
+  animation: fadeIn 0.8s ease-out 0.6s both, pulse-subtle 3s infinite ease-in-out;
+}
+
+@keyframes pulse-subtle {
+
+  0%,
+  100% {
+    box-shadow: 0 2px 8px rgba(26, 115, 232, 0.2);
+  }
+
+  50% {
+    box-shadow: 0 4px 16px rgba(26, 115, 232, 0.35);
+  }
 }
 
 .create-creator-btn:hover {
   background: #1557b0;
-  box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
+  box-shadow: 0 4px 16px rgba(26, 115, 232, 0.4);
+  transform: translateY(-2px) scale(1.02);
 }
 
 .select-chat-state h2 {
@@ -162,12 +204,14 @@
   font-weight: 400;
   color: #202124;
   margin: 0 0 8px 0;
+  animation: fadeIn 0.8s ease-out 0.2s both;
 }
 
 .select-chat-state p {
   font-size: 14px;
   color: #5f6368;
   margin: 0 0 24px 0;
+  animation: fadeIn 0.8s ease-out 0.4s both;
 }
 
 /* Error Banner */

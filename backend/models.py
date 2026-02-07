@@ -154,6 +154,7 @@ class Creator(BaseModel):
     handle: Optional[str] = None
     platforms: List[str] = []
     item_count: int = 0
+    profile_picture_url: Optional[str] = None
     created_at: str
 
 class CreateCreatorRequest(BaseModel):
@@ -164,17 +165,20 @@ class CreateCreatorRequest(BaseModel):
 class CreateCreatorWithConfigRequest(BaseModel):
     name: Optional[str] = None  # optional; derived from handle or first platform when missing
     handle: Optional[str] = None
+    profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}  # { "instagram": { "enabled", "url", "timeFilter": { "mode", "since"?, "days"? }, "maxItems"? }, ... }
 
 class UpdateCreatorRequest(BaseModel):
     name: Optional[str] = None
     handle: Optional[str] = None
+    profile_picture_url: Optional[str] = None
     platform_configs: Optional[Dict[str, Any]] = None
 
 class CreatorWithConfigResponse(BaseModel):
     id: int
     name: str
     handle: Optional[str] = None
+    profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}
     created_at: Optional[str] = None
 

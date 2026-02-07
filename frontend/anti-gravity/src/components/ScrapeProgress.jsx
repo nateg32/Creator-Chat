@@ -1,128 +1,128 @@
-import { useEffect, useState } from "react";
-import { getScrapeProgress } from "../api/client";
+import { useEffect, useState, useRef } from "react";
+import { getScrapeProgress, getScrapeItems } from "../api/client";
 import "./ScrapeProgress.css";
 
-export function ScrapeProgress({ scrapeId, onComplete, onError }) {
-  const [progress, setProgress] = useState(null);
+export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
+  const [progressData, setProgressData] = useState(null);
+  const [displayProgress, setDisplayProgress] = useState(0);
+  const [fetchingItems, setFetchingItems] = useState(false);
   const [error, setError] = useState(null);
 
+  // Smoothly move displayProgress towards actual backend percentage or milestones
+  useEffect(() => {
+    const target = progressData?.percentage || 0;
+    if (target > displayProgress) {
+      // Slowly creep towards target to avoid jumps
+      const interval = setInterval(() => {
+        setDisplayProgress(prev => {
+          if (prev >= target) {
+            clearInterval(interval);
+            return prev;
+          }
+          const diff = target - prev;
+          const step = Math.max(0.1, diff * 0.05); // Move 5% of the distance each tick
+          const next = Math.min(prev + step, target);
+          if (onProgress) onProgress(next);
+          return next;
+        });
+      }, 50);
+      return () => clearInterval(interval);
+    }
+  }, [progressData?.percentage, displayProgress, onProgress]);
+
+  // Polling logic
   useEffect(() => {
     if (!scrapeId) return;
 
-    let consecutive404s = 0;
-    const max404Retries = 6; // Retry 404 for ~3 seconds before giving up
+    // Initial fetch jump
+    setDisplayProgress(5);
+    if (onProgress) onProgress(5);
 
     const pollInterval = setInterval(async () => {
       try {
-        const data = await getScrapeProgress(scrapeId);
-        consecutive404s = 0; // Reset on success
-        setProgress(data);
-        setError(null);
+        const data = await getScrapeProgress(scrapeId); // Changed from getSearchProgress to getScrapeProgress to match import
+        setProgressData(data); // Store raw data
 
-        if (data.status === "completed" || data.status === "error") {
+        if (data.status === "completed") {
           clearInterval(pollInterval);
-          if (data.status === "completed" && onComplete) {
-            onComplete(data);
-          } else if (data.status === "error" && onError) {
-            const errMsg = data.error || (data.platform_summary && Object.values(data.platform_summary).find(s => s?.error)?.error) || `Searching failed (Status: ${data.status}, Err: ${data.error})`;
-            onError(errMsg);
-          }
+          setDisplayProgress(100);
+          if (onProgress) onProgress(100);
+          handleCompletion(data);
+        } else if (data.status === "failed" || data.status === "error") {
+          clearInterval(pollInterval);
+          const errMsg = data.error || "Search failed";
+          setError(errMsg);
+          if (onError) onError(errMsg);
         }
       } catch (err) {
-        const is404 = err.message && (err.message.includes("404") || err.message.includes("Search run not found"));
-        if (is404 && consecutive404s < max404Retries) {
-          consecutive404s += 1;
-          // Don't report yet - retry (progress may not be ready)
-        } else {
-          setError(err.message);
-          clearInterval(pollInterval);
-          if (onError) {
-            onError(err.message);
-          }
-        }
+        console.error("Poll error:", err);
+        // Don't stop polling on transient errors unless 404 persists (omitted for brevity)
       }
-    }, 500); // Poll every 500ms
+    }, 1500);
 
     return () => clearInterval(pollInterval);
-  }, [scrapeId, onComplete, onError]);
+  }, [scrapeId, onProgress, onError]); // Added onProgress, onError to dependency array
 
-  if (!progress) {
+  const handleCompletion = async (data) => {
+    if (fetchingItems) return;
+    setFetchingItems(true);
+    try {
+      // Fetch the actual items
+      const itemsResult = await getScrapeItems(scrapeId);
+      if (onComplete) {
+        // Pass combined result
+        onComplete({ ...data, items: itemsResult.items, platform_statuses: itemsResult.platform_statuses });
+      }
+    } catch (err) {
+      setError("Search completed, but failed to load results: " + err.message);
+      if (onError) onError(err.message);
+    } finally {
+      setFetchingItems(false);
+    }
+  };
+
+  const displayPct = Math.round(displayProgress);
+
+  // Status message based on real data
+  let statusMsg = "Initializing search agents...";
+  if (fetchingItems) statusMsg = "Finalizing results...";
+  else if (progressData?.current_platform) statusMsg = `Scanning ${progressData.current_platform}...`;
+  else if (progressData?.status === "running") statusMsg = "Searching for content...";
+
+  if (error) {
     return (
-      <div className="scrape-progress">
-        <div className="progress-spinner"></div>
-        <p>Initializing search...</p>
+      <div className="scrape-progress-container error">
+        <div className="error-icon">⚠️</div>
+        <h3>Search Failed</h3>
+        <p>{error}</p>
+        <button onClick={() => window.location.reload()} className="secondary-button">Try Again</button>
       </div>
     );
   }
 
-  const percentage = progress.percentage || 0;
-  const currentPlatform = progress.current_platform_label || progress.current_platform || "Unknown";
-
   return (
-    <div className="scrape-progress">
-      <div className="progress-header">
-        <h3>Search in progress</h3>
-        <div className="progress-percentage">{percentage}%</div>
-      </div>
+    <div className="scrape-progress-container">
+      <div className="progress-content">
+        <h2>{fetchingItems ? "Finalizing..." : "Searching..."}</h2>
+        <p className="status-message">{statusMsg}</p>
 
-      <div className="progress-bar-container">
-        <div
-          className="progress-bar"
-          style={{ width: `${percentage}%` }}
-        ></div>
-      </div>
+        <div className="progress-bar-container large">
+          <div
+            className="progress-bar-fill"
+            style={{ width: `${displayPct}%`, transition: 'width 0.1s linear' }}
+          ></div>
+        </div>
 
-      <div className="progress-details">
-        <div className="progress-item">
-          <span className="label">Current platform:</span>
-          <span className="value">{currentPlatform}</span>
+        <div className="progress-stats">
+          <span className="percentage">{displayPct}%</span>
         </div>
-        <div className="progress-item">
-          <span className="label">Progress:</span>
-          <span className="value">
-            {progress.completed} of {progress.total} platforms
-          </span>
-        </div>
-        {progress.items_found > 0 && (
-          <div className="progress-item">
-            <span className="label">Items found:</span>
-            <span className="value">{progress.items_found}</span>
-          </div>
-        )}
-        {progress.platform_summary && Object.keys(progress.platform_summary).length > 0 && (
-          <div className="progress-item" style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #e5e7eb" }}>
-            <span className="label" style={{ marginBottom: "8px", display: "block" }}>Platform status:</span>
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              {Object.entries(progress.platform_summary).map(([key, info]) => {
-                const statusIcon = info.status === "success" ? "✓" : info.status === "error" ? "⚠" : "·";
-                const statusColor = info.status === "success" ? "#10b981" : info.status === "error" ? "#ef4444" : "#6b7280";
-                return (
-                  <div key={key} style={{ fontSize: "12px", display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: statusColor }}>
-                      {statusIcon} {info.label}
-                    </span>
-                    <span style={{ color: "#6b7280" }}>
-                      {info.items_found} items
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+
+        {progressData && progressData.items_found > 0 && (
+          <div className="items-found-tag">
+            Found {progressData.items_found} items so far
           </div>
         )}
       </div>
-
-      {progress.status === "error" && progress.error && (
-        <div className="progress-error">
-          <strong>Error:</strong> {progress.error}
-        </div>
-      )}
-
-      {error && (
-        <div className="progress-error">
-          <strong>Error:</strong> {error}
-        </div>
-      )}
     </div>
   );
 }

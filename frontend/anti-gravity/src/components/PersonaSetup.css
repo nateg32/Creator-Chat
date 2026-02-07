@@ -1,16 +1,218 @@
 .persona-setup-card {
   background: white;
-  border-radius: 20px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  padding: 32px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-radius: 24px;
+  padding: 40px;
+  max-width: 800px;
+  /* Constrain width for elegance */
+  margin: 0 auto;
+  /* Removed border for cleaner look */
 }
 
 .persona-setup-card h2 {
-  margin: 0 0 8px 0;
-  font-size: 28px;
+  margin: 0 0 12px 0;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: #1d1d1f;
+  text-align: center;
+}
+
+.subtitle {
+  margin: 0 0 40px 0;
+  font-size: 16px;
+  color: #86868b;
+  font-weight: 400;
+  text-align: center;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.persona-form {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.persona-setup-card .form-group label {
+  font-size: 14px;
   font-weight: 600;
   color: #1d1d1f;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  /* Ensure full width */
+  margin-bottom: 4px;
+}
+
+/* Ensure centering for labels if desired, though usually left-align is better for readability.
+   Given "symmetrical", centering might be the goal. I'll keep justified space-between for sliders which looks good.
+   But for Tone select label, let's verify if justify-content applies. */
+
+.subtitle {
+  margin: 0 0 40px 0;
+  font-size: 16px;
+  color: #86868b;
+  font-weight: 400;
+  text-align: center;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+  display: block;
+  /* Ensure block level */
+  width: 100%;
+}
+
+.persona-form {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  align-items: stretch;
+  /* Stretch children */
+}
+
+.slider-value {
+  font-size: 13px;
+  color: #007aff;
+  font-weight: 600;
+  background: #edf5ff;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+.form-group select {
+  padding: 14px 16px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  font-size: 15px;
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.2s;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 16px;
+}
+
+.form-group select:focus {
+  outline: none;
+  background: white;
+  border-color: #007aff;
+  box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+}
+
+.slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px;
+  background: #fbfbfd;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.slider {
+  width: 100%;
+  height: 4px;
+  /* Sleeker track */
+  border-radius: 2px;
+  background: #e5e5e7;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #007aff;
+  /* White center with blue border */
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.form-group textarea {
+  padding: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: vertical;
+  background: #fafafa;
+  transition: all 0.2s;
+  min-height: 100px;
+}
+
+.form-group textarea:focus {
+  outline: none;
+  background: white;
+  border-color: #007aff;
+  box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+}
+
+.button-group {
+  display: flex;
+  gap: 16px;
+  margin-top: 24px;
+  justify-content: center;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Minimalist Button Styles */
+.button-group button {
+  flex: 1;
+  border-radius: 40px;
+  /* Pill shape */
+  padding: 14px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: none;
+}
+
+.button-group .primary-button {
+  background: #1d1d1f;
+  /* Elegant Black */
+  color: white;
+}
+
+.button-group .primary-button:hover {
+  background: #000000;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.button-group .secondary-button {
+  background: white;
+  color: #1d1d1f;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.button-group .secondary-button:hover {
+  background: #f5f5f7;
+  border-color: transparent;
 }
 
 .subtitle {

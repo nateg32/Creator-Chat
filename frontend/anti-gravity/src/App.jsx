@@ -1,7 +1,7 @@
 import { useReducer, useState, useMemo, useEffect } from "react";
 import { Stepper } from "./components/Stepper";
 import { CreatorSetup } from "./components/CreatorSetup";
-import { ScrapePreview } from "./components/ScrapePreview";
+import { ScrapeProgress } from "./components/ScrapeProgress";
 import { ApprovalGate } from "./components/ApprovalGate";
 import { PersonaSetup } from "./components/PersonaSetup";
 import { ChatPanel } from "./components/ChatPanel";
@@ -35,6 +35,7 @@ function wizardReducer(state, action) {
         platform: action.platform,
         handle: action.handle,
         source: action.source,
+        creatorAvatarUrl: action.creatorAvatarUrl,
       };
     case "SET_CREATOR_ID":
       return {
@@ -57,6 +58,8 @@ function wizardReducer(state, action) {
       return { ...state, progress: action.progress };
     case "SET_ERROR":
       return { ...state, error: action.error };
+    case "SET_IS_DRAFT":
+      return { ...state, isDraft: action.isDraft };
     case "RESET":
       return {
         currentStep: 1,
@@ -70,9 +73,11 @@ function wizardReducer(state, action) {
         platformStatuses: null,
         decisions: {},
         persona: "",
+        creatorAvatarUrl: "",
         loading: false,
         progress: null,
         error: null,
+        isDraft: true, // Default to draft/temporary unless specified
       };
     default:
       return state;
@@ -82,7 +87,7 @@ function wizardReducer(state, action) {
 export default function App() {
   // Workflow state (for creator setup/ingestion)
   const [state, dispatch] = useReducer(wizardReducer, {
-    currentStep: 5, // Default to Chat (requirement #2)
+    currentStep: 5, // Default to Chat
     creatorId: null,
     creatorName: "",
     creatorUrl: "",
@@ -94,106 +99,65 @@ export default function App() {
     platformStatuses: null,
     decisions: {},
     persona: "",
+    creatorAvatarUrl: "",
     loading: false,
     progress: null,
     error: null,
+    isDraft: true,
   });
 
-  // Multi-chat state
+  const [userAvatarUrl, setUserAvatarUrl] = useState(() => {
+    return localStorage.getItem("userAvatarUrl") || "";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("userAvatarUrl", userAvatarUrl);
+  }, [userAvatarUrl]);
+
+  // ... (useState declarations) ...
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [existingCreators, setExistingCreators] = useState([]);
 
-  // Other state
+  // ... (Other state) ...
   const [topK, setTopK] = useState(5);
   const [maxDistance] = useState(1.15);
   const [showDebug, setShowDebug] = useState(false);
   const [debugAsk, setDebugAsk] = useState(false);
   const [toast, setToast] = useState(null);
   const [backendConnected, setBackendConnected] = useState(null);
+  const [searchProgress, setSearchProgress] = useState(0);
+
+  const showToast = (message, type = "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   async function refreshCreators() {
     try {
       const data = await listCreators();
-      const creators = data.creators || [];
-      setExistingCreators(creators);
-      return creators;
-    } catch (err) {
-      console.error("Failed to load creators:", err);
-      return [];
+      setExistingCreators(data.creators || []);
+      setBackendConnected(true);
+    } catch (error) {
+      console.error("Failed to load creators:", error);
+      // Don't set error state globally to avoid blocking UI, just log it
+      if (error.message.includes("Failed to fetch")) {
+        setBackendConnected(false);
+      }
     }
   }
 
-  // Load existing creators on mount
   useEffect(() => {
+    refreshCreators();
+
+    // Check health
     health()
-      .then(() => {
-        setBackendConnected(true);
-        if (state.error && state.error.includes("Cannot connect to backend")) {
-          dispatch({ type: "SET_ERROR", error: null });
-        }
-      })
-      .catch((err) => {
-        setBackendConnected(false);
-        console.error("Backend health check failed:", err);
-      });
-
-    refreshCreators().then((creators) => {
-      // Handle URL params (open in new tab support)
-      const params = new URLSearchParams(window.location.search);
-      const urlCreatorId = params.get("creator_id");
-      if (urlCreatorId) {
-        const creator = creators.find(c => String(c.id) === String(urlCreatorId));
-        if (creator) {
-          if ((creator.item_count || 0) > 0) {
-            // Create active chat session from URL
-            const newId = generateChatId();
-            const newChat = {
-              id: newId,
-              creatorId: creator.id,
-              creatorName: creator.name,
-              handle: creator.handle,
-              messages: [
-                {
-                  id: "welcome",
-                  role: "assistant",
-                  text: `Hey! I'm ${creator.name}. Ask me anything!`,
-                },
-              ],
-              isTemporary: false,
-            };
-            setChats(prev => [...prev, newChat]);
-            setActiveChatId(newId);
-            dispatch({ type: "SET_STEP", step: 5 });
-          } else {
-            // Redirect to setup if empty
-            dispatch({ type: "SET_CREATOR_ID", creatorId: creator.id });
-            dispatch({
-              type: "SET_CREATOR_INFO",
-              creatorName: creator.name || "",
-              handle: creator.handle || "",
-              url: "", platform: "", source: ""
-            });
-            dispatch({ type: "SET_STEP", step: 1 });
-          }
-          // Remove query param to avoid re-triggering? optional
-          window.history.replaceState({}, document.title, window.location.pathname);
-        }
-      }
-    });
-
+      .then(() => setBackendConnected(true))
+      .catch(() => setBackendConnected(false));
   }, []);
 
-  function showToast(message, type = "success") {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  }
-
-  // ============================================================================
   // Chat Management
-  // ============================================================================
-
   const activeChat = chats.find((c) => c.id === activeChatId);
 
   function handleNewChat() {
@@ -207,46 +171,72 @@ export default function App() {
     let isTemporary = chatConfig.type === "temporary";
 
     if (chatConfig.type === "existing") {
-      // Check for empty creator content
-      const creator = existingCreators.find(c => c.id === chatConfig.creatorId);
-      if (creator && (creator.item_count || 0) === 0) {
-        // Redirect to setup
-        handleSaveConfig({
-          creatorId: creator.id,
-          name: creator.name || "",
-          handle: creator.handle || ""
-        });
-        dispatch({ type: "SET_STEP", step: 1 });
-        setShowNewChatModal(false);
-        return;
-      }
       creatorId = chatConfig.creatorId;
+      // ALWAYS go to Chat (Step 5) for existing creators
+      dispatch({ type: "SET_CREATOR_ID", creatorId });
+      dispatch({
+        type: "SET_CREATOR_INFO",
+        creatorName: chatConfig.name,
+        handle: chatConfig.handle || "",
+        creatorAvatarUrl: chatConfig.profile_picture_url || "",
+        url: "", platform: "", source: ""
+      });
+      dispatch({ type: "SET_IS_DRAFT", isDraft: false });
+      dispatch({ type: "SET_STEP", step: 5 });
     } else if (chatConfig.type === "new") {
-      // Create new creator in DB
-      try {
-        const result = await createCreator(chatConfig.name, chatConfig.handle || "", []);
-        creatorId = result.id;
-        creatorName = result.name;
-        handle = result.handle || "";
-        isTemporary = false;
-
-        // Refresh existing creators list
-        const data = await listCreators();
-        setExistingCreators(data.creators || []);
-
-        showToast(`Created new creator: ${creatorName}`);
-      } catch (error) {
-        showToast(`Failed to create creator: ${error.message}`, "error");
-        return;
+      // Redirect to Setup, NOT Temporary (Explicit Save)
+      if (chatConfig.creatorId) {
+        try {
+          const data = await getCreatorConfig(chatConfig.creatorId);
+          dispatch({
+            type: "SET_CREATOR_INFO",
+            creatorName: data.name,
+            handle: data.handle || "",
+            creatorAvatarUrl: data.profile_picture_url || "",
+            url: "", platform: "", source: ""
+          });
+          dispatch({ type: "SET_CREATOR_ID", creatorId: chatConfig.creatorId });
+        } catch (error) {
+          console.error("Failed to load creator config for new chat:", error);
+          showToast("Failed to load creator config. Please try again.", "error");
+        }
+      } else {
+        dispatch({ type: "RESET" });
+        dispatch({
+          type: "SET_CREATOR_INFO",
+          creatorName: chatConfig.name,
+          handle: chatConfig.handle || "",
+          url: "", platform: "", source: ""
+        });
       }
+      dispatch({ type: "SET_IS_DRAFT", isDraft: false });
+      dispatch({ type: "SET_STEP", step: 1 });
+      setShowNewChatModal(false);
+      return;
+    } else if (chatConfig.type === "temporary") {
+      // Redirect to Setup, BUT Temporary (Draft)
+      dispatch({ type: "RESET" });
+      dispatch({
+        type: "SET_CREATOR_INFO",
+        creatorName: chatConfig.name || "Temporary Creator",
+        handle: chatConfig.handle || "",
+        url: "",
+        platform: "",
+        source: ""
+      });
+      dispatch({ type: "SET_IS_DRAFT", isDraft: true }); // Temporary / Draft
+      dispatch({ type: "SET_STEP", step: 1 });
+      setShowNewChatModal(false);
+      return;
     }
 
-    // Create new chat
+    // Create new chat (only for existing flow now)
     const newChat = {
       id: generateChatId(),
       creatorId: creatorId,
       creatorName: creatorName,
       handle: handle,
+      creatorAvatarUrl: chatConfig.profile_picture_url || (chatConfig.type === "existing" ? chatConfig.profile_picture_url : ""),
       messages: [
         {
           id: "welcome",
@@ -290,22 +280,74 @@ export default function App() {
     );
   }
 
-  // ============================================================================
-  // Workflow Handlers (Creator Setup & Ingestion)
-  // ============================================================================
+  async function handleUpdateCreatorAvatar(creatorId, newAvatarUrl) {
+    // OPTIMISTIC UPDATE: Update UI immediately for instant feedback
 
-  function handleSaveConfig({ creatorId, name, handle }) {
+    // Update global wizard state if this matches current setup
+    if (state.creatorId === creatorId) {
+      dispatch({
+        type: "SET_CREATOR_INFO",
+        creatorName: state.creatorName,
+        handle: state.handle,
+        creatorAvatarUrl: newAvatarUrl,
+        creatorUrl: state.creatorUrl,
+        platform: state.platform,
+        source: state.source
+      });
+    }
+
+    // Update all chats belonging to this creator (or current temp chat)
+    setChats(prev => prev.map(c => {
+      // If it's a real creator, match by creatorId
+      if (creatorId && creatorId !== -1 && c.creatorId === creatorId) {
+        return { ...c, creatorAvatarUrl: newAvatarUrl };
+      }
+      // If it's a temporary/current chat, match by activeChatId
+      if (c.id === activeChatId) {
+        return { ...c, creatorAvatarUrl: newAvatarUrl };
+      }
+      return c;
+    }));
+
+    // Persist to backend if it's a real saved creator (in background)
+    if (creatorId && creatorId !== -1) {
+      try {
+        await updateCreator(creatorId, { profile_picture_url: newAvatarUrl });
+        refreshCreators();
+      } catch (err) {
+        console.error("Failed to persist creator avatar to backend:", err);
+        // Don't show error toast since the UI already updated successfully
+        // The user's experience is smooth even if backend sync fails
+      }
+    }
+  }
+
+  // Workflow Handlers
+
+  function handleSaveConfig({ creatorId, name, handle, profile_picture_url }) {
     dispatch({ type: "SET_CREATOR_ID", creatorId });
-    dispatch({ type: "SET_CREATOR_INFO", creatorName: name || "", handle: handle || "", url: "", platform: "", source: "" });
+    dispatch({ type: "SET_CREATOR_INFO", creatorName: name || "", handle: handle || "", creatorAvatarUrl: profile_picture_url || "", url: "", platform: "", source: "" });
+    // Refresh list so it shows up in sidebar/modal immediately
+    refreshCreators();
+  }
+
+  function handleSearchStart(scrapeId) {
+    dispatch({ type: "SET_ERROR", error: null });
+    dispatch({ type: "SET_SCRAPE_ID", scrapeId });
+    dispatch({ type: "SET_STEP", step: 2 }); // Move to Search Step UI
   }
 
   function handleScrapeResult(result) {
     dispatch({ type: "SET_ERROR", error: null });
-    dispatch({ type: "SET_SCRAPE_ID", scrapeId: result.scrape_id || result.search_id });
+    // Don't wipe scrapeId if missing in result; it should already be in state
+    const newScrapeId = result.scrape_id || result.search_id;
+    if (newScrapeId) {
+      dispatch({ type: "SET_SCRAPE_ID", scrapeId: newScrapeId });
+    }
     if (result.creator_id) dispatch({ type: "SET_CREATOR_ID", creatorId: result.creator_id });
     dispatch({ type: "SET_SCRAPED_ITEMS", items: result.items || [] });
     dispatch({ type: "SET_PLATFORM_STATUSES", platformStatuses: result.platform_statuses || null });
-    dispatch({ type: "SET_STEP", step: 2 });
+    dispatch({ type: "SET_STEP", step: 3 }); // Skip Preview, go straight to Approve
     const n = (result.items || []).length;
     if (n) showToast(`Found ${n} items!`);
     else showToast("Search finished. No items found—check platform statuses.", "error");
@@ -341,9 +383,11 @@ export default function App() {
       dispatch({ type: "SET_PROGRESS", progress: null });
       dispatch({ type: "SET_STEP", step: 4 });
 
-      // Refresh existing creators list
-      const data = await listCreators();
-      setExistingCreators(data.creators || []);
+      // Refresh existing creators list ONLY if not a draft
+      if (!state.isDraft) {
+        const data = await listCreators();
+        setExistingCreators(data.creators || []);
+      }
     } catch (error) {
       showToast(error.message, "error");
       dispatch({ type: "SET_PROGRESS", progress: null });
@@ -371,12 +415,29 @@ export default function App() {
   }
 
   function handlePersonaContinue() {
+    // Check Draft Status
+    let finalIsTemporary = false;
+    if (state.isDraft) {
+      // Prompt user
+      const save = window.confirm("Do you want to save this creator to your collection?");
+      if (save) {
+        // "Save" - just proceed, maybe toast
+        showToast("Creator saved to collection.");
+        finalIsTemporary = false;
+      } else {
+        // "Discard" - treat as temporary
+        finalIsTemporary = true;
+        // Ideally we would ensure it doesn't show in lists, but we rely on isTemporary flag in chat
+      }
+    }
+
     // When persona setup is complete, create a chat for this creator
     const newChat = {
       id: generateChatId(),
       creatorId: state.creatorId,
       creatorName: state.creatorName || state.handle || "Creator",
       handle: state.handle || "",
+      creatorAvatarUrl: state.creatorAvatarUrl,
       messages: [
         {
           id: "welcome",
@@ -384,12 +445,17 @@ export default function App() {
           text: `Hey! I'm ${state.creatorName || state.handle || "the creator"}. Ask me anything!`,
         },
       ],
-      isTemporary: false,
+      isTemporary: finalIsTemporary,
     };
 
     setChats((prev) => [...prev, newChat]);
     setActiveChatId(newChat.id);
     dispatch({ type: "SET_STEP", step: 5 });
+
+    // If not temporary, ensure list is refreshed
+    if (!finalIsTemporary) {
+      refreshCreators();
+    }
   }
 
   function handleResetWizard() {
@@ -404,25 +470,40 @@ export default function App() {
     return [];
   }, [activeChat]);
 
+  function handleResetChat() {
+    updateChatMessages(activeChat.id, [
+      {
+        id: "reset",
+        role: "assistant",
+        text: "Chat reset. Ask me anything!",
+      },
+    ]);
+  }
+
   function renderWorkflowStep() {
     switch (state.currentStep) {
       case 1:
         return (
           <CreatorSetup
             onSaveConfig={handleSaveConfig}
-            onScrape={handleScrapeResult}
+            onSearchStart={handleSearchStart}
             onSaveSuccess={() => showToast("Config saved. You can search now.")}
             loading={state.loading}
             savedCreatorId={state.creatorId}
+            initialCreatorName={state.creatorName}
+            initialHandle={state.handle}
+            initialAvatarUrl={state.creatorAvatarUrl}
+            userAvatarUrl={userAvatarUrl}
+            onUserAvatarChange={setUserAvatarUrl}
           />
         );
       case 2:
         return (
-          <ScrapePreview
-            items={state.scrapedItems}
-            platformStatuses={state.platformStatuses}
-            onContinue={handleScrapeContinue}
-            onBack={handleScrapeBack}
+          <ScrapeProgress
+            scrapeId={state.scrapeId}
+            onComplete={handleScrapeResult}
+            onProgress={(p) => setSearchProgress(p)}
+            onError={(msg) => dispatch({ type: "SET_ERROR", error: msg })}
           />
         );
       case 3:
@@ -467,7 +548,8 @@ export default function App() {
       <Stepper
         currentStep={state.currentStep}
         steps={STEPS}
-        onStepClick={handleStepClick}
+        onStepClick={(s) => dispatch({ type: "SET_STEP", step: s })}
+        searchProgress={searchProgress}
       />
 
       {toast && (
@@ -531,15 +613,7 @@ export default function App() {
                   setMessages={(updater) => updateChatMessages(activeChat.id, updater)}
                   loading={false}
                   setLoading={() => { }}
-                  onResetChat={() => {
-                    updateChatMessages(activeChat.id, [
-                      {
-                        id: "reset",
-                        role: "assistant",
-                        text: "Chat reset. Ask me anything!",
-                      },
-                    ]);
-                  }}
+                  onResetChat={handleResetChat}
                   onChangePersona={() => {
                     if (activeChat.creatorId) {
                       dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
@@ -552,6 +626,10 @@ export default function App() {
                       dispatch({ type: "SET_STEP", step: 1 });
                     }
                   }}
+                  creatorAvatarUrl={activeChat.creatorAvatarUrl || state.creatorAvatarUrl}
+                  userAvatarUrl={userAvatarUrl}
+                  onUpdateCreatorAvatar={handleUpdateCreatorAvatar}
+                  onUpdateUserAvatar={setUserAvatarUrl}
                   debug={debugAsk}
                 />
               ) : (

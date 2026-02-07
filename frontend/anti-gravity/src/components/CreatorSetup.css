@@ -1,23 +1,35 @@
 .creator-setup-card {
   background: white;
-  border-radius: 20px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  padding: 32px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-radius: 24px;
+  padding: 40px;
+  max-width: 800px;
+  /* Centered symmetry */
+  margin: 0 auto;
+  /* Minimalist: no heavy border */
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.02);
 }
 
 .creator-setup-card h2 {
-  margin: 0 0 8px 0;
-  font-size: 28px;
-  font-weight: 600;
+  margin: 0 0 12px 0;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
   color: #1d1d1f;
+  /* Revert to left align (default) */
 }
 
 .subtitle {
-  margin: 0 0 32px 0;
-  font-size: 15px;
+  margin: 0 0 40px 0;
+  font-size: 16px;
   color: #86868b;
   font-weight: 400;
+  text-align: left;
+  /* Explicitly force left align */
+  margin-left: 0;
+  /* Override any auto margins */
+  margin-right: 0;
+  max-width: 100%;
+  /* reset max-width if needed */
 }
 
 .setup-form {
@@ -30,6 +42,57 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.form-group-row {
+  display: flex;
+  gap: 20px;
+}
+
+.form-group-row .form-group {
+  flex: 1;
+}
+
+@media (max-width: 600px) {
+  .form-group-row {
+    flex-direction: column;
+    gap: 20px;
+  }
+}
+
+.input-with-action {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.input-with-action input {
+  flex: 1;
+}
+
+.upload-btn {
+  padding: 10px 16px;
+  background: #f5f5f7;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1d1d1f;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upload-btn:hover {
+  background: #ebebed;
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+.upload-btn:active {
+  background: #e1e1e3;
 }
 
 .form-group label {

@@ -83,14 +83,15 @@ export function validatePlatformUrl(key, url) {
   return getJson(`/platforms/${encodeURIComponent(key)}/validate?url=${encodeURIComponent(url || "")}`);
 }
 
-export function createCreatorWithConfig({ name, handle, platform_configs }) {
-  return postJson("/creators/config", { name, handle, platform_configs: platform_configs || {} });
+export function createCreatorWithConfig({ name, handle, profile_picture_url, platform_configs }) {
+  return postJson("/creators/config", { name, handle, profile_picture_url, platform_configs: platform_configs || {} });
 }
 
-export async function updateCreator(creatorId, { name, handle, platform_configs }) {
+export async function updateCreator(creatorId, { name, handle, profile_picture_url, platform_configs }) {
   const body = {};
   if (name != null) body.name = name;
   if (handle != null) body.handle = handle;
+  if (profile_picture_url != null) body.profile_picture_url = profile_picture_url;
   if (platform_configs != null) body.platform_configs = platform_configs;
   const res = await fetch(`${API_BASE_URL}/creators/${creatorId}`, {
     method: "PUT",

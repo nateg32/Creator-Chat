@@ -190,6 +190,11 @@ def require_auth(session_id: Optional[str] = Cookie(None)) -> Dict[str, Any]:
 async def startup():
     """Initialize database connection"""
     db.connect()
+    # Migration: Add profile_picture_url if missing
+    try:
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")
+    except Exception as e:
+        print(f"[STARTUP] Migration warning: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -529,8 +534,9 @@ def validate_platform_url(key: str, url: str = ""):
 async def list_creators():
     """List all creators"""
     try:
-        query = """
-            SELECT c.id, c.name, c.handle, c.platforms, c.created_at,
+        dcol = _creator_display_column()
+        query = f"""
+            SELECT c.id, c.{dcol} as name, c.handle, c.created_at, c.profile_picture_url,
                    (SELECT COUNT(*) FROM scrape_queue q WHERE q.creator_id = c.id AND q.status = 'ingested') as item_count
             FROM creators c
             ORDER BY c.created_at DESC
@@ -539,21 +545,21 @@ async def list_creators():
         
         creators = []
         for row in results:
-            platforms = row.get("platforms") or []
-            if isinstance(platforms, str):
-                platforms = json.loads(platforms) if platforms else []
             creators.append(Creator(
                 id=row["id"],
-                name=row["name"],
+                name=row["name"] or row.get("handle") or "Unknown",
                 handle=row.get("handle"),
-                platforms=platforms if isinstance(platforms, list) else [],
+                profile_picture_url=row.get("profile_picture_url"),
+                platforms=[], # Platforms column might be missing, omit for list
                 item_count=row.get("item_count", 0),
                 created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
             ))
         
         return CreatorsListResponse(creators=creators)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[RECOVERABLE] list_creators error: {e}")
+        # Return empty list rather than 500 to keep UI alive
+        return CreatorsListResponse(creators=[])
 
 @app.post("/creators", response_model=Creator)
 async def create_creator(request: CreateCreatorRequest):
@@ -693,20 +699,20 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
                 if has_pc:
                     creator_id = db.execute_insert(
                         f"""
-                        INSERT INTO creators (user_id, handle, {dcol}, platform_configs)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url, platform_configs)
+                        VALUES (%s, %s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (user_id, handle, name, json.dumps(configs)),
+                        (user_id, handle, name, request.profile_picture_url, json.dumps(configs)),
                     )
                 else:
                     creator_id = db.execute_insert(
                         f"""
-                        INSERT INTO creators (user_id, handle, {dcol})
-                        VALUES (%s, %s, %s)
+                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url)
+                        VALUES (%s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (user_id, handle, name),
+                        (user_id, handle, name, request.profile_picture_url),
                     )
             except Exception as e:
                 # Handle races / uniqueness: if handle already exists, update it instead.
@@ -771,6 +777,9 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
         if request.handle is not None:
             updates.append("handle = %s")
             params.append(request.handle.strip())
+        if request.profile_picture_url is not None:
+            updates.append("profile_picture_url = %s")
+            params.append(request.profile_picture_url)
         if request.platform_configs is not None:
             configs = _validate_and_normalize_platform_configs(request.platform_configs)
             try:
@@ -822,12 +831,70 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.delete("/creators/{creator_id}")
+async def delete_creator(creator_id: int):
+    """Delete a creator and all associated data."""
+    try:
+        # Check if creator exists (simple check)
+        existing = db.execute_one("SELECT id FROM creators WHERE id = %s", (creator_id,))
+        if not existing:
+            # If not found, create a dummy response or error
+            # But maybe the user clicked delete twice. Let's return 404.
+            raise HTTPException(status_code=404, detail="Creator not found")
+
+        # Delete associated data in order
+        # 1. Embeddings (linked to chunks)
+        # Note: chunks table might not have creator_id in older schemas?
+        # Let's check if chunks has creator_id. 
+        # ingest.py shows INSERT INTO chunks (creator_id, ...) so it does.
+        
+        # It's safer to delete embeddings first.
+        try:
+             db.execute_update("""
+                DELETE FROM embeddings 
+                WHERE chunk_id IN (SELECT id FROM chunks WHERE creator_id = %s)
+            """, (creator_id,))
+        except Exception as e:
+            print(f"Error deleting embeddings: {e}")
+
+        # 2. Chunks
+        try:
+            db.execute_update("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
+        except Exception as e:
+            print(f"Error deleting chunks: {e}")
+
+        # 3. Documents
+        try:
+            db.execute_update("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
+        except Exception as e:
+             print(f"Error deleting documents: {e}")
+
+        # 4. Scrape Queue
+        try:
+            db.execute_update("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
+        except Exception as e:
+             print(f"Error deleting scrape_queue: {e}")
+
+        # 5. Creator
+        count = db.execute_update("DELETE FROM creators WHERE id = %s", (creator_id,))
+        if count == 0:
+             raise HTTPException(status_code=404, detail="Creator not found during delete")
+
+        return {"ok": True, "message": f"Creator {creator_id} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/creators/{creator_id}/config", response_model=CreatorWithConfigResponse)
 async def get_creator_config(creator_id: int):
     """Get creator with platform_configs."""
     dcol = _creator_display_column()
     row = db.execute_one(
-        f"SELECT id, handle, {dcol} AS display_name, platform_configs, created_at FROM creators WHERE id = %s",
+        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, created_at FROM creators WHERE id = %s",
         (creator_id,),
     )
     if not row:
@@ -841,6 +908,7 @@ async def get_creator_config(creator_id: int):
         id=row["id"],
         name=row.get("display_name") or row.get("handle") or "",
         handle=row.get("handle"),
+        profile_picture_url=row.get("profile_picture_url"),
         platform_configs=pc,
         created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
     )

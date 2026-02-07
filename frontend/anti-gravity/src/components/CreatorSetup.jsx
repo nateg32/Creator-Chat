@@ -7,8 +7,9 @@ import {
   getCreatorConfig,
   scrape,
   getScrapeItems,
+  getSearchProgress,
 } from "../api/client";
-import { ScrapeProgress } from "./ScrapeProgress";
+import { resizeImage } from "../utils/image";
 import "./CreatorSetup.css";
 
 const TIME_MODES = [
@@ -19,22 +20,26 @@ const TIME_MODES = [
 
 export function CreatorSetup({
   onSaveConfig,
-  onScrape,
+  onSearchStart,
   onSaveSuccess,
   loading,
   savedCreatorId,
+  initialCreatorName = "",
+  initialHandle = "",
+  initialAvatarUrl = "",
+  userAvatarUrl = "",
+  onUserAvatarChange,
 }) {
   const [platforms, setPlatforms] = useState([]);
-  const [creatorName, setCreatorName] = useState("");
-  const [creatorHandle, setCreatorHandle] = useState("");
+  const [creatorName, setCreatorName] = useState(initialCreatorName);
+  const [creatorHandle, setCreatorHandle] = useState(initialHandle);
+  const [creatorAvatarUrl, setCreatorAvatarUrl] = useState(initialAvatarUrl);
   const [selected, setSelected] = useState(new Set());
   const [config, setConfig] = useState({});
   const [error, setError] = useState(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [testStatus, setTestStatus] = useState({});
-  const [scrapeId, setScrapeId] = useState(null);
-  const [showProgress, setShowProgress] = useState(false);
 
   useEffect(() => {
     getPlatforms()
@@ -73,6 +78,7 @@ export function CreatorSetup({
         setConfig(cf);
         setCreatorName(data.name || "");
         setCreatorHandle(data.handle || "");
+        setCreatorAvatarUrl(data.profile_picture_url || "");
       })
       .catch(() => { });
   }, [savedCreatorId]);
@@ -124,6 +130,22 @@ export function CreatorSetup({
     }
   };
 
+  const handleAvatarUpload = async (e, type) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const base64 = await resizeImage(file);
+      if (type === "creator") {
+        setCreatorAvatarUrl(base64);
+      } else {
+        onUserAvatarChange(base64);
+      }
+    } catch (err) {
+      setError("Failed to process image: " + err.message);
+    }
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
     if (!valid() || saveLoading) return;
@@ -160,16 +182,18 @@ export function CreatorSetup({
         await updateCreator(savedCreatorId, {
           name: creatorName.trim() || undefined,
           handle: creatorHandle.trim() || undefined,
+          profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
-        onSaveConfig({ creatorId: savedCreatorId, name: creatorName, handle: creatorHandle });
+        onSaveConfig({ creatorId: savedCreatorId, name: creatorName, handle: creatorHandle, profile_picture_url: creatorAvatarUrl });
       } else {
         const res = await createCreatorWithConfig({
           name: creatorName.trim() || undefined,
           handle: creatorHandle.trim() || undefined,
+          profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
-        onSaveConfig({ creatorId: res.id, name: res.name, handle: res.handle });
+        onSaveConfig({ creatorId: res.id, name: res.name, handle: res.handle, profile_picture_url: res.profile_picture_url });
       }
       onSaveSuccess?.();
     } catch (err) {
@@ -185,51 +209,18 @@ export function CreatorSetup({
     if (!id || scrapeLoading || loading) return;
     setError(null);
     setScrapeLoading(true);
-    setShowProgress(true);
     try {
       const result = await scrape({ creator_id: id });
-      setScrapeId(result.scrape_id);
-      // Progress component will handle completion via onComplete callback
+      if (onSearchStart) {
+        onSearchStart(result.scrape_id);
+      }
     } catch (err) {
       setError(err.message || "Search failed");
-      setShowProgress(false);
       setScrapeLoading(false);
     }
   };
 
-  const handleProgressComplete = async (progressData) => {
-    setShowProgress(false);
-    setScrapeLoading(false);
-    // Fetch scrape results using scrape_id
-    if (scrapeId) {
-      try {
-        const result = await getScrapeItems(scrapeId);
-        onScrape(result);
-      } catch (err) {
-        // Fallback: try regular scrape endpoint
-        try {
-          const result = await scrape({ creator_id: savedCreatorId });
-          onScrape(result);
-        } catch (err2) {
-          setError(err2.message || "Failed to fetch search results");
-        }
-      }
-    } else {
-      // Fallback if no scrape_id
-      try {
-        const result = await scrape({ creator_id: savedCreatorId });
-        onScrape(result);
-      } catch (err) {
-        setError(err.message || "Failed to fetch search results");
-      }
-    }
-  };
-
-  const handleProgressError = (errorMsg) => {
-    setShowProgress(false);
-    setScrapeLoading(false);
-    setError(errorMsg || "Searching failed");
-  };
+  const offset = 0; // cleanup unused vars dummy
 
   const canScrape = Boolean(savedCreatorId) && !scrapeLoading && !loading;
 
@@ -419,28 +410,21 @@ export function CreatorSetup({
             type="button"
             className="primary-button"
             onClick={handleSave}
-            disabled={!valid() || saveLoading}
+            disabled={!valid() || saveLoading || scrapeLoading}
           >
             {saveLoading ? "Saving…" : savedCreatorId ? "Update config" : "Save & Continue"}
           </button>
+
           <button
             type="button"
-            className="primary-button"
+            className={`primary-button search-button ${scrapeLoading ? 'searching' : ''}`}
             onClick={handleScrape}
             disabled={!canScrape}
           >
-            {scrapeLoading ? "Searching…" : "Search now"}
+            {scrapeLoading ? "Starting..." : "Search now"}
           </button>
         </div>
       </form>
-
-      {showProgress && scrapeId && (
-        <ScrapeProgress
-          scrapeId={scrapeId}
-          onComplete={handleProgressComplete}
-          onError={handleProgressError}
-        />
-      )}
     </div>
   );
 }

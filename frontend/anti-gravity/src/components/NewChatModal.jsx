@@ -32,6 +32,7 @@ export function NewChatModal({ onClose, onCreateChat, existingCreators, onRefres
                     creatorId: creator.id,
                     name: creator.name,
                     handle: creator.handle,
+                    profile_picture_url: creator.profile_picture_url,
                 });
             }
         }
