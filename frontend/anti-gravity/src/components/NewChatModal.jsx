@@ -1,11 +1,13 @@
 import { useState } from "react";
 import "./NewChatModal.css";
+import { deleteCreator } from "../api/client";
 
-export function NewChatModal({ onClose, onCreateChat, existingCreators }) {
+export function NewChatModal({ onClose, onCreateChat, existingCreators, onRefreshCreators }) {
     const [mode, setMode] = useState("temporary"); // "temporary" or "new" or "existing"
     const [creatorName, setCreatorName] = useState("");
     const [creatorHandle, setCreatorHandle] = useState("");
     const [selectedCreatorId, setSelectedCreatorId] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -35,6 +37,29 @@ export function NewChatModal({ onClose, onCreateChat, existingCreators }) {
         }
 
         onClose();
+    };
+
+    const handleDeleteCreator = async (e, creatorId, creatorName) => {
+        e.stopPropagation(); // Prevent selection when clicking delete
+        if (!window.confirm(`Are you sure you want to delete ${creatorName}? This cannot be undone.`)) {
+            return;
+        }
+
+        try {
+            setIsDeleting(true);
+            await deleteCreator(creatorId);
+            if (onRefreshCreators) {
+                await onRefreshCreators();
+            }
+            if (selectedCreatorId === creatorId) {
+                setSelectedCreatorId(null);
+            }
+        } catch (error) {
+            console.error("Failed to delete creator:", error);
+            alert("Failed to delete creator: " + error.message);
+        } finally {
+            setIsDeleting(false);
+        }
     };
 
     return (
@@ -93,21 +118,33 @@ export function NewChatModal({ onClose, onCreateChat, existingCreators }) {
                         </label>
                     </div>
 
-                    {mode === "existing" && existingCreators && existingCreators.length > 0 && (
-                        <div className="form-group">
-                            <label>Select Creator</label>
-                            <select
-                                value={selectedCreatorId || ""}
-                                onChange={(e) => setSelectedCreatorId(parseInt(e.target.value))}
-                                required
-                            >
-                                <option value="">Choose a creator...</option>
+                    {mode === "existing" && (
+                        <div className="creators-list-container">
+                            <label className="list-label">Select a Creator</label>
+                            <div className="creators-list">
                                 {existingCreators.map((creator) => (
-                                    <option key={creator.id} value={creator.id}>
-                                        {creator.name || creator.handle}
-                                    </option>
+                                    <div
+                                        key={creator.id}
+                                        className={`creator-item ${selectedCreatorId === creator.id ? "selected" : ""}`}
+                                        onClick={() => setSelectedCreatorId(creator.id)}
+                                    >
+                                        <div className="creator-info">
+                                            <div className="creator-name">{creator.name || "Unknown"}</div>
+                                            <div className="creator-handle">{creator.handle || ""}</div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="delete-creator-btn"
+                                            onClick={(e) => handleDeleteCreator(e, creator.id, creator.name)}
+                                            title="Delete Creator"
+                                        >
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                            </svg>
+                                        </button>
+                                    </div>
                                 ))}
-                            </select>
+                            </div>
                         </div>
                     )}
 
@@ -143,9 +180,9 @@ export function NewChatModal({ onClose, onCreateChat, existingCreators }) {
                         <button
                             type="submit"
                             className="primary-button"
-                            disabled={mode === "existing" && !selectedCreatorId}
+                            disabled={(mode === "existing" && !selectedCreatorId) || isDeleting}
                         >
-                            Start Chat
+                            {isDeleting ? "Deleting..." : "Start Chat"}
                         </button>
                     </div>
                 </form>

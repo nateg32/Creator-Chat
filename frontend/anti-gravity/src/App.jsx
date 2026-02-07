@@ -82,7 +82,7 @@ function wizardReducer(state, action) {
 export default function App() {
   // Workflow state (for creator setup/ingestion)
   const [state, dispatch] = useReducer(wizardReducer, {
-    currentStep: 1,
+    currentStep: 5, // Default to Chat (requirement #2)
     creatorId: null,
     creatorName: "",
     creatorUrl: "",
@@ -113,6 +113,18 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [backendConnected, setBackendConnected] = useState(null);
 
+  async function refreshCreators() {
+    try {
+      const data = await listCreators();
+      const creators = data.creators || [];
+      setExistingCreators(creators);
+      return creators;
+    } catch (err) {
+      console.error("Failed to load creators:", err);
+      return [];
+    }
+  }
+
   // Load existing creators on mount
   useEffect(() => {
     health()
@@ -127,57 +139,50 @@ export default function App() {
         console.error("Backend health check failed:", err);
       });
 
-    // Load existing creators
-    listCreators()
-      .then((data) => {
-        const creators = data.creators || [];
-        setExistingCreators(creators);
-
-        // Handle URL params (open in new tab support)
-        const params = new URLSearchParams(window.location.search);
-        const urlCreatorId = params.get("creator_id");
-        if (urlCreatorId) {
-          const creator = creators.find(c => String(c.id) === String(urlCreatorId));
-          if (creator) {
-            if ((creator.item_count || 0) > 0) {
-              // Create active chat session from URL
-              const newId = generateChatId();
-              const newChat = {
-                id: newId,
-                creatorId: creator.id,
-                creatorName: creator.name,
-                handle: creator.handle,
-                messages: [
-                  {
-                    id: "welcome",
-                    role: "assistant",
-                    text: `Hey! I'm ${creator.name}. Ask me anything!`,
-                  },
-                ],
-                isTemporary: false,
-              };
-              setChats(prev => [...prev, newChat]);
-              setActiveChatId(newId);
-              dispatch({ type: "SET_STEP", step: 5 });
-            } else {
-              // Redirect to setup if empty
-              dispatch({ type: "SET_CREATOR_ID", creatorId: creator.id });
-              dispatch({
-                type: "SET_CREATOR_INFO",
-                creatorName: creator.name || "",
-                handle: creator.handle || "",
-                url: "", platform: "", source: ""
-              });
-              dispatch({ type: "SET_STEP", step: 1 });
-            }
-            // Remove query param to avoid re-triggering? optional
-            window.history.replaceState({}, document.title, window.location.pathname);
+    refreshCreators().then((creators) => {
+      // Handle URL params (open in new tab support)
+      const params = new URLSearchParams(window.location.search);
+      const urlCreatorId = params.get("creator_id");
+      if (urlCreatorId) {
+        const creator = creators.find(c => String(c.id) === String(urlCreatorId));
+        if (creator) {
+          if ((creator.item_count || 0) > 0) {
+            // Create active chat session from URL
+            const newId = generateChatId();
+            const newChat = {
+              id: newId,
+              creatorId: creator.id,
+              creatorName: creator.name,
+              handle: creator.handle,
+              messages: [
+                {
+                  id: "welcome",
+                  role: "assistant",
+                  text: `Hey! I'm ${creator.name}. Ask me anything!`,
+                },
+              ],
+              isTemporary: false,
+            };
+            setChats(prev => [...prev, newChat]);
+            setActiveChatId(newId);
+            dispatch({ type: "SET_STEP", step: 5 });
+          } else {
+            // Redirect to setup if empty
+            dispatch({ type: "SET_CREATOR_ID", creatorId: creator.id });
+            dispatch({
+              type: "SET_CREATOR_INFO",
+              creatorName: creator.name || "",
+              handle: creator.handle || "",
+              url: "", platform: "", source: ""
+            });
+            dispatch({ type: "SET_STEP", step: 1 });
           }
+          // Remove query param to avoid re-triggering? optional
+          window.history.replaceState({}, document.title, window.location.pathname);
         }
-      })
-      .catch((err) => {
-        console.error("Failed to load creators:", err);
-      });
+      }
+    });
+
   }, []);
 
   function showToast(message, type = "success") {
@@ -447,34 +452,29 @@ export default function App() {
   // If we're in chat mode (step 5), show chat interface
   const showChatInterface = state.currentStep === 5;
 
-  return (
-    <div className="app">
-      <div className="app-header">
-        <h1 className="app-title">Creator Bot</h1>
-        <p className="app-subtitle">Build AI bots that sound like your favorite creators</p>
-        {!showChatInterface && (
-          <button
-            onClick={() => dispatch({ type: "SET_STEP", step: 5 })}
-            style={{
-              marginTop: "16px",
-              background: "none",
-              border: "1px solid #e0e0e0",
-              padding: "8px 16px",
-              borderRadius: "20px",
-              cursor: "pointer",
-              fontSize: "14px",
-              color: "#555",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px"
-            }}
-          >
-            Go to Chats <span>&rarr;</span>
-          </button>
-        )}
-      </div>
+  // Handler for global navigation step clicks
+  function handleStepClick(step) {
+    // Allow navigation to any step at any time (requirement #1)
+    dispatch({ type: "SET_STEP", step });
+  }
 
-      {!showChatInterface && <Stepper currentStep={state.currentStep} steps={STEPS} />}
+  // Determine if we have any creators
+  const hasCreators = existingCreators.length > 0;
+
+  return (
+    <div className="app-shell">
+      {/* Global Navigation - Always visible (requirement #1) */}
+      <Stepper
+        currentStep={state.currentStep}
+        steps={STEPS}
+        onStepClick={handleStepClick}
+      />
+
+      {toast && (
+        <div className={`toast toast-${toast.type}`}>
+          {toast.message}
+        </div>
+      )}
 
       {backendConnected === false && (
         <div className="error-banner">
@@ -488,15 +488,9 @@ export default function App() {
         </div>
       )}
 
-      {toast && (
-        <div className={`toast toast-${toast.type}`}>
-          {toast.message}
-        </div>
-      )}
-
-      <div className={`main-content ${showChatInterface ? "chat-mode" : ""}`}>
+      <div className="main-content-area">
         {showChatInterface ? (
-          <div className="multi-chat-container">
+          <div className="chat-fullscreen">
             <ChatSidebar
               chats={chats}
               activeChat={activeChatId}
@@ -504,64 +498,81 @@ export default function App() {
               onNewChat={handleNewChat}
               onCloseChat={handleCloseChat}
             />
-            <div className="chat-main">
-              {activeChat ? (
-                <>
-                  <div className="chat-layout">
-                    <ChatPanel
-                      key={activeChat.id}
-                      creatorId={activeChat.creatorId || -1}
-                      creatorDisplayName={activeChat.creatorName || activeChat.handle || "Creator"}
-                      topK={topK}
-                      maxDistance={maxDistance}
-                      messages={activeChat.messages}
-                      setMessages={(updater) => updateChatMessages(activeChat.id, updater)}
-                      loading={false}
-                      setLoading={() => { }}
-                      onResetChat={() => {
-                        updateChatMessages(activeChat.id, [
-                          {
-                            id: "reset",
-                            role: "assistant",
-                            text: "Chat reset. Ask me anything!",
-                          },
-                        ]);
-                      }}
-                      onChangePersona={() => {
-                        // Navigate to persona setup for this creator
-                        if (activeChat.creatorId) {
-                          dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
-                          dispatch({ type: "SET_STEP", step: 4 });
-                        }
-                      }}
-                      onRescrape={() => {
-                        // Navigate to creator setup
-                        if (activeChat.creatorId) {
-                          dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
-                          dispatch({ type: "SET_STEP", step: 1 });
-                        }
-                      }}
-                      debug={debugAsk}
-                    />
-                    {showDebug && <SourcesPanel lastSources={lastSources} />}
+            <div className="chat-main-area">
+              {/* Empty state when no creators exist (requirement #3) */}
+              {!hasCreators && !activeChat ? (
+                <div className="empty-creator-state">
+                  <div className="empty-icon">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="1.5">
+                      <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" />
+                    </svg>
                   </div>
-                </>
+                  <h1 className="empty-title">No creators yet</h1>
+                  <p className="empty-subtitle">Create a creator to start chatting</p>
+                  <button
+                    onClick={() => dispatch({ type: "SET_STEP", step: 1 })}
+                    className="create-creator-btn"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M10 4V16M4 10H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                    New Creator
+                  </button>
+                </div>
+              ) : activeChat ? (
+                <ChatPanel
+                  key={activeChat.id}
+                  creatorId={activeChat.creatorId || -1}
+                  creatorDisplayName={activeChat.creatorName || activeChat.handle || "Creator"}
+                  creatorHandle={activeChat.handle}
+                  topK={topK}
+                  maxDistance={maxDistance}
+                  messages={activeChat.messages}
+                  setMessages={(updater) => updateChatMessages(activeChat.id, updater)}
+                  loading={false}
+                  setLoading={() => { }}
+                  onResetChat={() => {
+                    updateChatMessages(activeChat.id, [
+                      {
+                        id: "reset",
+                        role: "assistant",
+                        text: "Chat reset. Ask me anything!",
+                      },
+                    ]);
+                  }}
+                  onChangePersona={() => {
+                    if (activeChat.creatorId) {
+                      dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
+                      dispatch({ type: "SET_STEP", step: 4 });
+                    }
+                  }}
+                  onRescrape={() => {
+                    if (activeChat.creatorId) {
+                      dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
+                      dispatch({ type: "SET_STEP", step: 1 });
+                    }
+                  }}
+                  debug={debugAsk}
+                />
               ) : (
-                <div className="no-chat-selected">
-                  <h2>Welcome to Creator Bot</h2>
-                  <p>Select a chat from the sidebar or create a new one to get started</p>
-                  <button onClick={handleNewChat} className="primary-button">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <div className="select-chat-state">
+                  <h2>Select a chat</h2>
+                  <p>Choose a conversation from the sidebar or start a new one</p>
+                  <button onClick={handleNewChat} className="create-creator-btn">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                       <path d="M10 4V16M4 10H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                     </svg>
                     New Chat
                   </button>
                 </div>
               )}
+              {showDebug && <SourcesPanel lastSources={lastSources} />}
             </div>
           </div>
         ) : (
-          renderWorkflowStep()
+          <div className="workflow-container">
+            {renderWorkflowStep()}
+          </div>
         )}
       </div>
 
@@ -570,6 +581,7 @@ export default function App() {
           onClose={() => setShowNewChatModal(false)}
           onCreateChat={handleCreateChat}
           existingCreators={existingCreators}
+          onRefreshCreators={refreshCreators}
         />
       )}
     </div>

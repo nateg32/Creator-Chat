@@ -300,3 +300,14 @@ export async function createCreator(name, handle, platforms) {
 export async function getCreatorStats(creator_id) {
   return getJson(`/creators/${creator_id}/stats`);
 }
+export async function deleteCreator(creator_id) {
+  const res = await fetch(`${API_BASE_URL}/creators/${creator_id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to delete creator");
+  }
+  return res.json();
+}

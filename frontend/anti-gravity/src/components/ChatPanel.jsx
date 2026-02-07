@@ -37,7 +37,8 @@ const EditIcon = () => (
 
 export function ChatPanel({
   creatorId,
-  creatorDisplayName = "Gemini",
+  creatorDisplayName = "Creator",
+  creatorHandle = "",
   topK,
   maxDistance,
   messages,
@@ -158,11 +159,10 @@ export function ChatPanel({
                   {m.role === "assistant" ? <SparkleIcon /> : <UserIcon />}
                 </div>
                 <div className="msg-bubble">
-                  {m.role === "user" ? (
-                    <div className="msg-text">{m.content ?? m.text}</div>
-                  ) : (
-                    <div className="msg-text assistant-text">{m.content ?? m.text}</div>
-                  )}
+                  <div className="msg-sender">
+                    {m.role === "assistant" ? creatorDisplayName : "You"}
+                  </div>
+                  <div className="msg-text">{m.content ?? m.text}</div>
                 </div>
               </div>
             ))
