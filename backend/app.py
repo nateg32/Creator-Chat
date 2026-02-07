@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Cookie, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import os
 import json
 import bcrypt
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import asyncio
 from fastapi import BackgroundTasks
-from .models import (
+from models import (
     AskRequest, AskResponse,
     IngestRequest, IngestResponse,
     SearchRequest, SearchResponse,
@@ -22,13 +22,13 @@ from .models import (
     CreateCreatorWithConfigRequest, UpdateCreatorRequest, CreatorWithConfigResponse,
     ApproveIngestRequestV2
 )
-from .rag import get_persona
-from .creator_engine import ask as creator_ask
-from .grounded_rag import grounded_rag_ask
-from .ingest import ingest_document
-from .apify_client import search_all, search_instagram_reels
-from .lib.instagram_parser import parse_instagram_url
-from .config.platforms import (
+from rag import get_persona
+from creator_engine import ask as creator_ask
+from grounded_rag import grounded_rag_ask
+from ingest import ingest_document
+from apify_service import search_all, search_instagram_reels
+from lib.instagram_parser import parse_instagram_url
+from config.platforms import (
     PLATFORMS,
     get_platform,
     validate_url,
@@ -36,9 +36,9 @@ from .config.platforms import (
     extract_handle,
     validate_time_filter,
 )
-from .scraper_router import run_search_router, PLATFORM_MAPPERS
-from .db import db
-from .settings import settings
+from scraper_router import run_search_router, PLATFORM_MAPPERS
+from db import db
+from settings import settings
 
 app = FastAPI(title="Creator Bot API")
 
@@ -478,7 +478,7 @@ async def logout(response: Response, session_id: Optional[str] = Cookie(None)):
 def list_platforms():
     """Returns platform config for UI: key, label, icon, placeholder, time_modes, default_max_items, supports_since_date."""
     print("[SEARCH] GET /platforms", flush=True)
-    from .config.platforms import TIME_MODES, LAST_DAYS_OPTIONS
+    from config.platforms import TIME_MODES, LAST_DAYS_OPTIONS
     try:
         result = [
             {
@@ -527,13 +527,13 @@ def validate_platform_url(key: str, url: str = ""):
 
 @app.get("/creators", response_model=CreatorsListResponse)
 async def list_creators():
-    """List all creators (default to creator_id=1)"""
+    """List all creators"""
     try:
         query = """
-            SELECT id, name, handle, platforms, created_at
-            FROM creators
-            WHERE id = 1
-            ORDER BY created_at DESC
+            SELECT c.id, c.name, c.handle, c.platforms, c.created_at,
+                   (SELECT COUNT(*) FROM scrape_queue q WHERE q.creator_id = c.id AND q.status = 'ingested') as item_count
+            FROM creators c
+            ORDER BY c.created_at DESC
         """
         results = db.execute_query(query, ())
         
@@ -547,6 +547,7 @@ async def list_creators():
                 name=row["name"],
                 handle=row.get("handle"),
                 platforms=platforms if isinstance(platforms, list) else [],
+                item_count=row.get("item_count", 0),
                 created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
             ))
         
@@ -579,6 +580,7 @@ async def create_creator(request: CreateCreatorRequest):
             name=row["name"],
             handle=row.get("handle"),
             platforms=platforms if isinstance(platforms, list) else [],
+            item_count=0,
             created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
         )
     except HTTPException:
@@ -1416,7 +1418,7 @@ async def approve_ingest(request: ApproveIngestRequestNew):
         ingested = []
 
         # These are the core helpers for chunking + embedding
-        from .ingest import chunk_text_structured, embed_chunks
+        from ingest import chunk_text_structured, embed_chunks
 
         # Process each row
         for row in queue_rows:
@@ -1540,9 +1542,9 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
         creator_id = request.creator_id
         
         ingested = []
-        from .ingest import chunk_text_structured, embed_chunks
+        from ingest import chunk_text_structured, embed_chunks
         try:
-            from .lib.transcription import transcribe_video
+            from lib.transcription import transcribe_video
         except ImportError:
             # Fallback if transcription module not available
             def transcribe_video(url):
@@ -1637,10 +1639,10 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 
                 # Fallback extraction if not in metadata
                 if not content_id:
-                    from .apify_client import extract_content_id
+                    from apify_service import extract_content_id
                     content_id = extract_content_id(source_url, platform)
                 if not title_from_meta:
-                    from .apify_client import extract_title_from_metadata
+                    from apify_service import extract_title_from_metadata
                     title_from_meta = extract_title_from_metadata({}, platform, source_url)
                 
                 # Create document with full source metadata
@@ -1769,6 +1771,317 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/approve_ingest_v2/stream")
+async def approve_ingest_v2_stream(request: ApproveIngestRequestV2):
+    """
+    Streaming version of approve_ingest_v2 with real-time progress updates via SSE.
+    Returns Server-Sent Events with progress information.
+    """
+    async def event_generator():
+        try:
+            # Separate approved and denied item IDs
+            approved_item_ids = [
+                d["item_id"] for d in request.decisions 
+                if d.get("decision") == "approve"
+            ]
+            denied_item_ids = [
+                d["item_id"] for d in request.decisions 
+                if d.get("decision") == "deny"
+            ]
+            
+            total_items = len(approved_item_ids)
+            
+            # Send initial progress
+            yield f"data: {json.dumps({'stage': 'starting', 'current': 0, 'total': total_items, 'message': 'Starting ingestion...'})}\n\n"
+            
+            # Update review_status for denied items
+            sid = request.search_id or request.scrape_id
+            if denied_item_ids:
+                yield f"data: {json.dumps({'stage': 'denying', 'current': 0, 'total': total_items, 'message': f'Marking {len(denied_item_ids)} items as denied...'})}\n\n"
+                deny_query = """
+                    UPDATE scrape_items
+                    SET review_status = 'denied'
+                    WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s
+                """
+                db.execute_update(deny_query, (denied_item_ids, sid))
+            
+            if not approved_item_ids:
+                yield f"data: {json.dumps({'stage': 'complete', 'current': 0, 'total': 0, 'message': 'No items to approve'})}\n\n"
+                return
+            
+            # Fetch approved items
+            yield f"data: {json.dumps({'stage': 'fetching', 'current': 0, 'total': total_items, 'message': f'Fetching {total_items} approved items...'})}\n\n"
+            
+            fetch_query = """
+                SELECT id, creator_handle, source_url, caption, transcript, 
+                       transcript_status, published_at, metadata, content_type
+                FROM scrape_items
+                WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s
+            """
+            items = db.execute_query(fetch_query, (approved_item_ids, sid))
+            
+            if not items:
+                yield f"data: {json.dumps({'stage': 'error', 'message': 'No approved items found'})}\n\n"
+                return
+            
+            creator_id = request.creator_id
+            ingested = []
+            from ingest import chunk_text_structured, embed_chunks
+            try:
+                from lib.transcription import transcribe_video
+            except ImportError:
+                def transcribe_video(url):
+                    return None
+            
+            # Process each item
+            for item_index, item in enumerate(items):
+                item_id = item["id"]
+                current_item = item_index + 1
+                
+                yield f"data: {json.dumps({'stage': 'processing', 'current': current_item, 'total': total_items, 'current_item': item_index, 'message': f'Processing item {current_item}/{total_items}...'})}\n\n"
+                
+                try:
+                    # Handle transcript fallback if needed
+                    transcript = item.get("transcript") or ""
+                    transcript_status = item.get("transcript_status", "missing")
+                    
+                    if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
+                        yield f"data: {json.dumps({'stage': 'transcribing', 'current': current_item, 'total': total_items, 'message': f'Transcribing item {current_item}...'})}\n\n"
+                        
+                        metadata = item.get("metadata") or {}
+                        if isinstance(metadata, str):
+                            metadata = json.loads(metadata) if metadata else {}
+                        
+                        video_url = metadata.get("video_url") or metadata.get("videoUrl") or metadata.get("video") or ""
+                        
+                        if not video_url:
+                            vid = metadata.get("videoId") or metadata.get("id")
+                            if metadata.get("platform") == "youtube" and vid:
+                                video_url = f"https://www.youtube.com/watch?v={vid}"
+                        
+                        if not video_url:
+                            video_url = item.get("source_url") or ""
+                        
+                        if video_url:
+                            try:
+                                transcript = transcribe_video(video_url)
+                                if transcript:
+                                    transcript_status = "present"
+                                    update_query = """
+                                        UPDATE scrape_items
+                                        SET transcript = %s, transcript_status = 'present'
+                                        WHERE id = %s::uuid
+                                    """
+                                    db.execute_update(update_query, (str(transcript), str(item_id)))
+                                else:
+                                    transcript_status = "error"
+                            except Exception as e:
+                                print(f"Transcription failed for {item_id}: {e}")
+                                transcript_status = "error"
+                    
+                    text_content = transcript if transcript and transcript.strip() else (item.get("caption") or "")
+                    
+                    if not text_content:
+                        print(f"Skipping item {item_id}: no transcript or caption")
+                        continue
+                    
+                    # Extract source metadata
+                    source_url = item["source_url"]
+                    item_meta = item.get("metadata") or {}
+                    if isinstance(item_meta, str):
+                        try:
+                            item_meta = json.loads(item_meta)
+                        except:
+                            item_meta = {}
+                    
+                    platform = item_meta.get("platform") or item.get("metadata", {}).get("platform") if isinstance(item.get("metadata"), dict) else None
+                    if not platform:
+                        if "instagram.com" in source_url:
+                            platform = "instagram"
+                        elif "youtube.com" in source_url or "youtu.be" in source_url:
+                            platform = "youtube"
+                        elif "twitter.com" in source_url or "x.com" in source_url:
+                            platform = "twitter"
+                        elif "tiktok.com" in source_url:
+                            platform = "tiktok"
+                        elif "linkedin.com" in source_url:
+                            platform = "linkedin"
+                        elif "facebook.com" in source_url:
+                            platform = "facebook"
+                        elif "reddit.com" in source_url:
+                            platform = "reddit"
+                        else:
+                            platform = "unknown"
+                    
+                    content_id = item_meta.get("content_id") or ""
+                    title_from_meta = item_meta.get("title") or ""
+                    
+                    if not content_id:
+                        from apify_service import extract_content_id
+                        content_id = extract_content_id(source_url, platform)
+                    if not title_from_meta:
+                        from apify_service import extract_title_from_metadata
+                        title_from_meta = extract_title_from_metadata({}, platform, source_url)
+                    
+                    # Create document
+                    yield f"data: {json.dumps({'stage': 'creating_doc', 'current': current_item, 'total': total_items, 'message': f'Creating document for item {current_item}...'})}\n\n"
+                    
+                    doc_metadata = {
+                        "type": "content",
+                        "platform": platform,
+                        "content_type": item.get("content_type", "unknown"),
+                        "creator_handle": item["creator_handle"],
+                        "source_url": source_url,
+                        "content_id": content_id,
+                        "canonical_url": source_url,
+                        "search_run_id": sid,
+                        "transcript_status": transcript_status,
+                        "published_at": item.get("published_at"),
+                    }
+                    for k, v in item_meta.items():
+                        if k not in ("platform", "content_id", "canonical_url", "title"):
+                            doc_metadata[k] = v
+                    
+                    doc_query = """
+                        INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (source, source_id) DO UPDATE SET
+                            creator_id = EXCLUDED.creator_id,
+                            title = EXCLUDED.title,
+                            content = EXCLUDED.content,
+                            metadata = EXCLUDED.metadata
+                        RETURNING id
+                    """
+                    title = str(title_from_meta) if title_from_meta else "Untitled"
+                    source_id = str(content_id) if content_id else f"search_item_{item_id}"
+                    source_platform = str(platform) if platform else "unknown"
+                    
+                    document_id = db.execute_insert(
+                        doc_query,
+                        (creator_id, title, text_content, source_platform, str(source_id), json.dumps(doc_metadata, default=str))
+                    )
+                    
+                    if not document_id:
+                        continue
+                    
+                    # Chunk the document
+                    yield f"data: {json.dumps({'stage': 'chunking', 'current': current_item, 'total': total_items, 'message': f'Breaking item {current_item} into chunks...'})}\n\n"
+                    
+                    chunks = chunk_text_structured(
+                        text=text_content,
+                        creator_id=creator_id,
+                        document_id=document_id,
+                        chunk_size=800,
+                        overlap=120
+                    )
+                    
+                    # Store chunks
+                    chunk_ids = []
+                    for chunk in chunks:
+                        source_ref = {
+                            "platform": platform,
+                            "content_id": content_id,
+                            "canonical_url": source_url,
+                            "title": title,
+                            "published_at": item.get("published_at"),
+                            "content_type": item.get("content_type", "unknown"),
+                        }
+                        
+                        chunk_metadata = {
+                            "platform": platform,
+                            "type": item.get("content_type", "unknown"),
+                            "creator_handle": item["creator_handle"],
+                            "source_url": source_url,
+                            "content_id": content_id,
+                            "canonical_url": source_url,
+                            "title": title,
+                            "search_run_id": request.search_id,
+                            "transcript_status": transcript_status,
+                            "published_at": item.get("published_at"),
+                            "source_ref": source_ref,
+                        }
+                        
+                        chunk_id = db.execute_insert(
+                            """
+                            INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
+                            VALUES (%s, %s, %s, %s, %s::jsonb)
+                            ON CONFLICT (document_id, chunk_index) DO UPDATE SET
+                                chunk_text = EXCLUDED.chunk_text,
+                                metadata = EXCLUDED.metadata,
+                                creator_id = EXCLUDED.creator_id
+                            RETURNING id
+                            """,
+                            (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata, default=str))
+                        )
+                        if chunk_id:
+                            chunk_ids.append(chunk_id)
+                    
+                    # Embed chunks with progress callback
+                    def embedding_progress(current, total, stage):
+                        event_data = {
+                            'stage': f'embedding_{stage}',
+                            'current': current_item,
+                            'total': total_items,
+                            'chunk_progress': current,
+                            'chunk_total': total,
+                            'message': f'Item {current_item}/{total_items}: {stage.capitalize()} embeddings ({current}/{total} chunks)...'
+                        }
+                        # Note: This won't work in async generator, but embed_chunks is sync
+                        # We'll handle this differently
+                        pass
+                    
+                    yield f"data: {json.dumps({'stage': 'embedding', 'current': current_item, 'total': total_items, 'message': f'Creating embeddings for item {current_item} ({len(chunk_ids)} chunks)...'})}\n\n"
+                    
+                    embed_chunks(chunk_ids)  # Now uses batch API - much faster!
+                    
+                    # Update search_items status
+                    update_status_query = """
+                        UPDATE scrape_items
+                        SET review_status = 'approved'
+                        WHERE id = %s::uuid
+                    """
+                    db.execute_update(update_status_query, (str(item_id),))
+                    
+                    ingested.append(
+                        ApproveIngestItem(
+                            queue_id=str(item_id),
+                            document_id=document_id,
+                            chunks_inserted=len(chunk_ids)
+                        )
+                    )
+                    
+                except Exception as e:
+                    print(f"Error processing item {item_id}: {e}")
+                    error_query = """
+                        UPDATE scrape_items
+                        SET review_status = 'denied', transcript_status = 'error'
+                        WHERE id = %s::uuid
+                    """
+                    db.execute_update(error_query, (str(item_id),))
+                    yield f"data: {json.dumps({'stage': 'error', 'current': current_item, 'total': total_items, 'message': f'Error processing item {current_item}: {str(e)}'})}\n\n"
+                    continue
+            
+            # Send completion event
+            result = {
+                'stage': 'complete',
+                'current': total_items,
+                'total': total_items,
+                'message': f'Successfully ingested {len(ingested)} items!',
+                'result': {
+                    'approved': len(approved_item_ids),
+                    'ingested': [{'queue_id': i.queue_id, 'document_id': i.document_id, 'chunks_inserted': i.chunks_inserted} for i in ingested]
+                }
+            }
+            yield f"data: {json.dumps(result)}\n\n"
+            
+        except Exception as e:
+            error_msg = str(e)
+            yield f"data: {json.dumps({'stage': 'error', 'message': f'Error: {error_msg}'})}\n\n"
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # ============================================================================
 # Persona Endpoints

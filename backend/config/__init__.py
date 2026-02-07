@@ -1,4 +1,4 @@
-from .platforms import (
+from config.platforms import (
     PLATFORMS,
     get_platform,
     validate_url,

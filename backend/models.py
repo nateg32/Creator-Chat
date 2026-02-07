@@ -153,6 +153,7 @@ class Creator(BaseModel):
     name: str
     handle: Optional[str] = None
     platforms: List[str] = []
+    item_count: int = 0
     created_at: str
 
 class CreateCreatorRequest(BaseModel):

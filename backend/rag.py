@@ -1,7 +1,7 @@
 import openai
 from typing import List, Dict, Any, Optional
-from .db import db
-from .settings import settings
+from db import db
+from settings import settings
 
 _client = None
 

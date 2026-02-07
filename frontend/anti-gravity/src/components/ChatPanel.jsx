@@ -106,7 +106,7 @@ export function ChatPanel({
             Change persona
           </button>
           <button onClick={onRescrape} className="link-button">
-            Re-search
+            Edit Bot
           </button>
         </div>
       </div>

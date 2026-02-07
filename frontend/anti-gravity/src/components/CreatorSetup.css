@@ -58,6 +58,22 @@
   cursor: not-allowed;
 }
 
+.form-group textarea {
+  padding: 12px 16px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  font-size: 14px;
+  background: white;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.form-group textarea:focus {
+  outline: none;
+  border-color: #007aff;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+}
+
 .platform-badge {
   display: flex;
   gap: 8px;
@@ -219,7 +235,8 @@
   align-items: center;
 }
 
-.url-row input {
+.url-row input,
+.url-row textarea {
   flex: 1;
 }
 

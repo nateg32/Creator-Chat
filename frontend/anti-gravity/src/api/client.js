@@ -119,6 +119,62 @@ export async function approveIngestV2({ scrape_id, decisions, creator_id }) {
   return postJson("/approve_ingest_v2", { scrape_id, decisions, creator_id });
 }
 
+// Streaming version with progress updates via Server-Sent Events
+export async function approveIngestV2Stream({ scrape_id, decisions, creator_id, onProgress }) {
+  const response = await fetch(`${API_BASE_URL}/approve_ingest_v2/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scrape_id, decisions, creator_id }),
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed (${response.status})`);
+  }
+
+  // Process Server-Sent Events stream
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Process complete SSE messages (split by double newline)
+    const messages = buffer.split("\n\n");
+    buffer = messages.pop() || ""; // Keep incomplete message in buffer
+
+    for (const message of messages) {
+      if (message.startsWith("data: ")) {
+        const data = JSON.parse(message.slice(6));
+
+        // Call progress callback
+        if (onProgress) {
+          onProgress(data);
+        }
+
+        // Store final result
+        if (data.stage === "complete" && data.result) {
+          finalResult = data.result;
+        }
+
+        // Handle errors
+        if (data.stage === "error") {
+          throw new Error(data.message || "Unknown error occurred");
+        }
+      }
+    }
+  }
+
+  return finalResult || { approved: 0, ingested: [] };
+}
+
 // Legacy approval endpoint (for backward compatibility)
 export async function approveIngest({ creator_id, queue_ids }) {
   const res = await fetch(`${API_BASE_URL}/approve_ingest`, {
@@ -191,6 +247,9 @@ export function savePersona(creator_id, persona) {
 export function getQueueItems(creator_id) {
   return getJson(`/creator/${creator_id}/queue`);
 }
+
+
+
 
 // Get items for a search run (new endpoint)
 export function getSearchItems(search_id) {

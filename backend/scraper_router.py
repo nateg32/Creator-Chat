@@ -7,9 +7,10 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Callable
 
-from .config.platforms import get_platform, validate_url, normalize_url, extract_handle
-from .lib.instagram_parser import parse_instagram_url
-from .apify_client import (
+from config.platforms import get_platform, validate_url, normalize_url, extract_handle
+from lib.instagram_parser import parse_instagram_url
+from apify_service import (
+    search_all,
     search_instagram_reels,
     search_youtube_channel,
     search_twitter_profile,
@@ -17,6 +18,7 @@ from .apify_client import (
     search_reddit_user,
     search_linkedin_posts,
     search_tiktok_posts,
+    scrape_custom_urls,
 )
 
 
@@ -69,6 +71,27 @@ def _apply_time_filter(
         if include:
             kept.append(it)
     return kept
+
+
+def _map_custom(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Scrape custom list of URLs."""
+    raw_urls = ctx.get("url", "")
+    if not raw_urls: return []
+    
+    # Split by newline (configured in platforms.py to be newline separated)
+    urls = [line.strip() for line in raw_urls.split('\n') if line.strip()]
+    if not urls: return []
+    
+    creator_handle = ctx.get("creator_handle") or "custom"
+    items = scrape_custom_urls(urls, creator_handle)
+    
+    # Ensure platform is set for consistency in ingest pipeline
+    for it in items:
+        if "platform" not in it:
+             it["platform"] = "custom"
+             
+    tf = ctx.get("time_filter") or {}
+    return _apply_time_filter(items, tf)
 
 
 def _map_instagram(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -222,6 +245,7 @@ PLATFORM_MAPPERS: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = 
     "reddit": _map_reddit,
     "facebook": _map_facebook,
     "tiktok": _map_tiktok,
+    "custom": _map_custom,
 }
 
 

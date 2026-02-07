@@ -100,6 +100,17 @@ PLATFORMS: List[Dict[str, Any]] = [
         "default_max_items": 20,
         "url_to_handle": "tiktok",
     },
+    {
+        "key": "custom",
+        "label": "Custom Links",
+        "icon": "link",
+        "placeholder": "Paste links to videos or posts (one per line)",
+        "url_pattern": r".*",
+        "apify_actor": "multiple",
+        "supports_since_date": False,
+        "default_max_items": 50,
+        "url_to_handle": "custom",
+    },
 ]
 
 
@@ -126,6 +137,18 @@ def normalize_url(url: str, platform_key: str) -> str:
     u = url.strip()
     if not u:
         return ""
+    
+    # Custom platform: handle multi-line
+    if platform_key == "custom":
+        lines = [line.strip() for line in u.split('\n') if line.strip()]
+        # Normalize each line
+        norm_lines = []
+        for line in lines:
+             if not line.startswith("http"):
+                 line = "https://" + line
+             norm_lines.append(_strip_tracking(line))
+        return "\n".join(norm_lines)
+
     # Handle @handle for instagram
     if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
         h = u.lstrip("@")
@@ -142,10 +165,14 @@ def extract_handle(url: str, platform_key: str) -> Optional[str]:
     u = url.strip()
     if not u:
         return None
+    
+    if platform_key == "custom":
+        return "custom"
+
     if platform_key == "instagram":
         if re.match(r"^@?[\w.]+$", u):
             return u.lstrip("@")
-        from ..lib.instagram_parser import parse_instagram_url
+        from lib.instagram_parser import parse_instagram_url
         p = parse_instagram_url(u)
         return p.get("handle") if p else None
     try:
@@ -168,6 +195,14 @@ def validate_url(url: str, platform_key: str) -> Tuple[bool, Optional[str]]:
     u = (url or "").strip()
     if not u:
         return False, "URL is required"
+    
+    if platform_key == "custom":
+        # Just check if there's at least one line with a valid-ish URL
+        lines = [line.strip() for line in u.split('\n') if line.strip()]
+        if not lines:
+            return False, "At least one URL is required"
+        return True, None
+
     # @handle for instagram
     if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
         return True, None

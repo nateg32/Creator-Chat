@@ -10,9 +10,9 @@ import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime, timezone, timedelta
-from .db import db
-from .settings import settings
-from . import rag
+from db import db
+from settings import settings
+import rag
 
 logger = logging.getLogger(__name__)
 
@@ -611,8 +611,8 @@ def generate_grounded_answer(
     allow_cta controls whether to mention coaching/group/DM/COACH.
     Returns (answer, debug_info).
     """
-    from .prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
-    from .creator_engine import PLACEHOLDER_PERSONA, PLACEHOLDER_PRODUCT_RULES
+    from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+    from creator_engine import PLACEHOLDER_PERSONA, PLACEHOLDER_PRODUCT_RULES
 
     length_instr = response_length_instruction(intent)
     is_request_sources = intent == "request_sources"
@@ -727,7 +727,7 @@ Question: {question}
     })
     
     try:
-        from .rag import get_client
+        from rag import get_client
         response = get_client().chat.completions.create(
             model=settings.CHAT_MODEL,
             messages=messages,
@@ -851,7 +851,7 @@ def grounded_rag_ask(
     q_search = build_search_query(question, conversation_history)
     
     # Get query embedding
-    from .rag import get_client
+    from rag import get_client
     try:
         embedding_response = get_client().embeddings.create(
             model=settings.EMBEDDING_MODEL,

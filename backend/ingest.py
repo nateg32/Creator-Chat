@@ -2,8 +2,8 @@ import re
 import json
 import openai
 from typing import List, Dict, Any
-from .db import db
-from .settings import settings
+from db import db
+from settings import settings
 
 _client = None
 
@@ -97,27 +97,59 @@ def get_embedding(text: str) -> List[float]:
         raise Exception(f"Failed to get embedding: {str(e)}")
 
 
-def embed_chunks(chunk_ids: List[int]) -> None:
+def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
+    """Get embeddings for multiple texts in a single API call (much faster!)"""
+    if not texts:
+        return []
+    
+    try:
+        # OpenAI allows up to 2048 texts per batch request
+        # Process in batches to stay within limits
+        BATCH_SIZE = 2048
+        all_embeddings = []
+        
+        for i in range(0, len(texts), BATCH_SIZE):
+            batch = texts[i:i + BATCH_SIZE]
+            response = get_client().embeddings.create(
+                model=settings.EMBEDDING_MODEL,
+                input=batch
+            )
+            # Response data is sorted by index, so this preserves order
+            batch_embeddings = [item.embedding for item in response.data]
+            all_embeddings.extend(batch_embeddings)
+        
+        return all_embeddings
+    except Exception as e:
+        raise Exception(f"Failed to get batch embeddings: {str(e)}")
+
+
+def embed_chunks(chunk_ids: List[int], progress_callback=None) -> None:
     """
     Embed existing chunk rows by id and upsert into `embeddings`.
+    NOW OPTIMIZED: Uses batch embedding API for 10-100x faster performance!
 
     Supports both legacy schema (`chunks.content`) and newer schema (`chunks.chunk_text`)
     by selecting whichever exists / is non-null.
+    
+    Args:
+        chunk_ids: List of chunk IDs to embed
+        progress_callback: Optional callback function(current, total, stage) for progress updates
     """
     if not chunk_ids:
         return
 
     # Prefer chunk_text (newer), fall back to content (legacy).
-    # Note: selecting a non-existent column will raise; we handle that by trying legacy query.
     query_new = """
         SELECT id as chunk_id, chunk_text
         FROM chunks
         WHERE id = ANY(%s)
+        ORDER BY id
     """
     query_old = """
         SELECT id as chunk_id, content as chunk_text
         FROM chunks
         WHERE id = ANY(%s)
+        ORDER BY id
     """
 
     try:
@@ -125,12 +157,37 @@ def embed_chunks(chunk_ids: List[int]) -> None:
     except Exception:
         rows = db.execute_query(query_old, (chunk_ids,))
 
+    if not rows:
+        return
+    
+    # Prepare data for batch embedding
+    valid_rows = []
+    texts = []
     for r in rows:
         text = r.get("chunk_text") or ""
-        if not text.strip():
-            continue
-
-        embedding = get_embedding(text)
+        if text.strip():
+            valid_rows.append(r)
+            texts.append(text)
+    
+    if not texts:
+        return
+    
+    total = len(texts)
+    
+    # Get all embeddings in batch (MUCH faster than one-by-one!)
+    if progress_callback:
+        progress_callback(0, total, "embedding")
+    
+    embeddings = get_embeddings_batch(texts)
+    
+    if progress_callback:
+        progress_callback(total, total, "embedding")
+    
+    # Now insert all embeddings into database
+    if progress_callback:
+        progress_callback(0, total, "storing")
+    
+    for idx, (r, embedding) in enumerate(zip(valid_rows, embeddings)):
         embedding_str = "[" + ",".join(map(str, embedding)) + "]"
         embedding_query = """
             INSERT INTO embeddings (chunk_id, model, embedding)
@@ -139,6 +196,9 @@ def embed_chunks(chunk_ids: List[int]) -> None:
             DO UPDATE SET embedding = EXCLUDED.embedding, model = EXCLUDED.model, created_at = NOW()
         """
         db.execute_update(embedding_query, (r["chunk_id"], settings.EMBEDDING_MODEL, embedding_str))
+        
+        if progress_callback and (idx + 1) % 10 == 0:  # Update every 10 items
+            progress_callback(idx + 1, total, "storing")
 
 def ingest_document(
     creator_id: int,

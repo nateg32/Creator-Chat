@@ -4,7 +4,8 @@ import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
-from .settings import settings
+from settings import settings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from apify_client import ApifyClient
@@ -913,22 +914,259 @@ def search_tiktok(handle: str, limit: int = 10) -> List[Dict[str, Any]]:
     return scrape_tiktok(handle, limit)
 
 def search_all(handle: str, sources: List[str], limit: int = 10) -> List[Dict[str, Any]]:
-    """Search from all requested sources"""
+    """Search from all requested sources in parallel"""
     # Enforce limit of 10
     limit = min(limit, 10)
     
     all_items = []
     
-    if "instagram" in sources:
-        all_items.extend(search_instagram(handle, limit))
+    # Define sources mapping
+    search_funcs = {
+        "instagram": search_instagram,
+        "youtube": scrape_youtube,
+        "twitter": search_twitter,
+        "tiktok": search_tiktok,
+    }
     
-    if "youtube" in sources:
-        all_items.extend(scrape_youtube(handle, limit))
+    futures_map = {}
+    with ThreadPoolExecutor(max_workers=min(len(sources) or 1, 4)) as executor:
+        for source in sources:
+            if func := search_funcs.get(source):
+                futures_map[executor.submit(func, handle, limit)] = source
+                
+        for future in as_completed(futures_map):
+            source = futures_map[future]
+            try:
+                items = future.result()
+                all_items.extend(items)
+            except Exception as e:
+                print(f"[SEARCH ERROR] {source} search failed: {e}")
+                
+    return all_items
+
+
+def _scrape_youtube_videos(urls: List[str], creator_handle: str) -> List[Dict[str, Any]]:
+    """Scrape specific YouTube videos."""
+    token = get_apify_token()
+    if not APIFY_AVAILABLE: return []
     
-    if "twitter" in sources:
-        all_items.extend(search_twitter(handle, limit))
+    # Normalize URLs to full watch URLs (apidojo often rejects youtu.be or other variants)
+    run_urls = []
+    for u in urls:
+        vid = extract_content_id(u, "youtube")
+        if vid:
+            run_urls.append(f"https://www.youtube.com/watch?v={vid}")
+        elif u.startswith("http"):
+            run_urls.append(u)
+            
+    if not run_urls:
+        return []
+
+    # apidojo/youtube-scraper supports startUrls list
+    run_input = {
+        "startUrls": run_urls,
+        "maxResults": len(run_urls),
+        "maxResultStreams": 0,
+        "maxItems": len(run_urls),
+    }
     
-    if "tiktok" in sources:
-        all_items.extend(search_tiktok(handle, limit))
+    print(f"[CUSTOM] Scraping {len(run_urls)} YouTube videos...")
+    client = ApifyClient(token)
+    run = client.actor("apidojo/youtube-scraper").call(run_input=run_input, timeout_secs=300)
     
+    # Parse results
+    video_data = [] # (item, source_url)
+    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        vurl = item.get("url") or ""
+        vid = item.get("id") or item.get("videoId") or extract_content_id(vurl, "youtube")
+        
+        if not vid: continue
+        
+        source_url = vurl or f"https://www.youtube.com/watch?v={vid}"
+        video_data.append((item, source_url))
+
+        
+    # Get transcripts
+    found_urls = [u for _, u in video_data]
+    transcripts = _extract_youtube_transcripts(found_urls, token)
+    
+    items = []
+    for item, source_url in video_data:
+         title = item.get("title") or ""
+         desc = item.get("description") or ""
+         caption = desc or title
+         transcript = transcripts.get(source_url, "") or (item.get("caption") if item.get("caption") else "")
+         if not transcript:
+             transcript = item.get("transcript") or item.get("subtitles") or ""
+             
+         transcript_status = "present" if transcript and str(transcript).strip() else "missing"
+         
+         published_at = item.get("uploadDate") or item.get("publishedAt")
+         # Simple date check
+         if isinstance(published_at, (int, float)):
+            try: published_at = datetime.fromtimestamp(float(published_at)).isoformat()
+            except: pass
+         
+         content_id = extract_content_id(source_url, "youtube")
+         
+         metadata = {
+             "likes": item.get("likes") or item.get("likeCount", 0),
+             "views": item.get("views") or item.get("viewCount", 0),
+             "platform": "youtube",
+             "content_id": content_id,
+             "canonical_url": source_url,
+             "title": title or f"YouTube Video {content_id}",
+             "channelName": item.get("channelTitle") or item.get("channelName"),
+         }
+         
+         items.append({
+             "creator_handle": item.get("channelTitle") or creator_handle,
+             "content_type": "video",
+             "source_url": source_url,
+             "caption": caption,
+             "transcript": transcript,
+             "transcript_status": transcript_status,
+             "published_at": published_at,
+             "metadata": metadata
+         })
+         
+    return items
+
+
+def _scrape_tiktok_videos(urls: List[str], creator_handle: str) -> List[Dict[str, Any]]:
+    token = get_apify_token()
+    if not APIFY_AVAILABLE: return []
+    
+    print(f"[CUSTOM] Scraping {len(urls)} TikTok videos...")
+    client = ApifyClient(token)
+    # thenetaji/tiktok-post-scraper supports startUrls
+    run_input = { "startUrls": urls, "resultsLimit": len(urls), "downloadSubtitles": False }
+    run = client.actor("thenetaji/tiktok-post-scraper").call(run_input=run_input)
+    
+    items = []
+    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+         source_url = item.get("webVideoUrl") or item.get("videoUrl") or item.get("url") or ""
+         text = item.get("text") or item.get("desc") or ""
+         
+         # Try to get transcript if available, otherwise use text
+         transcript = text
+         
+         items.append({
+             "creator_handle": item.get("authorMeta", {}).get("name") or creator_handle,
+             "content_type": "video",
+             "source_url": source_url,
+             "caption": text,
+             "transcript": transcript,
+             "transcript_status": "present" if transcript else "missing",
+             "metadata": {
+                 "platform": "tiktok", 
+                 "title": text[:50] if text else "TikTok Video",
+                 "content_id": item.get("id") or extract_content_id(source_url, "tiktok"),
+                 "canonical_url": source_url,
+                 "views": item.get("playCount", 0),
+                 "likes": item.get("diggCount", 0)
+             }
+         })
+    return items
+
+
+def _scrape_instagram_reels_multi(urls: List[str], creator_handle: str) -> List[Dict[str, Any]]:
+    token = get_apify_token()
+    if not APIFY_AVAILABLE: return []
+    
+    print(f"[CUSTOM] Scraping {len(urls)} Instagram items...")
+    client = ApifyClient(token)
+    run_input = { "startUrls": [{"url": u} for u in urls], "resultsLimit": len(urls) }
+    run = client.actor("apify/instagram-reel-scraper").call(run_input=run_input)
+    
+    items = []
+    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        # Reuse logic from search_instagram_reels normalization?
+        # For brevity, I'll allow minimal duplication or refactor. 
+        # Since I can't refactor easily within replace_tool, I'll duplicate normalization logic.
+        
+        transcript = item.get("transcript", "") or item.get("subtitles", "") or item.get("captionText", "") or ""
+        caption = item.get("caption", "") or item.get("text", "") or item.get("description", "") or ""
+        shortcode = item.get("shortCode", "") or item.get("shortcode", "") or item.get("id", "")
+        
+        if shortcode: source_url = f"https://instagram.com/reel/{shortcode}"
+        else: source_url = item.get("url") or item.get("postUrl") or ""
+        
+        if not source_url: continue
+            
+        items.append({
+            "creator_handle": item.get("ownerUsername") or creator_handle,
+            "content_type": "reel",
+            "source_url": source_url,
+            "caption": caption,
+            "transcript": transcript,
+            "transcript_status": "present" if transcript else "missing",
+            "metadata": {
+                "platform": "instagram",
+                "title": caption[:50] if caption else "Instagram Content",
+                "content_id": shortcode,
+                "canonical_url": source_url,
+                "views": item.get("viewsCount", 0),
+                "likes": item.get("likesCount", 0)
+            }
+        })
+    return items
+
+
+def scrape_custom_urls(urls: List[str], creator_handle: str = "custom", limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Scrape specific URLs by dispatching to appropriate platform logic.
+    """
+    if not urls:
+        return []
+
+    grouped = {"youtube": [], "instagram": [], "tiktok": [], "twitter": [], "linkedin": [], "unknown": []}
+    
+    for u in urls:
+        if not u or not isinstance(u, str) or not u.startswith("http"):
+            continue
+        u = u.strip()
+        if "youtube.com" in u or "youtu.be" in u:
+            grouped["youtube"].append(u)
+        elif "instagram.com" in u:
+            grouped["instagram"].append(u)
+        elif "tiktok.com" in u:
+            grouped["tiktok"].append(u)
+        elif "twitter.com" in u or "x.com" in u:
+            grouped["twitter"].append(u)
+        elif "linkedin.com" in u:
+            grouped["linkedin"].append(u)
+        else:
+            grouped["unknown"].append(u)
+            
+    all_items = []
+    
+    # Process YouTube
+    if grouped["youtube"]:
+         try:
+            items = _scrape_youtube_videos(grouped["youtube"], creator_handle)
+            all_items.extend(items)
+         except Exception as e:
+            print(f"[CUSTOM] YouTube scrape failed: {e}")
+
+    # Process TikTok
+    if grouped["tiktok"]:
+        try:
+             items = _scrape_tiktok_videos(grouped["tiktok"], creator_handle)
+             all_items.extend(items)
+        except Exception as e:
+             print(f"[CUSTOM] TikTok scrape failed: {e}")
+             
+    # Process Instagram
+    if grouped["instagram"]:
+        try:
+             items = _scrape_instagram_reels_multi(grouped["instagram"], creator_handle)
+             all_items.extend(items)
+        except Exception as e:
+             print(f"[CUSTOM] Instagram scrape failed: {e}")
+
+    # For unknown, we could try a generic extractor or skip.
+    if grouped["unknown"]:
+        print(f"[CUSTOM] Skipping {len(grouped['unknown'])} unknown URLs: {grouped['unknown']}")
+
     return all_items

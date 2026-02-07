@@ -1,7 +1,7 @@
 import psycopg
 from psycopg.rows import dict_row
 from typing import Optional, List, Dict, Any
-from .settings import settings
+from settings import settings
 
 class Database:
     def __init__(self):

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { getPersona } from "../api/client";
 import "./PersonaSetup.css";
 
 export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
@@ -13,9 +14,47 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
   useEffect(() => {
     // Load existing persona if available
     if (creatorId) {
-      // This would fetch from API, but for now we'll start fresh
+      getPersona(creatorId)
+        .then((data) => {
+          if (data && data.persona) {
+            parsePersona(data.persona);
+          }
+        })
+        .catch(err => console.error("Failed to load persona:", err));
     }
   }, [creatorId]);
+
+  function parsePersona(text) {
+    // Simple parser for the text format
+    // Tone: Neutral
+    const toneMatch = text.match(/Tone:\s*(\w+)/i);
+    if (toneMatch) setTone(toneMatch[1].toLowerCase());
+
+    // Style: Detailed, Playful
+    const styleMatch = text.match(/Style:\s*(.*)/i);
+    if (styleMatch) {
+      const styles = styleMatch[1].toLowerCase();
+      // Reset defaults
+      setConcise(5); setSerious(5); setDirect(5);
+
+      if (styles.includes("detailed")) setConcise(2);
+      if (styles.includes("concise")) setConcise(8);
+      if (styles.includes("playful")) setSerious(2);
+      if (styles.includes("serious")) setSerious(8);
+      if (styles.includes("gentle")) setDirect(2);
+      if (styles.includes("direct")) setDirect(8);
+    }
+
+    // Sections
+    const alwaysMatch = text.match(/Always do:\s*([\s\S]*?)(?=\nNever do:|\nExample response:|$)/i);
+    if (alwaysMatch) setAlwaysDo(alwaysMatch[1].trim());
+
+    const neverMatch = text.match(/Never do:\s*([\s\S]*?)(?=\nExample response:|$)/i);
+    if (neverMatch) setNeverDo(neverMatch[1].trim());
+
+    const exampleMatch = text.match(/Example response:\s*([\s\S]*)/i);
+    if (exampleMatch) setExample(exampleMatch[1].trim());
+  }
 
   function buildPersonaText() {
     const parts = [];
@@ -27,10 +66,10 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
     const styleParts = [];
     if (concise <= 3) styleParts.push("Detailed");
     else if (concise >= 7) styleParts.push("Concise");
-    
+
     if (serious <= 3) styleParts.push("Playful");
     else if (serious >= 7) styleParts.push("Serious");
-    
+
     if (direct <= 3) styleParts.push("Gentle");
     else if (direct >= 7) styleParts.push("Direct");
 

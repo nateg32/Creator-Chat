@@ -74,7 +74,7 @@ export function CreatorSetup({
         setCreatorName(data.name || "");
         setCreatorHandle(data.handle || "");
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [savedCreatorId]);
 
   const togglePlatform = (key) => {
@@ -302,51 +302,67 @@ export function CreatorSetup({
           <div key={p.key} className="platform-block">
             <h3 className="platform-block-title">{p.label}</h3>
             <div className="form-group">
-              <label>Profile URL *</label>
+              <label>{p.key === "custom" ? "Resource URLs (one per line)" : "Profile URL"}</label>
               <div className="url-row">
-                <input
-                  type="text"
-                  value={config[p.key]?.url || ""}
-                  onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
-                  placeholder={p.placeholder}
-                  disabled={saveLoading}
-                />
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => handleTestLink(p.key)}
-                  disabled={saveLoading}
-                >
-                  Test link
-                </button>
+                {p.key === "custom" ? (
+                  <textarea
+                    value={config[p.key]?.url || ""}
+                    onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
+                    placeholder={p.placeholder}
+                    disabled={saveLoading}
+                    rows={6}
+                    style={{ width: "100%", fontFamily: "monospace", resize: "vertical" }}
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={config[p.key]?.url || ""}
+                    onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
+                    placeholder={p.placeholder}
+                    disabled={saveLoading}
+                  />
+                )}
+                {p.key !== "custom" && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => handleTestLink(p.key)}
+                    disabled={saveLoading}
+                  >
+                    Test link
+                  </button>
+                )}
               </div>
-              {testStatus[p.key] && (
+              {p.key !== "custom" && testStatus[p.key] && (
                 <span className={`test-status ${testStatus[p.key] === "Valid" ? "ok" : "err"}`}>
                   {testStatus[p.key]}
                 </span>
               )}
             </div>
-            <div className="form-group">
-              <label>Search from</label>
-              <div className="time-mode-radios">
-                {TIME_MODES.map((m) => (
-                  <label key={m.value}>
-                    <input
-                      type="radio"
-                      name={`time-${p.key}`}
-                      checked={(config[p.key]?.timeFilter?.mode || "all") === m.value}
-                      onChange={() =>
-                        updatePlatformConfig(p.key, {
-                          timeFilter: { ...(config[p.key]?.timeFilter || {}), mode: m.value },
-                        })
-                      }
-                      disabled={saveLoading}
-                    />
-                    {m.label}
-                  </label>
-                ))}
+
+            {p.key !== "custom" && (
+              <div className="form-group">
+                <label>Search from</label>
+                <div className="time-mode-radios">
+                  {TIME_MODES.map((m) => (
+                    <label key={m.value}>
+                      <input
+                        type="radio"
+                        name={`time-${p.key}`}
+                        checked={(config[p.key]?.timeFilter?.mode || "all") === m.value}
+                        onChange={() =>
+                          updatePlatformConfig(p.key, {
+                            timeFilter: { ...(config[p.key]?.timeFilter || {}), mode: m.value },
+                          })
+                        }
+                        disabled={saveLoading}
+                      />
+                      {m.label}
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
             {(config[p.key]?.timeFilter?.mode === "last_days" || config[p.key]?.timeFilter?.mode === "since") && (
               <div className="form-group inline">
                 {config[p.key]?.timeFilter?.mode === "last_days" && (

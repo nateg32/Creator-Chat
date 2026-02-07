@@ -5,7 +5,7 @@ const DECISION_PENDING = "pending";
 const DECISION_APPROVE = "approve";
 const DECISION_DENY = "deny";
 
-export function ApprovalGate({ items, onSave, onBack, loading }) {
+export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
   const [decisions, setDecisions] = useState(() => {
     const initial = {};
     items.forEach((item) => {
@@ -115,6 +115,32 @@ export function ApprovalGate({ items, onSave, onBack, loading }) {
         <h2>Knowledge Base Gate</h2>
         <p className="subtitle">Approve or deny each item before adding to the knowledge base</p>
       </div>
+
+      {/* Progress Bar */}
+      {progress && (
+        <div className="progress-container">
+          <div className="progress-info">
+            <span className="progress-stage">{progress.message || "Processing..."}</span>
+            {progress.total > 0 && (
+              <span className="progress-count">{progress.current} / {progress.total}</span>
+            )}
+          </div>
+          <div className="progress-bar-wrapper">
+            <div
+              className="progress-bar-fill"
+              style={{
+                width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : "0%"
+              }}
+            >
+              {progress.total > 0 && (
+                <span className="progress-percentage">
+                  {Math.round((progress.current / progress.total) * 100)}%
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="approval-layout">
         <div className="approval-sidebar">
@@ -284,7 +310,7 @@ export function ApprovalGate({ items, onSave, onBack, loading }) {
           className="primary-button"
           disabled={loading || approvedCount === 0}
         >
-          {loading ? "Saving..." : `Save to knowledge base (${approvedCount} items)`}
+          {loading ? (progress ? progress.message : "Saving...") : `Save to knowledge base (${approvedCount} items)`}
         </button>
       </div>
     </div>
