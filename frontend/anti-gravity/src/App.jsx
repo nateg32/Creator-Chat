@@ -444,14 +444,34 @@ export default function App() {
     }
   }
 
-  // If we're in chat mode (step 5) or have active chats, show chat interface
-  const showChatInterface = state.currentStep === 5 || (activeChatId && chats.length > 0);
+  // If we're in chat mode (step 5), show chat interface
+  const showChatInterface = state.currentStep === 5;
 
   return (
     <div className="app">
       <div className="app-header">
         <h1 className="app-title">Creator Bot</h1>
         <p className="app-subtitle">Build AI bots that sound like your favorite creators</p>
+        {!showChatInterface && (
+          <button
+            onClick={() => dispatch({ type: "SET_STEP", step: 5 })}
+            style={{
+              marginTop: "16px",
+              background: "none",
+              border: "1px solid #e0e0e0",
+              padding: "8px 16px",
+              borderRadius: "20px",
+              cursor: "pointer",
+              fontSize: "14px",
+              color: "#555",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px"
+            }}
+          >
+            Go to Chats <span>&rarr;</span>
+          </button>
+        )}
       </div>
 
       {!showChatInterface && <Stepper currentStep={state.currentStep} steps={STEPS} />}
