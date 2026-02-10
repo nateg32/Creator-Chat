@@ -260,16 +260,17 @@
 }
 
 .modal-footer {
-    display: flex;
-    gap: 12px;
-    justify-content: flex-end;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
     margin-top: auto;
-    padding-top: 20px;
+    padding-top: 24px;
     border-top: 1px solid rgba(0, 0, 0, 0.08);
     flex-shrink: 0;
 }
 
 .modal-footer .secondary-button,
 .modal-footer .primary-button {
-    min-width: 100px;
+    width: 100%;
+    justify-content: center;
 }

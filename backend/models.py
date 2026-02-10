@@ -8,7 +8,31 @@ class AskRequest(BaseModel):
     top_k: int = 5
     max_distance: float = 1.15
     messages: Optional[List[Dict[str, str]]] = None  # conversation history [{role, content}]
+    thread_id: Optional[str] = None  # UUID of the chat thread
     debug: Optional[bool] = False
+
+class CreateThreadRequest(BaseModel):
+    creator_id: int
+
+class UpdateThreadRequest(BaseModel):
+    title: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_archived: Optional[bool] = None
+
+class ThreadResponse(BaseModel):
+    id: str
+    user_id: int
+    creator_id: int
+    title: str
+    last_preview: Optional[str] = None
+    created_at: Any
+    last_message_at: Any
+
+class MessageResponse(BaseModel):
+    id: str
+    role: str
+    content: str
+    created_at: Any
 
 class IngestRequest(BaseModel):
     creator_id: int
@@ -156,6 +180,7 @@ class Creator(BaseModel):
     item_count: int = 0
     profile_picture_url: Optional[str] = None
     created_at: str
+    visual_config: Dict[str, Any] = {}
 
 class CreateCreatorRequest(BaseModel):
     name: str
@@ -163,16 +188,18 @@ class CreateCreatorRequest(BaseModel):
     platforms: List[str] = []
 
 class CreateCreatorWithConfigRequest(BaseModel):
-    name: Optional[str] = None  # optional; derived from handle or first platform when missing
+    name: Optional[str] = None
     handle: Optional[str] = None
     profile_picture_url: Optional[str] = None
-    platform_configs: Dict[str, Any] = {}  # { "instagram": { "enabled", "url", "timeFilter": { "mode", "since"?, "days"? }, "maxItems"? }, ... }
+    platform_configs: Dict[str, Any] = {}
+    visual_config: Dict[str, Any] = {}
 
 class UpdateCreatorRequest(BaseModel):
     name: Optional[str] = None
     handle: Optional[str] = None
     profile_picture_url: Optional[str] = None
     platform_configs: Optional[Dict[str, Any]] = None
+    visual_config: Optional[Dict[str, Any]] = None
 
 class CreatorWithConfigResponse(BaseModel):
     id: int
@@ -180,6 +207,7 @@ class CreatorWithConfigResponse(BaseModel):
     handle: Optional[str] = None
     profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}
+    visual_config: Dict[str, Any] = {}
     created_at: Optional[str] = None
 
 class CreatorStats(BaseModel):
@@ -193,3 +221,15 @@ class CreatorStats(BaseModel):
 
 class CreatorsListResponse(BaseModel):
     creators: List[Creator]
+
+class UserSettings(BaseModel):
+    display_name: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    response_preferences: Dict[str, Any] = {}
+
+class UpdateUserSettingsRequest(BaseModel):
+    display_name: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    response_preferences: Optional[Dict[str, Any]] = None
+
+

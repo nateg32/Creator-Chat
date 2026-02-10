@@ -48,10 +48,11 @@ async function postJson(path, body) {
   }
 }
 
-export function ask({ creator_id, question, top_k, max_distance, messages, debug }) {
+export function ask({ creator_id, question, top_k, max_distance, messages, debug, thread_id }) {
   const body = { creator_id, question, top_k, max_distance };
   if (messages != null) body.messages = messages;
   if (debug) body.debug = true;
+  if (thread_id) body.thread_id = thread_id;
   return postJson("/ask", body);
 }
 
@@ -87,12 +88,13 @@ export function createCreatorWithConfig({ name, handle, profile_picture_url, pla
   return postJson("/creators/config", { name, handle, profile_picture_url, platform_configs: platform_configs || {} });
 }
 
-export async function updateCreator(creatorId, { name, handle, profile_picture_url, platform_configs }) {
+export async function updateCreator(creatorId, { name, handle, profile_picture_url, platform_configs, visual_config }) {
   const body = {};
   if (name != null) body.name = name;
   if (handle != null) body.handle = handle;
   if (profile_picture_url != null) body.profile_picture_url = profile_picture_url;
   if (platform_configs != null) body.platform_configs = platform_configs;
+  if (visual_config != null) body.visual_config = visual_config;
   const res = await fetch(`${API_BASE_URL}/creators/${creatorId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -101,7 +103,36 @@ export async function updateCreator(creatorId, { name, handle, profile_picture_u
   });
   if (!res.ok) {
     const d = await res.json().catch(() => ({}));
-    throw new Error(d.detail || "Update failed");
+    console.error("Update failed detail:", d);
+    const msg = typeof d.detail === 'object' ? JSON.stringify(d.detail) : (d.detail || "Update failed");
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+export async function getUserSettings() {
+  return getJson("/user/settings");
+}
+
+export async function updateUserSettings({ display_name, profile_picture_url, response_preferences }) {
+  const res = await fetch(`${API_BASE_URL}/user/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name, profile_picture_url, response_preferences }),
+    credentials: "include"
+  });
+
+  if (!res.ok) {
+    // Reuse readErrorPayload if accessible, or just text
+    let msg = "Update failed";
+    try {
+      const data = await res.json();
+      if (data && typeof data.detail === 'string') msg = data.detail;
+      else if (data) msg = JSON.stringify(data);
+    } catch {
+      try { msg = await res.text(); } catch { }
+    }
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -311,4 +342,50 @@ export async function deleteCreator(creator_id) {
     throw new Error(text || "Failed to delete creator");
   }
   return res.json();
+}
+
+// Thread functions
+export function createThread(creator_id) {
+  return postJson("/threads", { creator_id });
+}
+
+export function listThreads(creator_id, archived = false) {
+  return getJson(`/creators/${creator_id}/threads${archived ? '?archived=true' : ''}`);
+}
+
+export function getThreadMessages(thread_id) {
+  return getJson(`/threads/${thread_id}/messages`);
+}
+
+export function updateThread(threadId, { title, is_archived }) {
+  const body = {};
+  if (title !== undefined) body.title = title;
+  if (is_archived !== undefined) body.is_archived = is_archived;
+
+  return fetch(`${API_BASE_URL}/threads/${threadId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "include",
+  }).then(async res => {
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || "Failed to update thread");
+    }
+    return res.json();
+  });
+}
+
+export function deleteThread(thread_id) {
+  return fetch(`${API_BASE_URL}/threads/${thread_id}`, {
+    method: "DELETE",
+    credentials: "include",
+  }).then(res => {
+    if (!res.ok) throw new Error("Failed to delete thread");
+    return res.json();
+  });
+}
+
+export function getLastActiveThread(creator_id) {
+  return getJson(`/creators/${creator_id}/last_active_thread`);
 }

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import "./ApprovalGate.css";
 
 const DECISION_PENDING = "pending";
@@ -11,10 +11,27 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
     items.forEach((item) => {
       // Support both item_id (new) and queue_id (legacy)
       const itemKey = item.item_id || item.queue_id;
-      initial[itemKey] = DECISION_PENDING;
+      // If status is ingested/approved/completed, default to APPROVE
+      initial[itemKey] = (item.status === 'ingested' || item.status === 'approved' || item.status === 'completed' || item.item_status === 'ingested') ? DECISION_APPROVE : DECISION_PENDING;
     });
     return initial;
   });
+
+  // Sync decisions when items prop updates (e.g. async load)
+  useEffect(() => {
+    setDecisions(prev => {
+      const next = { ...prev };
+      let changed = false;
+      items.forEach(item => {
+        const key = item.item_id || item.queue_id;
+        if (next[key] === undefined) {
+          next[key] = (item.status === 'ingested' || item.status === 'approved' || item.status === 'completed' || item.item_status === 'ingested') ? DECISION_APPROVE : DECISION_PENDING;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [items]);
 
   const [expanded, setExpanded] = useState({});
   const [filter, setFilter] = useState("all");

@@ -8,39 +8,52 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
   const [fetchingItems, setFetchingItems] = useState(false);
   const [error, setError] = useState(null);
 
-  // Smoothly move displayProgress towards actual backend percentage or milestones
+  // Smoothly move displayProgress
   useEffect(() => {
+    // If we have an error or complete, just sync to target immediately or let the other logic handle it
     const target = progressData?.percentage || 0;
-    if (target > displayProgress) {
-      // Slowly creep towards target to avoid jumps
-      const interval = setInterval(() => {
-        setDisplayProgress(prev => {
-          if (prev >= target) {
-            clearInterval(interval);
-            return prev;
-          }
+    const isRunning = progressData?.status === "running";
+
+    const interval = setInterval(() => {
+      setDisplayProgress(prev => {
+        // Case 1: We are behind the target (catch up)
+        if (prev < target) {
           const diff = target - prev;
-          const step = Math.max(0.1, diff * 0.05); // Move 5% of the distance each tick
+          // Move faster if far behind, slower if close
+          const step = Math.max(0.5, diff * 0.1);
           const next = Math.min(prev + step, target);
           if (onProgress) onProgress(next);
           return next;
-        });
-      }, 50);
-      return () => clearInterval(interval);
-    }
-  }, [progressData?.percentage, displayProgress, onProgress]);
+        }
+
+        // Case 2: We are at or ahead of target, but still running (Ghost Progress)
+        // This prevents the "stuck" feeling. We creep up to 95% slowly.
+        if (isRunning && prev < 95) {
+          // Very slow creep: 0.05% per 50ms = 1% per second
+          const next = prev + 0.05;
+          if (onProgress) onProgress(next);
+          return next;
+        }
+
+        return prev;
+      });
+    }, 50);
+    return () => clearInterval(interval);
+  }, [progressData, onProgress]);
 
   // Polling logic
   useEffect(() => {
     if (!scrapeId) return;
 
     // Initial fetch jump
-    setDisplayProgress(5);
-    if (onProgress) onProgress(5);
+    if (displayProgress === 0) {
+      setDisplayProgress(5);
+      if (onProgress) onProgress(5);
+    }
 
     const pollInterval = setInterval(async () => {
       try {
-        const data = await getScrapeProgress(scrapeId); // Changed from getSearchProgress to getScrapeProgress to match import
+        const data = await getScrapeProgress(scrapeId);
         setProgressData(data); // Store raw data
 
         if (data.status === "completed") {
@@ -56,12 +69,11 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
         }
       } catch (err) {
         console.error("Poll error:", err);
-        // Don't stop polling on transient errors unless 404 persists (omitted for brevity)
       }
-    }, 1500);
+    }, 800); // Faster polling (800ms)
 
     return () => clearInterval(pollInterval);
-  }, [scrapeId, onProgress, onError]); // Added onProgress, onError to dependency array
+  }, [scrapeId, onProgress, onError]);
 
   const handleCompletion = async (data) => {
     if (fetchingItems) return;
@@ -81,12 +93,17 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
     }
   };
 
-  const displayPct = Math.round(displayProgress);
+  const displayPct = Math.min(100, Math.round(displayProgress));
 
   // Status message based on real data
   let statusMsg = "Initializing search agents...";
   if (fetchingItems) statusMsg = "Finalizing results...";
-  else if (progressData?.current_platform) statusMsg = `Scanning ${progressData.current_platform}...`;
+  else if (progressData?.current_platform) {
+    statusMsg = `Scanning ${progressData.current_platform}...`;
+    if (progressData.items_found > 0) {
+      statusMsg += ` (${progressData.items_found} items found)`;
+    }
+  }
   else if (progressData?.status === "running") statusMsg = "Searching for content...";
 
   if (error) {

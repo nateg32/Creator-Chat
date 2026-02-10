@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getPersona } from "../api/client";
+import { getPersona, getQueueItems } from "../api/client";
 import "./PersonaSetup.css";
 
 export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
@@ -10,14 +10,39 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
   const [alwaysDo, setAlwaysDo] = useState("");
   const [neverDo, setNeverDo] = useState("");
   const [example, setExample] = useState("");
+  const [hasContent, setHasContent] = useState(false);
+  const [contentLoading, setContentLoading] = useState(true);
+  const [initialPersonaLoaded, setInitialPersonaLoaded] = useState(false);
 
   useEffect(() => {
-    // Load existing persona if available
     if (creatorId) {
+      // Check for ingested content
+      setContentLoading(true);
+      getQueueItems(creatorId)
+        .then((data) => {
+          const items = data.items || [];
+          console.log("[PersonaSetup] Queue items:", items);
+          // Check if any items are ingested or approved (broad check)
+          const hasIngested = items && items.length > 0 && items.some(i =>
+            ['ingested', 'approved', 'completed', 'ready'].includes(i.status) ||
+            (i.item_status && ['ingested', 'approved', 'completed', 'ready'].includes(i.item_status))
+          );
+          setHasContent(hasIngested);
+        })
+        .catch(err => {
+          console.error("Failed to check content:", err);
+          setHasContent(false);
+        })
+        .finally(() => setContentLoading(false));
+
+      // Load existing persona
       getPersona(creatorId)
         .then((data) => {
           if (data && data.persona) {
             parsePersona(data.persona);
+            // If we have an existing persona, we treat this as a valid creator
+            // even if queue items check fails (e.g. legacy creators)
+            setInitialPersonaLoaded(true);
           }
         })
         .catch(err => console.error("Failed to load persona:", err));
@@ -94,7 +119,16 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
     return parts.join("\n");
   }
 
+  const isValid = () => {
+    return (
+      alwaysDo.trim().length > 0 &&
+      neverDo.trim().length > 0 &&
+      (hasContent || initialPersonaLoaded)
+    );
+  };
+
   async function handleSave() {
+    if (!isValid()) return;
     const personaText = buildPersonaText();
     await onSave(personaText);
   }
@@ -180,7 +214,7 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
         </div>
 
         <div className="form-group">
-          <label htmlFor="always-do">Always do...</label>
+          <label htmlFor="always-do">Always do... <span style={{ color: 'red' }}>*</span></label>
           <textarea
             id="always-do"
             value={alwaysDo}
@@ -192,7 +226,7 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
         </div>
 
         <div className="form-group">
-          <label htmlFor="never-do">Never do...</label>
+          <label htmlFor="never-do">Never do... <span style={{ color: 'red' }}>*</span></label>
           <textarea
             id="never-do"
             value={neverDo}
@@ -215,18 +249,32 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
           />
         </div>
 
+        {!hasContent && !contentLoading && !initialPersonaLoaded && (
+          <div style={{ color: '#d32f2f', fontSize: '14px', textAlign: 'center', marginTop: '10px' }}>
+            Missing ingested content. Please approve some items first.
+          </div>
+        )}
+
+        {!hasContent && !contentLoading && initialPersonaLoaded && (
+          <div style={{ color: '#f57f17', fontSize: '13px', textAlign: 'center', marginTop: '10px' }}>
+            Warning: No ingested content found. Bot responses may be limited.
+          </div>
+        )}
+
         <div className="button-group">
           <button
             onClick={handleSave}
             className="primary-button"
-            disabled={loading}
+            disabled={loading || !isValid()}
+            title={!isValid() ? "Fill out mandatory fields and ensure content is ingested" : ""}
           >
             {loading ? "Saving..." : "Save persona"}
           </button>
           <button
             onClick={onContinue}
             className="primary-button"
-            disabled={loading}
+            disabled={loading || !isValid()}
+            title={!isValid() ? "Fill out mandatory fields and ensure content is ingested" : ""}
           >
             Open chat
           </button>

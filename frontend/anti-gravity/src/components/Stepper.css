@@ -50,11 +50,13 @@
 
 .nav-step.disabled {
   cursor: not-allowed;
+  opacity: 1;
 }
 
 .nav-step.disabled:hover {
   background: transparent;
   color: #5f6368;
+  opacity: 1;
 }
 
 .nav-step.active:not(.disabled) .nav-step-label {
@@ -83,4 +85,38 @@
 .nav-step:not(:last-child)::after {
   content: "";
   display: none;
+}
+
+.nav-right-actions {
+  margin-left: auto;
+  padding-right: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.user-profile-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 50%;
+  color: #5f6368;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  transition: background-color 0.2s;
+}
+
+.user-profile-btn:hover {
+  background: #e8eaed;
+  color: #202124;
+}
+
+.user-avatar-small {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
 }

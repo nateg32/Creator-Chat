@@ -1,6 +1,6 @@
 import "./Stepper.css";
 
-export function Stepper({ currentStep, steps, onStepClick, searchProgress = 0 }) {
+export function Stepper({ currentStep, steps, onStepClick, searchProgress = 0, onUserClick, userAvatarUrl }) {
   return (
     <div className="global-nav-stepper">
       <div className="app-branding">Creator Bot</div>
@@ -28,6 +28,18 @@ export function Stepper({ currentStep, steps, onStepClick, searchProgress = 0 })
             </button>
           );
         })}
+      </div>
+      <div className="nav-right-actions">
+        <button className="user-profile-btn" onClick={onUserClick} title="User Settings">
+          {userAvatarUrl ? (
+            <img src={userAvatarUrl} alt="User" className="user-avatar-small" />
+          ) : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          )}
+        </button>
       </div>
     </div>
   );

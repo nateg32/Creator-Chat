@@ -224,6 +224,11 @@
   margin-left: 0;
 }
 
+.msg-user .msg-bubble {
+  padding-left: 12px;
+  border-left: 2px solid rgba(0, 0, 0, 0.1);
+}
+
 .msg-user .msg-sender {
   color: #5f6368;
 }
@@ -236,28 +241,23 @@
 .thinking-indicator {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   color: #5f6368;
   font-size: 14px;
+  font-style: italic;
+  animation: thinking-active 1.8s ease-in-out infinite alternate;
 }
 
 .thinking-dots {
   display: inline-flex;
-  margin-left: 2px;
 }
 
-.thinking-dots {
-  animation: thinking-pulse 1.5s infinite;
-}
-
-@keyframes thinking-pulse {
-
-  0%,
-  100% {
-    opacity: 0.3;
+@keyframes thinking-active {
+  from {
+    opacity: 0.4;
   }
 
-  50% {
+  to {
     opacity: 1;
   }
 }
@@ -380,4 +380,22 @@
   padding: 12px 16px;
   border-radius: 8px;
   margin: 8px 0;
+}
+
+/* System Notice */
+.system-notice-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+  margin-bottom: 16px;
+}
+
+.system-notice-text {
+  font-size: 12px;
+  color: #9aa0a6;
+  background: #f8f9fa;
+  /* Optional: very light bg */
+  padding: 4px 12px;
+  border-radius: 12px;
+  text-align: center;
 }

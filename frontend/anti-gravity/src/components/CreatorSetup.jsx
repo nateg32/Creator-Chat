@@ -398,7 +398,7 @@ export function CreatorSetup({
                 min={1}
                 max={50}
                 value={config[p.key]?.maxItems ?? p.default_max_items ?? 10}
-                onChange={(e) => updatePlatformConfig(p.key, { maxItems: Number(e.target.value) || 10 })}
+                onChange={(e) => updatePlatformConfig(p.key, { maxItems: e.target.value })}
                 disabled={saveLoading}
               />
             </div>

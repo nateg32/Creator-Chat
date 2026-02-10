@@ -20,7 +20,9 @@ from models import (
     LoginRequest, LoginResponse, SessionResponse,
     Creator, CreateCreatorRequest, CreatorStats, CreatorsListResponse,
     CreateCreatorWithConfigRequest, UpdateCreatorRequest, CreatorWithConfigResponse,
-    ApproveIngestRequestV2
+    ApproveIngestRequestV2,
+    UserSettings, UpdateUserSettingsRequest,
+    CreateThreadRequest, ThreadResponse, MessageResponse, UpdateThreadRequest
 )
 from rag import get_persona
 from creator_engine import ask as creator_ask
@@ -536,7 +538,7 @@ async def list_creators():
     try:
         dcol = _creator_display_column()
         query = f"""
-            SELECT c.id, c.{dcol} as name, c.handle, c.created_at, c.profile_picture_url,
+            SELECT c.id, c.{dcol} as name, c.handle, c.created_at, c.profile_picture_url, c.visual_config,
                    (SELECT COUNT(*) FROM scrape_queue q WHERE q.creator_id = c.id AND q.status = 'ingested') as item_count
             FROM creators c
             ORDER BY c.created_at DESC
@@ -552,7 +554,8 @@ async def list_creators():
                 profile_picture_url=row.get("profile_picture_url"),
                 platforms=[], # Platforms column might be missing, omit for list
                 item_count=row.get("item_count", 0),
-                created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
+                created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+                visual_config=row.get("visual_config") if isinstance(row.get("visual_config"), dict) else (json.loads(row.get("visual_config")) if isinstance(row.get("visual_config"), str) else {})
             ))
         
         return CreatorsListResponse(creators=creators)
@@ -747,11 +750,18 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         else:
             configs_out = configs
 
+        vc = creator.get("visual_config") or request.visual_config
+        if isinstance(vc, str):
+            vc = json.loads(vc)
+        elif not isinstance(vc, dict):
+            vc = {}
+
         return CreatorWithConfigResponse(
             id=creator_id,
             name=creator.get("display_name") or creator.get("handle") or name,
             handle=creator.get("handle"),
             platform_configs=configs_out,
+            visual_config=vc,
             created_at=creator["created_at"].isoformat() if creator.get("created_at") and hasattr(creator["created_at"], "isoformat") else None,
         )
     except HTTPException:
@@ -768,6 +778,8 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
         existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, platform_configs FROM creators WHERE id = %s", (creator_id,))
         if not existing:
             raise HTTPException(status_code=404, detail="Creator not found.")
+
+        print(f"[DEBUG] update_creator id={creator_id} request={request.dict(exclude={'profile_picture_url'})} has_pic={bool(request.profile_picture_url)}", flush=True)
 
         updates = []
         params = []
@@ -792,6 +804,9 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             if r:
                 updates.append("platform_configs = %s")
                 params.append(json.dumps(configs))
+        if request.visual_config is not None:
+             updates.append("visual_config = %s")
+             params.append(json.dumps(request.visual_config))
 
         if not updates:
             configs_out = existing.get("platform_configs") or {}
@@ -812,17 +827,26 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             f"UPDATE creators SET {', '.join(updates)} WHERE id = %s",
             tuple(params),
         )
-        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, platform_configs, created_at FROM creators WHERE id = %s", (creator_id,))
+        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, platform_configs, visual_config, created_at FROM creators WHERE id = %s", (creator_id,))
         pc = row.get("platform_configs") or {}
         if hasattr(pc, "copy"):
             pc = dict(pc) if pc else {}
         else:
             pc = json.loads(pc) if isinstance(pc, str) else {}
+        
+        vc = row.get("visual_config") or {}
+        if hasattr(vc, "copy"):
+            vc = dict(vc) if vc else {}
+        else:
+            vc = json.loads(vc) if isinstance(vc, str) else {}
+
         return CreatorWithConfigResponse(
             id=row["id"],
             name=row.get("display_name") or row.get("handle") or "",
             handle=row.get("handle"),
+            profile_picture_url=request.profile_picture_url if request.profile_picture_url is not None else existing.get("profile_picture_url"),
             platform_configs=pc,
+            visual_config=vc,
             created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
         )
     except HTTPException:
@@ -894,7 +918,7 @@ async def get_creator_config(creator_id: int):
     """Get creator with platform_configs."""
     dcol = _creator_display_column()
     row = db.execute_one(
-        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, created_at FROM creators WHERE id = %s",
+        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, created_at FROM creators WHERE id = %s",
         (creator_id,),
     )
     if not row:
@@ -904,12 +928,20 @@ async def get_creator_config(creator_id: int):
         pc = dict(pc) if pc else {}
     else:
         pc = json.loads(pc) if isinstance(pc, str) else {}
+    
+    vc = row.get("visual_config") or {}
+    if hasattr(vc, "copy"):
+        vc = dict(vc) if vc else {}
+    else:
+        vc = json.loads(vc) if isinstance(vc, str) else {}
+
     return CreatorWithConfigResponse(
         id=row["id"],
         name=row.get("display_name") or row.get("handle") or "",
         handle=row.get("handle"),
         profile_picture_url=row.get("profile_picture_url"),
         platform_configs=pc,
+        visual_config=vc,
         created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
     )
 
@@ -970,6 +1002,54 @@ async def get_creator_stats(creator_id: int):
 # Core Endpoints
 # ============================================================================
 
+@app.get("/user/settings", response_model=UserSettings)
+async def get_user_settings():
+    row = db.execute_one(
+        "SELECT display_name, profile_picture_url, response_preferences FROM users WHERE id = 1"
+    )
+    if not row:
+        return UserSettings()
+    
+    prefs = row.get("response_preferences") or {}
+    if hasattr(prefs, "copy"):
+        prefs = dict(prefs) if prefs else {}
+    else:
+        prefs = json.loads(prefs) if isinstance(prefs, str) else {}
+
+    return UserSettings(
+        display_name=row.get("display_name"),
+        profile_picture_url=row.get("profile_picture_url"),
+        response_preferences=prefs
+    )
+
+@app.put("/user/settings", response_model=UserSettings)
+async def update_user_settings(request: UpdateUserSettingsRequest):
+    updates = []
+    params = []
+    
+    if request.display_name is not None:
+        updates.append("display_name = %s")
+        params.append(request.display_name)
+    
+    if request.profile_picture_url is not None:
+        updates.append("profile_picture_url = %s")
+        params.append(request.profile_picture_url)
+        
+    if request.response_preferences is not None:
+        updates.append("response_preferences = %s")
+        params.append(json.dumps(request.response_preferences))
+        
+    if not updates:
+        return await get_user_settings()
+        
+    params.append(1) # user_id
+    
+    db.execute_update(
+        f"UPDATE users SET {', '.join(updates)} WHERE id = %s",
+        tuple(params)
+    )
+    return await get_user_settings()
+
 @app.get("/health")
 async def health():
     """Health check endpoint - minimal, no DB dependency."""
@@ -983,25 +1063,126 @@ async def health():
         raise
 
 @app.post("/ask", response_model=AskResponse)
-async def ask_endpoint(request: AskRequest):
+async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
     """
     Ask a question using Grounded-RAG Loop algorithm.
     Uses broad retrieval + re-ranking + answer contract + grounding validation.
+    Handles thread persistence if thread_id is provided.
     """
     try:
+        # Get user preferences
+        user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
+        user_prefs = None
+        user_name = None
+        if user_row:
+             up = user_row.get("response_preferences")
+             user_name = user_row.get("display_name")
+             if isinstance(up, str):
+                 try:
+                     user_prefs = json.loads(up)
+                 except: pass
+             elif isinstance(up, dict):
+                 user_prefs = up
+        
+        # Thread Logic (Session Persistence)
+        conversation_history = request.messages
+        thread = None
+        
+        if request.thread_id:
+             # Validate UUID format
+             try:
+                 uuid.UUID(str(request.thread_id))
+                 # Verify thread exists
+                 thread = db.execute_one("SELECT id, title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+             except ValueError:
+                 print(f"[WARN] Invalid UUID received for thread_id: {request.thread_id}. Treating as new thread.")
+                 request.thread_id = None
+                 thread = None
+
+             if thread:
+                 # Update last active thread preference
+                 db.execute_update("""
+                    INSERT INTO user_creator_preferences (user_id, creator_id, last_active_thread_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id, creator_id) 
+                    DO UPDATE SET last_active_thread_id = EXCLUDED.last_active_thread_id, updated_at = NOW()
+                 """, (1, request.creator_id, request.thread_id))
+                 
+                 # Save user message
+                 # Note: We save it now so it's persisted, but for RAG context we want *previous* history.
+                 db.execute_update("""
+                    INSERT INTO chat_messages (thread_id, role, content)
+                    VALUES (%s, 'user', %s)
+                 """, (request.thread_id, request.question))
+                 
+                 # Fetch history from DB for RAG context (last 20 messages)
+                 # We want the messages BEFORE the one we just inserted.
+                 # So we fetch limit 21 desc, and look at them.
+                 msgs_rows = db.execute_query("""
+                    SELECT role, content FROM chat_messages 
+                    WHERE thread_id = %s 
+                    ORDER BY created_at DESC 
+                    LIMIT 21
+                 """, (request.thread_id,))
+                 
+                 if msgs_rows:
+                     # Reverse to chronological order [oldest ... newest]
+                     msgs_rows.reverse()
+                     
+                     # The last message in msgs_rows should be the one we just inserted (user question).
+                     # We want history *excluding* the current question for the RAG 'conversation_history' param.
+                     # (grounded_rag_ask treats 'question' as new, 'conversation_history' as past)
+                     if msgs_rows[-1]['role'] == 'user' and msgs_rows[-1]['content'] == request.question:
+                          msgs_rows.pop() 
+                     
+                     conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
+        
+        # Get creator name
+        creator_name = "Creator"
+        try:
+            cr = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (request.creator_id,))
+            if cr:
+                creator_name = cr.get("name") or cr.get("handle") or "Creator"
+        except: pass
+        
         # Use grounded RAG algorithm for better grounding
         result = grounded_rag_ask(
             creator_id=request.creator_id,
             question=request.question,
-            conversation_history=request.messages,
+            conversation_history=conversation_history,
             top_k=request.top_k or 6,
             max_distance=request.max_distance or 1.15,
             debug=request.debug or False,
+            user_preferences=user_prefs,
+            user_name=user_name,
+            creator_name=creator_name
         )
         
+        answer_text = result["answer"]
+        
+        # Post-Processing: Save Assistant Message & Update Thread
+        if request.thread_id and thread:
+             # Save assistant message
+             db.execute_update("""
+                INSERT INTO chat_messages (thread_id, role, content)
+                VALUES (%s, 'assistant', %s)
+             """, (request.thread_id, answer_text))
+             
+             # Update thread metadata
+             preview = answer_text[:60] + "..." if len(answer_text) > 60 else answer_text
+             db.execute_update("""
+                UPDATE chat_threads 
+                SET last_message_at = NOW(), last_preview = %s 
+                WHERE id = %s
+             """, (preview, request.thread_id))
+             
+             # Trigger title update if needed (only if 'New conversation' and unlocked)
+             if thread['title'] == 'New conversation' and not thread['title_locked']:
+                  background_tasks.add_task(_update_thread_title_background, request.thread_id)
+
         # Ensure response matches AskResponse format
         return {
-            "answer": result["answer"],
+            "answer": answer_text,
             "retrieved": result.get("retrieved", []),
             "sources": result.get("sources", []),
             "debug_info": result.get("debug") if request.debug else None,
@@ -1571,15 +1752,32 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
     Handles transcript fallback if TRANSCRIBE_ON_INGEST is enabled.
     """
     try:
-        # Separate approved and denied item IDs
-        approved_item_ids = [
-            d["item_id"] for d in request.decisions 
-            if d.get("decision") == "approve"
-        ]
-        denied_item_ids = [
-            d["item_id"] for d in request.decisions 
-            if d.get("decision") == "deny"
-        ]
+        # Separate approved and denied, handling doc_ prefixes
+        approved_item_ids = []
+        denied_item_ids = []
+        doc_ids_to_delete = []
+        
+        for d in request.decisions:
+            raw_id = str(d["item_id"])
+            decision = d.get("decision")
+            
+            if raw_id.startswith("doc_"):
+                # Existing document - only handle delete (deny)
+                if decision == "deny":
+                    try:
+                        doc_ids_to_delete.append(int(raw_id.split("_")[1]))
+                    except: pass
+            else:
+                # Scrape item (UUID)
+                if decision == "approve":
+                    approved_item_ids.append(raw_id)
+                elif decision == "deny":
+                    denied_item_ids.append(raw_id)
+
+        # Delete existing documents if requested
+        if doc_ids_to_delete:
+            db.execute_update("DELETE FROM chunks WHERE document_id = ANY(%s)", (doc_ids_to_delete,))
+            db.execute_update("DELETE FROM documents WHERE id = ANY(%s)", (doc_ids_to_delete,))
         
         # Update review_status for denied items
         sid = request.search_id or request.scrape_id
@@ -1849,15 +2047,33 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2):
     """
     async def event_generator():
         try:
-            # Separate approved and denied item IDs
-            approved_item_ids = [
-                d["item_id"] for d in request.decisions 
-                if d.get("decision") == "approve"
-            ]
-            denied_item_ids = [
-                d["item_id"] for d in request.decisions 
-                if d.get("decision") == "deny"
-            ]
+            # Separate approved and denied, handling doc_ prefixes
+            approved_item_ids = []
+            denied_item_ids = []
+            doc_ids_to_delete = []
+            
+            for d in request.decisions:
+                raw_id = str(d["item_id"])
+                decision = d.get("decision")
+                
+                if raw_id.startswith("doc_"):
+                    # Existing document - only handle delete (deny)
+                    if decision == "deny":
+                        try:
+                            doc_ids_to_delete.append(int(raw_id.split("_")[1]))
+                        except: pass
+                else:
+                    # Scrape item (UUID)
+                    if decision == "approve":
+                        approved_item_ids.append(raw_id)
+                    elif decision == "deny":
+                        denied_item_ids.append(raw_id)
+
+            # Delete existing documents if requested
+            if doc_ids_to_delete:
+                yield f"data: {json.dumps({'stage': 'deleting', 'current': 0, 'total': len(doc_ids_to_delete), 'message': f'Deleting {len(doc_ids_to_delete)} existing documents...'})}\n\n"
+                db.execute_update("DELETE FROM chunks WHERE document_id = ANY(%s)", (doc_ids_to_delete,))
+                db.execute_update("DELETE FROM documents WHERE id = ANY(%s)", (doc_ids_to_delete,))
             
             total_items = len(approved_item_ids)
             
@@ -2173,19 +2389,21 @@ async def save_persona_endpoint(creator_id: int, request: PersonaRequest):
         if not persona_text:
             raise HTTPException(status_code=400, detail="Persona text is required")
         
-        # Delete existing persona documents
+        # Delete existing persona documents (using source='persona')
         delete_query = """
             DELETE FROM documents 
-            WHERE creator_id = %s AND metadata->>'type' = 'persona'
+            WHERE creator_id = %s AND source = 'persona'
         """
         db.execute_update(delete_query, (creator_id,))
         
         # Insert new persona document
+        # Note: metadata column might not exist, relying on source='persona'
         insert_query = """
-            INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
+            INSERT INTO documents (creator_id, title, content, source, source_id, url)
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
         """
+        # Use simple empty string for URL if not needed
         doc_id = db.execute_insert(
             insert_query,
             (
@@ -2194,7 +2412,7 @@ async def save_persona_endpoint(creator_id: int, request: PersonaRequest):
                 persona_text,
                 "persona",
                 f"persona_{creator_id}",
-                json.dumps({"type": "persona"}),
+                "", # URL
             )
         )
         
@@ -2208,11 +2426,12 @@ async def save_persona_endpoint(creator_id: int, request: PersonaRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/creator/{creator_id}/queue", response_model=SearchResponse)
+@app.get("/creator/{creator_id}/queue")
 async def get_queue_items(creator_id: int):
-    """Get all queue items for a creator with their status and chunk counts (legacy endpoint)"""
+    """Get all queue items for a creator. Merges legacy scrape_queue and actual documents."""
     try:
-        query = """
+        # 1. Legacy scrape_queue items
+        query_legacy = """
             SELECT 
                 sq.id, 
                 sq.title, 
@@ -2227,21 +2446,319 @@ async def get_queue_items(creator_id: int):
             GROUP BY sq.id, sq.title, sq.url, sq.raw_text, sq.status
             ORDER BY sq.created_at DESC
         """
-        results = db.execute_query(query, (creator_id,))
+        results_legacy = db.execute_query(query_legacy, (creator_id,))
         
         items = []
-        for row in results:
-            preview = row["raw_text"][:200] + "..." if len(row["raw_text"]) > 200 else row["raw_text"]
+        # Add legacy items
+        for row in results_legacy:
+            preview = row["raw_text"][:200] + "..." if len(row["raw_text"] or "") > 200 else (row["raw_text"] or "")
             chunks_count = row.get("chunks_inserted", 0) or 0
             items.append({
-                "queue_id": row["id"],
+                "item_id": str(row["id"]),
+                "queue_id": str(row["id"]),
                 "title": row.get("title"),
+                "caption": row.get("title"),
                 "url": row.get("url"),
+                "source_url": row.get("url"),
                 "preview": preview,
                 "status": row.get("status", "pending"),
+                "transcript_status": "present" if row.get("status") == "ingested" else "missing",
                 "chunks_inserted": chunks_count if row.get("status") == "ingested" else 0
             })
+
+        # 2. V2 Flow Documents (The actual knowledge base)
+        # Fetch actual documents (excluding persona and legacy queue wrappers if any)
+        # Note: source_id usually starts with 'queue_' for legacy items, but we want all content.
+        # We order by ID if created_at is missing.
+        query_docs = """
+            SELECT id, title, content, url, source, source_id
+            FROM documents
+            WHERE creator_id = %s AND source != 'persona'
+            ORDER BY id DESC
+            LIMIT 100
+        """
+        try:
+            results_docs = db.execute_query(query_docs, (creator_id,))
+        except Exception as e:
+            # Fallback if url column doesn't exist (older schema)
+            print(f"[WARN] get_queue_items V2 query failed, trying fallback: {e}")
+            query_docs = """
+                SELECT id, title, content, source, source_id
+                FROM documents
+                WHERE creator_id = %s AND source != 'persona'
+                ORDER BY id DESC
+                LIMIT 100
+            """
+            results_docs = db.execute_query(query_docs, (creator_id,))
         
+        for row in results_docs:
+            # Check if this document is already covered by legacy queue logic 
+            # (simple dedupe by checking if we have a queue item with same title/content? Hard to map perfectly)
+            # For now, we list everything. 
+            # If it's a legacy item, it might appear twice (once as Queue Item Pending/Ingested, once as Doc).
+            # This is acceptable for "Manager Mode".
+            
+            content_text = row.get("content") or ""
+            preview = content_text[:200] + "..." if len(content_text) > 200 else content_text
+            
+            # Use 'url' column if present, otherwise try to extract or empty
+            doc_url = row.get("url") or ""
+            
+            items.append({
+                "item_id": f"doc_{row['id']}",
+                "queue_id": f"doc_{row['id']}",
+                "title": row.get("title"),
+                "caption": row.get("title"),
+                "url": doc_url,
+                "source_url": doc_url,
+                "preview": preview,
+                "status": "ingested", 
+                "chunks_inserted": 1, 
+                "item_status": "ingested",
+                "transcript_status": "present"
+            })
+
         return {"search_id": str(creator_id), "items": items}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] get_queue_items: {e}", flush=True)
+        # Return empty list on error to avoid crashing UI
+        return {"search_id": str(creator_id), "items": []}
+
+# --- Thread Management Endpoints ---
+
+@app.post("/threads", response_model=ThreadResponse)
+def create_thread_endpoint(req: CreateThreadRequest):
+    # Assume default user_id = 1 for now
+    user_id = 1
+    
+    # Insert new thread
+    row = db.execute_one("""
+        INSERT INTO chat_threads (user_id, creator_id, title)
+        VALUES (%s, %s, 'New conversation')
+        RETURNING id, user_id, creator_id, title, last_preview, created_at, last_message_at
+    """, (user_id, req.creator_id))
+    
+    # Update user's last active thread for this creator
+    db.execute_update("""
+        INSERT INTO user_creator_preferences (user_id, creator_id, last_active_thread_id)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id, creator_id) 
+        DO UPDATE SET last_active_thread_id = EXCLUDED.last_active_thread_id, updated_at = NOW()
+    """, (user_id, req.creator_id, row['id']))
+    
+    return ThreadResponse(
+        id=str(row['id']),
+        user_id=row['user_id'],
+        creator_id=row['creator_id'],
+        title=row['title'],
+        last_preview=row['last_preview'],
+        created_at=row['created_at'],
+        last_message_at=row['last_message_at']
+    )
+
+@app.put("/threads/{thread_id}", response_model=ThreadResponse)
+def update_thread_endpoint(thread_id: str, req: UpdateThreadRequest):
+    user_id = 1
+    updates = []
+    params = []
+    
+    if req.title is not None:
+        updates.append("title = %s")
+        updates.append("title_locked = true")
+        params.append(req.title)
+    
+    if req.is_archived is not None:
+        updates.append("is_archived = %s")
+        params.append(req.is_archived)
+        
+    if not updates:
+        # Fetch current state to return
+        sql = "SELECT id, user_id, creator_id, title, last_preview, created_at, last_message_at FROM chat_threads WHERE id = %s AND user_id = %s"
+        row = db.execute_one(sql, (thread_id, user_id))
+    else:
+        params.append(thread_id)
+        params.append(user_id)
+        sql = f"UPDATE chat_threads SET {', '.join(updates)} WHERE id = %s AND user_id = %s RETURNING id, user_id, creator_id, title, last_preview, created_at, last_message_at"
+        row = db.execute_one(sql, tuple(params))
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Thread not found")
+        
+    return ThreadResponse(
+        id=str(row['id']),
+        user_id=row['user_id'],
+        creator_id=row['creator_id'],
+        title=row['title'],
+        last_preview=row['last_preview'],
+        created_at=row['created_at'],
+        last_message_at=row['last_message_at']
+    )
+
+@app.get("/creators/{creator_id}/threads", response_model=List[ThreadResponse])
+def list_threads_endpoint(creator_id: int, archived: bool = False):
+    user_id = 1
+    # Filter by archived status. handling NULL as false.
+    archived_clause = "is_archived = true" if archived else "(is_archived = false OR is_archived IS NULL)"
+    
+    query = f"""
+        SELECT id, user_id, creator_id, title, last_preview, created_at, last_message_at
+        FROM chat_threads
+        WHERE user_id = %s AND creator_id = %s AND is_active = true AND {archived_clause}
+        ORDER BY last_message_at DESC
+    """
+    rows = db.execute_query(query, (user_id, creator_id))
+    
+    return [
+        ThreadResponse(
+            id=str(r['id']),
+            user_id=r['user_id'],
+            creator_id=r['creator_id'],
+            title=r['title'],
+            last_preview=r['last_preview'],
+            created_at=r['created_at'],
+            last_message_at=r['last_message_at']
+        ) for r in rows
+    ]
+
+@app.get("/threads/{thread_id}/messages", response_model=List[MessageResponse])
+def list_thread_messages_endpoint(thread_id: str):
+    # Verify ownership (optional but good practice)
+    user_id = 1
+    
+    rows = db.execute_query("""
+        SELECT id, role, content, created_at
+        FROM chat_messages
+        WHERE thread_id = %s
+        ORDER BY created_at ASC
+    """, (thread_id,))
+    
+    return [
+        MessageResponse(
+            id=str(r['id']),
+            role=r['role'] or "user",
+            content=r['content'] or "",
+            created_at=r['created_at']
+        ) for r in rows
+    ]
+
+@app.delete("/threads/{thread_id}")
+def delete_thread_endpoint(thread_id: str):
+    user_id = 1
+    # Hard delete (Permanent removal as requested)
+    # First verify ownership
+    thread = db.execute_one("SELECT id FROM chat_threads WHERE id = %s AND user_id = %s", (thread_id, user_id))
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    # Delete messages first (cascade usually handles this but being explicit is safer)
+    db.execute_update("DELETE FROM chat_messages WHERE thread_id = %s", (thread_id,))
+    
+    # Delete thread
+    db.execute_update("DELETE FROM chat_threads WHERE id = %s", (thread_id,))
+    
+    return {"status": "deleted"}
+
+
+
+@app.get("/creators/{creator_id}/last_active_thread")
+def get_last_active_thread(creator_id: int):
+    user_id = 1
+    row = db.execute_one("""
+        SELECT last_active_thread_id 
+        FROM user_creator_preferences
+        WHERE user_id = %s AND creator_id = %s
+    """, (user_id, creator_id))
+    
+    if row and row.get('last_active_thread_id'):
+        return {"thread_id": str(row['last_active_thread_id'])}
+    return {"thread_id": None}
+
+
+def _update_thread_title_background(thread_id: str):
+    """
+    Attempt to generate a title from conversation history using LLM.
+    Only if title is 'New conversation' and not locked.
+    """
+    try:
+        # LLM based generation
+        from rag import get_client
+        from settings import settings
+        
+        # Verify checking again to be sure (in case of race condition)
+        thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (thread_id,))
+        if not thread or thread['title_locked'] or thread['title'] != 'New conversation':
+            return
+            
+        # Fetch conversation history (limit 6 messages) to determine intent
+        msgs = db.execute_query("""
+            SELECT role, content FROM chat_messages 
+            WHERE thread_id = %s 
+            ORDER BY created_at ASC 
+            LIMIT 6
+        """, (thread_id,))
+        
+        if not msgs:
+            return
+
+        # Check conditions: 2 user messages OR 1 user + 1 assistant
+        user_msgs = [m for m in msgs if m['role'] == 'user']
+        assistant_msgs = [m for m in msgs if m['role'] == 'assistant']
+        
+        has_enough_context = False
+        if len(user_msgs) >= 2:
+            has_enough_context = True
+        elif len(user_msgs) >= 1 and len(assistant_msgs) >= 1:
+            has_enough_context = True
+            
+        if not has_enough_context:
+            return
+
+        # Prepare context for LLM
+        history_text = ""
+        for m in msgs:
+            role = "User" if m['role'] == 'user' else "Assistant"
+            content = m['content'][:300] # Truncate 
+            history_text += f"{role}: {content}\n"
+
+        system_prompt = (
+            "Generate a short TOPIC SUMMARY title for this conversation.\n"
+            "RULES:\n"
+            "1. 3 to 6 words.\n"
+            "2. Max 42 chars.\n"
+            "3. NO trailing punctuation.\n"
+            "4. NO hyphens (-), en dashes, or em dashes. Use spaces/commas.\n"
+            "5. NO greetings ('Hello'). Summarize the SUBJECT.\n"
+            "6. Output ONLY the title text."
+        )
+        
+        try:
+            response = get_client().chat.completions.create(
+                model=settings.CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Conversation:\n{history_text}\n\nTitle:"}
+                ],
+                temperature=0.3,
+                max_tokens=25
+            )
+            title = response.choices[0].message.content.strip()
+            
+            # Cleanup & Enforce Constraints
+            title = title.replace('"', '').replace("'", "").replace("\n", "")
+            # Remove hyphens/dashes as requested
+            title = title.replace("-", " ").replace("–", " ").replace("—", " ")
+            # Remove trailing punctuation
+            if title and title[-1] in ".,?!;":
+                title = title[:-1]
+                
+            # Truncate to 42 chars strict
+            if len(title) > 42:
+                title = title[:42].strip()
+                
+            if len(title) >= 3 and title.lower() != "new conversation":
+                db.execute_update("UPDATE chat_threads SET title = %s WHERE id = %s", (title, thread_id))
+        except Exception as e:
+            print(f"LLM Title Generation Failed: {e}")
+
+    except Exception as e:
+        print(f"Error updating thread title: {e}")

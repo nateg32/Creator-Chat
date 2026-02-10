@@ -3,6 +3,7 @@ import { ask } from "../api/client";
 import { resizeImage } from "../utils/image";
 import { formatCreatorName, formatMessageText } from "../utils/format";
 import "./ChatPanel.css";
+import { CreatorSettingsModal } from "./CreatorSettingsModal";
 
 // Icons 
 const SparkleIcon = () => (
@@ -33,16 +34,24 @@ const EditIcon = () => (
   </svg>
 );
 
+const SettingsIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3"></circle>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+  </svg>
+);
+
 export function ChatPanel({
   creatorId,
+  threadId, // New prop
   creatorDisplayName = "Creator",
   creatorHandle = "",
   topK,
   maxDistance,
   messages,
   setMessages,
-  loading,
-  setLoading,
+  loading: externalLoading,
+  setLoading: setExternalLoading,
   onResetChat,
   onChangePersona,
   onRescrape,
@@ -50,14 +59,22 @@ export function ChatPanel({
   userAvatarUrl = "",
   onUpdateCreatorAvatar,
   onUpdateUserAvatar,
+  onUpdateVisualConfig,
+  visualConfig = {},
+  userName = "You",
   debug = false,
+  onInteraction
 }) {
+  const [showSettings, setShowSettings] = useState(false);
   const [input, setInput] = useState("");
   const [error, setError] = useState(null);
   const [debugInfo, setDebugInfo] = useState(null);
+  const [localLoading, setLocalLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [activeAvatarEdit, setActiveAvatarEdit] = useState(null); // 'creator' or 'user'
+  const [activeAvatarEdit, setActiveAvatarEdit] = useState(null);
+
+  const loading = localLoading;
 
   // Auto-scroll to the latest message
   useEffect(() => {
@@ -84,7 +101,7 @@ export function ChatPanel({
 
     setMessages((m) => [...m, userMessage]);
     setInput("");
-    setLoading(true);
+    setLocalLoading(true);
     setError(null);
     if (!debug) setDebugInfo(null);
 
@@ -95,6 +112,7 @@ export function ChatPanel({
       }));
       const result = await ask({
         creator_id: creatorId,
+        thread_id: threadId, // Pass threadId
         question: q,
         top_k: topK,
         max_distance: maxDistance,
@@ -114,6 +132,8 @@ export function ChatPanel({
           ts: new Date().toISOString(),
         },
       ]);
+
+      if (onInteraction) onInteraction();
     } catch (e) {
       setError(e.message);
       if (debug) setDebugInfo(null);
@@ -128,7 +148,7 @@ export function ChatPanel({
         },
       ]);
     } finally {
-      setLoading(false);
+      setLocalLoading(false); // Reset local loading
     }
   }
 
@@ -181,7 +201,8 @@ export function ChatPanel({
           <span className="title-text">{formatCreatorName(creatorDisplayName)}</span>
         </div>
         <div className="gemini-actions">
-          <button onClick={onResetChat} title="Reset Chat">New Chat</button>
+          <button onClick={() => setShowSettings(true)} title="Settings" className="action-icon-btn"><SettingsIcon /></button>
+          <button onClick={onResetChat} title="Reset Chat">Reset Chat</button>
           <button onClick={onChangePersona} title="Change Persona">Persona</button>
           <button onClick={onRescrape} title="Edit Bot" className="action-icon-btn"><EditIcon /></button>
         </div>
@@ -197,27 +218,36 @@ export function ChatPanel({
               <p>Ask me anything about my content, or how I can help you today.</p>
             </div>
           ) : (
-            messages.map((m, idx) => (
-              <div key={m.id ?? idx} className={`msg-row msg-${m.role}`}>
-                <div
-                  className="msg-avatar clickable"
-                  title={`Change ${m.role === "assistant" ? "bot" : "your"} avatar`}
-                  onClick={() => handleAvatarClick(m.role === "assistant" ? "creator" : "user")}
-                >
-                  {m.role === "assistant" ? (
-                    creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />
-                  ) : (
-                    userAvatarUrl ? <img src={userAvatarUrl} alt="You" className="avatar-img" /> : <UserIcon />
-                  )}
-                </div>
-                <div className="msg-bubble">
-                  <div className="msg-sender">
-                    {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : "You"}
+            messages.map((m, idx) => {
+              if (m.role === "system-notice") {
+                return (
+                  <div key={m.id ?? idx} className="system-notice-row">
+                    <span className="system-notice-text">{m.content || m.text}</span>
                   </div>
-                  <div className="msg-text">{formatMessageText(m.content ?? m.text, creatorDisplayName)}</div>
+                );
+              }
+              return (
+                <div key={m.id ?? idx} className={`msg-row msg-${m.role}`}>
+                  <div
+                    className="msg-avatar clickable"
+                    title={`Change ${m.role === "assistant" ? "bot" : "your"} avatar`}
+                    onClick={() => handleAvatarClick(m.role === "assistant" ? "creator" : "user")}
+                  >
+                    {m.role === "assistant" ? (
+                      creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />
+                    ) : (
+                      userAvatarUrl ? <img src={userAvatarUrl} alt={userName} className="avatar-img" /> : <UserIcon />
+                    )}
+                  </div>
+                  <div className="msg-bubble">
+                    <div className="msg-sender" style={{ color: m.role === "assistant" ? (visualConfig.creatorNameColor || "#4285F4") : (visualConfig.userNameColor || "#5f6368") }}>
+                      {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : userName}
+                    </div>
+                    <div className="msg-text">{formatMessageText(m.content ?? m.text, creatorDisplayName)}</div>
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
 
           {loading && (
@@ -230,7 +260,7 @@ export function ChatPanel({
                 {creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />}
               </div>
               <div className="msg-bubble">
-                <div className="msg-sender">{formatCreatorName(creatorDisplayName)}</div>
+                <div className="msg-sender" style={{ color: visualConfig.creatorNameColor || "#4285F4" }}>{formatCreatorName(creatorDisplayName)}</div>
                 <div className="thinking-indicator">
                   <span>Thinking</span>
                   <span className="thinking-dots">...</span>
@@ -279,6 +309,18 @@ export function ChatPanel({
           hidden
         />
       </div>
+
+      <CreatorSettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        creatorName={creatorDisplayName}
+        creatorAvatarUrl={creatorAvatarUrl}
+        visualConfig={visualConfig}
+        onUpdateVisualConfig={(newConfig) => onUpdateVisualConfig(creatorId, newConfig)}
+        onUpdateCreatorAvatar={async (base64) => {
+          if (onUpdateCreatorAvatar) await onUpdateCreatorAvatar(creatorId, base64);
+        }}
+      />
     </div>
   );
 }

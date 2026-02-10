@@ -2,6 +2,8 @@ import openai
 from typing import List, Dict, Any, Optional
 from db import db
 from settings import settings
+import re
+from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 
 _client = None
 
@@ -14,15 +16,21 @@ def get_client():
 
 def get_persona(creator_id: int) -> Optional[str]:
     """Get persona document content for a creator"""
+    # use source column instead of metadata
     query = """
         SELECT content 
         FROM documents 
         WHERE creator_id = %s 
-        AND metadata->>'type' = 'persona'
-        ORDER BY created_at DESC
+        AND source = 'persona'
+        ORDER BY id DESC
         LIMIT 1
     """
-    result = db.execute_one(query, (creator_id,))
+    try:
+        result = db.execute_one(query, (creator_id,))
+    except Exception:
+        # Fallback if source column missing (unlikely given validation)
+        return None
+        
     return result["content"] if result else None
 
 def retrieve_chunks(
@@ -38,6 +46,7 @@ def retrieve_chunks(
     embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
     
     # Fixed query: filter by actual cosine distance, not similarity
+    # Use source != 'persona' instead of metadata check
     query = """
         SELECT 
             c.id as chunk_id,
@@ -48,7 +57,7 @@ def retrieve_chunks(
         JOIN embeddings e ON c.id = e.chunk_id
         JOIN documents d ON c.document_id = d.id
         WHERE d.creator_id = %s
-        AND (d.metadata->>'type' IS NULL OR d.metadata->>'type' != 'persona')
+        AND d.source != 'persona'
         AND e.model = %s
         AND (e.embedding <=> %s::vector) <= %s
         ORDER BY e.embedding <=> %s::vector
@@ -79,36 +88,28 @@ def retrieve_chunks(
 def generate_answer(
     question: str,
     retrieved_chunks: List[Dict[str, Any]],
-    persona: Optional[str] = None
+    persona: Optional[str] = None,
+    creator_name: str = "Creator"
 ) -> str:
     """Generate answer using OpenAI with persona and retrieved context"""
     
     # Build context from retrieved chunks
-    context_parts = []
-    for chunk in retrieved_chunks:
-        context_parts.append(f"[Chunk {chunk['chunk_index']}]: {chunk['content']}")
+    context_str = "\n\n".join([f"<source_chunk id='{c['chunk_id']}'>\n{c['content']}\n</source_chunk>" for c in retrieved_chunks])
     
-    context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
-    
-    # Build system prompt with persona
-    system_parts = [
-        "You are a helpful AI assistant that answers questions based on provided context.",
-        "Never mention internal systems like 'embeddings', 'vector database', 'retrieval', or 'training data'.",
-        "Answer naturally and conversationally based on the context provided.",
-    ]
-    
-    if persona:
-        system_parts.append(f"\nYour persona and guidelines:\n{persona}")
-    
-    system_prompt = "\n".join(system_parts)
+    # Build system prompt from template
+    system_prompt = CREATOR_BASE_SYSTEM_PROMPT.replace("{{CREATOR_NAME}}", creator_name)
+    system_prompt = system_prompt.replace("{{USER_NAME}}", "User")
+    system_prompt = system_prompt.replace("{{CREATOR_PERSONA_TEXT_HERE}}", persona or "No specific persona loaded.")
+    system_prompt = system_prompt.replace("{{OPTIONAL_PRODUCT_RULES_HERE}}", "")
+    system_prompt = system_prompt.replace("{{USER_PERSONALIZATION_HERE}}", "")
     
     # Build user message
-    user_message = f"""Context:
-{context}
+    user_message = f"""<retrieved_sources>
+{context_str}
+</retrieved_sources>
 
-Question: {question}
-
-Answer the question based on the context above. If the context doesn't contain enough information, ask a short clarifying question instead of guessing."""
+User Question: {question}
+"""
     
     try:
         response = get_client().chat.completions.create(
@@ -119,7 +120,13 @@ Answer the question based on the context above. If the context doesn't contain e
             ],
             temperature=0.7
         )
-        return response.choices[0].message.content.strip()
+        answer = response.choices[0].message.content.strip()
+        
+        # Strip style analysis tags
+        if "<style_analysis>" in answer:
+            answer = re.sub(r"<style_analysis>.*?</style_analysis>", "", answer, flags=re.DOTALL).strip()
+            
+        return answer
     except Exception as e:
         raise Exception(f"Failed to generate answer: {str(e)}")
 
@@ -147,8 +154,12 @@ def ask_question(
     # Retrieve chunks
     retrieved = retrieve_chunks(creator_id, query_embedding, top_k, max_distance)
     
+    # Fetch creator name
+    creator_row = db.execute_one("SELECT name FROM creators WHERE id = %s", (creator_id,))
+    creator_name = creator_row["name"] if creator_row else "Creator"
+
     # Generate answer
-    answer = generate_answer(question, retrieved, persona)
+    answer = generate_answer(question, retrieved, persona, creator_name)
 
     # If no persona is loaded, warn that answers may be generic
     if not persona:

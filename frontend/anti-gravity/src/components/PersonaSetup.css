@@ -215,12 +215,7 @@
   border-color: transparent;
 }
 
-.subtitle {
-  margin: 0 0 32px 0;
-  font-size: 15px;
-  color: #86868b;
-  font-weight: 400;
-}
+
 
 .persona-form {
   display: flex;

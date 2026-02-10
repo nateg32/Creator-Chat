@@ -8,7 +8,8 @@ import { ChatPanel } from "./components/ChatPanel";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { NewChatModal } from "./components/NewChatModal";
-import { scrape, approveIngestV2Stream, savePersona, getScrapeItems, health, listCreators, createCreator } from "./api/client";
+import { UserSettingsModal } from "./components/UserSettingsModal";
+import { scrape, approveIngestV2Stream, savePersona, getScrapeItems, health, listCreators, createCreator, getQueueItems, updateCreator, getUserSettings, updateUserSettings, createThread, listThreads, getThreadMessages, deleteThread, getLastActiveThread, getCreatorConfig, updateThread } from "./api/client";
 import "./App.css";
 
 const STEPS = [
@@ -36,6 +37,7 @@ function wizardReducer(state, action) {
         handle: action.handle,
         source: action.source,
         creatorAvatarUrl: action.creatorAvatarUrl,
+        visualConfig: action.visualConfig || {},
       };
     case "SET_CREATOR_ID":
       return {
@@ -73,7 +75,9 @@ function wizardReducer(state, action) {
         platformStatuses: null,
         decisions: {},
         persona: "",
+        persona: "",
         creatorAvatarUrl: "",
+        visualConfig: {},
         loading: false,
         progress: null,
         error: null,
@@ -99,7 +103,9 @@ export default function App() {
     platformStatuses: null,
     decisions: {},
     persona: "",
+    persona: "",
     creatorAvatarUrl: "",
+    visualConfig: {},
     loading: false,
     progress: null,
     error: null,
@@ -110,6 +116,36 @@ export default function App() {
     return localStorage.getItem("userAvatarUrl") || "";
   });
 
+
+
+  const [userSettings, setUserSettings] = useState(null);
+  const [showUserSettings, setShowUserSettings] = useState(false);
+
+  useEffect(() => {
+    getUserSettings()
+      .then(settings => {
+        setUserSettings(settings);
+        if (settings.profile_picture_url) {
+          setUserAvatarUrl(settings.profile_picture_url);
+        }
+      })
+      .catch(err => console.error("Error loading user settings:", err));
+  }, []);
+
+  async function handleUpdateUserSettings(newSettings) {
+    try {
+      const updated = await updateUserSettings(newSettings);
+      setUserSettings(updated);
+      const newAvatar = updated.profile_picture_url || "";
+      setUserAvatarUrl(newAvatar);
+      showToast("User settings saved", "success");
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to save settings: " + err.message, "error");
+      throw err;
+    }
+  }
+
   useEffect(() => {
     localStorage.setItem("userAvatarUrl", userAvatarUrl);
   }, [userAvatarUrl]);
@@ -119,6 +155,8 @@ export default function App() {
   const [activeChatId, setActiveChatId] = useState(null);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [existingCreators, setExistingCreators] = useState([]);
+  const [threadsByCreator, setThreadsByCreator] = useState({});
+  const [activeCreatorId, setActiveCreatorId] = useState(null); // Track active creator for sidebar expansion
 
   // ... (Other state) ...
   const [topK, setTopK] = useState(5);
@@ -139,23 +177,196 @@ export default function App() {
       const data = await listCreators();
       setExistingCreators(data.creators || []);
       setBackendConnected(true);
+
+      // Pre-load threads for all creators (lazy load is better at scale but this is fine for now)
+      if (data.creators) {
+        data.creators.forEach(c => refreshThreads(c.id));
+      }
     } catch (error) {
       console.error("Failed to load creators:", error);
-      // Don't set error state globally to avoid blocking UI, just log it
       if (error.message.includes("Failed to fetch")) {
         setBackendConnected(false);
       }
     }
   }
 
+  async function refreshThreads(creatorId) {
+    if (!creatorId) return;
+    try {
+      const threads = await listThreads(creatorId);
+      setThreadsByCreator(prev => ({ ...prev, [creatorId]: threads }));
+    } catch (err) {
+      console.error(`Failed to load threads for creator ${creatorId}:`, err);
+    }
+  }
+
+  // Load a thread into the 'chats' state (active session cache)
+  async function ensureThreadsLoaded(threadId, creatorId) {
+    // Check if already loaded in chats
+    const existing = chats.find(c => c.id === threadId);
+    if (existing) return existing;
+
+    try {
+      const messages = await getThreadMessages(threadId);
+      // Construct chat object compatible with ChatPanel
+      const creator = existingCreators.find(c => c.id === creatorId);
+      const thread = (threadsByCreator[creatorId] || []).find(t => t.id === threadId);
+
+      const newChat = {
+        id: threadId,
+        creatorId: creatorId,
+        creatorName: creator ? (creator.name || creator.handle) : "Unknown",
+        handle: creator ? creator.handle : "",
+        creatorAvatarUrl: creator ? creator.profile_picture_url : "",
+        visualConfig: creator ? (creator.visual_config || {}) : {},
+        messages: messages.map(m => ({
+          id: m.id,
+          role: m.role,
+          text: m.content,
+          ts: m.created_at
+        })),
+        isTemporary: false
+      };
+
+      setChats(prev => [...prev, newChat]);
+      return newChat;
+    } catch (err) {
+      console.error("Failed to load thread messages:", err);
+      showToast(`Failed to load chat history: ${err.message}`, "error");
+      // Clear invalid session to prevent persistent error on reload
+      if (localStorage.getItem("lastActiveThread")?.includes(threadId)) {
+        localStorage.removeItem("lastActiveThread");
+      }
+      return null;
+    }
+  }
+
+  async function handleSelectThreadWrapper(threadId, creatorId) {
+    setActiveCreatorId(creatorId);
+    const chat = await ensureThreadsLoaded(threadId, creatorId);
+    if (chat) {
+      setActiveChatId(threadId);
+      // We might want to refresh messages to be sure? ensureThreadsLoaded fetches them fresh if not in cache.
+      // If already in cache, maybe refresh?
+      // For now, assume loaded is fine.
+    }
+  }
+
+  function updateChatMessages(threadId, updater) {
+    setChats(prev => prev.map(chat => {
+      if (chat.id !== threadId) return chat;
+
+      const newMessages = typeof updater === 'function' ? updater(chat.messages) : updater;
+      return { ...chat, messages: newMessages };
+    }));
+  }
+
+  async function handleNewThreadWrapper(creatorId) {
+    try {
+      const thread = await createThread(creatorId);
+      await refreshThreads(creatorId);
+      // Select it
+      handleSelectThreadWrapper(thread.id, creatorId);
+      // Auto-expand sidebar group is handled by activeCreatorId
+      setActiveCreatorId(creatorId);
+    } catch (err) {
+      console.error("Failed to create thread:", err);
+      showToast("Failed to create new chat", "error");
+    }
+  }
+
+  function handleResetChat() {
+    if (activeCreatorId) {
+      handleNewThreadWrapper(activeCreatorId);
+    }
+  }
+
+  async function handleDeleteThread(threadId, creatorId) {
+    if (!window.confirm("Permanently delete this conversation? This cannot be undone.")) return;
+    try {
+      await deleteThread(threadId);
+      await refreshThreads(creatorId);
+      if (activeChatId === threadId) {
+        // Find next thread
+        const remaining = (threadsByCreator[creatorId] || []).filter(t => t.id !== threadId);
+        if (remaining.length > 0) {
+          handleSelectThreadWrapper(remaining[0].id, creatorId);
+        } else {
+          handleNewThreadWrapper(creatorId);
+        }
+      }
+      showToast("Conversation deleted");
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to delete", "error");
+    }
+  }
+
+  async function handleArchiveThread(threadId, creatorId) {
+    try {
+      await updateThread(threadId, { is_archived: true });
+      await refreshThreads(creatorId);
+      if (activeChatId === threadId) {
+        setActiveChatId(null);
+        const remaining = (threadsByCreator[creatorId] || []).filter(t => t.id !== threadId);
+        if (remaining.length > 0) handleSelectThreadWrapper(remaining[0].id, creatorId);
+        else handleNewThreadWrapper(creatorId);
+      }
+      showToast("Conversation archived");
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to archive", "error");
+    }
+  }
+
+  async function handleRenameThread(threadId, creatorId, newTitle) {
+    try {
+      await updateThread(threadId, { title: newTitle });
+      await refreshThreads(creatorId);
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to rename", "error");
+    }
+  }
+
   useEffect(() => {
     refreshCreators();
 
-    // Check health
     health()
       .then(() => setBackendConnected(true))
       .catch(() => setBackendConnected(false));
   }, []);
+
+  // Load existing items if entering Approval step (Step 3) for existing creator
+  useEffect(() => {
+    if (state.currentStep === 3 && state.creatorId && state.scrapedItems.length === 0) {
+      dispatch({ type: "SET_LOADING", loading: true });
+      getQueueItems(state.creatorId)
+        .then((data) => {
+          if (data && data.items) {
+            const mappedItems = data.items.map(i => ({
+              item_id: i.queue_id,
+              queue_id: i.queue_id,
+              title: i.title,
+              source_url: i.url,
+              caption: i.preview,
+              status: i.item_status || i.status,
+              transcript_status: i.transcript_status,
+              metadata: { platform: "unknown" }
+            }));
+
+            // Use search_id from backend (likely creatorId) as scrapeId to pass validation
+            dispatch({ type: "SET_SCRAPE_ID", scrapeId: data.search_id });
+            dispatch({ type: "SET_SCRAPED_ITEMS", items: mappedItems });
+          }
+        })
+        .catch(err => {
+          console.error("Failed to load existing knowledge base:", err);
+          showToast("Failed to load existing knowledge base", "error");
+        })
+        .finally(() => dispatch({ type: "SET_LOADING", loading: false }));
+    }
+  }, [state.currentStep, state.creatorId, state.scrapedItems.length]);
 
   // Chat Management
   const activeChat = chats.find((c) => c.id === activeChatId);
@@ -179,6 +390,7 @@ export default function App() {
         creatorName: chatConfig.name,
         handle: chatConfig.handle || "",
         creatorAvatarUrl: chatConfig.profile_picture_url || "",
+        visualConfig: chatConfig.visual_config || {},
         url: "", platform: "", source: ""
       });
       dispatch({ type: "SET_IS_DRAFT", isDraft: false });
@@ -236,7 +448,9 @@ export default function App() {
       creatorId: creatorId,
       creatorName: creatorName,
       handle: handle,
+      handle: handle,
       creatorAvatarUrl: chatConfig.profile_picture_url || (chatConfig.type === "existing" ? chatConfig.profile_picture_url : ""),
+      visualConfig: chatConfig.visual_config || {},
       messages: [
         {
           id: "welcome",
@@ -314,15 +528,41 @@ export default function App() {
       try {
         await updateCreator(creatorId, { profile_picture_url: newAvatarUrl });
         refreshCreators();
+        injectSystemNotice(creatorId, "Profile photo updated");
       } catch (err) {
         console.error("Failed to persist creator avatar to backend:", err);
-        // Don't show error toast since the UI already updated successfully
-        // The user's experience is smooth even if backend sync fails
+        showToast("Failed to save profile picture: " + err.message, "error");
       }
     }
   }
 
   // Workflow Handlers
+
+  function injectSystemNotice(creatorId, text) {
+    setChats((prev) =>
+      prev.map((chat) => {
+        if (chat.creatorId === creatorId) {
+          const lastMsg = chat.messages[chat.messages.length - 1];
+          if (lastMsg && lastMsg.role === "system-notice" && lastMsg.text === text) {
+            return chat;
+          }
+          return {
+            ...chat,
+            messages: [
+              ...chat.messages,
+              {
+                id: Date.now(),
+                role: "system-notice",
+                text,
+                ts: new Date().toISOString(),
+              },
+            ],
+          };
+        }
+        return chat;
+      })
+    );
+  }
 
   function handleSaveConfig({ creatorId, name, handle, profile_picture_url }) {
     dispatch({ type: "SET_CREATOR_ID", creatorId });
@@ -380,6 +620,7 @@ export default function App() {
       });
 
       showToast(`Knowledge base updated! ${result.approved} items ingested.`);
+      injectSystemNotice(state.creatorId, "Updated creator knowledge");
       dispatch({ type: "SET_PROGRESS", progress: null });
       dispatch({ type: "SET_STEP", step: 4 });
 
@@ -407,6 +648,7 @@ export default function App() {
       await savePersona(creatorId, personaText);
       dispatch({ type: "SET_PERSONA", persona: personaText });
       showToast("Persona saved successfully!");
+      injectSystemNotice(state.creatorId, "Persona updated");
     } catch (error) {
       showToast(error.message, "error");
     } finally {
@@ -427,30 +669,51 @@ export default function App() {
       } else {
         // "Discard" - treat as temporary
         finalIsTemporary = true;
-        // Ideally we would ensure it doesn't show in lists, but we rely on isTemporary flag in chat
       }
     }
 
-    // When persona setup is complete, create a chat for this creator
-    const newChat = {
-      id: generateChatId(),
-      creatorId: state.creatorId,
-      creatorName: state.creatorName || state.handle || "Creator",
-      handle: state.handle || "",
-      creatorAvatarUrl: state.creatorAvatarUrl,
-      messages: [
-        {
-          id: "welcome",
-          role: "assistant",
-          text: `Hey! I'm ${state.creatorName || state.handle || "the creator"}. Ask me anything!`,
-        },
-      ],
-      isTemporary: finalIsTemporary,
-    };
+    // Check if chat exists for this creator
+    const existingChat = chats.find(c => c.creatorId === state.creatorId);
 
-    setChats((prev) => [...prev, newChat]);
-    setActiveChatId(newChat.id);
-    dispatch({ type: "SET_STEP", step: 5 });
+    if (existingChat) {
+      // Update existing chat metadata and switch to it
+      setChats(prev => prev.map(c => {
+        if (c.id === existingChat.id) {
+          return {
+            ...c,
+            creatorName: state.creatorName || state.handle || "Creator",
+            handle: state.handle || "",
+            creatorAvatarUrl: state.creatorAvatarUrl,
+            // Update temporary status if it changed (e.g. draft saved)
+            isTemporary: finalIsTemporary // state.isDraft only true for new creations, so logic holds
+          };
+        }
+        return c;
+      }));
+      setActiveChatId(existingChat.id);
+      dispatch({ type: "SET_STEP", step: 5 });
+    } else {
+      // Create new chat
+      const newChat = {
+        id: generateChatId(),
+        creatorId: state.creatorId,
+        creatorName: state.creatorName || state.handle || "Creator",
+        handle: state.handle || "",
+        creatorAvatarUrl: state.creatorAvatarUrl,
+        messages: [
+          {
+            id: "welcome",
+            role: "assistant",
+            text: `Hey! I'm ${state.creatorName || state.handle || "the creator"}. Ask me anything!`,
+          },
+        ],
+        isTemporary: finalIsTemporary,
+      };
+
+      setChats((prev) => [...prev, newChat]);
+      setActiveChatId(newChat.id);
+      dispatch({ type: "SET_STEP", step: 5 });
+    }
 
     // If not temporary, ensure list is refreshed
     if (!finalIsTemporary) {
@@ -542,14 +805,147 @@ export default function App() {
   // Determine if we have any creators
   const hasCreators = existingCreators.length > 0;
 
+  async function handleUpdateVisualConfig(creatorId, newConfig) {
+    if (!creatorId || creatorId === -1) return;
+    dispatch({ type: "SET_LOADING", loading: true });
+    try {
+      // Find current config to merge
+      const currentCreator = existingCreators.find(c => c.id === creatorId);
+      const oldConfig = currentCreator?.visual_config || {};
+      const mergedConfig = { ...oldConfig, ...newConfig };
+
+      // Update in existing creators list
+      setExistingCreators(prev => prev.map(c => c.id === creatorId ? { ...c, visual_config: mergedConfig } : c));
+
+      // Update in active chat if relevant
+      setChats(prev => prev.map(c => c.creatorId === creatorId ? { ...c, visualConfig: mergedConfig } : c));
+
+      // Update global state if relevant
+      if (state.creatorId === creatorId) {
+        dispatch({
+          type: "SET_CREATOR_INFO",
+          creatorName: state.creatorName,
+          url: state.creatorUrl,
+          platform: state.platform,
+          handle: state.handle,
+          source: state.source,
+          creatorAvatarUrl: state.creatorAvatarUrl,
+          visualConfig: mergedConfig
+        });
+      }
+
+      await updateCreator(creatorId, { visual_config: mergedConfig });
+      showToast("Settings saved", "success");
+    } catch (err) {
+      console.error("Failed to update visual config:", err);
+      showToast("Failed to save settings: " + err.message, "error");
+    } finally {
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
+  // Persistent Session Restoration
+  // Persistent Session Restoration & URL Handling
+  useEffect(() => {
+    // Only attempt if we have creators loaded and no active chat yet
+    if (existingCreators.length > 0 && !activeChatId) {
+      const urlParams = new URLSearchParams(window.location.search);
+      const threadParam = urlParams.get("thread");
+
+      if (threadParam) {
+        // precise handling for deep links
+        let foundCreatorId = null;
+        // Search through all loaded threads
+        for (const [cIdStr, threads] of Object.entries(threadsByCreator)) {
+          if (threads.find(t => t.id === threadParam)) {
+            foundCreatorId = parseInt(cIdStr);
+            break;
+          }
+        }
+
+        if (foundCreatorId) {
+          handleSelectThreadWrapper(threadParam, foundCreatorId).catch(console.error);
+        }
+        // If URL param exists, do not use localStorage fallback
+        return;
+      }
+
+      // Fallback to localStorage
+      const stored = localStorage.getItem("lastActiveThread");
+      if (stored) {
+        try {
+          const { threadId, creatorId } = JSON.parse(stored);
+          // Verify creator still exists
+          if (existingCreators.find(c => c.id === creatorId)) {
+            handleSelectThreadWrapper(threadId, creatorId).catch(console.error);
+          }
+        } catch (e) {
+          console.error("Failed to restore session", e);
+        }
+      }
+    }
+  }, [existingCreators, activeChatId, threadsByCreator]);
+
+  // Save Session
+  useEffect(() => {
+    if (activeChatId) {
+      const chat = chats.find(c => c.id === activeChatId);
+      if (chat && !chat.isTemporary) {
+        localStorage.setItem("lastActiveThread", JSON.stringify({
+          threadId: activeChatId,
+          creatorId: chat.creatorId
+        }));
+      }
+    }
+  }, [activeChatId, chats]);
+
+  async function handleRenameThread(threadId, creatorId, newTitle) {
+    try {
+      if (!newTitle) return;
+      await updateThread(threadId, { title: newTitle });
+      refreshThreads(creatorId);
+    } catch (err) {
+      console.error("Rename failed", err);
+      showToast("Failed to rename thread", "error");
+    }
+  }
+
+  async function handleArchiveThread(threadId, creatorId) {
+    if (!window.confirm("Archive this conversation?")) return;
+    try {
+      await updateThread(threadId, { is_archived: true });
+      refreshThreads(creatorId);
+      if (activeChatId === threadId) setActiveChatId(null);
+      showToast("Conversation archived", "success");
+    } catch (err) {
+      console.error("Archive failed", err);
+      showToast("Failed to archive thread", "error");
+    }
+  }
+
+  async function handleDeleteThread(threadId, creatorId) {
+    if (!window.confirm("Delete this conversation permanently?")) return;
+    try {
+      await deleteThread(threadId);
+      refreshThreads(creatorId);
+      if (activeChatId === threadId) setActiveChatId(null);
+      showToast("Conversation deleted", "success");
+    } catch (err) {
+      console.error("Delete failed", err);
+      showToast("Failed to delete thread", "error");
+    }
+  }
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${showChatInterface ? "fixed-height" : ""}`}>
       {/* Global Navigation - Always visible (requirement #1) */}
       <Stepper
         currentStep={state.currentStep}
         steps={STEPS}
         onStepClick={(s) => dispatch({ type: "SET_STEP", step: s })}
         searchProgress={searchProgress}
+        onUserClick={() => setShowUserSettings(true)}
+        userAvatarUrl={userAvatarUrl}
       />
 
       {toast && (
@@ -574,11 +970,17 @@ export default function App() {
         {showChatInterface ? (
           <div className="chat-fullscreen">
             <ChatSidebar
-              chats={chats}
-              activeChat={activeChatId}
-              onSelectChat={handleSelectChat}
-              onNewChat={handleNewChat}
-              onCloseChat={handleCloseChat}
+              creators={existingCreators}
+              threadsByCreator={threadsByCreator}
+              activeThreadId={activeChatId}
+              activeCreatorIdProp={activeCreatorId}
+              onSelectThread={handleSelectThreadWrapper}
+              onNewThread={handleNewThreadWrapper}
+              onToggleSidebar={() => { }}
+              onRenameThread={handleRenameThread}
+              onArchiveThread={handleArchiveThread}
+              onDeleteThread={handleDeleteThread}
+            // Removed old props: chats, activeChat, onNewChat (modal), onCloseChat
             />
             <div className="chat-main-area">
               {/* Empty state when no creators exist (requirement #3) */}
@@ -604,6 +1006,7 @@ export default function App() {
               ) : activeChat ? (
                 <ChatPanel
                   key={activeChat.id}
+                  threadId={activeChat.id}
                   creatorId={activeChat.creatorId || -1}
                   creatorDisplayName={activeChat.creatorName || activeChat.handle || "Creator"}
                   creatorHandle={activeChat.handle}
@@ -614,6 +1017,7 @@ export default function App() {
                   loading={false}
                   setLoading={() => { }}
                   onResetChat={handleResetChat}
+                  onInteraction={() => activeChat.creatorId && refreshThreads(activeChat.creatorId)}
                   onChangePersona={() => {
                     if (activeChat.creatorId) {
                       dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
@@ -628,9 +1032,18 @@ export default function App() {
                   }}
                   creatorAvatarUrl={activeChat.creatorAvatarUrl || state.creatorAvatarUrl}
                   userAvatarUrl={userAvatarUrl}
+                  visualConfig={activeChat.visualConfig || state.visualConfig || {}}
                   onUpdateCreatorAvatar={handleUpdateCreatorAvatar}
                   onUpdateUserAvatar={setUserAvatarUrl}
+                  onUpdateVisualConfig={handleUpdateVisualConfig}
+                  userName={userSettings?.display_name}
                   debug={debugAsk}
+                  onInteraction={() => {
+                    if (activeChat?.creatorId) {
+                      // Delay to allow LLM title generation to complete background task
+                      setTimeout(() => refreshThreads(activeChat.creatorId), 3500);
+                    }
+                  }}
                 />
               ) : (
                 <div className="select-chat-state">
@@ -662,6 +1075,12 @@ export default function App() {
           onRefreshCreators={refreshCreators}
         />
       )}
+      <UserSettingsModal
+        isOpen={showUserSettings}
+        onClose={() => setShowUserSettings(false)}
+        userSettings={userSettings}
+        onUpdateUserSettings={handleUpdateUserSettings}
+      />
     </div>
   );
 }

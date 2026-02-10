@@ -13,6 +13,8 @@ from datetime import datetime, timezone, timedelta
 from db import db
 from settings import settings
 import rag
+from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+
 
 logger = logging.getLogger(__name__)
 
@@ -336,8 +338,11 @@ def needs_cta(user_msg: str) -> bool:
 
 
 _INTENT_PATTERNS = [
-    (["what's your name", "what is your name", "who are you", "what do you do", "your name"], "identity"),
-    (["how are you", "what's up", "hey ", "hello", "hi there", "good morning", "good afternoon", "hi ", "hey,"], "small_talk"),
+    ([
+        "what's your name", "what is your name", "who are you", "what do you do", "your name",
+        "what's my name", "what is my name", "do you know my name", "my name"
+    ], "identity"),
+    (["how are you", "what's up", "hey", "hello", "hi there", "good morning", "good afternoon", "hi", "hey,"], "small_talk"),
     (["start a business", "start business", "starting a business", "want to start", "want to start a business", "i want to start"], "start_business"),
     (["how do i", "how to", "how can i", "steps to", "guide to", "tutorial"], "how_to"),
     (["strategy", "strategies", "framework", "breakdown", "explain ", "deep dive"], "deep_strategy"),
@@ -359,9 +364,13 @@ def classify_intent(question: str) -> str:
 def response_length_instruction(intent: str) -> str:
     """Instruction for model response length based on intent."""
     if intent == "identity":
-        return "Respond in 1–2 sentences only, then ask one short follow-up question."
+        return "Respond naturally in 1–2 sentences. Then ask a question to learn about the USER (e.g. their name, what they do, or what brought them here)."
     if intent == "small_talk":
-        return "Respond in 1–2 short sentences plus one question. Keep it casual. Do NOT pitch coaching, groups, 'message me COACH', or any CTA."
+        return (
+            "Just greet them warmly and ask a simple question (e.g. 'How's it going?', 'What's on your mind?'). "
+            "Do NOT mention productivity, systems, strategies, business, or ANY creator topics yet. "
+            "Do NOT use retrieved content. Keep it pure small talk. 1-2 sentences max."
+        )
     if intent == "start_business":
         return "Ask 2 short clarifying questions (e.g. what kind of business, what skill they have). Do NOT give a long list, framework, or steps yet."
     if intent == "how_to":
@@ -604,6 +613,9 @@ def generate_grounded_answer(
     allow_cta: bool = False,
     enabled_platforms: Optional[List[str]] = None,
     follow_up_requesting_links: bool = False,
+    user_preferences: Optional[Dict[str, Any]] = None,
+    user_name: Optional[str] = None,
+    creator_name: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Step 5: Generate answer using ONLY facts[] for creator-specific claims.
@@ -684,10 +696,39 @@ Rules:
 - If no source exists for a claim, say so explicitly.{platform_rule}{follow_up_rule}
 - {length_instr}"""
 
+    user_pref_prompt = ""
+    prefs_content = ""
+    if user_preferences:
+        prefs_list = []
+        if "presets" in user_preferences and isinstance(user_preferences["presets"], list):
+             prefs_list.extend(user_preferences["presets"])
+        if "custom" in user_preferences and user_preferences["custom"]:
+             prefs_list.append(user_preferences["custom"])
+        
+        if prefs_list:
+            prefs_content = "\n".join(f"- {p}" for p in prefs_list)
+
+    if prefs_content or user_name:
+        user_pref_prompt = "\n\n[USER PERSONALIZATION]\n"
+        if user_name:
+            user_pref_prompt += f"User's Name: {user_name}\n(You are talking to {user_name}. Use their name naturally in conversation.)\n"
+        if prefs_content:
+            user_pref_prompt += f"User Preferences:\n{prefs_content}\n"
+        
+        user_pref_prompt += (
+            "\nINSTRUCTIONS:\n"
+            "1. The User's Name is known context. If asked 'what is my name', answer with it.\n"
+            "2. ADAPT your communication STYLE (tone, complexity) to match User Preferences ABOVE ALL ELSE for style.\n"
+            "3. KEEP only the creator's beliefs/facts/knowledge.\n"
+        )
+
     final_system_prompt = (
         CREATOR_BASE_SYSTEM_PROMPT
         .replace(PLACEHOLDER_PERSONA, persona or "")
-        .replace(PLACEHOLDER_PRODUCT_RULES, product_rules + "\n- Use the specific phrasing and energy described in the <creator_persona> above.")
+        .replace(PLACEHOLDER_PRODUCT_RULES, product_rules)
+        .replace("{{USER_PERSONALIZATION_HERE}}", user_pref_prompt)
+        .replace("{{CREATOR_NAME}}", creator_name or "Creator Bot")
+        .replace("{{USER_NAME}}", user_name or "Friend")
     )
 
     messages = [{"role": "system", "content": final_system_prompt}]
@@ -735,6 +776,11 @@ Question: {question}
         )
         answer = response.choices[0].message.content.strip()
         
+        # Strip style analysis tags (internal monologue)
+        if "<style_analysis>" in answer:
+            answer = re.sub(r"<style_analysis>.*?</style_analysis>", "", answer, flags=re.DOTALL).strip()
+            
+
         debug_info = {
             "support_set_size": len(support_set),
             "facts_count": len(answer_contract["facts"]),
@@ -839,7 +885,10 @@ def grounded_rag_ask(
     conversation_history: Optional[List[Dict[str, str]]] = None,
     top_k: int = K_FINAL,
     max_distance: float = 1.15,
-    debug: bool = False
+    debug: bool = False,
+    user_preferences: Optional[Dict[str, Any]] = None,
+    user_name: Optional[str] = None,
+    creator_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Main Grounded-RAG Loop function.
@@ -883,7 +932,41 @@ def grounded_rag_ask(
     # Step 4: Build answer contract
     answer_contract = build_answer_contract(support_set, question)
     
+    # Early intent classification to skip retrieval for casual conversation
+    intent = classify_intent(question)
     persona = rag.get_persona(creator_id)
+    enabled_platforms = get_enabled_platforms_for_creator(creator_id)
+    
+    # For small talk and identity, don't retrieve content to avoid tempting the model
+    if intent in ("small_talk", "identity"):
+        support_set = []
+        answer_contract = {
+            "facts": [],
+            "gaps": [],
+            "sources": [],
+            "total_chunks": 0,
+        }
+        
+        answer, gen_debug = generate_grounded_answer(
+            question, support_set, answer_contract, persona, conversation_history,
+            intent=intent,
+            include_links_in_output=False,
+            allow_cta=False,
+            enabled_platforms=enabled_platforms,
+            follow_up_requesting_links=False,
+            user_preferences=user_preferences,
+            user_name=user_name,
+            creator_name=creator_name,
+        )
+        
+        return {
+            "answer": answer,
+            "retrieved": [],
+            "sources": [],
+            "debug": gen_debug if debug else None,
+        }
+    
+    # Normal retrieval flow for advice/help questions
     intent = classify_intent(question)
     want_links = needs_links(question) or debug
     allow_cta = needs_cta(question)
@@ -897,6 +980,9 @@ def grounded_rag_ask(
         allow_cta=allow_cta,
         enabled_platforms=enabled_platforms,
         follow_up_requesting_links=follow_up_requesting_links,
+        user_preferences=user_preferences,
+        user_name=user_name,
+        creator_name=creator_name,
     )
     
     # Step 6: Validate grounding
