@@ -154,7 +154,10 @@ class ContentFinder:
 
         # 1/2) Creator inventory retrieval only (no web).
         ingest_candidates = self._search_ingested_multi(creator_id, query)
-        verified_candidates = [c for c in ingest_candidates if self._verify_ownership(c, creator_profile)["relation"] == "SELF"]
+        verified_candidates = [
+            c for c in ingest_candidates
+            if self._verify_ownership(c, creator_profile)["relation"] == "SELF" and c.get("url")
+        ]
 
         # 4. Filter by Resource Type
         if resource_type != "any":
@@ -230,7 +233,7 @@ class ContentFinder:
             "title": candidate["title"],
             "subtitle": candidate.get("subtitle", "YouTube"),
             "thumbnail_url": candidate.get("thumbnail", ""),
-            "url": candidate["url"],
+            "url": candidate.get("url") or "",
             "short_snippet": (candidate.get("snippet") or "")[:150],
             "action_label": "Watch",
         }
@@ -506,7 +509,10 @@ class ContentFinder:
             if duration_seconds is not None:
                 subtitle_bits.append(f"{duration_seconds//60}m")
             subtitle = " • ".join(subtitle_bits) or "YouTube"
-            
+
+            if not r.get("url"):
+                continue
+
             candidates.append({
                 "title": title,
                 "url": r["url"],

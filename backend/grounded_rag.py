@@ -1125,7 +1125,8 @@ def grounded_rag_ask(
         # We override support_set to be just the found item to force focus
         if cf_result["status"] == "FOUND" and cf_result.get("cards"):
              cards = cf_result["cards"]
-             first_card = cards[0]
+             first_card = cards[0] if cards else {}
+             card_url = first_card.get("url") or ""
              snippet = first_card.get("short_snippet", "") or first_card.get("title", "")
              
              # Mock support set with the first result
@@ -1137,11 +1138,11 @@ def grounded_rag_ask(
                  "chunk_index": 0,
                  "distance": 0.0,
                  "rerank_score": 1.0,
-                 "content": f"Resource Found: {content_desc}\nTitle: {first_card['title']}\nSnippet: {snippet}",
+                 "content": f"Resource Found: {content_desc}\nTitle: {first_card.get('title', 'Recommended content')}\nSnippet: {snippet}",
                  "source_ref": {
-                     "platform": "youtube" if "youtube" in first_card["url"] else "web",
-                     "title": first_card["title"],
-                     "canonical_url": first_card["url"],
+                     "platform": "youtube" if "youtube" in card_url else "web",
+                     "title": first_card.get("title", "Recommended content"),
+                     "canonical_url": card_url,
                      "published_at": None,
                      "content_type": first_card.get("resource_type", "video")
                  }
