@@ -24,6 +24,12 @@ This document tracks the major debugging, implementation, and refinement tasks c
 - **Robotic Tone Mitigation**: Updated system prompts to penalize passive "AI-ish" language, over-structured listing, and repetitive sentence structures.
 - **Persona Integration**: Improved the injection of creator-specific phrasing and worldview directly from ingested persona documents and content snippets.
 
+
+### Creator-Only Recommendation Stability
+- **Dependency Injection Fix**: Corrected `ContentFinder` initialization so a provided database client is honored instead of always being overwritten by the global DB singleton.
+- **Embedding Client Consistency**: Updated content retrieval to use the injected embedding client when provided, with fallback to the default RAG client.
+- **Code Hygiene**: Removed duplicated internal helper implementation to keep recommendation response formatting behavior deterministic and maintainable.
+
 ### Dependency & Environment Management
 - **OpenAI Compatibility**: Resolved the `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'` by upgrading the `openai` and `httpx` libraries to compatible versions (1.40.0+).
 - **Environment Context**: Verified and documented the loading priority of `.env` files across root and backend directories to prevent token confusion.

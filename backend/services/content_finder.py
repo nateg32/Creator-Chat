@@ -1,19 +1,16 @@
 import logging
 import re
 from typing import List, Dict, Any, Optional
-from services.search_engine import SearchEngine
-from dateutil import parser as date_parser
-from datetime import datetime
-import numpy as np
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
 class ContentFinder:
     """
-    Implements STRICT confidence scoring for content retrieval.
-    Phase 1: Ingest-First Retrieval
-    Phase 2: Silent Web Fallback
-    Phase 3: Strict Scoring & Decision (Return Card vs Defer)
+    Creator-only video recommender for "best next video" decisions.
+    - Never returns off-channel recommendations.
+    - Uses confidence + margin gates before returning specific videos.
+    - Falls back to creator-owned channel search card when uncertain.
     """
     
     HIGH_THRESHOLD = 0.82
@@ -21,19 +18,121 @@ class ContentFinder:
     AMBIGUITY_MARGIN = 0.08
     
     def __init__(self, db_client=None, embedding_client=None):
-        self.search_engine = SearchEngine()
-        self.db = db_client # Should be passed or imported from db
-        from db import db
-        self.db = db
+        if db_client is not None:
+            self.db = db_client
+        else:
+            from db import db
+            self.db = db
         self.embedding_client = embedding_client
-        # If embedding_client is None, we need to get it via rag.get_client() when needed
+
+    def _parse_duration_seconds(self, raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            if isinstance(raw, int):
+                return raw
+            if isinstance(raw, float):
+                return int(raw)
+            txt = str(raw).strip()
+            if txt.isdigit():
+                return int(txt)
+            if ":" in txt:
+                parts = [int(p) for p in txt.split(":") if p.isdigit()]
+                if len(parts) == 3:
+                    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+                if len(parts) == 2:
+                    return parts[0] * 60 + parts[1]
+        except Exception:
+            return None
+        return None
+
+    def _interpret_user_need(
+        self,
+        user_message: str,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        user_level_estimate: Optional[str] = None,
+    ) -> Dict[str, str]:
+        text = f"{(user_message or '').lower()} " + " ".join(
+            (m.get("content") or "").lower() for m in (history_messages or []) if isinstance(m, dict)
+        )
+        topic = "strategy"
+        topic_rules = {
+            "market structure": ["market structure", "bos", "choch"],
+            "entries": ["entry", "entries", "entry model", "setup"],
+            "risk": ["risk", "1%", "stop loss", "position size"],
+            "psychology": ["psychology", "mindset", "emotion", "discipline"],
+            "strategy": ["strategy", "system", "plan", "framework"],
+        }
+        for k, words in topic_rules.items():
+            if any(w in text for w in words):
+                topic = k
+                break
+
+        task = "learn"
+        if any(w in text for w in ["mistake", "wrong", "fix", "failing"]):
+            task = "fix mistake"
+        elif any(w in text for w in ["which", "recommend", "best", "what should i watch"]):
+            task = "choose strategy"
+        elif any(w in text for w in ["proof", "evidence", "did you say", "where did"]):
+            task = "find proof"
+        elif any(w in text for w in ["next", "after", "what now"]):
+            task = "next steps"
+
+        specificity = "recommendation"
+        if any(w in text for w in ["video?", "specific", "exact", "which video", "did you say"]):
+            specificity = "specific"
+        if "proof" in text or "evidence" in text:
+            specificity = "evidence"
+
+        user_level = (user_level_estimate or "").lower() or "unknown"
+        if user_level not in ("beginner", "intermediate", "advanced"):
+            if any(w in text for w in ["i'm new", "beginner", "starting", "start trading"]):
+                user_level = "beginner"
+            elif any(w in text for w in ["advanced", "institutional", "already trade", "experienced"]):
+                user_level = "advanced"
+            elif any(w in text for w in ["intermediate", "improving", "decent"]):
+                user_level = "intermediate"
+            else:
+                user_level = "beginner" if "start trading" in text else "unknown"
+
+        time_preference = "unknown"
+        if any(w in text for w in ["quick", "short", "brief", "under 10"]):
+            time_preference = "short"
+        elif any(w in text for w in ["deep dive", "long", "full", "detailed"]):
+            time_preference = "long"
+
+        asset_class = "unknown"
+        for ac in ["forex", "crypto", "stocks", "options"]:
+            if ac in text:
+                asset_class = ac
+                break
+
+        style = "unknown"
+        if "day" in text and "trade" in text:
+            style = "daytrade"
+        elif "swing" in text:
+            style = "swing"
+        elif "invest" in text:
+            style = "investing"
+
+        return {
+            "topic": topic,
+            "task": task,
+            "specificity": specificity,
+            "user_level": user_level,
+            "time_preference": time_preference,
+            "asset_class": asset_class,
+            "style": style,
+        }
         
     def find_content_card(
         self, 
         creator_id: int, 
         query: str, 
         resource_type: str = "any", 
-        specificity: str = "recommendation"
+        specificity: str = "recommendation",
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        user_level_estimate: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Main entry point. Returns a result dict with possible multiple cards.
@@ -47,43 +146,20 @@ class ContentFinder:
             (creator_id,)
         )
         if not creator_profile:
-            return self._format_defer("LOW", 0.0)
+            return self._format_defer("LOW", 0.0, creator_profile=None, query=query)
+        if not creator_profile.get("youtube_channel_id") and not creator_profile.get("youtube_handle"):
+            return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=query)
 
-        # 1. Ingest Search (Strictly Scoped)
+        need = self._interpret_user_need(query, history_messages, user_level_estimate)
+        if specificity:
+            need["specificity"] = specificity
+
+        # 1/2) Creator inventory retrieval only (no web).
         ingest_candidates = self._search_ingested_multi(creator_id, query)
-        
-        # 2. Web Fallback if ingest is thin
-        web_candidates = []
-        if not ingest_candidates or ingest_candidates[0]["score"] < self.HIGH_THRESHOLD:
-            logger.info("ContentFinder: Ingest coverage low. Trying web fallback...")
-            creator_name = creator_profile["name"] if creator_profile else "Creator"
-            web_candidates = self._search_web_multi(creator_name, query)
-            
-        # 3. Verify Ownership & Filter
-        all_candidates = ingest_candidates + web_candidates
-        verified_candidates = []
-        
-        for c in all_candidates:
-            ownership = self._verify_ownership(c, creator_profile)
-            c["creator_relation"] = ownership["relation"]
-            c["creator_match_confidence"] = ownership["confidence"]
-
-            # SELF Boost: If we know it's theirs, it's highly likely what they want
-            if ownership["relation"] == "SELF":
-                c["score"] = min(1.0, c["score"] + 0.20)
-                # Extra weight for ingested content (provably theirs)
-                if c.get("source_opt") == "Ingested Content":
-                    c["score"] = min(1.0, c["score"] + 0.10)
-            elif ownership["relation"] == "AFFILIATED":
-                c["score"] = min(1.0, c["score"] + 0.10)
-                
-            # Strict Gating: Only SELF (or AFFILIATED if Broad recommendation)
-            is_valid = ownership["relation"] == "SELF"
-            if not is_valid and specificity == "recommendation" and ownership["relation"] == "AFFILIATED":
-                is_valid = True # Allow guest appearances for recommendations
-                
-            if is_valid:
-                verified_candidates.append(c)
+        verified_candidates = [
+            c for c in ingest_candidates
+            if self._verify_ownership(c, creator_profile)["relation"] == "SELF" and c.get("url")
+        ]
 
         # 4. Filter by Resource Type
         if resource_type != "any":
@@ -96,126 +172,103 @@ class ContentFinder:
         else:
             filtered = verified_candidates
 
-        # 5. Strict Scoring Gating
-        high_matches = [c for c in filtered if c["score"] >= self.HIGH_THRESHOLD]
-        
-        if high_matches and high_matches[0].get("is_ambiguous"):
-             logger.info("ContentFinder: Best match is ambiguous. Deferring.")
-             high_matches = []
+        # 5) Best-next scoring + safety gate.
+        if not filtered:
+            return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=need["topic"])
 
-        if high_matches:
-            cards = []
-            for c in high_matches[:3]:
-                source_name = c.get("source_opt", "Content")
-                if c["creator_relation"] == "AFFILIATED":
-                    source_name = f"Guest • {source_name}"
-                
-                cards.append({
-                    "type": "preview_card",
-                    "resource_type": c.get("type", "video"),
-                    "title": c["title"],
-                    "subtitle": f"{source_name} • {c.get('date', 'Recent')}",
-                    "thumbnail_url": c.get("thumbnail", ""),
-                    "url": c["url"],
-                    "short_snippet": c.get("snippet", "")[:150],
-                    "action_label": "Watch" if c.get("type") == "video" else "Read",
-                    "creator_relation": c["creator_relation"] # Internal metadata
-                })
-            
-            logger.info(f"ContentFinder: Found {len(cards)} verified high-confidence matches.")
-            return {
-                "status": "FOUND",
-                "cards": cards,
-                "confidence_score": high_matches[0]["score"]
-            }
-            
-        best_score = verified_candidates[0]["score"] if verified_candidates else 0.0
-        label = "MEDIUM" if best_score >= self.MEDIUM_THRESHOLD else "LOW"
-        logger.info(f"ContentFinder: No verified high confidence match. Attempting fallback cards...")
+        for c in filtered:
+            c["score"] = self._best_next_score(c, need)
+        filtered.sort(key=lambda x: x["score"], reverse=True)
 
-        # --- Fallback Cards (Creator-Specific) ---
-        fallback_cards = []
-        name = creator_profile.get("name") or creator_profile.get("handle") or "the creator"
-        avatar = creator_profile.get("profile_picture_url", "")
-        yt_handle = creator_profile.get("youtube_handle")
-        yt_channel_id = creator_profile.get("youtube_channel_id")
-        official_domains = creator_profile.get("official_domains") or []
-        
-        # 1. YouTube Search Fallback or Channel Fallback
-        if yt_handle or yt_channel_id:
-            import urllib.parse
-            if query and len(query.split()) > 1:
-                # Channel Search Card
-                handle_part = f"@{yt_handle}" if yt_handle else yt_channel_id
-                fallback_cards.append({
-                    "type": "channel_search_card",
-                    "platform": "youtube",
-                    "title": f"Search {name} for this topic",
-                    "subtitle": f"Topic: {query}",
-                    "thumbnail_url": avatar,
-                    "url": f"https://www.youtube.com/{handle_part}/search?query={urllib.parse.quote(query)}",
-                    "action_label": "Search Channel"
-                })
-            else:
-                # Channel Card
-                fallback_cards.append({
-                    "type": "channel_card",
-                    "platform": "youtube",
-                    "title": f"Watch {name} on YouTube",
-                    "subtitle": "Official Channel",
-                    "thumbnail_url": avatar,
-                    "url": f"https://www.youtube.com/@{yt_handle}" if yt_handle else f"https://www.youtube.com/channel/{yt_channel_id}",
-                    "action_label": "Open Channel"
-                })
+        top = filtered[0]
+        second = filtered[1] if len(filtered) > 1 else None
+        margin = top["score"] - (second["score"] if second else 0.0)
 
-        # 2. Official Site Fallback
-        if official_domains:
-            fallback_cards.append({
-                "type": "preview_card", # Use preview_card layout for site
-                "resource_type": "article",
-                "title": f"Visit {name}'s Official Site",
-                "subtitle": official_domains[0],
-                "thumbnail_url": avatar,
-                "url": f"https://{official_domains[0]}",
-                "action_label": "Visit Site"
-            })
+        if top["score"] >= self.HIGH_THRESHOLD and margin >= self.AMBIGUITY_MARGIN:
+            return {"status": "FOUND", "cards": [self._to_preview_card(top)], "confidence_score": top["score"]}
 
-        if fallback_cards:
-            logger.info(f"ContentFinder: Returning {len(fallback_cards)} fallback cards.")
-            return {
-                "status": "FOUND",
-                "cards": fallback_cards[:2], # Limit fallbacks
-                "confidence_score": 0.5, # Indicator of fallback
-                "is_fallback": True
-            }
+        if top["score"] >= self.HIGH_THRESHOLD and margin < self.AMBIGUITY_MARGIN:
+            top_high = [c for c in filtered[:3] if c["score"] >= self.HIGH_THRESHOLD]
+            if top_high:
+                return {
+                    "status": "FOUND",
+                    "cards": [self._to_preview_card(c) for c in top_high],
+                    "confidence_score": top["score"],
+                }
 
-        return self._format_defer(label, best_score)
-
-    def _format_success(self, candidate, source, creator_name=""):
         return {
             "status": "FOUND",
-            "card": {
-                "type": "preview_card",
-                "resource_type": candidate.get("type", "video"),
-                "title": candidate["title"],
-                "subtitle": f"{candidate.get('source_opt', source.title())} • {candidate.get('date', '')}",
-                "thumbnail_url": candidate.get("thumbnail", ""),
-                "short_snippet": candidate.get("snippet", "")[:150] + "...",
-                "url": candidate["url"],
-                "action_label": "Watch" if candidate.get("type") == "video" else "Read"
-            },
-            "confidence_score": candidate["score"],
-            "confidence_label": "HIGH",
-            "source": source
+            "cards": [self._channel_search_card(creator_profile, need["topic"])],
+            "confidence_score": top["score"],
+            "is_fallback": True,
         }
 
-    def _format_defer(self, label, score):
+    def _best_next_score(self, candidate: Dict[str, Any], need: Dict[str, str]) -> float:
+        topic_weight = 0.40
+        intent_weight = 0.25
+        level_weight = 0.15
+        continuity_weight = 0.10
+        format_weight = 0.05
+        recency_weight = 0.05
+
+        if need.get("specificity") == "specific":
+            topic_weight = 0.55
+            format_weight = 0.0
+            recency_weight = 0.0
+        if need.get("user_level") == "beginner":
+            level_weight += 0.10
+
+        score = (
+            topic_weight * candidate.get("topic_match_score", 0.0)
+            + intent_weight * candidate.get("intent_match_score", 0.0)
+            + level_weight * candidate.get("level_fit_score", 0.0)
+            + continuity_weight * candidate.get("continuity_score", 0.0)
+            + format_weight * candidate.get("format_fit_score", 0.0)
+            + recency_weight * candidate.get("recency_score", 0.0)
+        )
+        return max(0.0, min(1.0, score))
+
+    def _to_preview_card(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "status": "DEFER",
+            "type": "preview_card",
+            "resource_type": candidate.get("type", "video"),
+            "title": candidate["title"],
+            "subtitle": candidate.get("subtitle", "YouTube"),
+            "thumbnail_url": candidate.get("thumbnail", ""),
+            "url": candidate.get("url") or "",
+            "short_snippet": (candidate.get("snippet") or "")[:150],
+            "action_label": "Watch",
+        }
+
+    def _channel_search_card(self, creator_profile: Dict[str, Any], topic: str) -> Dict[str, Any]:
+        handle = creator_profile.get("youtube_handle")
+        channel_id = creator_profile.get("youtube_channel_id")
+        if handle:
+            url = f"https://www.youtube.com/@{handle}/search?query={quote(topic)}"
+        else:
+            url = f"https://www.youtube.com/channel/{channel_id}/search?query={quote(topic)}"
+        return {
+            "type": "channel_search_card",
+            "platform": "youtube",
+            "title": "Search my channel for this topic",
+            "subtitle": topic,
+            "thumbnail_url": creator_profile.get("profile_picture_url", ""),
+            "url": url,
+            "action_label": "Search Channel",
+        }
+
+    def _format_defer(self, label, score, creator_profile: Optional[Dict[str, Any]], query: str):
+        cards = []
+        if creator_profile and (creator_profile.get("youtube_handle") or creator_profile.get("youtube_channel_id")):
+            cards = [self._channel_search_card(creator_profile, query or "trading")]
+        return {
+            "status": "DEFER" if not cards else "FOUND",
             "card": None,
+            "cards": cards,
             "confidence_score": score,
             "confidence_label": label,
-            "defer_message": "Unfortunately I don’t have that information confidently. You may want to check my official YouTube channel / website directly."
+            "is_fallback": bool(cards),
+            "defer_message": "I can't confidently name a specific creator video right now."
         }
 
     def _verify_ownership(self, candidate: Dict, creator_profile: Dict) -> Dict:
@@ -286,24 +339,6 @@ class ContentFinder:
 
         return {"relation": "OTHER", "confidence": 0.1}
 
-    def _format_success(self, candidate, source, creator_name=""):
-        return {
-            "status": "FOUND",
-            "card": {
-                "type": "preview_card",
-                "resource_type": candidate.get("type", "video"),
-                "title": candidate["title"],
-                "subtitle": f"{candidate.get('source_opt', source.title())} • {candidate.get('date', '')}",
-                "thumbnail_url": candidate.get("thumbnail", ""),
-                "short_snippet": candidate.get("snippet", "")[:150] + "...",
-                "url": candidate["url"],
-                "action_label": "Watch" if candidate.get("type") == "video" else "Read"
-            },
-            "confidence_score": candidate["score"],
-            "confidence_label": "HIGH",
-            "source": source
-        }
-
     def _normalize_keywords(self, text: str) -> List[str]:
         # Broader stopword list for strict matching
         stopwords = {
@@ -336,13 +371,14 @@ class ContentFinder:
         from rag import get_client, settings
         
         # Get query embedding
+        client = self.embedding_client or get_client()
         try:
-            emb_resp = get_client().embeddings.create(
+            emb_resp = client.embeddings.create(
                 model=settings.EMBEDDING_MODEL,
                 input=query
             )
             q_emb = emb_resp.data[0].embedding
-        except:
+        except Exception:
             return []
             
         emb_str = "[" + ",".join(map(str, q_emb)) + "]"
@@ -350,14 +386,18 @@ class ContentFinder:
         # We need semantic similarity (S)
         sql = """
             SELECT 
-                d.title, d.url, d.metadata, c.chunk_text, (e.embedding <=> %s::vector) as distance
+                d.title,
+                d.url,
+                d.metadata,
+                c.chunk_text,
+                (e.embedding <=> %s::vector) as distance
             FROM chunks c
             JOIN embeddings e ON c.id = e.chunk_id
             JOIN documents d ON c.document_id = d.id
             WHERE d.creator_id = %s
             AND e.model = %s
             ORDER BY distance ASC
-            LIMIT 10
+            LIMIT 30
         """
         results = self.db.execute_query(sql, (emb_str, creator_id, settings.EMBEDDING_MODEL))
         
@@ -410,122 +450,52 @@ class ContentFinder:
             # 4. Topic/Tag Alignment (T)
             T = 1.0 if any(k in title.lower() for k in keywords) else 0.5
             
-            # 5. Recency (R)
-            R = 1.0 
-                
-            # Final Score
-            # Adjusted weights to allow high confidence without explicit quotes
-            # S=0.55, K=0.25, P=0.05, T=0.15
-            score = (0.55 * S) + (0.25 * K) + (0.05 * P) + (0.15 * T) * R
-            
-            logger.debug(f"Ingest Score debug: {title[:20]}... S={S:.2f} K={K:.2f} P={P:.2f} T={T:.2f} Score={score:.3f}")
-            
+            # Derived feature scores for best-next ranking
+            topic_match = max(0.0, min(1.0, (0.75 * S) + (0.25 * K)))
+            intent_match = max(0.0, min(1.0, (0.70 * K) + (0.30 * P)))
+
+            level_fit = 0.6
+            level_text = f"{title} {text}".lower()
+            if any(w in level_text for w in ["beginner", "basics", "start", "foundation"]):
+                level_fit = 1.0
+            elif any(w in level_text for w in ["advanced", "pro", "institutional"]):
+                level_fit = 0.4
+
+            duration_seconds = self._parse_duration_seconds((r.get("metadata") or {}).get("duration_seconds"))
+            format_fit = 0.5
+            if duration_seconds is not None:
+                format_fit = 1.0 if duration_seconds <= 900 else 0.7
+
+            recency = 0.6
+            continuity = T
+
+            meta = r.get("metadata") or {}
+            subtitle_bits = []
+            if meta.get("published_at"):
+                subtitle_bits.append(str(meta.get("published_at"))[:10])
+            if duration_seconds is not None:
+                subtitle_bits.append(f"{duration_seconds//60}m")
+            subtitle = " • ".join(subtitle_bits) or "YouTube"
+
+            if not r.get("url"):
+                continue
+
             candidates.append({
                 "title": title,
                 "url": r["url"],
                 "snippet": text,
-                "score": score,
+                "topic_match_score": topic_match,
+                "intent_match_score": intent_match,
+                "level_fit_score": level_fit,
+                "recency_score": recency,
+                "format_fit_score": format_fit,
+                "continuity_score": continuity,
+                "creator_match_score": 1.0,
                 "type": "video" if "youtube" in (r["url"] or "") else "article",
-                "date": "Recent",
-                "source_opt": "Ingested Content"
+                "source_opt": "Ingested Content",
+                "thumbnail": meta.get("thumbnail_url") or meta.get("thumbnail") or "",
+                "subtitle": subtitle,
             })
             
-        candidates.sort(key=lambda x: x["score"], reverse=True)
+        candidates.sort(key=lambda x: x.get("topic_match_score", 0.0), reverse=True)
         return candidates
-
-    def _search_web_multi(self, creator_name: str, query: str) -> List[Dict]:
-        search_query = f"{creator_name} {query}"
-        results = self.search_engine.search(search_query, num_results=5)
-        
-        if not results:
-            return []
-            
-        scored_results = []
-        
-        # Keywords
-        keywords = self._normalize_keywords(query)
-        if not keywords: keywords = [""]
-
-        for r in results:
-            title = r.get("title") or ""
-            snippet = r.get("snippet") or ""
-            link = r.get("link") or ""
-            
-            # 1. Domain Trust (D)
-            D = 0.20
-            if "youtube.com" in link or "youtu.be" in link:
-                D = 1.0 
-            elif "wikipedia" in link:
-                D = 0.75
-            else:
-                clean_name = creator_name.lower().replace(" ", "")
-                if clean_name in link.lower():
-                    D = 1.0
-                else:
-                    D = 0.35
-            
-            # 2. Title Match (TM)
-            tm_matches = 0
-            title_lower = title.lower()
-            for k in keywords:
-                if k in title_lower:
-                    tm_matches += 1
-                elif k.endswith('s') and k[:-1] in title_lower:
-                    tm_matches += 1
-                elif k + "s" in title_lower:
-                    tm_matches += 1
-            
-            TM = tm_matches / max(1, len(keywords))
-            if query.lower() in title_lower:
-                TM = min(1.0, TM + 0.25)
-                
-            # 3. Snippet Match (SM)
-            sm_matches = 0
-            snippet_lower = snippet.lower()
-            for k in keywords:
-                 if k in snippet_lower:
-                    sm_matches += 1
-                 elif k.endswith('s') and k[:-1] in snippet_lower:
-                    sm_matches += 1
-            
-            SM = sm_matches / max(1, len(keywords))
-            
-            # 4. Creator Identity Match (CM)
-            CM = 0.5
-            if creator_name.lower() in title_lower or creator_name.lower() in snippet_lower:
-                CM = 1.0
-            elif D == 1.0:
-                CM = 1.0
-                
-            # 5. Ambiguity (A)
-            A = 1.0 
-            
-            # Rescaled Web Weights
-            # D=0.30, TM=0.30, SM=0.20, CM=0.15, A=0.05
-            score = (0.30 * D) + (0.30 * TM) + (0.20 * SM) + (0.15 * CM) + (0.05 * A)
-            
-            logger.debug(f"Web Score debug: {title[:20]}... D={D} TM={TM} SM={SM} CM={CM} Score={score}")
-            
-            scored_results.append({
-                "title": title,
-                "url": link,
-                "snippet": snippet,
-                "score": score,
-                "type": "video" if "youtube" in link else "article",
-                "source_opt": r.get("source") or "Web",
-                "metadata": r.get("rich_snippet", {}) or r.get("video_result", {}) or r
-            })
-            
-        scored_results.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Ambiguity Penalty & Safety Check
-        if len(scored_results) > 1:
-            best = scored_results[0]
-            second = scored_results[1]
-            diff = best["score"] - second["score"]
-            if diff < self.AMBIGUITY_MARGIN:
-                # Mark candidates as ambiguous
-                for s in scored_results:
-                    s["is_ambiguous"] = True
-                
-        return scored_results
