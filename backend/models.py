@@ -2,6 +2,11 @@ from pydantic import BaseModel
 from typing import List, Optional, Literal, Dict, Any, Union
 
 # Request models
+class ImageInput(BaseModel):
+    """Image attached to a chat message."""
+    data_url: str  # base64 data URL (data:image/jpeg;base64,...)
+    detail: str = "auto"  # "auto", "low", or "high"
+
 class AskRequest(BaseModel):
     creator_id: int
     question: str
@@ -9,6 +14,7 @@ class AskRequest(BaseModel):
     max_distance: float = 1.15
     messages: Optional[List[Dict[str, str]]] = None  # conversation history [{role, content}]
     thread_id: Optional[str] = None  # UUID of the chat thread
+    images: Optional[List[ImageInput]] = None  # Attached images (max 4)
     debug: Optional[bool] = False
 
 class CreateThreadRequest(BaseModel):
@@ -33,6 +39,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     created_at: Any
+    images: Optional[List[Dict[str, Any]]] = None # To return attached images
 
 class IngestRequest(BaseModel):
     creator_id: int
@@ -98,15 +105,18 @@ class PersonaResponse(BaseModel):
 
 # Response models
 class RetrievedChunk(BaseModel):
-    chunk_id: int
+    chunk_id: Union[int, str]
     chunk_index: int
     distance: float
+    rerank_score: Optional[float] = None
     preview: Optional[str] = None
+    source_ref: Optional[Dict[str, Any]] = None
 
 class AskResponse(BaseModel):
     answer: str
     retrieved: List[RetrievedChunk]
     sources: Optional[List[Dict[str, Any]]] = None  # Source references with URLs
+    cards: Optional[List[Dict[str, Any]]] = None  # Content cards for high confidence matches
     debug_info: Optional[Dict[str, Any]] = None  # only when debug=true
 
 class IngestResponse(BaseModel):
@@ -181,6 +191,13 @@ class Creator(BaseModel):
     profile_picture_url: Optional[str] = None
     created_at: str
     visual_config: Dict[str, Any] = {}
+    style_fingerprint: Dict[str, Any] = {}
+    youtube_channel_id: Optional[str] = None
+    youtube_handle: Optional[str] = None
+    official_domains: List[str] = []
+    course_domains: List[str] = []
+    course_base_urls: List[str] = []
+
 
 class CreateCreatorRequest(BaseModel):
     name: str
@@ -193,6 +210,12 @@ class CreateCreatorWithConfigRequest(BaseModel):
     profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}
     visual_config: Dict[str, Any] = {}
+    youtube_channel_id: Optional[str] = None
+    youtube_handle: Optional[str] = None
+    official_domains: List[str] = []
+    course_domains: List[str] = []
+    course_base_urls: List[str] = []
+
 
 class UpdateCreatorRequest(BaseModel):
     name: Optional[str] = None
@@ -200,6 +223,12 @@ class UpdateCreatorRequest(BaseModel):
     profile_picture_url: Optional[str] = None
     platform_configs: Optional[Dict[str, Any]] = None
     visual_config: Optional[Dict[str, Any]] = None
+    youtube_channel_id: Optional[str] = None
+    youtube_handle: Optional[str] = None
+    official_domains: Optional[List[str]] = None
+    course_domains: Optional[List[str]] = None
+    course_base_urls: Optional[List[str]] = None
+
 
 class CreatorWithConfigResponse(BaseModel):
     id: int
@@ -208,6 +237,13 @@ class CreatorWithConfigResponse(BaseModel):
     profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}
     visual_config: Dict[str, Any] = {}
+    style_fingerprint: Dict[str, Any] = {}
+    youtube_channel_id: Optional[str] = None
+    youtube_handle: Optional[str] = None
+    official_domains: List[str] = []
+    course_domains: List[str] = []
+    course_base_urls: List[str] = []
+
     created_at: Optional[str] = None
 
 class CreatorStats(BaseModel):

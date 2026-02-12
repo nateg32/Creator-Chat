@@ -14,6 +14,37 @@ def get_client():
         _client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
     return _client
 
+
+def generate_chat_completion(
+    messages: List[Dict[str, str]],
+    model: str = settings.CHAT_MODEL,
+    temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
+    json_mode: bool = False
+) -> str:
+    """
+    Wrapper for OpenAI chat completion.
+    """
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens:
+        kwargs["max_tokens"] = max_tokens
+    
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    try:
+        response = get_client().chat.completions.create(**kwargs)
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Chat completion failed: {e}")
+        raise e
+
 def get_persona(creator_id: int) -> Optional[str]:
     """Get persona document content for a creator"""
     # use source column instead of metadata

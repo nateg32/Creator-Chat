@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
@@ -66,25 +67,69 @@ def extract_content_id(url: str, platform: str) -> str:
     return ""
 
 
-def extract_title_from_metadata(item: Dict[str, Any], platform: str, source_url: str) -> str:
-    """Extract title from item metadata or derive from URL."""
-    title = item.get("title") or item.get("name") or ""
+def extract_title_from_metadata(item: Dict[str, Any], platform: str, source_url: str, caption_override: Optional[str] = None) -> str:
+    """Extract title from item metadata or derive from URL/caption."""
+    # Priority 1: Use caption/text as the primary source for social posts (Twitter, FB, Insta, LinkedIn)
+    # Social posts rarely have "titles", and if they do, they are often generic or IDs.
+    caption = (
+        caption_override or
+        item.get("caption") or 
+        item.get("text") or 
+        item.get("desc") or 
+        item.get("description") or 
+        item.get("full_text") or 
+        item.get("message") or
+        item.get("display_text") or
+        ""
+    )
+    if isinstance(caption, dict):
+        caption = caption.get("text") or ""
+        
+    title_from_item = item.get("title") or item.get("name") or ""
+    
+    # Check if the title from item is generic or just an ID
+    is_generic = False
+    if title_from_item:
+        clean_tit = str(title_from_item).strip().lower()
+        # Numeric or hex-like IDs or platform-named generic strings
+        # Increase robustness for long numeric strings often used in tweets
+        if clean_tit.isdigit() or len(clean_tit) > 15 and re.match(r'^[a-f0-9_\-]+$', clean_tit):
+            is_generic = True
+        elif clean_tit in [platform.lower(), f"{platform.lower()} post", f"{platform.lower()} content", f"{platform.lower()} reel"]:
+            is_generic = True
+
+    # Use caption if title is missing or generic
+    title = ""
+    if not is_generic:
+        title = title_from_item
+
+    if not title and caption:
+        # Clean up and truncate caption for title use
+        # Remove hashtags and excessive whitespace
+        clean_caption = re.sub(r'#\w+\s*', '', str(caption))
+        clean_caption = re.sub(r'\s+', ' ', clean_caption).strip()
+        if len(clean_caption) > 60:
+            title = clean_caption[:57] + "..."
+        else:
+            title = clean_caption
+
+    # Final Fallbacks
     if not title:
-        # Try to derive from URL or use platform-specific defaults
+        content_id = extract_content_id(source_url, platform)
         if platform == "youtube":
-            content_id = extract_content_id(source_url, platform)
             title = f"YouTube video: {content_id}" if content_id else "YouTube video"
         elif platform == "instagram":
-            content_id = extract_content_id(source_url, platform)
             title = f"Instagram reel: {content_id}" if content_id else "Instagram content"
         elif platform == "twitter":
-            content_id = extract_content_id(source_url, platform)
             title = f"Tweet: {content_id}" if content_id else "Twitter post"
+        elif platform == "tiktok":
+            title = f"TikTok: {content_id}" if content_id else "TikTok video"
         else:
             title = f"{platform.title()} content"
+            
     return title
 
-def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: int = 10, skip_transcripts: bool = False) -> List[Dict[str, Any]]:
     """
     Scrape Instagram reels using Apify instagram-reel-scraper actor.
     
@@ -119,18 +164,15 @@ def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: in
         if reel_id:
             run_input["startUrls"] = [{"url": f"https://instagram.com/reel/{reel_id}"}]
         
-        # Run the Instagram reel scraper actor
+        # 1. First Pass: Scrape metadata
         run = client.actor("apify/instagram-reel-scraper").call(run_input=run_input)
         
         # Wait for the run to finish and get results
         items = []
+        video_urls = []
         raw_count = 0
         for item in client.dataset(run["defaultDatasetId"]).iterate_items():
             raw_count += 1
-            # Extract transcript/subtitles
-            transcript = item.get("transcript", "") or item.get("subtitles", "") or item.get("captionText", "") or ""
-            transcript_status = "present" if transcript and transcript.strip() else "missing"
-            
             # Extract caption
             caption = item.get("caption", "") or item.get("text", "") or item.get("description", "") or ""
             
@@ -148,7 +190,7 @@ def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: in
             
             # Extract content_id and title for source fidelity
             content_id = shortcode or reel_id_from_item or ""
-            title = extract_title_from_metadata(item, "instagram", source_url)
+            title = extract_title_from_metadata(item, "instagram", source_url, caption_override=caption)
             
             # Extract published date
             published_at = None
@@ -175,24 +217,36 @@ def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: in
             }
             
             # Normalized item schema
-            if raw_count == 1:
-                print(f"[APIFY] Instagram first raw item keys: {list(item.keys())[:15]}", flush=True)
             normalized_item = {
                 "creator_handle": handle,
+                "platform": "instagram",
                 "content_type": "reel",
                 "source_url": source_url,
                 "caption": caption,
-                "transcript": transcript,
-                "transcript_status": transcript_status,
+                "transcript": "", # Will be filled in second pass
+                "transcript_status": "missing",
                 "published_at": published_at,
                 "metadata": metadata,
             }
             
             items.append(normalized_item)
+            video_urls.append(source_url)
             
             if len(items) >= limit:
                 break
         
+        # 2. Second Pass: Batch Extract Transcripts (Actual Spoken Word)
+        if video_urls and not skip_transcripts:
+            print(f"[APIFY] Instagram handle={handle} attempting transcript recovery for {len(video_urls)} Reels...")
+            transcripts = _extract_social_transcripts(video_urls, token, platform="instagram")
+            for it in items:
+                vurl = it["source_url"]
+                if vurl in transcripts:
+                    it["transcript"] = transcripts[vurl]
+                    it["transcript_status"] = "present"
+        elif video_urls and skip_transcripts:
+            print(f"[APIFY] Instagram handle={handle} skipping transcripts (deferred batch mode)")
+                    
         print(f"[APIFY] Instagram handle={handle} raw_items={raw_count} normalized={len(items)}", flush=True)
         return items
     except Exception as e:
@@ -216,11 +270,204 @@ def _time_filter_to_date_expr(time_filter: Optional[Dict[str, Any]]) -> Optional
     return None
 
 
+def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: str = "") -> Dict[str, str]:
+    """
+    Extract transcripts from multiple video URLs using invideoiq/video-transcript-scraper.
+    Supports YouTube, TikTok, X/Twitter, Facebook, Instagram, Dailymotion, etc.
+    Returns a dict mapping video_url -> transcript text.
+    """
+    transcripts = {}
+    if not video_urls:
+        return transcripts
+
+    try:
+        client = ApifyClient(token)
+        run_input = {
+            "video_urls": video_urls,
+            "language": language,
+            "best_effort": False,
+            "proxy_country": "US",
+            "get_yt_original_metadata": False,
+        }
+
+        print(f"[TRANSCRIPT] Extracting transcripts for {len(video_urls)} videos via invideoiq/video-transcript-scraper...")
+        run = client.actor("invideoiq/video-transcript-scraper").call(
+            run_input=run_input,
+            timeout_secs=300,
+        )
+
+        for result_item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            vurl = (
+                result_item.get("video_url") or
+                result_item.get("url") or
+                result_item.get("videoUrl") or
+                ""
+            )
+
+            transcript = (
+                result_item.get("transcript") or
+                result_item.get("text") or
+                result_item.get("captions") or
+                result_item.get("subtitles") or
+                result_item.get("content") or
+                ""
+            )
+
+            # Handle list format (timestamped segments)
+            if isinstance(transcript, list):
+                if transcript and isinstance(transcript[0], dict):
+                    transcript = " ".join([str(seg.get("text", "")) for seg in transcript])
+                else:
+                    transcript = " ".join([str(seg) for seg in transcript])
+
+            t_str = str(transcript).strip()
+
+            if vurl and t_str:
+                if len(t_str) < 500 and ("sign in" in t_str.lower() or "confirm you're not a bot" in t_str.lower()):
+                    print(f"[TRANSCRIPT] Skipping bot-block message for {vurl}")
+                    continue
+                transcripts[vurl] = t_str
+
+        print(f"[TRANSCRIPT] invideoiq extracted {len(transcripts)}/{len(video_urls)} transcripts")
+    except Exception as e:
+        print(f"[TRANSCRIPT] invideoiq extraction failed: {e}")
+
+    return transcripts
+
+
+def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Post-scrape batch transcript extraction for ALL platforms in ONE call.
+    
+    This is the key performance optimization: instead of each platform making
+    separate invideoiq actor calls (4+ runs × ~3s startup = 12s+ overhead),
+    we batch ALL video URLs into a SINGLE invideoiq call.
+    
+    Flow:
+    1. Collect all video URLs from items that need transcripts
+    2. ONE invideoiq call for ALL URLs (YouTube, TikTok, Instagram, etc.)
+    3. YouTube-only: karamelo fallback for any still-missing YouTube URLs
+    4. Distribute transcripts back to items
+    
+    Args:
+        items: List of scraped items from all platforms
+    
+    Returns:
+        The same items list with transcripts filled in
+    """
+    if not items:
+        return items
+    
+    token = get_apify_token()
+    if not token:
+        print("[BATCH-TRANSCRIPT] No Apify token, skipping transcript extraction")
+        return items
+    
+    # 1. Collect all video URLs that need transcripts
+    video_platforms = {"youtube", "youtube_shorts", "tiktok", "instagram"}
+    video_items = []
+    all_video_urls = []
+    seen_urls = set()
+    
+    for it in items:
+        platform = it.get("platform", "")
+        # Normalize platform for matching
+        plat_key = platform.lower().replace(" ", "_")
+        
+        # Only attempt transcript extraction for video-based platforms
+        if plat_key in video_platforms:
+            url = it.get("source_url", "")
+            if url and it.get("transcript_status") != "present" and url not in seen_urls:
+                video_items.append(it)
+                all_video_urls.append(url)
+                seen_urls.add(url)
+    
+    if not all_video_urls:
+        print("[BATCH-TRANSCRIPT] No video URLs need transcripts")
+        return items
+    
+    # Adaptive timeout: ~30s per video, min 60s, max 300s
+    timeout = min(max(len(all_video_urls) * 30, 60), 300)
+    print(f"[BATCH-TRANSCRIPT] Extracting transcripts for {len(all_video_urls)} videos across all platforms (timeout={timeout}s)...")
+    
+    # 2. ONE invideoiq call for everything
+    all_transcripts = {}
+    try:
+        all_transcripts = _extract_transcripts_invideoiq(all_video_urls, token)
+        print(f"[BATCH-TRANSCRIPT] invideoiq: {len(all_transcripts)}/{len(all_video_urls)} transcripts")
+    except Exception as e:
+        print(f"[BATCH-TRANSCRIPT] invideoiq failed: {e}")
+    
+    # 3. YouTube-only fallback: karamelo for any still-missing YouTube URLs
+    youtube_missing = [
+        url for url in all_video_urls
+        if url not in all_transcripts and ("youtube.com" in url or "youtu.be" in url)
+    ]
+    
+    if youtube_missing:
+        print(f"[BATCH-TRANSCRIPT] Karamelo fallback for {len(youtube_missing)} YouTube URLs...")
+        try:
+            client = ApifyClient(token)
+            run = client.actor("karamelo/youtube-transcripts").call(
+                run_input={"urls": youtube_missing, "subtitlesLanguage": "en"},
+                timeout_secs=120,
+            )
+            for result_item in client.dataset(run["defaultDatasetId"]).iterate_items():
+                vurl = result_item.get("videoUrl") or result_item.get("url") or ""
+                vid = result_item.get("videoId") or result_item.get("id") or ""
+                
+                transcript = (
+                    result_item.get("transcript") or
+                    result_item.get("text") or 
+                    result_item.get("captions") or
+                    result_item.get("body") or ""
+                )
+                if isinstance(transcript, list):
+                    if transcript and isinstance(transcript[0], dict):
+                        transcript = " ".join([str(c.get("text", "")) for c in transcript])
+                    else:
+                        transcript = " ".join([str(c) for c in transcript])
+                
+                t_str = str(transcript).strip()
+                if t_str and (len(t_str) >= 500 or "sign in" not in t_str.lower()):
+                    # Match by video ID since karamelo may return different URL format
+                    if not vid and vurl:
+                        vid = extract_content_id(vurl, "youtube")
+                    matched = False
+                    if vid:
+                        for orig_url in youtube_missing:
+                            orig_vid = extract_content_id(orig_url, "youtube")
+                            if orig_vid and orig_vid == vid:
+                                all_transcripts[orig_url] = t_str
+                                matched = True
+                                break
+                    if not matched and vurl and vurl in youtube_missing:
+                        all_transcripts[vurl] = t_str
+            
+            yt_recovered = sum(1 for u in youtube_missing if u in all_transcripts)
+            if yt_recovered:
+                print(f"[BATCH-TRANSCRIPT] Karamelo recovered {yt_recovered}/{len(youtube_missing)} YouTube transcripts")
+        except Exception as e:
+            print(f"[BATCH-TRANSCRIPT] Karamelo fallback failed: {e}")
+    
+    # 4. Distribute transcripts back to items
+    transcripts_applied = 0
+    for it in items:
+        url = it.get("source_url", "")
+        if url in all_transcripts:
+            it["transcript"] = all_transcripts[url]
+            it["transcript_status"] = "present"
+            transcripts_applied += 1
+    
+    print(f"[BATCH-TRANSCRIPT] Applied {transcripts_applied}/{len(all_video_urls)} transcripts total")
+    return items
+
+
 def _extract_youtube_transcripts(video_urls: List[str], token: str) -> Dict[str, str]:
     """
-    Extract transcripts from multiple YouTube videos using karamelo/youtube-transcripts.
+    Extract transcripts from multiple YouTube videos.
+    Primary: invideoiq/video-transcript-scraper, Fallbacks: karamelo, pintostudio.
     Returns a dict mapping video_url -> transcript.
-    Uses video IDs for robust mapping.
     """
     # Map from video_id -> transcript for robust matching
     transcripts_by_id = {}
@@ -231,14 +478,30 @@ def _extract_youtube_transcripts(video_urls: List[str], token: str) -> Dict[str,
     def get_vid(u):
         return extract_content_id(u, "youtube")
 
+    # Primary: invideoiq/video-transcript-scraper (multi-platform, high quality)
+    try:
+        ivq = _extract_transcripts_invideoiq(video_urls, token)
+        for url in video_urls:
+            vid = get_vid(url)
+            if url in ivq and vid:
+                transcripts_by_id[vid] = ivq[url]
+        if transcripts_by_id:
+            print(f"[YOUTUBE] invideoiq primary: {len(transcripts_by_id)}/{len(video_urls)} transcripts")
+    except Exception as e:
+        print(f"[YOUTUBE] invideoiq primary failed, falling back: {e}")
+
+    # Fallback 1: karamelo/youtube-transcripts (only for videos still missing)
+    _karamelo_urls = [u for u in video_urls if get_vid(u) not in transcripts_by_id]
+    if not _karamelo_urls:
+        return {url: transcripts_by_id[get_vid(url)] for url in video_urls if get_vid(url) in transcripts_by_id}
+
     try:
         client = ApifyClient(token)
-        # Primary: karamelo/youtube-transcripts (supports multiple URLs)
         run_input = {
-            "urls": video_urls,
+            "urls": _karamelo_urls,
             "subtitlesLanguage": "en",
         }
-        print(f"[YOUTUBE] Extracting transcripts for {len(video_urls)} videos via karamelo...")
+        print(f"[YOUTUBE] Fallback karamelo for {len(_karamelo_urls)} remaining videos...")
         run = client.actor("karamelo/youtube-transcripts").call(run_input=run_input, timeout_secs=180)
         
         count = 0
@@ -271,13 +534,13 @@ def _extract_youtube_transcripts(video_urls: List[str], token: str) -> Dict[str,
                     continue
                 transcripts_by_id[vid] = t_str
                 count += 1
-                
+            
         if count > 0:
             print(f"[YOUTUBE] Extracted {count}/{len(video_urls)} transcripts via karamelo")
     except Exception as e:
-        print(f"[YOUTUBE] Batch extraction with karamelo failed: {e}")
+        print(f"[YOUTUBE] Karamelo fallback failed: {e}")
 
-    # Fallback to pintostudio for any still missing IDs
+    # Fallback 2: pintostudio for any still missing IDs
     remaining_urls = [u for u in video_urls if get_vid(u) not in transcripts_by_id]
     if remaining_urls:
         try:
@@ -331,6 +594,7 @@ def search_youtube_channel(
     limit: int = 10,
     time_filter: Optional[Dict[str, Any]] = None,
     youtube_shorts_only: bool = False,
+    skip_transcripts: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Scrape YouTube channel/videos using apidojo/youtube-scraper.
@@ -338,6 +602,8 @@ def search_youtube_channel(
     """
     limit = min(max(1, int(limit)), 50)
     token = get_apify_token()
+    # Import time locally to ensure it's defined during parallel execution/reloads
+    import time
     if not APIFY_AVAILABLE:
         raise ImportError("apify-client package is not installed. Run: pip install apify-client")
     date_expr = _time_filter_to_date_expr(time_filter)
@@ -348,10 +614,9 @@ def search_youtube_channel(
         if "/videos" in target_url:
             target_url = target_url.replace("/videos", "/shorts")
         elif "/shorts" not in target_url:
-            # Append /shorts but handle trailing slash
             target_url = target_url.rstrip("/") + "/shorts"
             
-    # apidojo/youtube-scraper expects startUrls as a list of strings
+    # Optimization: Use the actor's native filtering.
     run_input = {
         "startUrls": [target_url],
         "maxResults": limit if not youtube_shorts_only else 0,
@@ -363,34 +628,60 @@ def search_youtube_channel(
     if date_expr:
         run_input["oldestPostDate"] = date_expr
     
-    print(f"[YOUTUBE] Calling apidojo/youtube-scraper with limit={limit} shorts_only={youtube_shorts_only} input={json.dumps(run_input)}")
+    print(f"[YOUTUBE] Starting apidojo/youtube-scraper (Surgical) with limit={limit} shorts_only={youtube_shorts_only}")
         
     client = ApifyClient(token)
-    # Adding a timeout to the call to prevent infinite hanging runs
-    run = client.actor("apidojo/youtube-scraper").call(run_input=run_input, timeout_secs=180)
+    # Start the actor but don't wait for it to finish (surgical abort strategy)
+    run = client.actor("apidojo/youtube-scraper").start(run_input=run_input)
+    run_id = run["id"]
+    dataset_id = run["defaultDatasetId"]
     
-    # First pass: collect all video URLs
+    # Poll for results and abort as soon as we have enough
     video_data = []
-    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-        vid = item.get("id") or item.get("videoId") or ""
-        vurl = item.get("url") or ""
+    start_time = time.time()
+    while len(video_data) < limit:
+        # Check if run finished naturally
+        run_info = client.run(run_id).get()
+        status = run_info.get("status")
         
-        # Robust ID validation: must be exactly 11 valid chars
-        if not (vid and len(str(vid)) == 11 and re.match(r'^[a-zA-Z0-9_-]{11}$', str(vid))):
-            vid = extract_content_id(vurl, "youtube")
+        # Check dataset
+        items = list(client.dataset(dataset_id).iterate_items())
+        for item in items:
+            vid = item.get("id") or item.get("videoId") or ""
+            vurl = item.get("url") or ""
+            if not (vid and len(str(vid)) == 11):
+                vid = extract_content_id(vurl, "youtube")
+            if not vid or vid == "watch": continue
             
-        source_url = vurl or (f"https://www.youtube.com/watch?v={vid}" if vid else "")
+            source_url = vurl or f"https://www.youtube.com/watch?v={vid}"
+            # Deduplicate by ID
+            if not any(v[1] == source_url for v in video_data):
+                video_data.append((item, source_url))
         
-        if not vid or vid == "watch":
-            continue
-            
-        video_data.append((item, source_url))
-        if len(video_data) >= int(limit * 1.5): # allow a tiny bit of headroom for filtering
+        if len(video_data) >= limit:
+            print(f"[YOUTUBE] Found {len(video_data)} items. Aborting actor early to save time.")
+            try:
+                client.run(run_id).abort()
+            except:
+                pass
             break
+            
+        if status in ["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"]:
+            break
+            
+        if time.time() - start_time > 90: # Backup safety timeout
+            print("[YOUTUBE] Polling timeout. Proceeding with what we found.")
+            break
+            
+        time.sleep(2) # Poll every 2 seconds
     
-    # Batch extract transcripts for all videos
+    # Batch extract transcripts for all videos (unless deferred)
     video_urls = [vsurl for _, vsurl in video_data]
-    transcripts_dict = _extract_youtube_transcripts(video_urls, token)
+    if skip_transcripts:
+        print(f"[YOUTUBE] Skipping transcripts (deferred batch mode) for {len(video_urls)} videos")
+        transcripts_dict = {}
+    else:
+        transcripts_dict = _extract_youtube_transcripts(video_urls, token)
     
     # Second pass: build items with transcripts
     items = []
@@ -405,7 +696,11 @@ def search_youtube_channel(
             # Fallback to any transcript/subtitle from search
             transcript = item.get("transcript") or item.get("subtitles") or item.get("caption", "") or ""
         
-        transcript_status = "present" if transcript and str(transcript).strip() else "missing"
+        # When transcripts were deferred, mark as "pending" so batch extraction picks them up
+        if skip_transcripts:
+            transcript_status = "pending"
+        else:
+            transcript_status = "present" if transcript and str(transcript).strip() else "missing"
         published_at = None
         if item.get("uploadDate"):
             published_at = item["uploadDate"]
@@ -437,13 +732,16 @@ def search_youtube_channel(
             "title": final_title,
         }
         
-        is_shorts = "/shorts/" in source_url or "short" in str(item.get("type", "")).lower()
+        is_shorts = "/shorts/" in source_url
         if youtube_shorts_only and not is_shorts:
+            continue
+        if not youtube_shorts_only and is_shorts:
             continue
             
         creator = handle or item.get("channelName") or item.get("channelTitle") or "youtube"
         items.append({
             "creator_handle": creator,
+            "platform": "youtube",
             "content_type": "video" if not is_shorts else "short",
             "source_url": source_url,
             "caption": caption,
@@ -504,7 +802,7 @@ def search_twitter_profile(
         
         # Extract content_id and title for source fidelity
         content_id = tid or extract_content_id(source_url, "twitter")
-        title = extract_title_from_metadata(item, "twitter", source_url)
+        title = extract_title_from_metadata(item, "twitter", source_url, caption_override=text)
         
         metadata = {
             "likes": item.get("likes") or item.get("favorite_count", 0) or item.get("likeCount", 0),
@@ -518,6 +816,7 @@ def search_twitter_profile(
         }
         items.append({
             "creator_handle": handle,
+            "platform": "twitter",
             "content_type": "tweet",
             "source_url": source_url,
             "caption": text,
@@ -601,7 +900,7 @@ def search_linkedin_posts(
             if raw_urn and not isinstance(raw_urn, str):
                 raw_urn = str(raw_urn)
             content_id = raw_urn or extract_content_id(source_url, "linkedin")
-            title = extract_title_from_metadata(item, "linkedin", source_url)
+            title = extract_title_from_metadata(item, "linkedin", source_url, caption_override=text)
             
             metadata = {
                 "likes": stats.get("like") or stats.get("likes") or item.get("likes", 0),
@@ -618,6 +917,7 @@ def search_linkedin_posts(
             
             items.append({
                 "creator_handle": metadata.get("author") or "linkedin",
+                "platform": "linkedin",
                 "content_type": "post",
                 "source_url": source_url,
                 "caption": text,
@@ -672,7 +972,7 @@ def search_facebook_posts(
                 published_at = None
         # Extract content_id and title for source fidelity
         content_id = extract_content_id(source_url, "facebook")
-        title = extract_title_from_metadata(item, "facebook", source_url)
+        title = extract_title_from_metadata(item, "facebook", source_url, caption_override=text)
         
         metadata = {
             "likes": item.get("likes") or item.get("reactions", 0),
@@ -686,6 +986,7 @@ def search_facebook_posts(
         creator = handle or item.get("author") or item.get("pageName", "") or "facebook"
         items.append({
             "creator_handle": creator,
+            "platform": "facebook",
             "content_type": "post",
             "source_url": source_url,
             "caption": text,
@@ -737,7 +1038,7 @@ def search_reddit_user(
                 published_at = None
         # Extract content_id and title for source fidelity
         content_id = extract_content_id(source_url, "reddit")
-        title_for_meta = title or extract_title_from_metadata(item, "reddit", source_url)
+        title_for_meta = title or extract_title_from_metadata(item, "reddit", source_url, caption_override=caption)
         
         metadata = {
             "score": item.get("score", 0),
@@ -752,6 +1053,7 @@ def search_reddit_user(
         creator = handle or item.get("author") or "reddit"
         items.append({
             "creator_handle": creator,
+            "platform": "reddit",
             "content_type": "post",
             "source_url": source_url,
             "caption": caption,
@@ -765,44 +1067,44 @@ def search_reddit_user(
     return items
 
 
-def _extract_tiktok_transcripts(video_urls: List[str], token: str) -> Dict[str, str]:
+def _extract_social_transcripts(video_urls: List[str], token: str, platform: str = "tiktok") -> Dict[str, str]:
     """
-    Extract transcripts from multiple TikTok videos using agentx/tiktok-transcript.
+    Extract transcripts from multiple social videos (TikTok, Instagram, FB, etc.).
+    Primary: invideoiq/video-transcript-scraper, Fallback: tictechid/anoxvanzi-Transcriber.
     Returns a dict mapping video_url -> transcript.
     """
     transcripts = {}
     if not video_urls:
         return transcripts
-    
+
+    # Primary: invideoiq/video-transcript-scraper (multi-platform)
     try:
-        client = ApifyClient(token)
-        run_input = {
-            "videoUrls": video_urls,
-        }
-        run = client.actor("tictechid/anoxvanzi-Transcriber").call(run_input=run_input)
-        # Map transcripts to video URLs
-        for result_item in client.dataset(run["defaultDatasetId"]).iterate_items():
-            video_url = result_item.get("videoUrl") or result_item.get("url") or ""
-            transcript = result_item.get("transcript") or result_item.get("text") or result_item.get("subtitle") or ""
-            if video_url and transcript and str(transcript).strip():
-                transcripts[video_url] = str(transcript).strip()
-        print(f"[TIKTOK] Extracted {len(transcripts)}/{len(video_urls)} transcripts")
+        transcripts = _extract_transcripts_invideoiq(video_urls, token)
+        if transcripts:
+            print(f"[{platform.upper()}] invideoiq primary: {len(transcripts)}/{len(video_urls)} transcripts")
     except Exception as e:
-        print(f"[TIKTOK] Failed to extract transcripts: {e}")
-        # Fallback: try individual calls
-        for video_url in video_urls:
-            try:
-                client = ApifyClient(token)
-                run_input = {"videoUrls": [video_url]}
-                run = client.actor("tictechid/anoxvanzi-Transcriber").call(run_input=run_input)
-                for result_item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                    transcript = result_item.get("transcript") or result_item.get("text") or result_item.get("subtitle") or ""
-                    if transcript and str(transcript).strip():
-                        transcripts[video_url] = str(transcript).strip()
-                        break
-            except Exception as e2:
-                print(f"[TIKTOK] Failed to extract transcript for {video_url}: {e2}")
-    
+        print(f"[{platform.upper()}] invideoiq primary failed: {e}")
+
+    # Fallback: tictechid/anoxvanzi-Transcriber (for any still missing)
+    remaining = [u for u in video_urls if u not in transcripts]
+    if remaining:
+        try:
+            client = ApifyClient(token)
+            run_input = {
+                "start_urls": "\n".join(remaining),
+            }
+            print(f"[{platform.upper()}] Fallback tictechid for {len(remaining)} remaining videos...")
+            run = client.actor("tictechid/anoxvanzi-Transcriber").call(run_input=run_input, timeout_secs=180)
+
+            for result_item in client.dataset(run["defaultDatasetId"]).iterate_items():
+                video_url = result_item.get("videoUrl") or result_item.get("url") or ""
+                transcript = result_item.get("transcript") or result_item.get("text") or result_item.get("subtitle") or ""
+                if video_url and transcript and str(transcript).strip():
+                    transcripts[video_url] = str(transcript).strip()
+            print(f"[{platform.upper()}] Total transcripts recovered: {len(transcripts)}/{len(video_urls)}")
+        except Exception as e:
+            print(f"[{platform.upper()}] tictechid fallback failed: {e}")
+
     return transcripts
 
 
@@ -810,6 +1112,7 @@ def scrape_tiktok_posts(
     url: str,
     handle: Optional[str],
     limit: int = 20,
+    skip_transcripts: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Search TikTok posts using clockworks/tiktok-scraper.
@@ -823,21 +1126,22 @@ def scrape_tiktok_posts(
     run_input = {
         "profiles": [url],
         "resultsPerPage": limit,
-        "downloadSubtitles": False, # Text caption is usually sufficient
+        "resultsLimit": limit, # Optimization: Hard stop at limit
+        "downloadSubtitles": False,
     }
     
     client = ApifyClient(token)
-    run = client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
+    run = client.actor("clockworks/tiktok-scraper").call(run_input=run_input, timeout_secs=90)
     
     items: List[Dict[str, Any]] = []
+    video_urls = []
     
     for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         source_url = item.get("webVideoUrl") or item.get("videoUrl") or item.get("url") or ""
         text = item.get("text") or item.get("desc") or ""
         
-        # Transcript handling (using caption as transcript for now)
-        transcript = text
-        transcript_status = "present" if transcript and str(transcript).strip() else "missing"
+        # Initial status
+        transcript_status = "missing"
         
         create_time_iso = item.get("createTimeISO")
         published_at = None
@@ -849,7 +1153,7 @@ def scrape_tiktok_posts(
              except: pass
 
         content_id = item.get("id") or extract_content_id(source_url, "tiktok")
-        title = extract_title_from_metadata(item, "tiktok", source_url)
+        title = extract_title_from_metadata(item, "tiktok", source_url, caption_override=text)
         
         user_meta = item.get("authorMeta") or {}
         creator_name = user_meta.get("name") or user_meta.get("nickName") or handle or "tiktok"
@@ -868,17 +1172,31 @@ def scrape_tiktok_posts(
         
         items.append({
             "creator_handle": creator_name,
+            "platform": "tiktok",
             "content_type": "video",
             "source_url": source_url,
             "caption": text,
-            "transcript": transcript,
+            "transcript": text, # Fallback to caption
             "transcript_status": transcript_status,
             "published_at": published_at,
             "metadata": metadata,
         })
+        video_urls.append(source_url)
         if len(items) >= limit:
             break
             
+    # Batch Extract Transcripts for TikTok (unless deferred)
+    if video_urls and not skip_transcripts:
+        print(f"[APIFY] TikTok attempting transcript recovery for {len(video_urls)} videos...")
+        transcripts_recovered = _extract_social_transcripts(video_urls, token, platform="tiktok")
+        for it in items:
+            vurl = it["source_url"]
+            if vurl in transcripts_recovered:
+                it["transcript"] = transcripts_recovered[vurl]
+                it["transcript_status"] = "present"
+    elif video_urls and skip_transcripts:
+        print(f"[APIFY] TikTok skipping transcripts (deferred batch mode)")
+
     return items
 
 
@@ -1021,6 +1339,7 @@ def _scrape_youtube_videos(urls: List[str], creator_handle: str) -> List[Dict[st
          
          items.append({
              "creator_handle": item.get("channelTitle") or creator_handle,
+             "platform": "youtube",
              "content_type": "video",
              "source_url": source_url,
              "caption": caption,
@@ -1043,21 +1362,22 @@ def _scrape_tiktok_videos(urls: List[str], creator_handle: str) -> List[Dict[str
     run_input = { "startUrls": urls, "resultsLimit": len(urls), "downloadSubtitles": False }
     run = client.actor("thenetaji/tiktok-post-scraper").call(run_input=run_input)
     
-    items = []
+    items: List[Dict[str, Any]] = []
+    # Collect URLs for recovery
+    video_urls = []
+    
     for item in client.dataset(run["defaultDatasetId"]).iterate_items():
          source_url = item.get("webVideoUrl") or item.get("videoUrl") or item.get("url") or ""
          text = item.get("text") or item.get("desc") or ""
          
-         # Try to get transcript if available, otherwise use text
-         transcript = text
-         
          items.append({
              "creator_handle": item.get("authorMeta", {}).get("name") or creator_handle,
+             "platform": "tiktok",
              "content_type": "video",
              "source_url": source_url,
              "caption": text,
-             "transcript": transcript,
-             "transcript_status": "present" if transcript else "missing",
+             "transcript": text,
+             "transcript_status": "missing",
              "metadata": {
                  "platform": "tiktok", 
                  "title": text[:50] if text else "TikTok Video",
@@ -1067,6 +1387,16 @@ def _scrape_tiktok_videos(urls: List[str], creator_handle: str) -> List[Dict[str
                  "likes": item.get("diggCount", 0)
              }
          })
+         video_urls.append(source_url)
+         
+    if video_urls:
+         print(f"[CUSTOM-TIKTOK] Attempting transcript recovery for {len(video_urls)} videos...")
+         trans_map = _extract_social_transcripts(video_urls, token, platform="tiktok")
+         for it in items:
+             if it["source_url"] in trans_map:
+                 it["transcript"] = trans_map[it["source_url"]]
+                 it["transcript_status"] = "present"
+                 
     return items
 
 
@@ -1080,22 +1410,21 @@ def _scrape_instagram_reels_multi(urls: List[str], creator_handle: str) -> List[
     run = client.actor("apify/instagram-reel-scraper").call(run_input=run_input)
     
     items = []
+    video_urls = []
     for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-        # Reuse logic from search_instagram_reels normalization?
-        # For brevity, I'll allow minimal duplication or refactor. 
-        # Since I can't refactor easily within replace_tool, I'll duplicate normalization logic.
-        
+        # Reuse logic from search_instagram_reels normalization
         transcript = item.get("transcript", "") or item.get("subtitles", "") or item.get("captionText", "") or ""
         caption = item.get("caption", "") or item.get("text", "") or item.get("description", "") or ""
         shortcode = item.get("shortCode", "") or item.get("shortcode", "") or item.get("id", "")
         
         if shortcode: source_url = f"https://instagram.com/reel/{shortcode}"
-        else: source_url = item.get("url") or item.get("postUrl") or ""
+        else: surl_raw = item.get("url") or item.get("postUrl") or ""
         
         if not source_url: continue
             
         items.append({
             "creator_handle": item.get("ownerUsername") or creator_handle,
+            "platform": "instagram",
             "content_type": "reel",
             "source_url": source_url,
             "caption": caption,
@@ -1110,6 +1439,16 @@ def _scrape_instagram_reels_multi(urls: List[str], creator_handle: str) -> List[
                 "likes": item.get("likesCount", 0)
             }
         })
+        video_urls.append(source_url)
+        
+    if video_urls:
+         print(f"[CUSTOM-INSTA] Attempting transcript recovery for {len(video_urls)} Reels...")
+         trans_map = _extract_social_transcripts(video_urls, token, platform="instagram")
+         for it in items:
+             if it["source_url"] in trans_map:
+                 it["transcript"] = trans_map[it["source_url"]]
+                 it["transcript_status"] = "present"
+                 
     return items
 
 

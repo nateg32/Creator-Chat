@@ -48,11 +48,12 @@ async function postJson(path, body) {
   }
 }
 
-export function ask({ creator_id, question, top_k, max_distance, messages, debug, thread_id }) {
+export function ask({ creator_id, question, top_k, max_distance, messages, debug, thread_id, images }) {
   const body = { creator_id, question, top_k, max_distance };
   if (messages != null) body.messages = messages;
   if (debug) body.debug = true;
   if (thread_id) body.thread_id = thread_id;
+  if (images != null) body.images = images;
   return postJson("/ask", body);
 }
 
@@ -139,6 +140,14 @@ export async function updateUserSettings({ display_name, profile_picture_url, re
 
 export function getCreatorConfig(creatorId) {
   return getJson(`/creators/${creatorId}/config`);
+}
+
+export function getScrapeRuns(creatorId, limit = 5) {
+  return getJson(`/scrape/runs?creator_id=${creatorId}&limit=${limit}`);
+}
+
+export function startScrapeRun(creatorId, platforms = null, forceFull = false) {
+  return postJson("/scrape/run", { creator_id: creatorId, platforms, force_full: forceFull });
 }
 
 // Legacy scrape function (for backward compatibility)

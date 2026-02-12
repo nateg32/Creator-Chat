@@ -18,9 +18,10 @@ from apify_service import (
     search_reddit_user,
     search_linkedin_posts,
     search_tiktok_posts,
-    scrape_custom_urls,
+    batch_extract_all_transcripts,
 )
-
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def _apply_time_filter(
     items: List[Dict[str, Any]],
@@ -36,7 +37,8 @@ def _apply_time_filter(
     for it in items:
         pub = it.get("published_at")
         if not pub:
-            it["matched_time_filter"] = False
+            it["matched_time_filter"] = True  # Keep items missing dates (still valid content)
+            kept.append(it)
             continue
         try:
             if isinstance(pub, str):
@@ -46,7 +48,7 @@ def _apply_time_filter(
             if not ts.tzinfo:
                 ts = ts.replace(tzinfo=timezone.utc)
         except Exception:
-            it["matched_time_filter"] = False
+            it["matched_time_filter"] = True  # Keep items with unparseable dates
             kept.append(it)
             continue
         now = datetime.now(timezone.utc)
@@ -107,7 +109,7 @@ def _map_instagram(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
     reel_id = parsed.get("reel_id") if parsed else None
     max_items = min(int(ctx.get("max_items") or 10), 10)
-    items = search_instagram_reels(handle, reel_id, max_items)
+    items = search_instagram_reels(handle, reel_id, max_items, skip_transcripts=True)
     creator_handle = ctx.get("creator_handle") or handle
     platform = "instagram"
     for it in items:
@@ -126,7 +128,7 @@ def _map_youtube(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     creator_handle = ctx.get("creator_handle") or handle or "youtube"
     max_items = min(int(ctx.get("max_items") or 10), 50)
     tf = ctx.get("time_filter") or {}
-    items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf)
+    items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf, skip_transcripts=True)
     for it in items:
         it["creator_handle"] = creator_handle
         it["platform"] = "youtube"
@@ -142,7 +144,7 @@ def _map_youtube_shorts(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     creator_handle = ctx.get("creator_handle") or handle or "youtube"
     max_items = min(int(ctx.get("max_items") or 10), 50)
     tf = ctx.get("time_filter") or {}
-    items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf, youtube_shorts_only=True)
+    items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf, youtube_shorts_only=True, skip_transcripts=True)
     for it in items:
         it["creator_handle"] = creator_handle
         it["platform"] = "youtube_shorts"
@@ -228,7 +230,7 @@ def _map_tiktok(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "tiktok"
     max_items = min(int(ctx.get("max_items") or 20), 100)
-    items = search_tiktok_posts(url, handle, limit=max_items)
+    items = search_tiktok_posts(url, handle, limit=max_items, skip_transcripts=True)
     for it in items:
         it["creator_handle"] = creator_handle
         it["platform"] = "tiktok"
@@ -249,6 +251,9 @@ PLATFORM_MAPPERS: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = 
 }
 
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
 def run_search_router(
     creator_id: int,
     creator_handle: str,
@@ -256,78 +261,89 @@ def run_search_router(
     progress_callback: Optional[Callable[[str, str, int, int], None]] = None,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
-    For each enabled platform, run the mapped search. One platform failing
-    does not fail the run. Returns (all_items, platform_statuses).
-    platform_statuses[key] = { last_search_status, last_search_at, last_error }.
-    
-    Args:
-        progress_callback: Optional callback(platform_key, status, current, total) for progress updates.
+    For each enabled platform, run the mapped search in PARALLEL. 
+    Returns (all_items, platform_statuses).
     """
     all_items: List[Dict[str, Any]] = []
     platform_statuses: Dict[str, Dict[str, Any]] = {}
     now_iso = datetime.now(timezone.utc).isoformat()
     
     # Count enabled platforms
-    enabled_platforms = [
-        k for k, cfg in (platform_configs or {}).items()
+    enabled_configs = [
+        (k, cfg) for k, cfg in (platform_configs or {}).items()
         if isinstance(cfg, dict) and cfg.get("enabled")
     ]
-    total_platforms = len(enabled_platforms)
-    current_platform = 0
+    total_platforms = len(enabled_configs)
+    
+    if total_platforms == 0:
+        return [], {}
 
-    for key, cfg in (platform_configs or {}).items():
-        if not isinstance(cfg, dict) or not cfg.get("enabled"):
-            continue
+    # Thread-safety
+    results_lock = threading.Lock()
+    completed_counter = [0] # List to make it mutable in closure
+
+    def scrape_one(key: str, cfg: Dict[str, Any]):
         url = (cfg.get("url") or "").strip()
+        
+        # 1. Validation & Pre-checks (Synchronous-like within thread)
         if not url:
-            current_platform += 1
-            platform_statuses[key] = {
-                "last_scrape_status": "skipped",
-                "last_search_at": now_iso,
-                "last_error": "No URL",
-                "items_found": 0,
-            }
+            with results_lock:
+                completed_counter[0] += 1
+                platform_statuses[key] = {
+                    "last_scrape_status": "skipped",
+                    "last_search_at": now_iso,
+                    "last_error": "No URL",
+                    "items_found": 0,
+                }
             if progress_callback:
-                progress_callback(key, "skipped", current_platform, total_platforms)
-            continue
+                progress_callback(key, "skipped", completed_counter[0], total_platforms)
+            return
+
         plat = get_platform(key)
         if not plat:
-            current_platform += 1
-            platform_statuses[key] = {
-                "last_scrape_status": "skipped",
-                "last_search_at": now_iso,
-                "last_error": "Unknown platform",
-                "items_found": 0,
-            }
+            with results_lock:
+                completed_counter[0] += 1
+                platform_statuses[key] = {
+                    "last_scrape_status": "skipped",
+                    "last_search_at": now_iso,
+                    "last_error": "Unknown platform",
+                    "items_found": 0,
+                }
             if progress_callback:
-                progress_callback(key, "skipped", current_platform, total_platforms)
-            continue
+                progress_callback(key, "skipped", completed_counter[0], total_platforms)
+            return
+
         ok, err = validate_url(url, key)
         if not ok:
-            current_platform += 1
-            platform_statuses[key] = {
-                "last_scrape_status": "error",
-                "last_search_at": now_iso,
-                "last_error": err or "Invalid URL",
-                "items_found": 0,
-            }
+            with results_lock:
+                completed_counter[0] += 1
+                platform_statuses[key] = {
+                    "last_scrape_status": "error",
+                    "last_search_at": now_iso,
+                    "last_error": err or "Invalid URL",
+                    "items_found": 0,
+                }
             if progress_callback:
-                progress_callback(key, "error", current_platform, total_platforms)
-            continue
+                progress_callback(key, "error", completed_counter[0], total_platforms)
+            return
+
         norm_url = normalize_url(url, key)
         handle = cfg.get("handle") or extract_handle(norm_url, key)
         mapper = PLATFORM_MAPPERS.get(key)
+        
         if not mapper:
-            current_platform += 1
-            platform_statuses[key] = {
-                "last_scrape_status": "skipped",
-                "last_search_at": now_iso,
-                "last_error": "No search implemented",
-                "items_found": 0,
-            }
+            with results_lock:
+                completed_counter[0] += 1
+                platform_statuses[key] = {
+                    "last_scrape_status": "skipped",
+                    "last_search_at": now_iso,
+                    "last_error": "No search implemented",
+                    "items_found": 0,
+                }
             if progress_callback:
-                progress_callback(key, "skipped", current_platform, total_platforms)
-            continue
+                progress_callback(key, "skipped", completed_counter[0], total_platforms)
+            return
+
         ctx = {
             "url": norm_url,
             "handle": handle,
@@ -335,45 +351,66 @@ def run_search_router(
             "max_items": min(int(cfg.get("maxItems") or 10), 50),
             "creator_handle": creator_handle,
         }
-        current_platform += 1
+
+        # 2. THE ACTUAL SCRAPE (Async/Actor Call)
         if progress_callback:
-            progress_callback(key, "searching", current_platform, total_platforms)
+            # Note: current is approximated here since multiple threads run
+            progress_callback(key, "searching", completed_counter[0] + 1, total_platforms)
+            
         try:
-            print(f"[SCRAPE] {key} url={norm_url} handle={handle}", flush=True)
+            print(f"[SCRAPE-START] {key} url={norm_url}", flush=True)
             items = mapper(ctx)
-            all_items.extend(items)
-            print(f"[SCRAPE] {key} items_found={len(items)}", flush=True)
-            platform_statuses[key] = {
-                "last_scrape_status": "success",
-                "last_search_at": now_iso,
-                "last_error": None,
-                "items_found": len(items),
-            }
+            
+            with results_lock:
+                completed_counter[0] += 1
+                all_items.extend(items)
+                platform_statuses[key] = {
+                    "last_scrape_status": "success",
+                    "last_search_at": now_iso,
+                    "last_error": None,
+                    "items_found": len(items),
+                }
+            
             if progress_callback:
-                progress_callback(key, "completed", current_platform, total_platforms)
+                progress_callback(key, "completed", completed_counter[0], total_platforms)
+            print(f"[SCRAPE-END] {key} items_found={len(items)}", flush=True)
+                
         except Exception as e:
             print(f"[SCRAPE] {key} ERROR: {e}", flush=True)
-            platform_statuses[key] = {
-                "last_scrape_status": "error",
-                "last_search_at": now_iso,
-                "last_error": str(e),
-                "items_found": 0,
-            }
+            with results_lock:
+                completed_counter[0] += 1
+                platform_statuses[key] = {
+                    "last_scrape_status": "error",
+                    "last_search_at": now_iso,
+                    "last_error": str(e),
+                    "items_found": 0,
+                }
             if progress_callback:
-                progress_callback(key, "error", current_platform, total_platforms)
+                progress_callback(key, "error", completed_counter[0], total_platforms)
+
+    # Execute enabled scrapers in parallel pool
+    # Max workers set to total_platforms to ensure everyone starts immediately
+    with ThreadPoolExecutor(max_workers=total_platforms) as executor:
+        futures = [executor.submit(scrape_one, k, cfg) for k, cfg in enabled_configs]
+        # Wait for all to finish
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"[ROUTER] Fatal unexpected thread error: {e}")
 
     # Log summary
     successful = sum(1 for s in platform_statuses.values() if s.get("last_scrape_status") == "success")
     failed = sum(1 for s in platform_statuses.values() if s.get("last_scrape_status") == "error")
     skipped = sum(1 for s in platform_statuses.values() if s.get("last_scrape_status") == "skipped")
-    total_items = sum(s.get("items_found", 0) for s in platform_statuses.values())
+    total_found = sum(s.get("items_found", 0) for s in platform_statuses.values())
     
-    print(f"[SEARCH] Summary: {successful} succeeded, {failed} failed, {skipped} skipped")
-    print(f"[SEARCH] Total items found: {len(all_items)} (sum: {total_items})")
-    for key, status in platform_statuses.items():
-        items_count = status.get("items_found", 0)
-        status_val = status.get("last_scrape_status", "unknown")
-        error = status.get("last_error")
-        print(f"[SEARCH]   {key}: {status_val} ({items_count} items)" + (f" - {error}" if error else ""))
+    print(f"[SEARCH] Parallel Run Summary: {successful} succeeded, {failed} failed, {skipped} skipped")
+    print(f"[SEARCH] Total items found: {len(all_items)} (sum: {total_found})")
+    
+    # === BATCH TRANSCRIPT EXTRACTION (single invideoiq call for ALL platforms) ===
+    if all_items:
+        print(f"[SEARCH] Starting batch transcript extraction for {len(all_items)} items...")
+        batch_extract_all_transcripts(all_items)
     
     return all_items, platform_statuses

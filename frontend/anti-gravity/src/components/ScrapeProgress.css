@@ -46,26 +46,51 @@
   position: relative;
 }
 
+/* Apple-Smooth Progress Fill */
 .progress-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #007aff, #5856d6);
   border-radius: 6px;
-  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Default transition, overridden by JS for micro-settle effect */
+  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
+  /* Subtle inner highlight */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 2px 4px rgba(0, 122, 255, 0.2);
+  overflow: hidden;
 }
 
+/* Subtle Shimmer (8-12s loop) */
 .progress-bar-fill::after {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
   bottom: 0;
+  width: 100%;
   background: linear-gradient(90deg,
-      transparent,
-      rgba(255, 255, 255, 0.2),
-      transparent);
-  animation: shine 2s infinite;
+      transparent 0%,
+      rgba(255, 255, 255, 0.15) 50%,
+      transparent 100%);
+  transform: translateX(-100%);
+  animation: shimmer 10s infinite linear;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  20% {
+    transform: translateX(100%);
+  }
+
+  /* Fast pass */
+  100% {
+    transform: translateX(100%);
+  }
+
+  /* Wait */
 }
 
 @keyframes shine {

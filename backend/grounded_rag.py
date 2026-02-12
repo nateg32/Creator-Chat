@@ -14,6 +14,9 @@ from db import db
 from settings import settings
 import rag
 from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+from services.style_distiller import StyleDistiller
+from services.style_scorer import StyleScorer
+from services.content_finder import ContentFinder
 
 
 logger = logging.getLogger(__name__)
@@ -355,38 +358,123 @@ def classify_intent(question: str) -> str:
     q = (question or "").lower().strip()
     if not q:
         return "small_talk"
+    
+    # 1. Check explicit patterns
     for patterns, intent in _INTENT_PATTERNS:
         if any(p in q for p in patterns):
             return intent
+            
+    # 2. Heuristic for low-intent: Very short messages (1-2 words) that don't match specific business triggers
+    words = q.split()
+    if len(words) <= 2:
+        # If it's short but NOT asking for links/proof, it's probably a greeting or small talk
+        return "small_talk"
+        
     return "how_to"  # default
+
+
+def classify_resource_intent(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    creator_profile: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Semantic Intent Router to detect when user needs a resource (video, article, course).
+    """
+    import rag
+    
+    # Prepare profile context
+    profile_info = "Available platforms: YouTube, Instagram, Website."
+    if creator_profile:
+        pc = creator_profile.get("platform_configs") or {}
+        active_plats = [k for k, v in pc.items() if isinstance(v, dict) and v.get("enabled")]
+        if active_plats:
+            profile_info = f"Available platforms: {', '.join(active_plats)}."
+        if creator_profile.get("has_course"):
+            profile_info += " This creator HAS a paid course/modules."
+
+    # Prepare history context
+    history_context = ""
+    if history:
+        history_context = "\nConversation History:\n"
+        for m in history[-10:]:
+            role = m.get("role", "user").upper()
+            content = m.get("content") or m.get("text") or ""
+            history_context += f"{role}: {content}\n"
+
+    system_prompt = f"""
+You are an Intent Router for a Creator AI. Your goal is to detect when the user is requesting or would benefit from a specific piece of creator content (video, article, or course lesson).
+
+Output ONLY a JSON object:
+{{
+  "needs_resource": true/false,
+  "resource_type": "video" | "article" | "course_lesson" | "any",
+  "specificity": "specific" | "recommendation" | "evidence",
+  "query": "the search query to use",
+  "reason": "short explanation",
+  "confidence": 0.0-1.0
+}}
+
+Set needs_resource=true when the user intent implies:
+- Finding where something exists (e.g., "where did you talk about X?")
+- Requesting what to watch/read/do next (learning path/recommendations)
+- Requesting proof, source, clip, episode, or lesson.
+- Wanting a resource recommendation related to a topic.
+- Asking "how to learn X" where the creator likely has content covering it.
+- Asking a specific question that is best answered by pointing to a foundational video or lesson.
+
+{profile_info}
+"""
+
+    user_prompt = f"User Message: {question}\n{history_context}"
+
+    try:
+        response_text = rag.generate_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0,
+            json_mode=True
+        )
+        return json.loads(response_text)
+    except Exception as e:
+        logger.error(f"Intent Router failed: {e}")
+        return {
+            "needs_resource": False,
+            "resource_type": "any",
+            "specificity": "recommendation",
+            "query": question,
+            "reason": "error",
+            "confidence": 0.0
+        }
 
 
 def response_length_instruction(intent: str) -> str:
     """Instruction for model response length based on intent."""
     if intent == "identity":
-        return "Respond naturally in 1–2 sentences. Then ask a question to learn about the USER (e.g. their name, what they do, or what brought them here)."
+        return "Respond naturally in 1–2 sentences. Then ask a question in the creator's style to learn about the USER."
     if intent == "small_talk":
         return (
-            "Just greet them warmly and ask a simple question (e.g. 'How's it going?', 'What's on your mind?'). "
-            "Do NOT mention productivity, systems, strategies, business, or ANY creator topics yet. "
-            "Do NOT use retrieved content. Keep it pure small talk. 1-2 sentences max."
+            "Just greet them briefly in character using their specific hooks and small talk style. "
+            "Do NOT use generic advisor phrases. Ask a unique question that matches the creator's persona to open the floor. "
+            "Do NOT use retrieved content. 1-2 sentences max."
         )
     if intent == "start_business":
-        return "Ask 2 short clarifying questions (e.g. what kind of business, what skill they have). Do NOT give a long list, framework, or steps yet."
+        return "Give a high-level response in character. Share one key piece of mindset advice from the creator's worldview, then ask 1-2 clarifying questions to understand their situation better."
     if intent == "how_to":
-        return "Give concise steps or pointers only if they asked how/steps/strategy. Max ~25 lines. No long frameworks unless asked."
+        return "Provide actionable steps in the creator's voice. Use their specific vocabulary and frameworks. Be thorough but don't overwhelm."
     if intent == "deep_strategy":
-        return "You may give a longer, structured answer. Still be clear and actionable."
+        return "Provide a detailed, structured strategy session. Use the creator's mental models. Be as long as necessary to be comprehensive."
     if intent == "request_sources":
         return (
             "Recommend 1–3 sources most relevant to their question. "
-            "For each: (a) a brief summary of the video/post (look for tool names or specific advice in the retrieved content), "
+            "For each: (a) a brief summary of the video/post, "
             "(b) how it helps their specific request, and (c) the link. "
-            "IMPORTANT: If the source title implies specific tools (e.g. 'Top 5 AI tools') but you cannot find the actual names in the provided text, do NOT make them up. "
-            "Instead, honestly state that you have the source but don't have the specific details from the transcript yet. "
+            "If details are missing from a transcript, be honest about it. "
             "Inline the links with your summaries."
         )
-    return "Keep the response short to medium length."
+    return "Match the length and depth the creator usually provides in their content."
 
 
 # Match URLs for stripping or collecting
@@ -602,6 +690,83 @@ def build_answer_contract(
     }
 
 
+def generate_meaning_draft(
+    question: str,
+    context: str,
+    verified_facts: str,
+    intent: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """
+    Step 3: Generate a Neutral Meaning Draft (Content Plan).
+    This step focuses purely on WHAT to say, ignoring HOW to say it.
+    """
+    
+    system_prompt = """
+You are a Neutral Content Planner. 
+Your goal is to extract the core information needed to answer the user's question based ONLY on the provided content.
+Do NOT write the final answer. Do NOT use any persona.
+Output a JSON object with the following structure:
+{
+    "answer_points": ["Point 1", "Point 2"],
+    "required_facts": [{"claim": "...", "confidence": "HIGH/MEDIUM/LOW", "source": "Source 1"}],
+    "uncertainty_handling": "exact_required" | "admit_unknown" | "general_advice",
+    "followup_question": "Optional clarifying question if needed",
+    "tone_guidance": "neutral"
+}
+"""
+    history_text = ""
+    if conversation_history:
+        history_text = "\\nRecent History:\\n" + "\\n".join([f"{m.get('role', 'unknown')}: {m.get('content', '')}" for m in conversation_history[-3:]])
+
+    user_prompt = f"""
+Context:
+{context}
+
+Verified Facts:
+{verified_facts}
+
+Question: {question}
+{history_text}
+
+Draft the content plan.
+"""
+
+    # Use rag.generate_chat_completion (assuming it handles json_mode if accessible, or just instruct json)
+    # The current rag module might not expose json_mode directly in generate_chat_completion signature based on how it's called elsewhere.
+    # I'll rely on the prompt instructions.
+    
+    response = rag.generate_chat_completion(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.0, # Strict facts
+        json_mode=True
+    )
+    
+    try:
+        # Simple heuristic to extract JSON if specific block not returned
+        json_str = response
+        if "```json" in response:
+            json_str = response.split("```json")[1].split("```")[0]
+        elif "{" in response:
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            json_str = response[start:end]
+            
+        return json.loads(json_str)
+    except Exception as e:
+        logger.error(f"Failed to parse Meaning Draft JSON: {e}")
+        return {
+            "answer_points": ["Could not parse plan"], 
+            "required_facts": [], 
+            "uncertainty_handling": "admit_unknown",
+            "tone_guidance": "neutral"
+        }
+
+
+
 def generate_grounded_answer(
     question: str,
     support_set: List[Dict[str, Any]],
@@ -616,181 +781,161 @@ def generate_grounded_answer(
     user_preferences: Optional[Dict[str, Any]] = None,
     user_name: Optional[str] = None,
     creator_name: Optional[str] = None,
+    style_fingerprint: Optional[Dict[str, Any]] = None,
+    images: Optional[List[Dict[str, Any]]] = None,
+    creator_id: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Step 5: Generate answer using ONLY facts[] for creator-specific claims.
-    intent drives response length; include_links_in_output controls links;
-    allow_cta controls whether to mention coaching/group/DM/COACH.
-    Returns (answer, debug_info).
+    SDD-CVR Implementation:
+    1. Meaning Draft (Neutral)
+    2. Voice Render (Creator Persona + Style DNA)
+    3. Verification & Repair Loop
     """
-    from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
-    from creator_engine import PLACEHOLDER_PERSONA, PLACEHOLDER_PRODUCT_RULES
-
-    length_instr = response_length_instruction(intent)
-    is_request_sources = intent == "request_sources"
-    if include_links_in_output:
-        if is_request_sources:
-            link_rule = (
-                "The user asked for a specific video/post/link. Recommend 1–3 sources most relevant to their question (only one if that's all that fits). "
-                "For each source, use the transcript or caption text in the retrieved chunks to give a brief summary of the content, "
-                "then explain how it helps their specific request, and include the link. Put links inline with your summaries; do not add a separate 'Sources:' block."
-            )
-        else:
-            link_rule = "Include relevant source links (max 3) when they support a claim."
-    else:
-        link_rule = "Do NOT include URLs or links in your response."
-    if allow_cta:
-        cta_platform = _cta_platform_instruction(enabled_platforms)
-        cta_rule = (
-            "You may mention coaching, groups, or 'message me COACH' / 'message me Elite' only if relevant and the user asked about help/coaching/programs. "
-            + cta_platform
-        )
-    else:
-        cta_rule = "Do NOT mention coaching, groups, 'message me COACH', 'message me Elite', or similar CTAs. No pitch. Keep it to a short, helpful reply."
-    platform_rule = ""
-    if enabled_platforms:
-        plats = ", ".join(enabled_platforms)
-        first = (enabled_platforms[0] or "").strip()
-        platform_rule = f" Only cite content from these ingested platforms: {plats}. If the user asks for a specific video/post but you have none from those platforms, say so (e.g. 'I don't have a specific {first} post on that ingested yet') instead of inventing or citing other platforms."
-
-    follow_up_rule = ""
-    if follow_up_requesting_links:
-        follow_up_rule = (
-            " CRITICAL: The user is asking for links to the specific videos/posts you recommended in your **previous** message (e.g. 'links for both', 'those'). "
-            "Provide links ONLY for those same items—same titles, same sources. Do NOT recommend different videos or new ones. Look at your last reply to see which items they mean."
-        )
-
-    # Build context from support set (URLs only in context for model use; output gated separately)
+    
+    # --- Dependencies ---
+    distiller = StyleDistiller()
+    scorer = StyleScorer(style_fingerprint)
+    
+    # --- Context Construction ---
+    # Build context from support set
     context_parts = []
     for i, chunk in enumerate(support_set):
         source = chunk["source_ref"]
         platform = source.get("platform", "unknown")
         title = source.get("title", "")
-        url = source.get("canonical_url", "")
         context_parts.append(
             f"[Source {i+1} - {platform}" + (f": {title}" if title else "") + "]:\n"
             + chunk["content"]
-            + (f"\n(Source: {url})" if url else "")
         )
-
     context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
 
-    facts_summary = []
-    for fact in answer_contract["facts"]:
-        facts_summary.append(f"- {fact['text']} (supported by {len(fact['support'])} chunks)")
+    # Fetch verified facts
+    from services.fact_verification import FactVerificationService
+    fv_service = FactVerificationService()
+    verified_facts_str = "No verified facts loaded."
+    if creator_id:
+        verified_facts_str = fv_service.get_verified_facts_formatted(creator_id)
 
-    product_rules = f"""You must ONLY make creator-specific claims if they are supported by the facts below.
-If a claim is not supported, label it as general advice or ask a clarifying question.
-
-Supported facts:
-{chr(10).join(facts_summary) if facts_summary else "None"}
-
-Gaps (unsupported areas):
-{chr(10).join(f"- {g}" for g in answer_contract["gaps"]) if answer_contract["gaps"] else "None"}
-
-Rules:
-- For creator-specific claims, prefer using 2+ sources when possible.
-- {link_rule}
-- {cta_rule}
-- Never invent links or sources.
-- If no source exists for a claim, say so explicitly.{platform_rule}{follow_up_rule}
-- {length_instr}"""
-
-    user_pref_prompt = ""
-    prefs_content = ""
-    if user_preferences:
-        prefs_list = []
-        if "presets" in user_preferences and isinstance(user_preferences["presets"], list):
-             prefs_list.extend(user_preferences["presets"])
-        if "custom" in user_preferences and user_preferences["custom"]:
-             prefs_list.append(user_preferences["custom"])
-        
-        if prefs_list:
-            prefs_content = "\n".join(f"- {p}" for p in prefs_list)
-
-    if prefs_content or user_name:
-        user_pref_prompt = "\n\n[USER PERSONALIZATION]\n"
-        if user_name:
-            user_pref_prompt += f"User's Name: {user_name}\n(You are talking to {user_name}. Use their name naturally in conversation.)\n"
-        if prefs_content:
-            user_pref_prompt += f"User Preferences:\n{prefs_content}\n"
-        
-        user_pref_prompt += (
-            "\nINSTRUCTIONS:\n"
-            "1. The User's Name is known context. If asked 'what is my name', answer with it.\n"
-            "2. ADAPT your communication STYLE (tone, complexity) to match User Preferences ABOVE ALL ELSE for style.\n"
-            "3. KEEP only the creator's beliefs/facts/knowledge.\n"
-        )
-
-    final_system_prompt = (
-        CREATOR_BASE_SYSTEM_PROMPT
-        .replace(PLACEHOLDER_PERSONA, persona or "")
-        .replace(PLACEHOLDER_PRODUCT_RULES, product_rules)
-        .replace("{{USER_PERSONALIZATION_HERE}}", user_pref_prompt)
-        .replace("{{CREATOR_NAME}}", creator_name or "Creator Bot")
-        .replace("{{USER_NAME}}", user_name or "Friend")
-    )
-
-    messages = [{"role": "system", "content": final_system_prompt}]
-
-    if conversation_history:
-        for msg in conversation_history[-10:]:
-            if msg.get("role") in ("user", "assistant"):
-                messages.append({"role": msg["role"], "content": msg.get("content", "")})
-
-    prompt_tail = "Answer based ONLY on the retrieved sources above."
-    if not include_links_in_output:
-        prompt_tail += " Do not include any URLs or links in your reply."
-    elif follow_up_requesting_links:
-        prompt_tail += (
-            " The user is asking for links to the specific videos/posts you recommended in your **previous** message. "
-            "Provide links ONLY for those same items (same titles, same sources). Do NOT recommend different videos. "
-            "Include each link inline. Do not add a 'Sources:' block."
-        )
-    elif is_request_sources:
-        prompt_tail += (
-            " The user wants a specific video/post/link. Pick 1–3 sources most relevant to their question. "
-            "For each: (1) briefly summarize the video/post using the transcript or caption text in the chunks, "
-            "(2) say how it helps their specific request, (3) include the link inline. Use only one source if that's all that fits. Do not add a 'Sources:' block."
-        )
-    else:
-        prompt_tail += " When relevant, cite sources (max 3 links)."
-
-    messages.append({
-        "role": "user",
-        "content": f"""<retrieved_sources>
-{context}
-</retrieved_sources>
-
-Question: {question}
-
-{prompt_tail}"""
-    })
+    # --- Step 1: Meaning Draft (Neutral) ---
+    logger.info("Generating Meaning Draft...")
+    draft = generate_meaning_draft(question, context, verified_facts_str, intent, conversation_history)
     
-    try:
-        from rag import get_client
-        response = get_client().chat.completions.create(
-            model=settings.CHAT_MODEL,
-            messages=messages,
-            temperature=0.7
-        )
-        answer = response.choices[0].message.content.strip()
-        
-        # Strip style analysis tags (internal monologue)
-        if "<style_analysis>" in answer:
-            answer = re.sub(r"<style_analysis>.*?</style_analysis>", "", answer, flags=re.DOTALL).strip()
-            
+    # --- Step 2: Voice Render (Creator Persona) ---
+    logger.info("Rendering Voice...")
+    style_dna = distiller.get_style_dna(creator_id or 0, style_fingerprint or {})
+    dna_instruction = distiller.format_for_prompt(style_dna)
+    
+    # Construct Render Prompt
+    render_system_prompt = f"""
+You are {creator_name or 'the creator'}.
+{persona or ''}
 
-        debug_info = {
-            "support_set_size": len(support_set),
-            "facts_count": len(answer_contract["facts"]),
-            "gaps_count": len(answer_contract["gaps"]),
-            "sources_count": len(answer_contract["sources"]),
-        }
+MISSION:
+Rewrite the NEUTRAL CONTENT PLAN below into your unique voice and style.
+Strictly adhere to the STYLE DNA constraints.
+
+{dna_instruction}
+
+RULES:
+1. NO SOURCES: Do NOT mention "Source 1" or include URLs. Speak as if you know this info.
+2. NO FILLER: Do not say "Here is a plan" or "I hope this helps". Dive straight in.
+3. HONESTY: If the plan says "uncertainty_handling: admit_unknown", admit you don't know in your voice.
+4. FORMAT: Use the structure defined in the DNA (e.g. valid frameworks, list style).
+5. USER: You are talking to {user_name or 'a friend'}.
+6. NO LINKS: Do not output any http links.
+
+NEUTRAL PLAN:
+{json.dumps(draft, indent=2)}
+"""
+
+    messages = [{"role": "system", "content": render_system_prompt}]
+    
+    # Add history for continuity
+    if conversation_history:
+        for msg in conversation_history[-5:]: 
+             if msg.get("role") in ("user", "assistant"):
+                messages.append({"role": msg["role"], "content": msg.get("content", "")})
+    
+    # Current User Input
+    messages.append({"role": "user", "content": f"Question: {question}\n(Respond using the plan above in your voice.)"})
+    
+    # --- Generation & Repair Loop ---
+    final_response = ""
+    is_rewrite = False
+    style_score = {}
+    
+    # Pass 1
+    response_text = rag.generate_chat_completion(
+        messages=messages,
+        temperature=0.7,
+        max_tokens=1000
+    )
+    
+    # Verify
+    score_result = scorer.score_response(response_text)
+    style_score = score_result
+    
+    if score_result["passed"]:
+        final_response = response_text
+    else:
+        logger.info(f"Style Check Failed: {score_result['final_score']}. Rewriting...")
+        is_rewrite = True
         
-        return answer, debug_info
-    except Exception as e:
-        raise Exception(f"Failed to generate grounded answer: {str(e)}")
+        repair_prompt = f"""
+CRITIQUE: The response failed the style check (Score: {score_result['final_score']}).
+VIOLATIONS:
+- Structure: {score_result['structural_score']} (Check sentence length/paragraphing)
+- Lexical: {score_result['lexical_score']} (Check vocabulary)
+- Behavioral: {score_result['behavioral_score']} (Check tone/frameworks)
+
+REPAIR INSTRUCTION:
+Rewrite the response to fix these violations. 
+- Vary sentence structure.
+- Remove generic filler.
+- Be more authentic.
+- KEEP THE INFORMATION THE SAME.
+"""
+        messages.append({"role": "assistant", "content": response_text})
+        messages.append({"role": "user", "content": repair_prompt})
+        
+        final_response = rag.generate_chat_completion(
+            messages=messages,
+            temperature=0.75
+        )
+
+    # --- Step 4: Post-Processing ---
+    # Strip URLs to enforce "No sources shown in chat" (just in case model hallucinated them)
+    try:
+        final_response = strip_urls_from_text(final_response)
+    except:
+        pass
+
+    # Build sources list for UI (not for chat text)
+    unique_sources = []
+    seen_urls = set()
+    for chunk in support_set:
+        ref = chunk.get("source_ref", {})
+        url = ref.get("canonical_url")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            unique_sources.append({
+                "platform": ref.get("platform", ""),
+                "canonical_url": url,
+                "title": ref.get("title", ""),
+                "published_at": ref.get("published_at"),
+                "content_type": ref.get("content_type", ""),
+            })
+
+    debug_info = {
+        "draft": draft,
+        "style_score": style_score,
+        "is_rewrite": is_rewrite,
+        "dna_used": style_dna,
+        "retrieved_count": len(support_set),
+        "sources": unique_sources[:5]
+    }
+    
+    return final_response, debug_info
 
 
 def validate_grounding(
@@ -889,6 +1034,7 @@ def grounded_rag_ask(
     user_preferences: Optional[Dict[str, Any]] = None,
     user_name: Optional[str] = None,
     creator_name: Optional[str] = None,
+    images: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Main Grounded-RAG Loop function.
@@ -898,6 +1044,12 @@ def grounded_rag_ask(
     
     # Step 1: Build search query
     q_search = build_search_query(question, conversation_history)
+    
+    from db import db
+    # Fetch creator personality metadata and configurations
+    creator_row = db.execute_one("SELECT name, handle, style_fingerprint, platform_configs FROM creators WHERE id = %s", (creator_id,))
+    sf = creator_row.get("style_fingerprint") if creator_row else {}
+    if isinstance(sf, str): sf = json.loads(sf)
     
     # Get query embedding
     from rag import get_client
@@ -910,7 +1062,7 @@ def grounded_rag_ask(
     except Exception as e:
         raise Exception(f"Failed to get query embedding: {str(e)}")
     
-    # Step 2: Retrieve broadly (filter by creator_id always; by enabled platforms when set)
+    # Step 2: Retrieve broadly
     enabled_platforms = get_enabled_platforms_for_creator(creator_id)
     candidates = retrieve_candidates(
         creator_id, query_embedding, K_RETRIEVE, max_distance,
@@ -932,12 +1084,98 @@ def grounded_rag_ask(
     # Step 4: Build answer contract
     answer_contract = build_answer_contract(support_set, question)
     
-    # Early intent classification to skip retrieval for casual conversation
-    intent = classify_intent(question)
+    # Early intent classification
+    has_images = images and len(images) > 0
     persona = rag.get_persona(creator_id)
-    enabled_platforms = get_enabled_platforms_for_creator(creator_id)
     
-    # For small talk and identity, don't retrieve content to avoid tempting the model
+    # --- Semantic Intent Router (Resource-First Policy) ---
+    logger.info("ContentFinder: Running Semantic Intent Router...")
+    resource_intent = classify_resource_intent(question, conversation_history, creator_row)
+    logger.info(f"Intent Router Output: {json.dumps(resource_intent)}")
+    
+    is_strict_content = resource_intent.get("needs_resource") and resource_intent.get("confidence", 0) >= 0.70
+    intent = "request_sources" if is_strict_content else classify_intent(question)
+
+    if is_strict_content:
+        logger.info(f"ContentFinder: Semantic trigger activated (Reason: {resource_intent.get('reason')})")
+        from services.content_finder import ContentFinder
+        finder = ContentFinder(db, get_client())
+        
+        # Use Router's query and types
+        router_query = resource_intent.get("query") or question
+        cf_result = finder.find_content_card(
+            creator_id, 
+            router_query, 
+            resource_type=resource_intent.get("resource_type", "any"),
+            specificity=resource_intent.get("specificity", "recommendation")
+        )
+        
+        if cf_result["status"] == "DEFER":
+             logger.info("ContentFinder: Deferring response.")
+             return {
+                 "answer": cf_result["defer_message"],
+                 "retrieved": [],
+                 "sources": [],
+                 "cards": [],
+                 "debug": {"cf_result": cf_result} if debug else None
+             }
+        
+        # If FOUND, we still want to generate a persona response that introduces the card
+        # We override support_set to be just the found item to force focus
+        if cf_result["status"] == "FOUND" and cf_result.get("cards"):
+             cards = cf_result["cards"]
+             first_card = cards[0]
+             snippet = first_card.get("short_snippet", "") or first_card.get("title", "")
+             
+             # Mock support set with the first result
+             is_fallback = cf_result.get("is_fallback", False)
+             content_desc = "Specific Video" if not is_fallback else "Creator Channel/Search"
+             
+             support_set = [{
+                 "chunk_id": "content_finder_match",
+                 "chunk_index": 0,
+                 "distance": 0.0,
+                 "rerank_score": 1.0,
+                 "content": f"Resource Found: {content_desc}\nTitle: {first_card['title']}\nSnippet: {snippet}",
+                 "source_ref": {
+                     "platform": "youtube" if "youtube" in first_card["url"] else "web",
+                     "title": first_card["title"],
+                     "canonical_url": first_card["url"],
+                     "published_at": None,
+                     "content_type": first_card.get("resource_type", "video")
+                 }
+             }]
+             
+             # Force answering with this content
+             answer_contract = build_answer_contract(support_set, question)
+             
+             answer, gen_debug = generate_grounded_answer(
+                question, support_set, answer_contract, persona, conversation_history,
+                intent="introduce_content", # Custom intent to guide style?
+                include_links_in_output=False, # We use card, not text links
+                allow_cta=False,
+                enabled_platforms=enabled_platforms,
+                user_preferences=user_preferences,
+                creator_name=creator_name,
+                style_fingerprint=sf,
+                creator_id=creator_id,
+            )
+             
+             return {
+                 "answer": answer,
+                 "retrieved": support_set,
+                 "sources": [], 
+                 "cards": cards,
+                 "debug": gen_debug if debug else None 
+             }
+        
+    # --- Standard RAG Path --- (if no strict content found or triggered)
+
+    # When images are attached, override small_talk — images need full analysis
+    if has_images and intent in ("small_talk", "identity"):
+        intent = "how_to"
+    
+    # For small talk and identity (no images), don't retrieve content to avoid tempting the model
     if intent in ("small_talk", "identity"):
         support_set = []
         answer_contract = {
@@ -955,8 +1193,9 @@ def grounded_rag_ask(
             enabled_platforms=enabled_platforms,
             follow_up_requesting_links=False,
             user_preferences=user_preferences,
-            user_name=user_name,
             creator_name=creator_name,
+            style_fingerprint=sf,
+            creator_id=creator_id,
         )
         
         return {
@@ -983,6 +1222,9 @@ def grounded_rag_ask(
         user_preferences=user_preferences,
         user_name=user_name,
         creator_name=creator_name,
+        style_fingerprint=sf,
+        images=images,
+        creator_id=creator_id,
     )
     
     # Step 6: Validate grounding

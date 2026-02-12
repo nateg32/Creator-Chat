@@ -41,6 +41,7 @@ from config.platforms import (
 from scraper_router import run_search_router, PLATFORM_MAPPERS
 from db import db
 from settings import settings
+from personality_analyzer import PersonalityAnalyzer
 
 app = FastAPI(title="Creator Bot API")
 
@@ -538,7 +539,7 @@ async def list_creators():
     try:
         dcol = _creator_display_column()
         query = f"""
-            SELECT c.id, c.{dcol} as name, c.handle, c.created_at, c.profile_picture_url, c.visual_config,
+            SELECT c.id, c.{dcol} as name, c.handle, c.created_at, c.profile_picture_url, c.visual_config, c.style_fingerprint,
                    (SELECT COUNT(*) FROM scrape_queue q WHERE q.creator_id = c.id AND q.status = 'ingested') as item_count
             FROM creators c
             ORDER BY c.created_at DESC
@@ -555,7 +556,8 @@ async def list_creators():
                 platforms=[], # Platforms column might be missing, omit for list
                 item_count=row.get("item_count", 0),
                 created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
-                visual_config=row.get("visual_config") if isinstance(row.get("visual_config"), dict) else (json.loads(row.get("visual_config")) if isinstance(row.get("visual_config"), str) else {})
+                visual_config=row.get("visual_config") if isinstance(row.get("visual_config"), dict) else (json.loads(row.get("visual_config")) if isinstance(row.get("visual_config"), str) else {}),
+                style_fingerprint=row.get("style_fingerprint") if isinstance(row.get("style_fingerprint"), dict) else (json.loads(row.get("style_fingerprint")) if isinstance(row.get("style_fingerprint"), str) else {})
             ))
         
         return CreatorsListResponse(creators=creators)
@@ -702,20 +704,20 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
                 if has_pc:
                     creator_id = db.execute_insert(
                         f"""
-                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url, platform_configs)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url, platform_configs, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (user_id, handle, name, request.profile_picture_url, json.dumps(configs)),
+                        (user_id, handle, name, request.profile_picture_url, json.dumps(configs), request.youtube_channel_id, request.youtube_handle, request.official_domains, request.course_domains, request.course_base_urls),
                     )
                 else:
                     creator_id = db.execute_insert(
                         f"""
-                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (user_id, handle, name, request.profile_picture_url),
+                        (user_id, handle, name, request.profile_picture_url, request.youtube_channel_id, request.youtube_handle, request.official_domains, request.course_domains, request.course_base_urls),
                     )
             except Exception as e:
                 # Handle races / uniqueness: if handle already exists, update it instead.
@@ -739,7 +741,7 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         if not creator_id:
             raise HTTPException(status_code=500, detail="Failed to create creator.")
 
-        creator = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, created_at FROM creators WHERE id = %s", (creator_id,))
+        creator = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s", (creator_id,))
         if has_pc:
             pc = db.execute_one("SELECT platform_configs FROM creators WHERE id = %s", (creator_id,))
             configs_out = pc.get("platform_configs") if pc else configs
@@ -756,12 +758,24 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         elif not isinstance(vc, dict):
             vc = {}
 
+        sf = creator.get("style_fingerprint") or {}
+        if isinstance(sf, str):
+            sf = json.loads(sf)
+        elif not isinstance(sf, dict):
+            sf = {}
+
         return CreatorWithConfigResponse(
             id=creator_id,
             name=creator.get("display_name") or creator.get("handle") or name,
             handle=creator.get("handle"),
             platform_configs=configs_out,
             visual_config=vc,
+            style_fingerprint=sf,
+            youtube_channel_id=creator.get("youtube_channel_id"),
+            youtube_handle=creator.get("youtube_handle"),
+            official_domains=creator.get("official_domains") or [],
+            course_domains=creator.get("course_domains") or [],
+            course_base_urls=creator.get("course_base_urls") or [],
             created_at=creator["created_at"].isoformat() if creator.get("created_at") and hasattr(creator["created_at"], "isoformat") else None,
         )
     except HTTPException:
@@ -775,7 +789,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
     """Update creator name, handle, and/or platform_configs."""
     try:
         dcol = _creator_display_column()
-        existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, platform_configs FROM creators WHERE id = %s", (creator_id,))
+        existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, style_fingerprint, visual_config, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s", (creator_id,))
         if not existing:
             raise HTTPException(status_code=404, detail="Creator not found.")
 
@@ -808,6 +822,22 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
              updates.append("visual_config = %s")
              params.append(json.dumps(request.visual_config))
 
+        if request.youtube_channel_id is not None:
+            updates.append("youtube_channel_id = %s")
+            params.append(request.youtube_channel_id)
+        if request.youtube_handle is not None:
+            updates.append("youtube_handle = %s")
+            params.append(request.youtube_handle)
+        if request.official_domains is not None:
+            updates.append("official_domains = %s")
+            params.append(request.official_domains)
+        if request.course_domains is not None:
+            updates.append("course_domains = %s")
+            params.append(request.course_domains)
+        if request.course_base_urls is not None:
+            updates.append("course_base_urls = %s")
+            params.append(request.course_base_urls)
+
         if not updates:
             configs_out = existing.get("platform_configs") or {}
             if hasattr(configs_out, "copy"):
@@ -818,7 +848,15 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
                 id=existing["id"],
                 name=existing.get("display_name") or existing.get("handle") or "",
                 handle=existing.get("handle"),
+                profile_picture_url=existing.get("profile_picture_url"),
                 platform_configs=configs_out,
+                visual_config=existing.get("visual_config") or {},
+                style_fingerprint=existing.get("style_fingerprint") or {},
+                youtube_channel_id=existing.get("youtube_channel_id"),
+                youtube_handle=existing.get("youtube_handle"),
+                official_domains=existing.get("official_domains") or [],
+                course_domains=existing.get("course_domains") or [],
+                course_base_urls=existing.get("course_base_urls") or [],
                 created_at=None,
             )
 
@@ -827,7 +865,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             f"UPDATE creators SET {', '.join(updates)} WHERE id = %s",
             tuple(params),
         )
-        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, platform_configs, visual_config, created_at FROM creators WHERE id = %s", (creator_id,))
+        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s", (creator_id,))
         pc = row.get("platform_configs") or {}
         if hasattr(pc, "copy"):
             pc = dict(pc) if pc else {}
@@ -839,14 +877,26 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             vc = dict(vc) if vc else {}
         else:
             vc = json.loads(vc) if isinstance(vc, str) else {}
+        
+        sf = row.get("style_fingerprint") or {}
+        if hasattr(sf, "copy"):
+            sf = dict(sf) if sf else {}
+        else:
+            sf = json.loads(sf) if isinstance(sf, str) else {}
 
         return CreatorWithConfigResponse(
             id=row["id"],
             name=row.get("display_name") or row.get("handle") or "",
             handle=row.get("handle"),
-            profile_picture_url=request.profile_picture_url if request.profile_picture_url is not None else existing.get("profile_picture_url"),
+            profile_picture_url=row.get("profile_picture_url"),
             platform_configs=pc,
             visual_config=vc,
+            style_fingerprint=sf,
+            youtube_channel_id=row.get("youtube_channel_id"),
+            youtube_handle=row.get("youtube_handle"),
+            official_domains=row.get("official_domains") or [],
+            course_domains=row.get("course_domains") or [],
+            course_base_urls=row.get("course_base_urls") or [],
             created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
         )
     except HTTPException:
@@ -918,7 +968,7 @@ async def get_creator_config(creator_id: int):
     """Get creator with platform_configs."""
     dcol = _creator_display_column()
     row = db.execute_one(
-        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, created_at FROM creators WHERE id = %s",
+        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, created_at FROM creators WHERE id = %s",
         (creator_id,),
     )
     if not row:
@@ -935,6 +985,12 @@ async def get_creator_config(creator_id: int):
     else:
         vc = json.loads(vc) if isinstance(vc, str) else {}
 
+    sf = row.get("style_fingerprint") or {}
+    if hasattr(sf, "copy"):
+        sf = dict(sf) if sf else {}
+    else:
+        sf = json.loads(sf) if isinstance(sf, str) else {}
+
     return CreatorWithConfigResponse(
         id=row["id"],
         name=row.get("display_name") or row.get("handle") or "",
@@ -942,6 +998,12 @@ async def get_creator_config(creator_id: int):
         profile_picture_url=row.get("profile_picture_url"),
         platform_configs=pc,
         visual_config=vc,
+        style_fingerprint=sf,
+        youtube_channel_id=row.get("youtube_channel_id"),
+        youtube_handle=row.get("youtube_handle"),
+        official_domains=row.get("official_domains") or [],
+        course_domains=row.get("course_domains") or [],
+        course_base_urls=row.get("course_base_urls") or [],
         created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
     )
 
@@ -1108,12 +1170,20 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
                     DO UPDATE SET last_active_thread_id = EXCLUDED.last_active_thread_id, updated_at = NOW()
                  """, (1, request.creator_id, request.thread_id))
                  
-                 # Save user message
-                 # Note: We save it now so it's persisted, but for RAG context we want *previous* history.
+                 # Save user message with images (persisted in metadata)
+                 user_metadata = {}
+                 if request.images and len(request.images) > 0:
+                     # Store images in metadata JSON so they persist on refresh
+                     # Note: Storing base64 strings in DB can be heavy, but required for persistence without S3.
+                     user_metadata["images"] = [
+                         {"data_url": img.data_url, "detail": img.detail} 
+                         for img in request.images
+                     ]
+
                  db.execute_update("""
-                    INSERT INTO chat_messages (thread_id, role, content)
-                    VALUES (%s, 'user', %s)
-                 """, (request.thread_id, request.question))
+                    INSERT INTO chat_messages (thread_id, role, content, metadata)
+                    VALUES (%s, 'user', %s, %s::jsonb)
+                 """, (request.thread_id, request.question, json.dumps(user_metadata)))
                  
                  # Fetch history from DB for RAG context (last 20 messages)
                  # We want the messages BEFORE the one we just inserted.
@@ -1145,17 +1215,29 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
                 creator_name = cr.get("name") or cr.get("handle") or "Creator"
         except: pass
         
+        # Prepare images for vision model
+        images_payload = None
+        if request.images and len(request.images) > 0:
+            images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in request.images[:4]]
+            print(f"[ASK] {len(images_payload)} image(s) attached, using vision model")
+        
+        # Auto-inject default question for image-only messages
+        question = request.question
+        if images_payload and (not question or not question.strip()):
+            question = "Describe this image and point out anything important."
+        
         # Use grounded RAG algorithm for better grounding
         result = grounded_rag_ask(
             creator_id=request.creator_id,
-            question=request.question,
+            question=question,
             conversation_history=conversation_history,
             top_k=request.top_k or 6,
             max_distance=request.max_distance or 1.15,
             debug=request.debug or False,
             user_preferences=user_prefs,
             user_name=user_name,
-            creator_name=creator_name
+            creator_name=creator_name,
+            images=images_payload,
         )
         
         answer_text = result["answer"]
@@ -1185,6 +1267,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
             "answer": answer_text,
             "retrieved": result.get("retrieved", []),
             "sources": result.get("sources", []),
+            "cards": result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
             "debug_info": result.get("debug") if request.debug else None,
         }
     except Exception as e:
@@ -1274,10 +1357,45 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
         base_meta = item.get("metadata") or {}
         if not isinstance(base_meta, dict):
             base_meta = {}
-        meta = {**base_meta, "platform": item.get("platform"), "matched_time_filter": item.get("matched_time_filter", True)}
+            
+        # Ensure we have a valid platform and creator_handle
+        item_platform = item.get("platform") or base_meta.get("platform")
+        
+        # If still missing or generic "multi", try to derive from individual URL
+        if not item_platform or item_platform in ("multi", "unknown"):
+            surl = (item.get("source_url") or "").lower()
+            if "youtube.com" in surl or "youtu.be" in surl:
+                item_platform = "youtube"
+            elif "instagram.com" in surl:
+                item_platform = "instagram"
+            elif "twitter.com" in surl or "x.com" in surl:
+                item_platform = "twitter"
+            elif "tiktok.com" in surl:
+                item_platform = "tiktok"
+            elif "facebook.com" in surl or "fb.com" in surl:
+                item_platform = "facebook"
+            elif "linkedin.com" in surl:
+                item_platform = "linkedin"
+            elif "reddit.com" in surl:
+                item_platform = "reddit"
+            else:
+                item_platform = platform or "unknown"
+
+        item_creator_handle = item.get("creator_handle") or base_meta.get("creator_handle") or creator_handle or "unknown"
+        
+        # Clean up creator_handle if it's explicitly "unknown" string but we have a better fallback
+        if str(item_creator_handle).lower() == "unknown" and creator_handle:
+            item_creator_handle = creator_handle
+
+        meta = {
+            **base_meta,
+            "platform": item_platform,
+            "matched_time_filter": item.get("matched_time_filter", True)
+        }
         metadata_json = json.dumps(meta, default=str)
         published_at_raw = item.get("published_at")
         published_at = _normalize_timestamp(published_at_raw)
+        
         insert_query = """
             INSERT INTO scrape_items (
                 id, scrape_run_id, creator_handle, content_type, source_url,
@@ -1299,7 +1417,7 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
         db_item_id = db.execute_insert(
             insert_query,
             (
-                str(uuid.uuid4()), search_run_id, item["creator_handle"], item["content_type"],
+                str(uuid.uuid4()), search_run_id, item_creator_handle, item["content_type"],
                 item["source_url"], item.get("caption"), item.get("transcript"),
                 item["transcript_status"], published_at, metadata_json, "pending_review"
             )
@@ -1313,13 +1431,15 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
                 published_at_str = published_at.isoformat()
             else:
                 published_at_str = str(published_at)
+                
         response_items.append({
             "item_id": str(db_item_id),
             "source_url": item["source_url"],
             "caption": item.get("caption"),
+            "creator_handle": item_creator_handle,
             "transcript_status": item["transcript_status"],
             "published_at": published_at_str,
-            "platform": item.get("platform"),
+            "platform": item_platform,
             "metadata": meta,
             "preview": preview
         })
@@ -1334,22 +1454,33 @@ def _run_search_background(
     source_url: str,
     platform_tag: str,
 ):
-    """Background task to run scraping and update progress."""
+    """
+    Background task to run scraping and update progress.
+    Implements weighted stage progress:
+    - Initializing: 0-5%
+    - Scraping: 5-80% (split by platform)
+    - Finalizing: 90-95% (100% on success)
+    """
     try:
         # Ensure progress exists (may already be created by main handler)
+        # 1. Initializing Stage (0-5%)
         enabled_count = sum(1 for cfg in pc.values() if isinstance(cfg, dict) and cfg.get("enabled"))
-        current = _get_search_progress(search_run_id)
-        if not current:
-            _set_search_progress(search_run_id, {
-                "status": "running",
-                "current_platform": None,
-                "current_platform_label": None,
-                "completed": 0,
-                "total": enabled_count,
-                "platform_statuses": {},
-                "items_found": 0,
-                "error": None,
-            })
+        current_data = _get_search_progress(search_run_id) or {}
+        
+        # Initialize
+        _set_search_progress(search_run_id, {
+            "status": "running",
+            "percent": 2,
+            "stage": "initializing",
+            "current_platform": None,
+            "current_platform_label": None,
+            "completed": 0,
+            "total": enabled_count,
+            "platform_statuses": current_data.get("platform_statuses", {}),
+            "items_found": 0,
+            "error": None,
+            "message": "Preparing search..."
+        })
         
         def progress_callback(platform_key: str, status: str, current: int, total: int):
             """Update progress for this search run."""
@@ -1360,17 +1491,45 @@ def _run_search_background(
                 platform_statuses_progress = prog.get("platform_statuses", {})
                 if platform_key not in platform_statuses_progress:
                     platform_statuses_progress[platform_key] = {}
+                
+                # Update specific platform status
                 platform_statuses_progress[platform_key].update({
                     "status": status,
                     "label": label,
                 })
+                
+                # Calculate weighted progress
+                # Scraping stage: 5% to 80% (Range size: 75%)
+                # Only increase progress on completion of a platform
+                base_scraping = 5.0
+                scrape_range = 75.0
+                
+                # If status is finished (completed/error/skipped), contribution = 1.0 * step
+                # If status is searching, we don't advance percentage yet (or maybe just a tiny bit?)
+                # Requirement: "Progress increases only when a platform finishes"
+                
+                completed_count = current if status in ("completed", "error", "skipped") else (current - 1)
+                
+                if total > 0:
+                    percent = base_scraping + (completed_count / total) * scrape_range
+                else:
+                    percent = base_scraping
+                
+                # Ensure we don't exceed 80% during scraping
+                percent = min(80.0, percent)
+                
+                msg = f"Collecting content from {label}..." if status == "searching" else "Collecting content..."
+
                 prog.update({
                     "current_platform": platform_key,
                     "current_platform_label": label,
                     "completed": current,
                     "total": total,
                     "status": "running",
+                    "stage": "scraping",
+                    "percent": round(percent, 1),
                     "platform_statuses": platform_statuses_progress,
+                    "message": msg
                 })
                 _set_search_progress(search_run_id, prog)
         
@@ -1402,6 +1561,15 @@ def _run_search_background(
                 "UPDATE creators SET platform_configs = %s WHERE id = %s",
                 (json.dumps(pc_updated), creator_id),
             )
+            
+        # 3. Finalizing Stage (90-95%)
+        # Skip Transcripts stage (80-90%) as we don't have explicit enrichment step here currently
+        _set_search_progress(search_run_id, {
+            **(_get_search_progress(search_run_id) or {}),
+            "stage": "finalizing",
+            "percent": 90.0,
+            "message": "Finalizing..."
+        })
         
         # Save items to database
         _execute_search_run(
@@ -1427,10 +1595,13 @@ def _run_search_background(
             
             prog.update({
                 "status": "completed",
+                "stage": "finalizing",
+                "percent": 100.0,
                 "items_found": len(normalized_items),
                 "platform_statuses": platform_statuses,
                 "platform_summary": platform_summary,
                 "completed": enabled_count,
+                "message": "Search completed"
             })
             _set_search_progress(search_run_id, prog)
             print(f"[SEARCH] Final summary for search {search_run_id}:")
@@ -1450,8 +1621,9 @@ def _run_search_background(
             
         prog = _get_search_progress(search_run_id)
         if prog is not None:
-            prog.update({"status": "error", "error": msg})
+            prog.update({"status": "error", "percent": prog.get("percent", 0), "error": msg, "message": "Search failed"})
             _set_search_progress(search_run_id, prog)
+
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -1574,20 +1746,24 @@ async def search_endpoint(request: SearchRequest, background_tasks: BackgroundTa
 async def get_search_progress(search_id: str):
     """
     Get search progress for a search run.
-    Returns: { status, current_platform, current_platform_label, completed, total, items_found, error }
+    Returns: { status, percent, stage, current_platform, completed_platforms, message, ... }
     Progress is persisted to DB so it survives backend restarts.
     """
-    print(f"[SEARCH] GET /search/{search_id}/progress", flush=True)
+    # print(f"[SEARCH] GET /search/{search_id}/progress", flush=True)
     progress = _get_search_progress(search_id)
-    if progress:
-        print(f"[DEBUG] Returning progress for {search_id}: {progress.get('status')} err={progress.get('error')}", flush=True)
     if not progress:
         raise HTTPException(status_code=404, detail="Search run not found or progress expired")
     
-    percentage = int((progress["completed"] / progress["total"] * 100)) if progress["total"] > 0 else 0
+    # Use stored weighted percent if available, otherwise calculate simple ratio
+    if "percent" in progress:
+        percentage = progress["percent"]
+    else:
+        percentage = int((progress.get("completed", 0) / progress.get("total", 1) * 100)) if progress.get("total", 0) > 0 else 0
+        
     return {
         **progress,
-        "percentage": percentage,
+        "percentage": percentage,  # frontend expects "percentage" (or we can migrate to "percent")
+        "percent": percentage,
     }
 
 
@@ -1597,7 +1773,7 @@ async def get_search_items(search_id: str):
     try:
         query = """
             SELECT id, source_url, caption, transcript, transcript_status, 
-                   published_at, metadata, review_status
+                   published_at, metadata, review_status, creator_handle
             FROM scrape_items
             WHERE scrape_run_id = %s
             ORDER BY created_at DESC
@@ -1620,6 +1796,7 @@ async def get_search_items(search_id: str):
                 "item_id": str(row["id"]),
                 "source_url": row["source_url"],
                 "caption": row.get("caption"),
+                "creator_handle": row.get("creator_handle"),
                 "transcript_status": row.get("transcript_status", "missing"),
                 "published_at": row.get("published_at").isoformat() if row.get("published_at") and hasattr(row.get("published_at"), "isoformat") else str(row.get("published_at")) if row.get("published_at") else None,
                 "platform": platform,
@@ -1746,7 +1923,7 @@ async def approve_ingest(request: ApproveIngestRequestNew):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/approve_ingest_v2", response_model=ApproveIngestResponseNew)
-async def approve_ingest_v2(request: ApproveIngestRequestV2):
+async def approve_ingest_v2(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks):
     """
     Approve/deny items from search_items staging table and ingest approved items.
     Handles transcript fallback if TRANSCRIBE_ON_INGEST is enabled.
@@ -1790,6 +1967,8 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
             db.execute_update(deny_query, (denied_item_ids, sid))
         
         if not approved_item_ids:
+            if doc_ids_to_delete:
+                background_tasks.add_task(PersonalityAnalyzer.analyze_creator, request.creator_id)
             return ApproveIngestResponseNew(approved=0, ingested=[])
         
         # Fetch approved items
@@ -2032,6 +2211,9 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
                 db.execute_update(error_query, (str(item_id),))
                 continue
         
+        if ingested:
+            background_tasks.add_task(PersonalityAnalyzer.analyze_creator, request.creator_id)
+            
         return ApproveIngestResponseNew(approved=len(approved_item_ids), ingested=ingested)
     except HTTPException:
         raise
@@ -2040,7 +2222,7 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2):
 
 
 @app.post("/approve_ingest_v2/stream")
-async def approve_ingest_v2_stream(request: ApproveIngestRequestV2):
+async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks):
     """
     Streaming version of approve_ingest_v2 with real-time progress updates via SSE.
     Returns Server-Sent Events with progress information.
@@ -2358,6 +2540,9 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2):
                     'ingested': [{'queue_id': i.queue_id, 'document_id': i.document_id, 'chunks_inserted': i.chunks_inserted} for i in ingested]
                 }
             }
+            if ingested or doc_ids_to_delete:
+                background_tasks.add_task(PersonalityAnalyzer.analyze_creator, request.creator_id)
+            
             yield f"data: {json.dumps(result)}\n\n"
             
         except Exception as e:
@@ -2626,20 +2811,30 @@ def list_thread_messages_endpoint(thread_id: str):
     user_id = 1
     
     rows = db.execute_query("""
-        SELECT id, role, content, created_at
+        SELECT id, role, content, created_at, metadata
         FROM chat_messages
         WHERE thread_id = %s
         ORDER BY created_at ASC
     """, (thread_id,))
     
-    return [
-        MessageResponse(
+    results = []
+    for r in rows:
+        meta = r.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except:
+                meta = {}
+                
+        results.append(MessageResponse(
             id=str(r['id']),
             role=r['role'] or "user",
             content=r['content'] or "",
-            created_at=r['created_at']
-        ) for r in rows
-    ]
+            created_at=r['created_at'],
+            images=meta.get("images")
+        ))
+        
+    return results
 
 @app.delete("/threads/{thread_id}")
 def delete_thread_endpoint(thread_id: str):
@@ -2762,3 +2957,189 @@ def _update_thread_title_background(thread_id: str):
 
     except Exception as e:
         print(f"Error updating thread title: {e}")
+@app.delete("/creators/{creator_id}", status_code=204)
+async def delete_creator_endpoint(creator_id: int):
+    """
+    Delete a creator and ALL their associated data:
+    - Creator profile
+    - Chat threads & messages
+    - Documents & Chunks (Knowledge Base)
+    - Scrape items / Search results
+    - Vector embeddings (implied by chunks deletion)
+    """
+    try:
+        # Verify creator exists
+        exists = db.execute_one("SELECT id FROM creators WHERE id = %s", (creator_id,))
+        if not exists:
+            # If not found, perhaps already deleted? 204 is fine.
+            return
+
+        # 1. Delete Messages (via threads)
+        try:
+             db.execute_update(
+                 "DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE creator_id = %s)",
+                 (creator_id,)
+             )
+        except Exception: 
+            pass
+
+        # 2. Delete Threads
+        try:
+            db.execute_update("DELETE FROM threads WHERE creator_id = %s", (creator_id,))
+        except Exception:
+            pass
+
+        # 3. Delete Chunks (Vector Store Data) - This is critical for vector cleanup
+        try:
+             db.execute_update("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
+        except Exception:
+             pass
+
+        # Also clean up chunks that might be linked via documents but missing creator_id (if any legacy issues)
+        try:
+             db.execute_update(
+                 "DELETE FROM chunks WHERE document_id IN (SELECT id FROM documents WHERE creator_id = %s)",
+                 (creator_id,)
+             )
+        except Exception:
+             pass
+
+        # 4. Delete Documents (Knowledge Base)
+        try:
+             db.execute_update("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
+        except Exception:
+             pass
+
+        # 5. Delete Scrape Items / Queue (Raw Search Data)
+        # Note: scrape_queue is legacy, scrape_items is current
+        try:
+             db.execute_update("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
+        except Exception:
+             pass 
+        
+        # New table usage - scrape_items usually linked to search_run_id which is often ephemeral or missing proper linkage
+        # However, we can TRY to delete if creator_id exists
+        try:
+             # Just in case `creator_id` column exists
+             db.execute_update("DELETE FROM scrape_items WHERE creator_id = %s", (creator_id,)) 
+        except Exception:
+             # If column doesn't exist, we might have orphan scrape_items but that's less critical than KB/Vectors
+             pass
+
+        # 6. Delete Creator Profile
+        db.execute_update("DELETE FROM creators WHERE id = %s", (creator_id,))
+
+        return 
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting creator {creator_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete creator: {str(e)}")
+
+# ============================================================================
+# Advanced Scrape Pipeline Endpoints
+# ============================================================================
+
+from services.scrape_orchestrator import ScrapeOrchestrator
+from services.ingest_worker import IngestWorker
+from pydantic import BaseModel
+
+class ScrapeRunRequest(BaseModel):
+    creator_id: int
+    platforms: Optional[List[str]] = None
+    force_full: bool = False
+
+@app.post("/scrape/run")
+async def run_scrape(request: ScrapeRunRequest, background_tasks: BackgroundTasks):
+    """
+    Trigger an incremental scrape for a creator.
+    """
+    try:
+        # Verify creator
+        creator = db.execute_one(
+            "SELECT id, platform_configs FROM creators WHERE id = %s", 
+            (request.creator_id,)
+        )
+        if not creator:
+            raise HTTPException(status_code=404, detail="Creator not found")
+            
+        configs = []
+        pc = creator.get("platform_configs") or {}
+        
+        # Parse platform configs from JSON if string
+        if isinstance(pc, str):
+            pc = json.loads(pc)
+        
+        # Filter platforms if requested
+        if request.platforms:
+            target_platforms = request.platforms
+        else:
+            target_platforms = pc.keys()
+        
+        for key in target_platforms:
+            cfg = pc.get(key)
+            if isinstance(cfg, dict) and cfg.get("enabled"):
+                # Add platform key to config for Orchestrator
+                cfg_copy = dict(cfg)
+                cfg_copy["platform_key"] = key
+                configs.append(cfg_copy)
+                
+        if not configs:
+            return {"message": "No enabled platforms found to scrape."}
+
+        # Run in background to not block response
+        orchestrator = ScrapeOrchestrator(request.creator_id)
+        # Note: background_tasks runs purely async; ensuring db connection safety within it
+        background_tasks.add_task(orchestrator.run, configs)
+        
+        return {"message": "Scrape started", "platforms": [c["platform_key"] for c in configs]}
+    except Exception as e:
+        print(f"[ScrapeRun] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/scrape/runs")
+async def get_scrape_runs(creator_id: int, limit: int = 10):
+    """Get recent scrape runs for observability."""
+    try:
+        runs = db.execute_query(
+            """
+            SELECT * FROM scrape_runs 
+            WHERE creator_id = %s 
+            ORDER BY started_at DESC 
+            LIMIT %s
+            """,
+            (creator_id, limit)
+        )
+        return {"runs": runs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ingest/jobs")
+async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: int = 50):
+    """Get ingestion job queue status."""
+    try:
+        query = "SELECT * FROM ingest_jobs WHERE creator_id = %s"
+        params = [creator_id]
+        
+        if status:
+            query += " AND status = %s"
+            params.append(status)
+            
+        query += " ORDER BY created_at DESC LIMIT %s"
+        params.append(limit)
+        
+        jobs = db.execute_query(query, tuple(params))
+        return {"jobs": jobs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ingest/worker/start")
+async def start_ingest_worker(background_tasks: BackgroundTasks):
+    """
+    DEV ONLY: Start the async ingest worker in this process.
+    In production, this should be a separate service/container.
+    """
+    worker = IngestWorker(concurrency=2)
+    background_tasks.add_task(worker.run)
+    return {"message": "Worker started in background"}
+

@@ -570,52 +570,119 @@
   color: #c62828;
 }
 
+.platform-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.platform-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  background: #f5f5f7;
+  color: #86868b;
+}
+
+.platform-youtube,
+.platform-youtube-shorts {
+  background: #ffebeb;
+  color: #ff0000;
+}
+
+.platform-tiktok {
+  background: #000;
+  color: #fff;
+}
+
+.platform-instagram {
+  background: #fdf2f8;
+  color: #e1306c;
+}
+
+.platform-twitter,
+.platform-twitter-x {
+  background: #e0f2fe;
+  color: #1da1f2;
+}
+
+.platform-linkedin {
+  background: #e0f2fe;
+  color: #0a66c2;
+}
+
+.platform-facebook {
+  background: #eff6ff;
+  color: #1877f2;
+}
+
+.creator-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d1d1f;
+  opacity: 0.8;
+}
+
+.card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+
 .decision-controls {
   display: flex;
-  gap: 8px;
+  gap: 4px;
+  background: #f5f5f7;
+  padding: 3px;
+  border-radius: 10px;
+  /* More rounded */
 }
 
 .decision-button {
-  flex: 1;
-  padding: 8px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
+  padding: 8px 16px;
+  /* Slightly larger */
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  /* Bolder */
+  color: #86868b;
   cursor: pointer;
-  transition: all 0.2s;
-  background: white;
-  color: #515154;
-}
-
-.decision-button:hover {
-  background: #f5f5f7;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .decision-button.active.approve {
-  background: #34c759;
-  color: white;
-  border-color: #34c759;
+  background: #34c759 !important;
+  color: white !important;
+  box-shadow: 0 2px 6px rgba(52, 199, 89, 0.3);
 }
 
 .decision-button.active.deny {
-  background: #ff3b30;
-  color: white;
-  border-color: #ff3b30;
-}
-
-.card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  background: #ff3b30 !important;
+  color: white !important;
+  box-shadow: 0 2px 6px rgba(255, 59, 48, 0.3);
 }
 
 .card-title {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
   color: #1d1d1f;
   line-height: 1.4;
+  /* Ensure titles don't wrap too much */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  height: 2.8em;
+  /* Force consistent height for alignment */
 }
 
 .card-preview {

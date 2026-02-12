@@ -29,7 +29,7 @@ This document tracks the major debugging, implementation, and refinement tasks c
 - **Environment Context**: Verified and documented the loading priority of `.env` files across root and backend directories to prevent token confusion.
 
 ## 🛠️ System Integrity Dashboard
-- **Backend**: FastAPI (Python) - Port 8001
+- **Backend**: FastAPI (Python) - Port 8000
 - **Frontend**: Vite (React) - Port 5173
 - **Primary Scraper**: Apify (LinkedIn, Instagram Reels, TikTok)
 - **Vector Engine**: Postgres + pgvector

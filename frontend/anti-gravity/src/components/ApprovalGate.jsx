@@ -231,40 +231,29 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
                 const previewText = item.preview || item.caption || "";
                 const transcriptStatus = item.transcript_status || "missing";
 
+                // Extract metadata for better display
+                const metadata = item.metadata || {};
+                const platform = item.platform || metadata.platform || "unknown";
+                const displayTitle = item.title || metadata.title || item.caption?.substring(0, 50) || "Untitled Content";
+
+                let creatorHandle = item.creator_handle || metadata.channelName || metadata.authorMeta?.name || platform;
+                if (creatorHandle.toLowerCase() === "unknown") creatorHandle = platform;
+                // Prepend @ if not present
+                const displayHandle = creatorHandle.startsWith("@") ? creatorHandle : `@${creatorHandle}`;
+
                 return (
                   <div
                     key={itemKey}
                     className={`approval-card ${decision === DECISION_APPROVE ? "approved" : ""} ${decision === DECISION_DENY ? "denied" : ""}`}
                   >
                     <div className="card-header">
-                      <div className="decision-controls">
-                        <button
-                          className={`decision-button ${decision === DECISION_APPROVE ? "active approve" : ""}`}
-                          onClick={() =>
-                            setDecision(
-                              itemKey,
-                              decision === DECISION_APPROVE
-                                ? DECISION_PENDING
-                                : DECISION_APPROVE
-                            )
-                          }
-                        >
-                          ✓ Approve
-                        </button>
-                        <button
-                          className={`decision-button ${decision === DECISION_DENY ? "active deny" : ""}`}
-                          onClick={() =>
-                            setDecision(
-                              itemKey,
-                              decision === DECISION_DENY
-                                ? DECISION_PENDING
-                                : DECISION_DENY
-                            )
-                          }
-                        >
-                          ✗ Deny
-                        </button>
+                      <div className="platform-info">
+                        <span className={`platform-badge platform-${platform.toLowerCase().replace(" / ", "-")}`}>
+                          {platform.toUpperCase()}
+                        </span>
+                        <span className="creator-name">{displayHandle}</span>
                       </div>
+
                       <div className="transcript-badge">
                         {transcriptStatus === "present" && (
                           <span className="badge badge-success">✓ Transcript</span>
@@ -272,20 +261,19 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
                         {transcriptStatus === "missing" && (
                           <span className="badge badge-warning">⚠ No transcript</span>
                         )}
-                        {transcriptStatus === "error" && (
-                          <span className="badge badge-error">✗ Error</span>
-                        )}
                       </div>
                     </div>
 
                     <div className="card-body">
-                      <h3 className="card-title">
-                        {item.source_url ? new URL(item.source_url).pathname.split("/").pop() : "Untitled"}
+                      <h3 className="card-title" title={displayTitle}>
+                        {displayTitle}
                       </h3>
+
                       <p className="card-preview">
                         {isExpanded ? previewText : (previewText.substring(0, 150) || "No preview available")}
                         {previewText.length > 150 && !isExpanded && "..."}
                       </p>
+
                       {previewText.length > 150 && (
                         <button
                           className="expand-button"
@@ -299,16 +287,48 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
                           {isExpanded ? "Show less" : "Show more"}
                         </button>
                       )}
-                      {(item.source_url || item.url) && (
-                        <a
-                          href={item.source_url || item.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="card-link"
-                        >
-                          View source →
-                        </a>
-                      )}
+
+                      <div className="card-actions">
+                        {(item.source_url || item.url) && (
+                          <a
+                            href={item.source_url || item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="card-link"
+                          >
+                            View source →
+                          </a>
+                        )}
+
+                        <div className="decision-controls">
+                          <button
+                            className={`decision-button ${decision === DECISION_APPROVE ? "active approve" : ""}`}
+                            onClick={() =>
+                              setDecision(
+                                itemKey,
+                                decision === DECISION_APPROVE
+                                  ? DECISION_PENDING
+                                  : DECISION_APPROVE
+                              )
+                            }
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className={`decision-button ${decision === DECISION_DENY ? "active deny" : ""}`}
+                            onClick={() =>
+                              setDecision(
+                                itemKey,
+                                decision === DECISION_DENY
+                                  ? DECISION_PENDING
+                                  : DECISION_DENY
+                              )
+                            }
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );

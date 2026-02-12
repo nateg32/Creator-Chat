@@ -1,4 +1,4 @@
-import { useReducer, useState, useMemo, useEffect } from "react";
+import { useReducer, useState, useMemo, useEffect, Component } from "react";
 import { Stepper } from "./components/Stepper";
 import { CreatorSetup } from "./components/CreatorSetup";
 import { ScrapeProgress } from "./components/ScrapeProgress";
@@ -9,8 +9,39 @@ import { SourcesPanel } from "./components/SourcesPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { NewChatModal } from "./components/NewChatModal";
 import { UserSettingsModal } from "./components/UserSettingsModal";
-import { scrape, approveIngestV2Stream, savePersona, getScrapeItems, health, listCreators, createCreator, getQueueItems, updateCreator, getUserSettings, updateUserSettings, createThread, listThreads, getThreadMessages, deleteThread, getLastActiveThread, getCreatorConfig, updateThread } from "./api/client";
+import { scrape, approveIngestV2Stream, savePersona, getScrapeItems, health, listCreators, createCreator, getQueueItems, updateCreator, getUserSettings, updateUserSettings, createThread, listThreads, getThreadMessages, deleteThread, getLastActiveThread, getCreatorConfig, updateThread, deleteCreator } from "./api/client";
 import "./App.css";
+
+// Error Boundary to prevent blank-page crashes
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("[ErrorBoundary] Caught:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 48, textAlign: "center", fontFamily: "Inter, sans-serif" }}>
+          <h2 style={{ color: "#c5221f" }}>Something went wrong</h2>
+          <p style={{ color: "#5f6368", marginBottom: 24 }}>{this.state.error?.message || "An unexpected error occurred."}</p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{ padding: "10px 24px", background: "#1a73e8", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14 }}
+          >
+            Reload Page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const STEPS = [
   { label: "Setup", key: "setup" },
@@ -75,7 +106,6 @@ function wizardReducer(state, action) {
         platformStatuses: null,
         decisions: {},
         persona: "",
-        persona: "",
         creatorAvatarUrl: "",
         visualConfig: {},
         loading: false,
@@ -88,7 +118,7 @@ function wizardReducer(state, action) {
   }
 }
 
-export default function App() {
+function AppInner() {
   // Workflow state (for creator setup/ingestion)
   const [state, dispatch] = useReducer(wizardReducer, {
     currentStep: 5, // Default to Chat
@@ -102,7 +132,6 @@ export default function App() {
     scrapedItems: [],
     platformStatuses: null,
     decisions: {},
-    persona: "",
     persona: "",
     creatorAvatarUrl: "",
     visualConfig: {},
@@ -156,6 +185,7 @@ export default function App() {
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [existingCreators, setExistingCreators] = useState([]);
   const [threadsByCreator, setThreadsByCreator] = useState({});
+  const [archivedThreadsByCreator, setArchivedThreadsByCreator] = useState({});
   const [activeCreatorId, setActiveCreatorId] = useState(null); // Track active creator for sidebar expansion
 
   // ... (Other state) ...
@@ -169,7 +199,7 @@ export default function App() {
 
   const showToast = (message, type = "success") => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 2000);
   };
 
   async function refreshCreators() {
@@ -200,6 +230,17 @@ export default function App() {
     }
   }
 
+  async function refreshArchivedThreads(creatorId) {
+    if (!creatorId) return;
+    try {
+      // listThreads(creatorId, true) fetches archived
+      const threads = await listThreads(creatorId, true);
+      setArchivedThreadsByCreator(prev => ({ ...prev, [creatorId]: threads }));
+    } catch (err) {
+      console.error(`Failed to load archived threads for creator ${creatorId}:`, err);
+    }
+  }
+
   // Load a thread into the 'chats' state (active session cache)
   async function ensureThreadsLoaded(threadId, creatorId) {
     // Check if already loaded in chats
@@ -210,7 +251,12 @@ export default function App() {
       const messages = await getThreadMessages(threadId);
       // Construct chat object compatible with ChatPanel
       const creator = existingCreators.find(c => c.id === creatorId);
-      const thread = (threadsByCreator[creatorId] || []).find(t => t.id === threadId);
+
+      // Look in both active and archived lists
+      let thread = (threadsByCreator[creatorId] || []).find(t => t.id === threadId);
+      if (!thread) {
+        thread = (archivedThreadsByCreator[creatorId] || []).find(t => t.id === threadId);
+      }
 
       const newChat = {
         id: threadId,
@@ -223,7 +269,8 @@ export default function App() {
           id: m.id,
           role: m.role,
           text: m.content,
-          ts: m.created_at
+          ts: m.created_at,
+          images: m.images // Include images from backend response
         })),
         isTemporary: false
       };
@@ -240,6 +287,7 @@ export default function App() {
       return null;
     }
   }
+
 
   async function handleSelectThreadWrapper(threadId, creatorId) {
     setActiveCreatorId(creatorId);
@@ -306,8 +354,10 @@ export default function App() {
     try {
       await updateThread(threadId, { is_archived: true });
       await refreshThreads(creatorId);
+      await refreshArchivedThreads(creatorId); // Refresh archive too
       if (activeChatId === threadId) {
         setActiveChatId(null);
+        // Maybe select another active thread?
         const remaining = (threadsByCreator[creatorId] || []).filter(t => t.id !== threadId);
         if (remaining.length > 0) handleSelectThreadWrapper(remaining[0].id, creatorId);
         else handleNewThreadWrapper(creatorId);
@@ -319,10 +369,24 @@ export default function App() {
     }
   }
 
+  async function handleRestoreThread(threadId, creatorId) {
+    try {
+      await updateThread(threadId, { is_archived: false });
+      await refreshThreads(creatorId);
+      await refreshArchivedThreads(creatorId);
+      showToast("Conversation restored");
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to restore", "error");
+    }
+  }
+
   async function handleRenameThread(threadId, creatorId, newTitle) {
     try {
       await updateThread(threadId, { title: newTitle });
+      // Refresh both lists to be safe, though usually just one
       await refreshThreads(creatorId);
+      await refreshArchivedThreads(creatorId);
     } catch (err) {
       console.error(err);
       showToast("Failed to rename", "error");
@@ -447,7 +511,6 @@ export default function App() {
       id: generateChatId(),
       creatorId: creatorId,
       creatorName: creatorName,
-      handle: handle,
       handle: handle,
       creatorAvatarUrl: chatConfig.profile_picture_url || (chatConfig.type === "existing" ? chatConfig.profile_picture_url : ""),
       visualConfig: chatConfig.visual_config || {},
@@ -936,6 +999,41 @@ export default function App() {
     }
   }
 
+  async function handleDeleteCreators(creatorIds) {
+    if (!creatorIds || creatorIds.length === 0) return;
+
+    // Optimistic Update: Remove from UI immediately
+    const deletedSet = new Set(creatorIds);
+    setExistingCreators(prev => prev.filter(c => !deletedSet.has(c.id)));
+
+    // Cleanup active chats immediately
+    if (activeChatId) {
+      const currentChat = chats.find(c => c.id === activeChatId);
+      if (currentChat && deletedSet.has(currentChat.creatorId)) {
+        setActiveChatId(null);
+        localStorage.removeItem("lastActiveThread");
+      }
+    }
+    setChats(prev => prev.filter(c => !deletedSet.has(c.creatorId)));
+
+    dispatch({ type: "SET_LOADING", loading: true });
+    try {
+      await Promise.all(creatorIds.map(id => deleteCreator(id)));
+
+      // Still refresh to ensure backend sync, but UI is already updated
+      refreshCreators();
+
+      showToast(`Deleted ${creatorIds.length} creator(s)`, "success");
+    } catch (err) {
+      console.error("Failed to delete creators:", err);
+      showToast("Failed to delete creators: " + err.message, "error");
+      // On error, refresh to restore state if deletion failed
+      refreshCreators();
+    } finally {
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
   return (
     <div className={`app-shell ${showChatInterface ? "fixed-height" : ""}`}>
       {/* Global Navigation - Always visible (requirement #1) */}
@@ -979,8 +1077,15 @@ export default function App() {
               onToggleSidebar={() => { }}
               onRenameThread={handleRenameThread}
               onArchiveThread={handleArchiveThread}
+              onRestoreThread={handleRestoreThread}
               onDeleteThread={handleDeleteThread}
-            // Removed old props: chats, activeChat, onNewChat (modal), onCloseChat
+              archivedThreadsByCreator={archivedThreadsByCreator}
+              onLoadArchived={refreshArchivedThreads}
+              onNewCreator={() => {
+                dispatch({ type: "RESET" });
+                dispatch({ type: "SET_STEP", step: 1 });
+              }}
+              onDeleteCreators={handleDeleteCreators}
             />
             <div className="chat-main-area">
               {/* Empty state when no creators exist (requirement #3) */}
@@ -1017,16 +1122,18 @@ export default function App() {
                   loading={false}
                   setLoading={() => { }}
                   onResetChat={handleResetChat}
-                  onInteraction={() => activeChat.creatorId && refreshThreads(activeChat.creatorId)}
+
                   onChangePersona={() => {
                     if (activeChat.creatorId) {
                       dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
+                      dispatch({ type: "SET_CREATOR_INFO", creatorName: activeChat.creatorName || activeChat.handle || "", handle: activeChat.handle || "", creatorAvatarUrl: activeChat.creatorAvatarUrl || "", url: "", platform: "", source: "" });
                       dispatch({ type: "SET_STEP", step: 4 });
                     }
                   }}
                   onRescrape={() => {
                     if (activeChat.creatorId) {
                       dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
+                      dispatch({ type: "SET_CREATOR_INFO", creatorName: activeChat.creatorName || activeChat.handle || "", handle: activeChat.handle || "", creatorAvatarUrl: activeChat.creatorAvatarUrl || "", url: "", platform: "", source: "" });
                       dispatch({ type: "SET_STEP", step: 1 });
                     }
                   }}
@@ -1082,5 +1189,13 @@ export default function App() {
         onUpdateUserSettings={handleUpdateUserSettings}
       />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }

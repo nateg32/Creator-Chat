@@ -1,0 +1,150 @@
+.scrape-status-panel {
+    margin-top: 20px;
+    background-color: #f7f9fc;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #e1e4e8;
+}
+
+.status-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.status-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #24292e;
+}
+
+.sync-button {
+    padding: 6px 14px;
+    background-color: #2ea44f;
+    color: white;
+    border: none;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.sync-button:disabled {
+    background-color: #ffffff;
+    color: #959da5;
+    border: 1px solid #e1e4e8;
+    cursor: not-allowed;
+}
+
+.run-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.run-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.status-badge {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    background-color: #eaecef;
+    color: #586069;
+}
+
+.status-badge.completed {
+    background-color: #dafbe1;
+    color: #22863a;
+}
+
+.status-badge.running {
+    background-color: #dbedff;
+    color: #0366d6;
+}
+
+.status-badge.failed {
+    background-color: #ffeef0;
+    color: #cb2431;
+}
+
+.run-time {
+    font-size: 12px;
+    color: #586069;
+}
+
+.platform-tag {
+    font-size: 11px;
+    background-color: #f1f8ff;
+    color: #0366d6;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.run-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    background-color: #fff;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 8px;
+}
+
+.metric {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid #f1f1f1;
+}
+
+.metric:last-child {
+    border-right: none;
+}
+
+.metric .val {
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.metric .lbl {
+    font-size: 10px;
+    color: #586069;
+    text-transform: uppercase;
+    margin-top: 4px;
+}
+
+.recent-runs-summary {
+    margin-top: 10px;
+    font-size: 11px;
+    color: #586069;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #ccc;
+    margin-left: 4px;
+}
+
+.dot.completed {
+    background-color: #28a745;
+}
+
+.dot.failed {
+    background-color: #dc3545;
+}

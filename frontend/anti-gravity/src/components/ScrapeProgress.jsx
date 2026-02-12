@@ -2,109 +2,163 @@ import { useEffect, useState, useRef } from "react";
 import { getScrapeProgress, getScrapeItems } from "../api/client";
 import "./ScrapeProgress.css";
 
+const STAGE_CAPS = {
+  initializing: 4.8,
+  scraping: 79.5,
+  transcripts: 89.5,
+  finalizing: 95.0
+};
+
 export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
-  const [progressData, setProgressData] = useState(null);
-  const [displayProgress, setDisplayProgress] = useState(0);
-  const [fetchingItems, setFetchingItems] = useState(false);
+  const [percent, setPercent] = useState(0);
+  const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [isFinishing, setIsFinishing] = useState(false);
 
-  // Smoothly move displayProgress
-  useEffect(() => {
-    // If we have an error or complete, just sync to target immediately or let the other logic handle it
-    const target = progressData?.percentage || 0;
-    const isRunning = progressData?.status === "running";
+  // Refs for animation state to avoid stale closures in timeouts
+  const stateRef = useRef({
+    backendPercent: 0,
+    lastBackendUpdateAt: Date.now(),
+    stage: "initializing",
+    isComplete: false
+  });
 
-    const interval = setInterval(() => {
-      setDisplayProgress(prev => {
-        // Case 1: We are behind the target (catch up)
-        if (prev < target) {
-          const diff = target - prev;
-          // Move faster if far behind, slower if close
-          const step = Math.max(0.5, diff * 0.1);
-          const next = Math.min(prev + step, target);
-          if (onProgress) onProgress(next);
-          return next;
-        }
+  // Stable refs for callbacks — prevents infinite effect loops when parent
+  // passes inline arrow functions that change reference every render
+  const onProgressRef = useRef(onProgress);
+  const onCompleteRef = useRef(onComplete);
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onProgressRef.current = onProgress; }, [onProgress]);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
-        // Case 2: We are at or ahead of target, but still running (Ghost Progress)
-        // This prevents the "stuck" feeling. We creep up to 95% slowly.
-        if (isRunning && prev < 95) {
-          // Very slow creep: 0.05% per 50ms = 1% per second
-          const next = prev + 0.05;
-          if (onProgress) onProgress(next);
-          return next;
-        }
-
-        return prev;
-      });
-    }, 50);
-    return () => clearInterval(interval);
-  }, [progressData, onProgress]);
-
-  // Polling logic
+  // Polling Effect — only depends on scrapeId (stable value)
   useEffect(() => {
     if (!scrapeId) return;
 
-    // Initial fetch jump
-    if (displayProgress === 0) {
-      setDisplayProgress(5);
-      if (onProgress) onProgress(5);
-    }
+    // Initial jump to show responsiveness
+    setPercent(2);
 
-    const pollInterval = setInterval(async () => {
+    const poll = async () => {
+      if (stateRef.current.isComplete) return true;
+
       try {
-        const data = await getScrapeProgress(scrapeId);
-        setProgressData(data); // Store raw data
+        const res = await getScrapeProgress(scrapeId);
 
-        if (data.status === "completed") {
-          clearInterval(pollInterval);
-          setDisplayProgress(100);
-          if (onProgress) onProgress(100);
-          handleCompletion(data);
-        } else if (data.status === "failed" || data.status === "error") {
-          clearInterval(pollInterval);
-          const errMsg = data.error || "Search failed";
-          setError(errMsg);
-          if (onError) onError(errMsg);
+        if (res.status === "completed") {
+          stateRef.current.isComplete = true;
+          setPercent(100);
+          if (onProgressRef.current) onProgressRef.current(100);
+          handleCompletion(res);
+          return true; // Stop polling
         }
-      } catch (err) {
-        console.error("Poll error:", err);
-      }
-    }, 800); // Faster polling (800ms)
 
-    return () => clearInterval(pollInterval);
-  }, [scrapeId, onProgress, onError]);
+        if (res.status === "failed" || res.status === "error") {
+          stateRef.current.isComplete = true;
+          setError(res.error || "Search failed");
+          if (onErrorRef.current) onErrorRef.current(res.error || "Search failed");
+          return true;
+        }
+
+        const newBackendPercent = res.percentage || res.percent || 0;
+        const currentStage = res.stage || "initializing";
+
+        // Update Ref state
+        stateRef.current.stage = currentStage;
+
+        // If backend advanced, snap to it and reset stall timer
+        if (newBackendPercent > stateRef.current.backendPercent) {
+          stateRef.current.backendPercent = newBackendPercent;
+          stateRef.current.lastBackendUpdateAt = Date.now();
+
+          // Snap UI
+          setPercent(newBackendPercent);
+          if (onProgressRef.current) onProgressRef.current(newBackendPercent);
+        }
+
+        setData(res);
+        return false;
+      } catch (err) {
+        console.error("Poll error", err);
+        return false;
+      }
+    };
+
+    const interval = setInterval(async () => {
+      const stop = await poll();
+      if (stop) clearInterval(interval);
+    }, 1000); // 1s polling
+
+    poll(); // Immediate first check
+
+    return () => clearInterval(interval);
+  }, [scrapeId]);
+
+  // Creep Animation Loop — no callback dependencies, uses refs
+  useEffect(() => {
+    let timeoutId;
+
+    const loop = () => {
+      if (stateRef.current.isComplete) return;
+
+      const now = Date.now();
+      const { backendPercent, lastBackendUpdateAt, stage } = stateRef.current;
+
+      // Calculate headroom based on stall time
+      const stallTime = now - lastBackendUpdateAt;
+      let allowedHeadroom = 0.2;
+      if (stallTime > 15000) allowedHeadroom = 1.8;
+      else if (stallTime > 6000) allowedHeadroom = 1.2;
+      else if (stallTime > 2000) allowedHeadroom = 0.6;
+
+      // Determine cap
+      const stageCap = STAGE_CAPS[stage] || 95.0;
+      // Never creep beyond stage cap OR backend + headroom
+      const creepLimit = Math.min(stageCap - 0.6, backendPercent + allowedHeadroom);
+
+      setPercent(prev => {
+        if (prev >= creepLimit) return prev; // Cap reached, hold steady
+        if (prev >= 100) return 100;
+
+        // Random step size
+        const isFinalizing = stage === "finalizing";
+        const minStep = isFinalizing ? 0.02 : 0.04;
+        const maxStep = isFinalizing ? 0.07 : 0.12;
+        const step = minStep + Math.random() * (maxStep - minStep);
+
+        const next = Math.min(prev + step, creepLimit);
+
+        // Update parent via ref
+        if (onProgressRef.current) onProgressRef.current(next);
+
+        return next;
+      });
+
+      // Schedule next pulse (jittered)
+      const delay = 900 + Math.random() * 500; // 900-1400ms
+      timeoutId = setTimeout(loop, delay);
+    };
+
+    loop();
+    return () => clearTimeout(timeoutId);
+  }, []);
 
   const handleCompletion = async (data) => {
-    if (fetchingItems) return;
-    setFetchingItems(true);
+    if (isFinishing) return;
+    setIsFinishing(true);
     try {
-      // Fetch the actual items
       const itemsResult = await getScrapeItems(scrapeId);
       if (onComplete) {
-        // Pass combined result
-        onComplete({ ...data, items: itemsResult.items, platform_statuses: itemsResult.platform_statuses });
+        // Wait slightly for 100% animation to finish visually
+        setTimeout(() => {
+          onComplete({ ...data, items: itemsResult.items, platform_statuses: itemsResult.platform_statuses });
+        }, 800);
       }
     } catch (err) {
       setError("Search completed, but failed to load results: " + err.message);
       if (onError) onError(err.message);
-    } finally {
-      setFetchingItems(false);
     }
   };
-
-  const displayPct = Math.min(100, Math.round(displayProgress));
-
-  // Status message based on real data
-  let statusMsg = "Initializing search agents...";
-  if (fetchingItems) statusMsg = "Finalizing results...";
-  else if (progressData?.current_platform) {
-    statusMsg = `Scanning ${progressData.current_platform}...`;
-    if (progressData.items_found > 0) {
-      statusMsg += ` (${progressData.items_found} items found)`;
-    }
-  }
-  else if (progressData?.status === "running") statusMsg = "Searching for content...";
 
   if (error) {
     return (
@@ -117,28 +171,36 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
     );
   }
 
+  // Determine message
+  let displayMsg = "Preparing search...";
+  const stage = data?.stage || stateRef.current.stage;
+
+  if (isFinishing || stage === "finalizing") displayMsg = "Finalizing...";
+  else if (stage === "scraping") {
+    if (data?.message) displayMsg = data.message;
+    else displayMsg = "Collecting content...";
+  }
+  else if (stage === "transcripts") displayMsg = "Understanding context...";
+
   return (
     <div className="scrape-progress-container">
       <div className="progress-content">
-        <h2>{fetchingItems ? "Finalizing..." : "Searching..."}</h2>
-        <p className="status-message">{statusMsg}</p>
+        <h2>{isFinishing ? "Finalizing..." : "Searching..."}</h2>
+        <p className="status-message">{displayMsg}</p>
 
         <div className="progress-bar-container large">
           <div
             className="progress-bar-fill"
-            style={{ width: `${displayPct}%`, transition: 'width 0.1s linear' }}
+            style={{
+              width: `${Math.min(100, percent)}%`,
+              transition: 'width 420ms cubic-bezier(0.22, 1, 0.36, 1)'
+            }}
           ></div>
         </div>
 
         <div className="progress-stats">
-          <span className="percentage">{displayPct}%</span>
+          <span className="percentage">{Math.round(percent)}%</span>
         </div>
-
-        {progressData && progressData.items_found > 0 && (
-          <div className="items-found-tag">
-            Found {progressData.items_found} items so far
-          </div>
-        )}
       </div>
     </div>
   );

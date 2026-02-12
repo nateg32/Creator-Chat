@@ -30,5 +30,8 @@ class Settings:
     
     # Chat model
     CHAT_MODEL: str = "gpt-4o-mini"
+    
+    # Vision model (multimodal - supports text + image input)
+    VISION_MODEL: str = "gpt-4o-mini"
 
 settings = Settings()

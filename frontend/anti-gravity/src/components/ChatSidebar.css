@@ -311,3 +311,143 @@
     background: #fff;
     color: #202124;
 }
+
+.header-actions-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.new-creator-icon-btn {
+    padding: 6px;
+    background: transparent;
+    color: #666;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.new-creator-icon-btn:hover {
+    background: rgba(26, 115, 232, 0.1);
+    color: #1a73e8;
+}
+
+/* Delete Mode Styles */
+.icon-btn {
+    padding: 6px;
+    background: transparent;
+    color: #666;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.icon-btn:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: #333;
+}
+
+.new-creator-btn:hover {
+    background: rgba(26, 115, 232, 0.1);
+    color: #1a73e8;
+}
+
+.delete-mode-btn:hover {
+    background: rgba(217, 48, 37, 0.1);
+    color: #d93025;
+}
+
+.delete-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.delete-count {
+    font-size: 13px;
+    color: #5f6368;
+    margin-right: auto;
+}
+
+.confirm-delete-btn {
+    background: #d93025;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.confirm-delete-btn:hover {
+    background: #b31412;
+}
+
+.cancel-delete-btn {
+    background: transparent;
+    color: #5f6368;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.cancel-delete-btn:hover {
+    background: #f1f3f4;
+    color: #333;
+}
+
+.checkbox-wrapper {
+    margin-right: 12px;
+    display: flex;
+    align-items: center;
+}
+
+.custom-checkbox {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #5f6368;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    background: white;
+}
+
+.custom-checkbox.checked {
+    background: #d93025;
+    border-color: #d93025;
+    color: white;
+}
+
+.creator-group.selected .creator-header {
+    background-color: rgba(217, 48, 37, 0.05);
+}
+
+.chat-sidebar.delete-mode .creator-header {
+    cursor: pointer;
+}
+
+.chat-sidebar.delete-mode .creator-header:hover {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+.chat-sidebar.delete-mode .creator-toggle-icon {
+    display: none;
+}

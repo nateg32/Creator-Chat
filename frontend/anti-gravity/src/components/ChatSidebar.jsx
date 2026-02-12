@@ -13,13 +13,26 @@ export function ChatSidebar({
     onToggleSidebar,
     onRenameThread,
     onArchiveThread,
-    onDeleteThread
+    onRecall, // Placeholder for future
+    onNewCreator, // () => void
+    onDeleteCreators, // (creatorIds[]) => Promise<void>
+    onDeleteThread, // (threadId, creatorId) => void
+    onRestoreThread, // (threadId, creatorId) => void
+    archivedThreadsByCreator = {},
+    onLoadArchived // (creatorId) => void
 }) {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [expandedCreators, setExpandedCreators] = useState({});
 
+    // Delete Mode State
+    const [isDeleteMode, setIsDeleteMode] = useState(false);
+    const [selectedCreators, setSelectedCreators] = useState(new Set());
+
+    // Archive Mode State
+    const [isArchiveMode, setIsArchiveMode] = useState(false);
+
     // Menu state
-    const [activeMenu, setActiveMenu] = useState(null); // { thread: {}, creatorId: number, top: 0, left: 0 }
+    const [activeMenu, setActiveMenu] = useState(null); // { thread: {}, creatorId: number, top?: number, bottom?: number, left: number }
 
     // Rename state
     const [renamingId, setRenamingId] = useState(null);
@@ -28,22 +41,34 @@ export function ChatSidebar({
 
     // Auto-expand the active creator
     useEffect(() => {
-        if (activeCreatorIdProp) {
+        if (activeCreatorIdProp && !isDeleteMode) {
             setExpandedCreators(prev => ({ ...prev, [activeCreatorIdProp]: true }));
         }
-    }, [activeCreatorIdProp]);
+    }, [activeCreatorIdProp, isDeleteMode]);
 
     // Also auto-expand if we find the active thread in a creator's list
     useEffect(() => {
-        if (activeThreadId && threadsByCreator) {
+        if (activeThreadId && (threadsByCreator || archivedThreadsByCreator) && !isDeleteMode) {
+            // Check active threads first
             for (const [cId, threads] of Object.entries(threadsByCreator)) {
                 if (threads.find(t => t.id === activeThreadId)) {
                     setExpandedCreators(prev => ({ ...prev, [cId]: true }));
-                    break;
+                    // If found in active, insure we are not in archive mode (optional, or switch mode?)
+                    // Actually, if user clicks a link to an archived thread, we might want to switch to archive mode?
+                    // For now, keep simple.
+                    return;
+                }
+            }
+            // Check archived threads
+            for (const [cId, threads] of Object.entries(archivedThreadsByCreator)) {
+                if (threads && threads.find(t => t.id === activeThreadId)) {
+                    setExpandedCreators(prev => ({ ...prev, [cId]: true }));
+                    setIsArchiveMode(true); // Switch to archive mode if active thread is archived
+                    return;
                 }
             }
         }
-    }, [activeThreadId, threadsByCreator]);
+    }, [activeThreadId, threadsByCreator, archivedThreadsByCreator, isDeleteMode]);
 
     // Close menu on outside click
     useEffect(() => {
@@ -63,22 +88,69 @@ export function ChatSidebar({
 
     const toggleCreator = (creatorId, e) => {
         if (e) e.stopPropagation();
-        setExpandedCreators(prev => ({
-            ...prev,
-            [creatorId]: !prev[creatorId]
-        }));
+
+        if (isDeleteMode) {
+            // Toggle selection
+            const newSelected = new Set(selectedCreators);
+            if (newSelected.has(creatorId)) {
+                newSelected.delete(creatorId);
+            } else {
+                newSelected.add(creatorId);
+            }
+            setSelectedCreators(newSelected);
+        } else {
+            // Toggle expansion
+            const isExpanding = !expandedCreators[creatorId];
+
+            setExpandedCreators(prev => ({
+                ...prev,
+                [creatorId]: isExpanding
+            }));
+
+            // If expanding in Archive Mode, load archived threads
+            if (isExpanding && isArchiveMode && onLoadArchived) {
+                onLoadArchived(creatorId);
+            }
+        }
+    };
+
+    const toggleArchiveMode = () => {
+        const newMode = !isArchiveMode;
+        setIsArchiveMode(newMode);
+        // If switching to archive mode, trigger load for all expanded creators
+        if (newMode && onLoadArchived) {
+            Object.keys(expandedCreators).forEach(cId => {
+                if (expandedCreators[cId]) onLoadArchived(cId);
+            });
+        }
     };
 
     const toggleMenu = (e, thread, creatorId) => {
         e.stopPropagation();
-        if (activeMenu && activeMenu.thread.id === threadId) {
+        if (activeMenu && activeMenu.thread.id === thread.id) {
             setActiveMenu(null);
         } else {
             const rect = e.currentTarget.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            // Approximate height of the menu (4 items * ~40px) = ~160px
+            const MENU_HEIGHT = 160;
+
+            let topPos, bottomPos;
+
+            if (spaceBelow < MENU_HEIGHT) {
+                // Not enough space below, position above
+                // 'bottom' value should be distance from viewport bottom to button top
+                bottomPos = window.innerHeight - rect.top + 4;
+            } else {
+                // Default: position below
+                topPos = rect.bottom + 4;
+            }
+
             setActiveMenu({
                 thread,
                 creatorId,
-                top: rect.bottom + 4,
+                top: topPos,
+                bottom: bottomPos,
                 left: rect.right
             });
         }
@@ -111,6 +183,13 @@ export function ChatSidebar({
         setActiveMenu(null);
     };
 
+    const handleRestore = (e) => {
+        e.stopPropagation();
+        if (!activeMenu) return;
+        onRestoreThread && onRestoreThread(activeMenu.thread.id, activeMenu.creatorId);
+        setActiveMenu(null);
+    };
+
     const handleDelete = (e) => {
         e.stopPropagation();
         if (!activeMenu) return;
@@ -128,6 +207,31 @@ export function ChatSidebar({
         setActiveMenu(null);
     }
 
+    // Toggle Delete Mode
+    const toggleDeleteMode = () => {
+        if (isDeleteMode) {
+            // Cancel/Exit
+            setIsDeleteMode(false);
+            setSelectedCreators(new Set());
+        } else {
+            // Enter delete mode
+            setIsDeleteMode(true);
+            // Optionally collapse all to make selection easier? 
+            // setExpandedCreators({}); 
+        }
+    };
+
+    const executeDeleteCreators = async () => {
+        if (selectedCreators.size === 0) return;
+        if (!window.confirm(`Are you sure you want to delete ${selectedCreators.size} creator(s)? This cannot be undone.`)) return;
+
+        if (onDeleteCreators) {
+            await onDeleteCreators(Array.from(selectedCreators));
+        }
+        setIsDeleteMode(false);
+        setSelectedCreators(new Set());
+    };
+
     // Render Menu via Portal (Moved OUTSIDE the loop)
     const renderActiveMenu = () => {
         if (!activeMenu) return null;
@@ -138,6 +242,7 @@ export function ChatSidebar({
                 ref={menuRef}
                 style={{
                     top: activeMenu.top,
+                    bottom: activeMenu.bottom,
                     left: activeMenu.left,
                     position: 'fixed',
                     transform: 'translateX(-100%)', // Align right edge
@@ -152,9 +257,16 @@ export function ChatSidebar({
                 <div className="menu-item" onClick={startRename}>
                     Rename
                 </div>
-                <div className="menu-item" onClick={handleArchive}>
-                    Archive
-                </div>
+                {isArchiveMode ? (
+                    <div className="menu-item" onClick={handleRestore}>
+                        Unarchive
+                    </div>
+                ) : (
+                    <div className="menu-item" onClick={handleArchive}>
+                        Archive
+                    </div>
+                )}
+
                 <div className="menu-item delete" onClick={handleDelete}>
                     Delete
                 </div>
@@ -164,9 +276,67 @@ export function ChatSidebar({
     };
 
     return (
-        <div className={`chat-sidebar ${isCollapsed ? "collapsed" : ""}`}>
+        <div className={`chat-sidebar ${isCollapsed ? "collapsed" : ""} ${isDeleteMode ? "delete-mode" : ""} ${isArchiveMode ? "archive-mode" : ""}`}>
             <div className="sidebar-header">
-                {!isCollapsed && <h3>Chats</h3>}
+                {!isCollapsed && (
+                    <div className="header-actions-left">
+                        <h3>{isArchiveMode ? "Archived" : "Chats"}</h3>
+
+                        {!isDeleteMode ? (
+                            <>
+                                <button
+                                    onClick={onNewCreator}
+                                    className="icon-btn new-creator-btn"
+                                    title="New Creator"
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <path d="M12 5V19M5 12H19" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                </button>
+                                <button
+                                    onClick={toggleDeleteMode}
+                                    className="icon-btn delete-mode-btn"
+                                    title="Delete Creators"
+                                >
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                </button>
+                                <button
+                                    onClick={toggleArchiveMode}
+                                    className={`icon-btn archive-mode-btn ${isArchiveMode ? 'active' : ''}`}
+                                    title={isArchiveMode ? "Show Active Chats" : "Show Archived Chats"}
+                                >
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <polyline points="21 8 21 21 3 21 3 8" />
+                                        <rect x="1" y="3" width="22" height="5" />
+                                        <line x1="10" y1="12" x2="14" y2="12" />
+                                    </svg>
+                                </button>
+                            </>
+                        ) : (
+                            <div className="delete-actions">
+                                <span className="delete-count">{selectedCreators.size} selected</span>
+                                {selectedCreators.size > 0 && (
+                                    <button
+                                        onClick={executeDeleteCreators}
+                                        className="confirm-delete-btn"
+                                        title="Delete Selected"
+                                    >
+                                        Delete
+                                    </button>
+                                )}
+                                <button
+                                    onClick={toggleDeleteMode}
+                                    className="cancel-delete-btn"
+                                    title="Cancel"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
                 <button onClick={handleToggle} className="toggle-button" title={isCollapsed ? "Expand" : "Collapse"}>
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                         {isCollapsed ? (
@@ -186,18 +356,35 @@ export function ChatSidebar({
                         </div>
                     ) : (
                         creators.map((creator) => {
-                            const threads = threadsByCreator[creator.id] || [];
+                            const threads = isArchiveMode
+                                ? (archivedThreadsByCreator[creator.id] || [])
+                                : (threadsByCreator[creator.id] || []);
+
                             const isExpanded = expandedCreators[creator.id];
+                            const isSelected = selectedCreators.has(creator.id);
 
                             // Check if this creator is "active" (active thread belongs to them)
+                            // In archive mode, we can still highlight if the active thread is in archive list
                             const hasActiveThread = threads.some(t => t.id === activeThreadId);
 
                             return (
-                                <div key={creator.id} className={`creator-group ${hasActiveThread ? 'has-active' : ''}`}>
+                                <div key={creator.id} className={`creator-group ${hasActiveThread ? 'has-active' : ''} ${isSelected ? 'selected' : ''}`}>
                                     <div
                                         className="creator-header"
                                         onClick={(e) => toggleCreator(creator.id, e)}
                                     >
+                                        {isDeleteMode && (
+                                            <div className="checkbox-wrapper">
+                                                <div className={`custom-checkbox ${isSelected ? 'checked' : ''}`}>
+                                                    {isSelected && (
+                                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                                            <polyline points="20 6 9 17 4 12" strokeLinecap="round" strokeLinejoin="round" />
+                                                        </svg>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
                                         <div className="chat-avatar-mini">
                                             {creator.profile_picture_url ? (
                                                 <img src={creator.profile_picture_url} alt="" className="mini-avatar-img" />
@@ -212,22 +399,30 @@ export function ChatSidebar({
                                                 {formatCreatorName(creator.name || creator.handle || "Unknown")}
                                             </div>
                                         </div>
-                                        <div className="creator-toggle-icon">
-                                            <svg
-                                                width="16" height="16" viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                strokeWidth="2"
-                                                style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
-                                            >
-                                                <path d="M9 18L15 12L9 6" strokeLinecap="round" strokeLinejoin="round" />
-                                            </svg>
-                                        </div>
+
+                                        {!isDeleteMode && (
+                                            <div className="creator-toggle-icon">
+                                                <svg
+                                                    width="16" height="16" viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="2"
+                                                    style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+                                                >
+                                                    <path d="M9 18L15 12L9 6" strokeLinecap="round" strokeLinejoin="round" />
+                                                </svg>
+                                            </div>
+                                        )}
                                     </div>
 
-                                    {isExpanded && (
+                                    {!isDeleteMode && isExpanded && (
                                         <div className="thread-list">
                                             {/* List threads */}
+                                            {threads.length === 0 && (
+                                                <div className="empty-threads">
+                                                    {isArchiveMode ? "No archived chats" : "No chats yet"}
+                                                </div>
+                                            )}
                                             {threads.map(thread => {
                                                 const isRenaming = renamingId === thread.id;
                                                 // activeMenu check is global now
@@ -265,19 +460,21 @@ export function ChatSidebar({
                                                 );
                                             })}
 
-                                            {/* New Chat Button */}
-                                            <button
-                                                className="new-thread-btn"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onNewThread(creator.id);
-                                                }}
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
-                                                    <path d="M12 5V19M5 12H19" strokeLinecap="round" strokeLinejoin="round" />
-                                                </svg>
-                                                New Chat
-                                            </button>
+                                            {/* New Chat Button - Only show if NOT in Archive Mode */}
+                                            {!isArchiveMode && (
+                                                <button
+                                                    className="new-thread-btn"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        onNewThread(creator.id);
+                                                    }}
+                                                >
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
+                                                        <path d="M12 5V19M5 12H19" strokeLinecap="round" strokeLinejoin="round" />
+                                                    </svg>
+                                                    New Chat
+                                                </button>
+                                            )}
                                         </div>
                                     )}
                                 </div>

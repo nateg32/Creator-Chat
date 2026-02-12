@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getCreatorStats } from "../api/client";
+import { ScrapeStatusPanel } from "./ScrapeStatusPanel";
 
 export function CreatorProfile({ creatorId, creator, onScrape, onApprove, onChat }) {
   const [stats, setStats] = useState(null);
@@ -66,6 +67,10 @@ export function CreatorProfile({ creatorId, creator, onScrape, onApprove, onChat
           </div>
         </div>
       ) : null}
+
+      {/* Advanced Scrape Status Panel */}
+      <ScrapeStatusPanel creatorId={creatorId} />
+
 
       <div className="profile-actions">
         <button onClick={onScrape} className="action-button scrape-button">

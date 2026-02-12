@@ -21,7 +21,7 @@ DB_PASSWORD=your_db_password
 ### 3. Run the Backend
 ```powershell
 cd backend
-python -m uvicorn app:app --host 127.0.0.1 --port 8001
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
 ### 4. Run the Frontend
@@ -53,7 +53,7 @@ npm run dev
 - **LinkedIn Scraper Output**: The system is tuned to use the `username` field for LinkedIn actors. Always provide a handle or a full `/in/` URL.
 - **OpenAI/Httpx Compatibility**: If you see `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'`, ensure `openai >= 1.40.0`.
 - **JSON Serialization**: Database objects (datetimes, UUIDs) are automatically handled via `default=str` in all internal serialization calls.
-- **Port 8001**: The backend is configured to run on port 8001 to avoid common conflicts with system services on port 8000.
+- **Port 8000**: The backend is configured to run on port 8000.
 
 ## 📂 Project Structure
 - `backend/`: Core logic, API endpoints, and database handlers.
