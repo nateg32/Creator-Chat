@@ -42,6 +42,12 @@ This document tracks the major debugging, implementation, and refinement tasks c
 - **Metadata Protection**: Implemented a rule to hide text-based source links whenever preview cards are present, ensuring a clean and focused UI.
 - **Dynamic Icons**: Added conditional icon rendering for different resource types (Search, Video, Article, Channel).
 
+
+### Creator-Only Recommendation Stability
+- **Dependency Injection Fix**: Corrected `ContentFinder` initialization so a provided database client is honored instead of always being overwritten by the global DB singleton.
+- **Embedding Client Consistency**: Updated content retrieval to use the injected embedding client when provided, with fallback to the default RAG client.
+- **Code Hygiene**: Removed duplicated internal helper implementation to keep recommendation response formatting behavior deterministic and maintainable.
+
 ### Dependency & Environment Management
 - **OpenAI Compatibility**: Resolved the `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'` by upgrading the `openai` and `httpx` libraries to compatible versions (1.40.0+).
 - **Environment Context**: Verified and documented the loading priority of `.env` files across root and backend directories to prevent token confusion.

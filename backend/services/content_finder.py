@@ -18,9 +18,11 @@ class ContentFinder:
     AMBIGUITY_MARGIN = 0.08
     
     def __init__(self, db_client=None, embedding_client=None):
-        self.db = db_client # Should be passed or imported from db
-        from db import db
-        self.db = db
+        if db_client is not None:
+            self.db = db_client
+        else:
+            from db import db
+            self.db = db
         self.embedding_client = embedding_client
 
     def _parse_duration_seconds(self, raw: Any) -> Optional[int]:
@@ -255,24 +257,6 @@ class ContentFinder:
             "action_label": "Search Channel",
         }
 
-    def _format_success(self, candidate, source, creator_name=""):
-        return {
-            "status": "FOUND",
-            "card": {
-                "type": "preview_card",
-                "resource_type": candidate.get("type", "video"),
-                "title": candidate["title"],
-                "subtitle": f"{candidate.get('source_opt', source.title())} • {candidate.get('date', '')}",
-                "thumbnail_url": candidate.get("thumbnail", ""),
-                "short_snippet": candidate.get("snippet", "")[:150] + "...",
-                "url": candidate["url"],
-                "action_label": "Watch" if candidate.get("type") == "video" else "Read"
-            },
-            "confidence_score": candidate["score"],
-            "confidence_label": "HIGH",
-            "source": source
-        }
-
     def _format_defer(self, label, score, creator_profile: Optional[Dict[str, Any]], query: str):
         cards = []
         if creator_profile and (creator_profile.get("youtube_handle") or creator_profile.get("youtube_channel_id")):
@@ -355,24 +339,6 @@ class ContentFinder:
 
         return {"relation": "OTHER", "confidence": 0.1}
 
-    def _format_success(self, candidate, source, creator_name=""):
-        return {
-            "status": "FOUND",
-            "card": {
-                "type": "preview_card",
-                "resource_type": candidate.get("type", "video"),
-                "title": candidate["title"],
-                "subtitle": f"{candidate.get('source_opt', source.title())} • {candidate.get('date', '')}",
-                "thumbnail_url": candidate.get("thumbnail", ""),
-                "short_snippet": candidate.get("snippet", "")[:150] + "...",
-                "url": candidate["url"],
-                "action_label": "Watch" if candidate.get("type") == "video" else "Read"
-            },
-            "confidence_score": candidate["score"],
-            "confidence_label": "HIGH",
-            "source": source
-        }
-
     def _normalize_keywords(self, text: str) -> List[str]:
         # Broader stopword list for strict matching
         stopwords = {
@@ -405,13 +371,14 @@ class ContentFinder:
         from rag import get_client, settings
         
         # Get query embedding
+        client = self.embedding_client or get_client()
         try:
-            emb_resp = get_client().embeddings.create(
+            emb_resp = client.embeddings.create(
                 model=settings.EMBEDDING_MODEL,
                 input=query
             )
             q_emb = emb_resp.data[0].embedding
-        except:
+        except Exception:
             return []
             
         emb_str = "[" + ",".join(map(str, q_emb)) + "]"
