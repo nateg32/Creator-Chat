@@ -1104,10 +1104,11 @@ def grounded_rag_ask(
         # Use Router's query and types
         router_query = resource_intent.get("query") or question
         cf_result = finder.find_content_card(
-            creator_id, 
-            router_query, 
+            creator_id,
+            router_query,
             resource_type=resource_intent.get("resource_type", "any"),
-            specificity=resource_intent.get("specificity", "recommendation")
+            specificity=resource_intent.get("specificity", "recommendation"),
+            history_messages=conversation_history,
         )
         
         if cf_result["status"] == "DEFER":
