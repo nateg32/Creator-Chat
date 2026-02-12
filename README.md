@@ -37,6 +37,7 @@ npm run dev
 - **Scraper Router**: Directs requests to platform-specific Apify actors (LinkedIn, Instagram, TikTok).
 - **Ingestion Pipeline**: Automated chunking (800 chars), metadata extraction, and embedding generation using `text-embedding-3-small`.
 - **Grounded-RAG**: A custom multi-step retrieval loop that re-ranks candidates and enforces the creator's persona while ensuring factual grounding.
+- **Creator Video Recommender**: Uses a three-tier confidence model (strong/moderate/weak) so moderate matches return 2–3 creator-owned video cards before falling back to channel search.
 
 ### Frontend (React + Vite)
 - **Setup Wizard**: Simplifies creator onboarding and platform configuration.
