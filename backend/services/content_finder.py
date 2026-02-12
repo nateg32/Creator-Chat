@@ -13,8 +13,9 @@ class ContentFinder:
     - Falls back to creator-owned channel search card when uncertain.
     """
     
-    HIGH_THRESHOLD = 0.82
-    MEDIUM_THRESHOLD = 0.68
+    STRONG_MATCH_THRESHOLD = 0.85
+    MODERATE_MATCH_THRESHOLD = 0.65
+    LOW_TRANSCRIPT_THRESHOLD_ADJUST = 0.05
     AMBIGUITY_MARGIN = 0.08
     
     def __init__(self, db_client=None, embedding_client=None):
@@ -176,23 +177,30 @@ class ContentFinder:
         if not filtered:
             return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=need["topic"])
 
+        has_transcript_candidates = any((c.get("snippet") or "").strip() for c in filtered)
+        strong_threshold = self.STRONG_MATCH_THRESHOLD
+        moderate_threshold = self.MODERATE_MATCH_THRESHOLD
+        if not has_transcript_candidates:
+            strong_threshold = max(0.0, strong_threshold - self.LOW_TRANSCRIPT_THRESHOLD_ADJUST)
+            moderate_threshold = max(0.0, moderate_threshold - self.LOW_TRANSCRIPT_THRESHOLD_ADJUST)
+
         for c in filtered:
-            c["score"] = self._best_next_score(c, need)
+            c["score"] = self._best_next_score(c, need, query=query)
         filtered.sort(key=lambda x: x["score"], reverse=True)
 
         top = filtered[0]
         second = filtered[1] if len(filtered) > 1 else None
         margin = top["score"] - (second["score"] if second else 0.0)
 
-        if top["score"] >= self.HIGH_THRESHOLD and margin >= self.AMBIGUITY_MARGIN:
+        if top["score"] >= strong_threshold and margin >= self.AMBIGUITY_MARGIN:
             return {"status": "FOUND", "cards": [self._to_preview_card(top)], "confidence_score": top["score"]}
 
-        if top["score"] >= self.HIGH_THRESHOLD and margin < self.AMBIGUITY_MARGIN:
-            top_high = [c for c in filtered[:3] if c["score"] >= self.HIGH_THRESHOLD]
-            if top_high:
+        if top["score"] >= moderate_threshold:
+            moderate = [c for c in filtered[:3] if c["score"] >= moderate_threshold]
+            if moderate:
                 return {
                     "status": "FOUND",
-                    "cards": [self._to_preview_card(c) for c in top_high],
+                    "cards": [self._to_preview_card(c) for c in moderate],
                     "confidence_score": top["score"],
                 }
 
@@ -203,7 +211,7 @@ class ContentFinder:
             "is_fallback": True,
         }
 
-    def _best_next_score(self, candidate: Dict[str, Any], need: Dict[str, str]) -> float:
+    def _best_next_score(self, candidate: Dict[str, Any], need: Dict[str, str], query: str = "") -> float:
         topic_weight = 0.40
         intent_weight = 0.25
         level_weight = 0.15
@@ -226,6 +234,20 @@ class ContentFinder:
             + format_weight * candidate.get("format_fit_score", 0.0)
             + recency_weight * candidate.get("recency_score", 0.0)
         )
+
+        if query:
+            query_terms = set(self._normalize_keywords(query))
+            title_terms = set(self._normalize_keywords(candidate.get("title", "")))
+            overlap = len(query_terms.intersection(title_terms))
+            if overlap > 0:
+                score += min(0.08, 0.02 * overlap)
+
+        foundational_topics = {"market structure", "risk", "entries", "strategy"}
+        if need.get("user_level") == "beginner" and need.get("topic") in foundational_topics:
+            level_text = f"{candidate.get('title', '')} {candidate.get('snippet', '')}".lower()
+            if any(w in level_text for w in ["beginner", "basics", "foundation", "start"]):
+                score += 0.05
+
         return max(0.0, min(1.0, score))
 
     def _to_preview_card(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -495,6 +517,7 @@ class ContentFinder:
                 "source_opt": "Ingested Content",
                 "thumbnail": meta.get("thumbnail_url") or meta.get("thumbnail") or "",
                 "subtitle": subtitle,
+                "has_transcript": bool(text.strip()),
             })
             
         candidates.sort(key=lambda x: x.get("topic_match_score", 0.0), reverse=True)

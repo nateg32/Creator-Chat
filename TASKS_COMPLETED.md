@@ -48,6 +48,15 @@ This document tracks the major debugging, implementation, and refinement tasks c
 - **Embedding Client Consistency**: Updated content retrieval to use the injected embedding client when provided, with fallback to the default RAG client.
 - **Code Hygiene**: Removed duplicated internal helper implementation to keep recommendation response formatting behavior deterministic and maintainable.
 
+
+### Creator-Only Recommendation Stability
+- **Confidence Gating Upgrade**: Replaced binary fallback gating with a 3-tier model: strong (1 best video), moderate (2–3 creator-owned choices), and weak (channel search fallback).
+- **Transcript-Aware Thresholding**: Added automatic threshold relaxation when transcript text is unavailable so title-only inventories do not over-fallback.
+- **Ranking Boosts**: Added query-token/title overlap boost and beginner foundational topic boost to improve precision for starter educational asks (for example, market structure).
+- **Dependency Injection Fix**: Corrected `ContentFinder` initialization so a provided database client is honored instead of always being overwritten by the global DB singleton.
+- **Embedding Client Consistency**: Updated content retrieval to use the injected embedding client when provided, with fallback to the default RAG client.
+- **Code Hygiene**: Removed duplicated internal helper implementation to keep recommendation response formatting behavior deterministic and maintainable.
+
 ### Dependency & Environment Management
 - **OpenAI Compatibility**: Resolved the `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'` by upgrading the `openai` and `httpx` libraries to compatible versions (1.40.0+).
 - **Environment Context**: Verified and documented the loading priority of `.env` files across root and backend directories to prevent token confusion.
