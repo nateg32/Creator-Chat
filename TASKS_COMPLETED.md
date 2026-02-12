@@ -23,6 +23,30 @@ This document tracks the major debugging, implementation, and refinement tasks c
 - **Human Voice Algorithm**: Developed a "Grounded-RAG" logic that forces the assistant to speak in a high-energy, human conversational style.
 - **Robotic Tone Mitigation**: Updated system prompts to penalize passive "AI-ish" language, over-structured listing, and repetitive sentence structures.
 - **Persona Integration**: Improved the injection of creator-specific phrasing and worldview directly from ingested persona documents and content snippets.
+- **Resource Intent Routing**: Implemented a semantic intent classifier that distinguishes between "General Knowledge" and "Specific Resource" requests (Video, Course, Article), triggering specialized retrieval loops.
+
+### Creator Ownership Gate (COG)
+- **Strict Ownership Enforcement**: Implemented a multi-layered verification gate that prevents the bot from recommending content not owned by the active creator.
+- **Creator Relation Scoring**: Each candidate (Ingested or Web) is classified as `SELF`, `AFFILIATED`, `OTHER`, or `UNKNOWN`. Only `SELF` (or verified `AFFILIATED`) content is allowed to be presented as a preview card.
+- **Confidence Scoring Engine**: Established a strict confidence threshold (0.82) for specific resource recommendations to ensure high precision and trust.
+- **Verification Logic**: Implemented domain-allowlist and YouTube channel-ID matching to verify ownership of web search results.
+
+### Identity Infrastructure & Fallbacks
+- **Canonical Identity Profiling**: Extended the creator profile to store `youtube_channel_id`, `youtube_handle`, `official_domains`, and `course_base_urls` as primary sources of truth for ownership verification.
+- **Graceful Fallbacks**: Created a "No Dead-End" strategy. If a specific video cannot be found with high confidence, the system returns a **Creator-Specific Fallback Card** (e.g., a search on the creator's official channel) instead of a generic deferral message.
+- **Identity-First Web Fallback**: Restricted web search recommendations to creators with verified canonical identity fields, ensuring no "random" internet links leak through.
+
+### UI/UX & Card Rendering
+- **Multi-Card Layout**: Updated the chat interface to support rendering multiple preview cards (up to 3) side-by-side or stacked.
+- **Custom Card Types**: Implemented `channel_card` and `channel_search_card` in the frontend to handle fallback recommendations with appropriate styling and iconography.
+- **Metadata Protection**: Implemented a rule to hide text-based source links whenever preview cards are present, ensuring a clean and focused UI.
+- **Dynamic Icons**: Added conditional icon rendering for different resource types (Search, Video, Article, Channel).
+
+
+### Creator-Only Recommendation Stability
+- **Dependency Injection Fix**: Corrected `ContentFinder` initialization so a provided database client is honored instead of always being overwritten by the global DB singleton.
+- **Embedding Client Consistency**: Updated content retrieval to use the injected embedding client when provided, with fallback to the default RAG client.
+- **Code Hygiene**: Removed duplicated internal helper implementation to keep recommendation response formatting behavior deterministic and maintainable.
 
 
 ### Creator-Only Recommendation Stability
@@ -41,4 +65,5 @@ This document tracks the major debugging, implementation, and refinement tasks c
 - **Backend**: FastAPI (Python) - Port 8000
 - **Frontend**: Vite (React) - Port 5173
 - **Primary Scraper**: Apify (LinkedIn, Instagram Reels, TikTok)
+- **Search Provider**: SerpAPI (Google Search)
 - **Vector Engine**: Postgres + pgvector

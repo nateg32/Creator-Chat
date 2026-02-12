@@ -14,6 +14,7 @@ Create a `.env` file in the root directory:
 ```env
 OPENAI_API_KEY=your_key
 APIFY_TOKEN=your_token
+SERPAPI_API_KEY=your_serpapi_key
 DATABASE_URL=postgresql://user:pass@localhost:5432/creator_bot
 DB_PASSWORD=your_db_password
 ```
@@ -40,14 +41,13 @@ npm run dev
 - **Creator Video Recommender**: Uses a three-tier confidence model (strong/moderate/weak) so moderate matches return 2–3 creator-owned video cards before falling back to channel search.
 
 ### Frontend (React + Vite)
-- **Setup Wizard**: Simplifies creator onboarding and platform configuration.
-- **Approval Gate**: Provides a staging area to review and approve scraped content before it hits the vector database.
-- **Chat Interface**: A premium, responsive interface for interacting with the "cloned" assistant.
+- **Setup Wizard**: Handles creator onboarding and verification of official links (YouTube, Website).
+- **Resource Cards**: Premium UI components for rendering Videos, Articles, and "Channel Fallback" cards.
+- **Approval Gate**: Staging area for reviewed and approved scraped content.
 
 ### Database (Postgres + pgvector)
-- **`scrape_items`**: Staging table for raw content previews and transcriptions.
-- **`documents`**: Permanent storage for approved creator knowledge.
-- **`embeddings`**: Vector storage for semantic similarity search.
+- **`creators`**: Stores canonical identity metadata (YouTube handles, official domains, course URLs) for verification.
+- **`documents` / `chunks`**: Approved knowledge snippets with semantic embeddings.
 
 ## 🛠️ In-Depth Troubleshooting & Fixes
 
