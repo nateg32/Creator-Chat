@@ -157,3 +157,75 @@
 .done-btn:hover {
     background: #1557b0;
 }
+
+.mode-toggle-group {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.mode-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: #f8f9fa;
+    border: 1px solid #dadce0;
+    border-radius: 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s;
+}
+
+.mode-btn:hover {
+    background: #f1f3f4;
+    border-color: #bdc1c6;
+}
+
+.mode-btn.selected {
+    background: #e8f0fe;
+    border-color: #1a73e8;
+}
+
+.radio-circle {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid #bdc1c6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.mode-btn.selected .radio-circle {
+    border-color: #1a73e8;
+}
+
+.radio-inner {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #1a73e8;
+    display: none;
+}
+
+.mode-btn.selected .radio-inner {
+    display: block;
+}
+
+.mode-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.mode-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #3c4043;
+}
+
+.mode-desc {
+    font-size: 12px;
+    color: #5f6368;
+}

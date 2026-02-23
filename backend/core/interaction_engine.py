@@ -840,7 +840,11 @@ Output ONLY your response."""
                         title = source_ref["title"]
 
                 if content:
-                    item_text = f"From your content: \"{content[:400]}\""
+                    if content.startswith("[LIVE WEB SEARCH RESULT]"):
+                        item_text = f"Live Web Search (Verified Link): '{title}' - {content.replace('[LIVE WEB SEARCH RESULT]', '').strip()}"
+                    else:
+                        item_text = f"From your content: \"{content[:400]}\""
+                    
                     if url:
                         item_text += f"\n(Video Title: {title} | Link: {url})"
                     chunks_text.append(item_text)
@@ -854,7 +858,7 @@ Output ONLY your response."""
         history_context = ""
         if history:
             recent = history[-10:]
-            history_lines = [f"{('User' if t.get('role') == 'user' else creator_name)}: {t.get('content', '')[:150]}" for t in recent]
+            history_lines = [f"{('User' if t.get('role') == 'user' else creator_name)}: {t.get('content', '')[:1000]}" for t in recent]
             history_context = f"\nRECENT CONVERSATION:\n{chr(10).join(history_lines)}\n"
 
         memory_section = ""
@@ -922,7 +926,7 @@ STRICT IDENTITY LOCK:
 1. NEVER reveal you are an AI, a language model, or ChatGPT.
 2. You are {creator_name}. This is your real, physical identity.
 3. KNOWLEDGE HIERARCHY:
-   - PRIORITY 1: Use specific context from "KNOWLEDGE" section (your own video transcripts/ingested content). If a link is provided in the knowledge, SHARE IT if the user asks.
+   - PRIORITY 1: Use specific context from "KNOWLEDGE" section (your own video transcripts/ingested content OR Verified Live Web Search Results). If a link is provided in the knowledge, SHARE IT if the user asks.
    - PRIORITY 2: Use the "YOUR SOCIAL CHANNELS" and "PUBLIC DOMAIN FACTS" sections.
 {anti_halluc_rule}
 4. TRUTH ANCHOR: The biographical facts provided in IDENTITY/FACTS are the ABSOLUTE TRUTH. If they conflict with any other context or memory, THESE facts win.
@@ -937,6 +941,10 @@ STRICT IDENTITY LOCK:
         anti_halluc_rule = "- FALLBACK: If a fact or link is NOT in Priority 1 or 2, say: \"Unfortunately, I don't have access to that information right now.\" DO NOT guess, speculate, or hallucinate."
         if not has_links:
             anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent a title. Tell the user you don't have a link for that right now, but give them your best advice instead."
+        
+        # If we have web search results, ensure the rule allows them
+        if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
+            anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links (labeled 'Live Web Search') to answer the user accurately. These are VERIFIED for this session."
 
         return f"""IDENTITY: You are {creator_name}.
 {identity_context}
@@ -1213,6 +1221,10 @@ Output only the response."""
         anti_hallucination_rule = "7. DO NOT HALLUCINATE VIDEOS. If you recommend a video but there is NO specific video title or link mapped in the KNOWLEDGE FROM YOUR CONTENT section above, you MUST NOT invent or guess a video title. Instead, give them the advice directly or say you don't have a specific link handy right now."
         if not has_links:
             anti_hallucination_rule = "7. CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS IN YOUR CONTEXT. Therefore, you MUST NOT recommend ANY specific video or resource by title, because you cannot provide the link. Do not invent a title. Just give the advice directly or tell the user you don't have a link for that right now."
+        
+        # If we have web search results, ensure the rule allows them
+        if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
+            anti_hallucination_rule = "7. USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links (labeled 'Live Web Search') to answer the user accurately. These are VERIFIED for this session."
 
         system_prompt = f"""IDENTITY:
 You are {creator_name}.
@@ -1426,7 +1438,7 @@ Output the cleaned text only."""
         summary = ""
         for turn in history[-5:]:
             role = turn.get("role", "user")
-            content = turn.get("content", "")[:100]
+            content = turn.get("content", "")[:1000]
             summary += f"{role}: {content}...\n"
         return summary
 

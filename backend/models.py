@@ -198,6 +198,7 @@ class Creator(BaseModel):
     official_domains: List[str] = []
     course_domains: List[str] = []
     course_base_urls: List[str] = []
+    search_mode: str = "hybrid"
 
 
 class CreateCreatorRequest(BaseModel):
@@ -229,6 +230,7 @@ class UpdateCreatorRequest(BaseModel):
     official_domains: Optional[List[str]] = None
     course_domains: Optional[List[str]] = None
     course_base_urls: Optional[List[str]] = None
+    search_mode: Optional[str] = None
 
 
 class CreatorWithConfigResponse(BaseModel):
@@ -244,6 +246,7 @@ class CreatorWithConfigResponse(BaseModel):
     official_domains: List[str] = []
     course_domains: List[str] = []
     course_base_urls: List[str] = []
+    search_mode: str = "hybrid"
 
     created_at: Optional[str] = None
 

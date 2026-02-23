@@ -25,8 +25,8 @@ class ContentFinder:
             from db import db
             self.db = db
         self.embedding_client = embedding_client
-        from services.research_provider import GeminiResearchProvider
-        self.research_provider = GeminiResearchProvider()
+        from services.research_provider import get_research_provider
+        self.research_provider = get_research_provider()
 
     def _parse_duration_seconds(self, raw: Any) -> Optional[int]:
         if raw is None:

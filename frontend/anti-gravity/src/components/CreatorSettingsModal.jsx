@@ -19,7 +19,9 @@ export function CreatorSettingsModal({
     creatorAvatarUrl,
     visualConfig,
     onUpdateVisualConfig,
-    onUpdateCreatorAvatar
+    onUpdateCreatorAvatar,
+    searchMode = "hybrid",
+    onUpdateSearchMode
 }) {
     if (!isOpen) return null;
 
@@ -28,6 +30,7 @@ export function CreatorSettingsModal({
     // Local state for immediate feedback inside modal
     const [localCreatorColor, setLocalCreatorColor] = useState(visualConfig?.creatorNameColor || "#4285F4");
     const [localUserColor, setLocalUserColor] = useState(visualConfig?.userNameColor || "#3C4043");
+    const [localSearchMode, setLocalSearchMode] = useState(searchMode);
 
     const fileInputRef = useRef(null);
 
@@ -38,6 +41,13 @@ export function CreatorSettingsModal({
         } else {
             setLocalUserColor(color);
             await onUpdateVisualConfig({ userNameColor: color });
+        }
+    };
+
+    const handleSearchModeChange = async (mode) => {
+        setLocalSearchMode(mode);
+        if (onUpdateSearchMode) {
+            await onUpdateSearchMode(mode);
         }
     };
 
@@ -84,6 +94,37 @@ export function CreatorSettingsModal({
                             accept="image/*"
                             onChange={handleAvatarUpload}
                         />
+                    </div>
+                </div>
+
+                <div className="settings-section">
+                    <h4>Search Mode</h4>
+                    <div className="mode-toggle-group">
+                        <button
+                            className={`mode-btn ${localSearchMode === "ingested_only" ? "selected" : ""}`}
+                            onClick={() => handleSearchModeChange("ingested_only")}
+                        >
+                            <div className="radio-circle">
+                                <div className="radio-inner"></div>
+                            </div>
+                            <div className="mode-info">
+                                <span className="mode-label">Ingested Content Only</span>
+                                <span className="mode-desc">Only refers to your official documents and transcripts.</span>
+                            </div>
+                        </button>
+
+                        <button
+                            className={`mode-btn ${localSearchMode === "hybrid" ? "selected" : ""}`}
+                            onClick={() => handleSearchModeChange("hybrid")}
+                        >
+                            <div className="radio-circle">
+                                <div className="radio-inner"></div>
+                            </div>
+                            <div className="mode-info">
+                                <span className="mode-label">Ingested Content + Web Search</span>
+                                <span className="mode-desc">Uses your content first, then searches the web for context.</span>
+                            </div>
+                        </button>
                     </div>
                 </div>
 

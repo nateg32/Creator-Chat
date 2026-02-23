@@ -29,7 +29,9 @@ def generate_chat_completion(
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
     json_mode: bool = False,
-    stream: bool = False
+    stream: bool = False,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[Any] = None
 ) -> Any:
     """
     Wrapper for OpenAI chat completion.
@@ -41,7 +43,9 @@ def generate_chat_completion(
     kwargs = {
         "model": model,
         "messages": messages,
-        "stream": stream
+        "stream": stream,
+        "tools": tools,
+        "tool_choice": tool_choice
     }
     
     if is_reasoning_model:
@@ -56,6 +60,9 @@ def generate_chat_completion(
     
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    
+    # Filter out None values in kwargs
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
         response = get_client().chat.completions.create(**kwargs)
@@ -74,14 +81,18 @@ async def generate_chat_completion_async(
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
     json_mode: bool = False,
-    stream: bool = False
+    stream: bool = False,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[Any] = None
 ) -> Any:
     """Async wrapper for OpenAI chat completion."""
     is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
     kwargs = {
         "model": model,
         "messages": messages,
-        "stream": stream
+        "stream": stream,
+        "tools": tools,
+        "tool_choice": tool_choice
     }
     if is_reasoning_model:
         kwargs["temperature"] = 1.0
@@ -92,6 +103,9 @@ async def generate_chat_completion_async(
     
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    
+    # Filter out None values in kwargs
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
         response = await get_async_client().chat.completions.create(**kwargs)

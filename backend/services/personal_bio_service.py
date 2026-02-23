@@ -23,7 +23,8 @@ class PersonalBioService:
     """
 
     def __init__(self):
-        self.researcher = GeminiResearchProvider()
+        from services.research_provider import get_research_provider
+        self.researcher = get_research_provider()
 
     def handle_personal_question(
         self, 

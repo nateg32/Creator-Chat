@@ -265,6 +265,7 @@ function AppInner() {
         handle: creator ? creator.handle : "",
         creatorAvatarUrl: creator ? creator.profile_picture_url : "",
         visualConfig: creator ? (creator.visual_config || {}) : {},
+        searchMode: creator ? (creator.search_mode || "hybrid") : "hybrid",
         messages: messages.map(m => ({
           id: m.id,
           role: m.role,
@@ -908,6 +909,23 @@ function AppInner() {
     }
   }
 
+  async function handleUpdateSearchMode(creatorId, mode) {
+    if (!creatorId || creatorId === -1) return;
+    try {
+      // Update in existing creators list
+      setExistingCreators(prev => prev.map(c => c.id === creatorId ? { ...c, search_mode: mode } : c));
+
+      // Update in active chats
+      setChats(prev => prev.map(c => c.creatorId === creatorId ? { ...c, searchMode: mode } : c));
+
+      await updateCreator(creatorId, { search_mode: mode });
+      showToast("Search preference updated", "success");
+    } catch (err) {
+      console.error("Failed to update search mode:", err);
+      showToast("Failed to save search preference: " + err.message, "error");
+    }
+  }
+
   // Persistent Session Restoration
   // Persistent Session Restoration & URL Handling
   useEffect(() => {
@@ -1146,9 +1164,11 @@ function AppInner() {
                   creatorAvatarUrl={activeChat.creatorAvatarUrl || state.creatorAvatarUrl}
                   userAvatarUrl={userAvatarUrl}
                   visualConfig={activeChat.visualConfig || state.visualConfig || {}}
+                  searchMode={activeChat.searchMode || "hybrid"}
                   onUpdateCreatorAvatar={handleUpdateCreatorAvatar}
                   onUpdateUserAvatar={setUserAvatarUrl}
                   onUpdateVisualConfig={handleUpdateVisualConfig}
+                  onUpdateSearchMode={handleUpdateSearchMode}
                   userName={userSettings?.display_name}
                   debug={debugAsk}
                   onInteraction={() => {

@@ -551,6 +551,7 @@ async def list_creators():
         dcol = _creator_display_column()
         query = f"""
             SELECT c.id, c.{dcol} as name, c.handle, c.created_at, c.profile_picture_url, c.visual_config, c.style_fingerprint,
+                   c.search_mode,
                    (SELECT COUNT(*) FROM scrape_queue q WHERE q.creator_id = c.id AND q.status = 'ingested') as item_count
             FROM creators c
             ORDER BY c.created_at DESC
@@ -568,7 +569,8 @@ async def list_creators():
                 item_count=row.get("item_count", 0),
                 created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
                 visual_config=row.get("visual_config") if isinstance(row.get("visual_config"), dict) else (json.loads(row.get("visual_config")) if isinstance(row.get("visual_config"), str) else {}),
-                style_fingerprint=row.get("style_fingerprint") if isinstance(row.get("style_fingerprint"), dict) else (json.loads(row.get("style_fingerprint")) if isinstance(row.get("style_fingerprint"), str) else {})
+                style_fingerprint=row.get("style_fingerprint") if isinstance(row.get("style_fingerprint"), dict) else (json.loads(row.get("style_fingerprint")) if isinstance(row.get("style_fingerprint"), str) else {}),
+                search_mode=row.get("search_mode") or "hybrid"
             ))
         
         return CreatorsListResponse(creators=creators)
@@ -848,6 +850,9 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
         if request.course_base_urls is not None:
             updates.append("course_base_urls = %s")
             params.append(request.course_base_urls)
+        if request.search_mode is not None:
+            updates.append("search_mode = %s")
+            params.append(request.search_mode)
 
         if not updates:
             configs_out = existing.get("platform_configs") or {}
@@ -868,6 +873,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
                 official_domains=existing.get("official_domains") or [],
                 course_domains=existing.get("course_domains") or [],
                 course_base_urls=existing.get("course_base_urls") or [],
+                search_mode=existing.get("search_mode") or "hybrid",
                 created_at=None,
             )
 
@@ -876,7 +882,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             f"UPDATE creators SET {', '.join(updates)} WHERE id = %s",
             tuple(params),
         )
-        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s", (creator_id,))
+        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode FROM creators WHERE id = %s", (creator_id,))
         pc = row.get("platform_configs") or {}
         if hasattr(pc, "copy"):
             pc = dict(pc) if pc else {}
@@ -908,6 +914,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             official_domains=row.get("official_domains") or [],
             course_domains=row.get("course_domains") or [],
             course_base_urls=row.get("course_base_urls") or [],
+            search_mode=row.get("search_mode") or "hybrid",
             created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
         )
     except HTTPException:
@@ -929,30 +936,30 @@ async def delete_creator(creator_id: int):
 
         # Delete associated data in strict foreign-key dependency order
         
+        def safe_delete(query, params):
+            try:
+                db.execute_update(query, params)
+            except Exception as e:
+                # Ignore if table doesn't exist, log otherwise
+                if "does not exist" not in str(e):
+                    print(f"Delete warning for {query}: {e}")
+
         # 1. User preferences & facts & turns
-        db.execute_update("DELETE FROM user_creator_preferences WHERE creator_id = %s", (creator_id,))
-        db.execute_update("DELETE FROM verified_facts WHERE creator_id = %s", (creator_id,))
-        db.execute_update("DELETE FROM conversation_turns WHERE creator_id = %s", (creator_id,))
+        safe_delete("DELETE FROM user_creator_preferences WHERE creator_id = %s", (creator_id,))
+        safe_delete("DELETE FROM verified_facts WHERE creator_id = %s", (creator_id,))
+        safe_delete("DELETE FROM conversation_turns WHERE creator_id = %s", (creator_id,))
         
         # 2. Chat Threads & Messages
-        db.execute_update("DELETE FROM chat_messages WHERE thread_id IN (SELECT id FROM chat_threads WHERE creator_id = %s)", (creator_id,))
-        db.execute_update("DELETE FROM chat_threads WHERE creator_id = %s", (creator_id,))
+        safe_delete("DELETE FROM chat_messages WHERE thread_id IN (SELECT id FROM chat_threads WHERE creator_id = %s)", (creator_id,))
+        safe_delete("DELETE FROM chat_threads WHERE creator_id = %s", (creator_id,))
         
-        # 3. Search Jobs & Items
-        db.execute_update("DELETE FROM search_items WHERE search_id IN (SELECT id FROM search_jobs WHERE creator_id = %s)", (creator_id,))
-        db.execute_update("DELETE FROM search_jobs WHERE creator_id = %s", (creator_id,))
+        # 3. Embeddings, Chunks & Documents & Queue
+        safe_delete("DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE creator_id = %s)", (creator_id,))
+        safe_delete("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
+        safe_delete("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
+        safe_delete("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
         
-        # 4. Scrape Runs & Items (if schema uses run_id)
-        db.execute_update("DELETE FROM search_items WHERE scrape_id IN (SELECT id FROM scrape_runs WHERE creator_id = %s)", (creator_id,))
-        db.execute_update("DELETE FROM scrape_runs WHERE creator_id = %s", (creator_id,))
-        
-        # 5. Embeddings, Chunks & Documents & Queue
-        db.execute_update("DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE creator_id = %s)", (creator_id,))
-        db.execute_update("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
-        db.execute_update("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
-        db.execute_update("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
-        
-        # 6. Finally, delete the creator
+        # 4. Finally, delete the creator
         count = db.execute_update("DELETE FROM creators WHERE id = %s", (creator_id,))
         if count == 0:
              raise HTTPException(status_code=404, detail="Creator not found during delete")
@@ -971,7 +978,7 @@ async def get_creator_config(creator_id: int):
     """Get creator with platform_configs."""
     dcol = _creator_display_column()
     row = db.execute_one(
-        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, created_at FROM creators WHERE id = %s",
+        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode, created_at FROM creators WHERE id = %s",
         (creator_id,),
     )
     if not row:
@@ -1007,6 +1014,7 @@ async def get_creator_config(creator_id: int):
         official_domains=row.get("official_domains") or [],
         course_domains=row.get("course_domains") or [],
         course_base_urls=row.get("course_base_urls") or [],
+        search_mode=row.get("search_mode") or "hybrid",
         created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
     )
 

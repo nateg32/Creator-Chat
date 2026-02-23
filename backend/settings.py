@@ -27,7 +27,7 @@ class Settings:
     APIFY_TOKEN: Optional[str] = os.getenv("APIFY_TOKEN", None)
     
     # Search API (e.g. Brave Search, Google, Serper)
-    SEARCH_API_KEY: Optional[str] = os.getenv("SEARCH_API_KEY", None)
+    SEARCH_API_KEY: Optional[str] = os.getenv("SEARCH_API_KEY", os.getenv("SERPAPI_API_KEY"))
     
     # Transcription
     TRANSCRIBE_ON_INGEST: bool = os.getenv("TRANSCRIBE_ON_INGEST", "false").lower() == "true"

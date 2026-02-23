@@ -361,6 +361,56 @@ def needs_links(user_msg: str) -> bool:
     ]
     return any(x in t for x in triggers)
 
+def evaluate_context_sufficiency(question: str, support_set: List[Dict[str, Any]]) -> str:
+    """
+    Uses a fast LLM call to classify if the retrieved RAG chunks are sufficient to answer the question.
+    Returns: "SUFFICIENT", "PARTIAL", or "INSUFFICIENT"
+    """
+    knowledge_text = ""
+    for i, c in enumerate(support_set[:5]):
+        knowledge_text += f"[{i}] {c.get('content', '')}\n"
+    
+    if not knowledge_text.strip():
+        return "INSUFFICIENT"
+
+    prompt = f"""
+Evaluate if the following KNOWLEDGE is sufficient to answer the USER QUESTION accurately.
+
+USER QUESTION: "{question}"
+
+KNOWLEDGE:
+{knowledge_text}
+
+Classify the sufficiency:
+- SUFFICIENT: The knowledge provides a complete, accurate, and current answer.
+- PARTIAL: The knowledge has some info but is missing critical updated facts, real-time data (like current prices/news), or specific details asked.
+- INSUFFICIENT: The knowledge is irrelevant, outdated, or completely missing the answer.
+
+Respond with JUST the classification in JSON format.
+JSON: {{"classification": "SUFFICIENT" | "PARTIAL" | "INSUFFICIENT"}}
+"""
+    
+    try:
+        messages = [{"role": "system", "content": "You are a helpful knowledge assessment assistant."}, {"role": "user", "content": prompt}]
+        # Use MODEL_CLASSIFICATION as requested (e.g. GPT-4o-mini or GPT-4o)
+        response_text = rag.generate_chat_completion(messages, model=settings.MODEL_CLASSIFICATION, json_mode=True)
+        
+        if not response_text:
+            return "PARTIAL"
+            
+        # Use GeminiResearchProvider's parser for convenience if it's accessible, 
+        # or just a simple json.loads here
+        import json
+        data = json.loads(response_text)
+        if data and "classification" in data:
+            result = data["classification"].upper()
+            if result in ["SUFFICIENT", "PARTIAL", "INSUFFICIENT"]:
+                return result
+    except Exception as e:
+        logger.error(f"Error in context evaluation: {e}")
+        
+    return "PARTIAL"
+
 
 def is_follow_up_requesting_links(
     question: str,
@@ -2097,7 +2147,8 @@ Message: {answer_text[:500]}"""
         SELECT id, name, handle, style_fingerprint, voice_profile, 
                identity_fingerprint, research_summary, soul_md,
                decision_policy, stronghold_json, rhythm_profile_json,
-               creator_category, persona_style_json, controller_overrides_json
+               creator_category, persona_style_json, controller_overrides_json,
+               search_mode
         FROM creators WHERE id = %s
     """, (creator_id,))
     if not creator_row:
@@ -2235,14 +2286,19 @@ Message: {answer_text[:500]}"""
         needs_fallback = False
         if not support_set:
             needs_fallback = True
-        elif min([c.get("distance", 1.0) for c in support_set]) > 0.65:
-            needs_fallback = True
-        elif wants_link and not any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in support_set):
-            needs_fallback = True # Force fallback if they asked for a link but DB has no URL
+        else:
+            # SMART EVALUATOR: Instead of keywords, ask LLM if we have enough info
+            sufficiency = evaluate_context_sufficiency(question, support_set)
+            logger.info(f"Context Sufficiency: {sufficiency}")
+            if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
+                needs_fallback = True
             
-        if needs_fallback and wants_link:
-            logger.info("RAG weak/empty & links requested. Triggering Live Web Search Fallback...")
-            rp = GeminiResearchProvider()
+        search_mode = creator_row.get("search_mode") or "hybrid"
+            
+        if needs_fallback and search_mode == "hybrid":
+            logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
+            from services.research_provider import get_research_provider
+            rp = get_research_provider()
             web_results = rp.search(
                 question, 
                 creator_row, 
@@ -2250,7 +2306,7 @@ Message: {answer_text[:500]}"""
             )
             
             # Inject Live Search results as faux-chunks
-            for i, w in enumerate(web_results[:3]):
+            for i, w in enumerate(web_results[:6]):
                 faux_chunk = {
                     "chunk_id": f"web_{i}",
                     "chunk_index": i,
@@ -2382,7 +2438,8 @@ async def grounded_rag_stream(
     # 2. Launch Basic Metadata Tasks (Fast/Async)
     creator_task = asyncio.to_thread(db.execute_one, """
         SELECT id, name, handle, creator_category, rhythm_profile_json,
-               identity_fingerprint, research_summary, soul_md, style_fingerprint
+               identity_fingerprint, research_summary, soul_md, style_fingerprint,
+               search_mode
         FROM creators WHERE id = %s
     """, (creator_id,))
     persona_task = asyncio.to_thread(rag.get_persona, creator_id)
@@ -2444,14 +2501,19 @@ async def grounded_rag_stream(
         needs_fallback = False
         if not support_set:
             needs_fallback = True
-        elif min([c.get("distance", 1.0) for c in support_set]) > 0.65:
-            needs_fallback = True
-        elif wants_link and not any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in support_set):
-            needs_fallback = True
+        else:
+            # SMART EVALUATOR: Instead of keywords, ask LLM if we have enough info
+            sufficiency = await asyncio.to_thread(evaluate_context_sufficiency, question, support_set)
+            logger.info(f"Context Sufficiency: {sufficiency}")
+            if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
+                needs_fallback = True
             
-        if needs_fallback and wants_link:
-            logger.info("RAG weak/empty & links requested (or context implied). Triggering Live Web Search Fallback...")
-            rp = GeminiResearchProvider()
+        search_mode = creator_row.get("search_mode") or "hybrid"
+            
+        if needs_fallback and search_mode == "hybrid":
+            logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
+            from services.research_provider import get_research_provider
+            rp = get_research_provider()
             web_results = await asyncio.to_thread(
                 rp.search, 
                 question, 
@@ -2460,7 +2522,7 @@ async def grounded_rag_stream(
             )
             
             # Inject Live Search results as faux-chunks
-            for i, w in enumerate(web_results[:3]):
+            for i, w in enumerate(web_results[:6]):
                 faux_chunk = {
                     "chunk_id": f"web_{i}",
                     "chunk_index": i,

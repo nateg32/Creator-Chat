@@ -18,7 +18,8 @@ class FingerprintService:
     """
 
     def __init__(self):
-        self.researcher = GeminiResearchProvider()
+        from services.research_provider import get_research_provider
+        self.researcher = get_research_provider()
         self.analyzer = PersonalityAnalyzer()
 
     async def generate_fingerprint_async(self, creator_id: int, refresh: bool = False):

@@ -77,7 +77,9 @@ export function ChatPanel({
   onUpdateCreatorAvatar,
   onUpdateUserAvatar,
   onUpdateVisualConfig,
+  onUpdateSearchMode,
   visualConfig = {},
+  searchMode = "hybrid",
   userName = "You",
   debug = false,
   onInteraction
@@ -648,6 +650,8 @@ export function ChatPanel({
         creatorAvatarUrl={creatorAvatarUrl}
         visualConfig={visualConfig}
         onUpdateVisualConfig={(newConfig) => onUpdateVisualConfig(creatorId, newConfig)}
+        searchMode={searchMode}
+        onUpdateSearchMode={(mode) => onUpdateSearchMode(creatorId, mode)}
         onUpdateCreatorAvatar={async (base64) => {
           if (onUpdateCreatorAvatar) await onUpdateCreatorAvatar(creatorId, base64);
         }}

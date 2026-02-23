@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import requests
 from db import db
 from settings import settings
+import rag
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,110 @@ class ResearchProvider(ABC):
             INSERT INTO search_cache (creator_id, query_hash, provider, results, created_at)
             VALUES (%s, %s, %s, %s, now())
             ON CONFLICT (creator_id, query_hash, provider) 
-            DO UPDATE SET results = EXCLUDED.results, created_at = now()
+            DO UPDATE SET 
+                results = EXCLUDED.results,
+                created_at = now()
         """
         try:
             db.execute_update(sql, (creator_id, query_hash, provider_name, json.dumps(results)))
         except Exception as e:
             logger.error(f"ResearchProvider: Cache write error: {e}")
+
+    def _parse_json(self, text: str) -> Any:
+        try:
+            # Clean markdown formatting
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                # Remove ```json or ``` at start and ``` at end
+                cleaned = re.sub(r'^```(?:json)?\n?', '', cleaned)
+                cleaned = re.sub(r'\n?```$', '', cleaned)
+            
+            # Simple fallback for missing commas or other minor issues 
+            return json.loads(cleaned)
+        except Exception:
+            # Try regex extraction if direct parse fails
+            try:
+                json_match = re.search(r'\[\s*\{.*\}\s*\]|\{.*\}', cleaned, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group(0))
+            except Exception as e:
+                logger.error(f"ResearchProvider: Failed to parse JSON even after cleanup: {e}")
+            return None
+
+    def _enforce_cog(self, candidates: List[Dict[str, Any]], creator_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
+        yt_id = (creator_profile.get('youtube_channel_id') or "").lower()
+        yt_handle = (creator_profile.get('youtube_handle') or "").lower().strip("@")
+        
+        configs = creator_profile.get('platform_configs') or {}
+        yt_config = configs.get('youtube', {})
+        if not yt_handle:
+            yt_handle = (yt_config.get('handle') or yt_config.get('username') or "").lower().strip("@")
+        if not yt_id:
+            yt_id = (yt_config.get('channel_id') or yt_config.get('id') or "").lower()
+
+        official_domains = [d.lower() for d in (creator_profile.get('official_domains') or [])]
+        course_base_urls = [u.lower() for u in (creator_profile.get('course_base_urls') or [])]
+        creator_name = (creator_profile.get('name') or "").lower()
+        
+        verified = []
+        collab_markers = ["interview", "podcast", "guest", "featuring", "presents", "collab", "conversation", "mentorship"]
+
+        for c in candidates:
+            url = c.get('url', "").lower()
+            if not url: continue
+            
+            relation = "OTHER"
+            score = 0.0
+            
+            # PHASE 1: Direct Ownership Check (URL/Domain)
+            is_self = False
+            if "youtube.com" in url or "youtu.be" in url:
+                if yt_id and yt_id in url: is_self = True
+                elif yt_handle and (f"@{yt_handle}" in url or f"/{yt_handle}" in url): is_self = True
+            
+            domain = urlparse(url).netloc.lower()
+            if any(d in domain for d in official_domains): is_self = True
+            if any(url.startswith(u) for u in course_base_urls): is_self = True
+
+            # PHASE 2: Indirect Verification (Source/Channel Name)
+            source = c.get('source', '').lower()
+            if not is_self and source and creator_name:
+                if creator_name in source: is_self = True
+
+            if is_self:
+                relation = "SELF"
+                score = 1.0
+            else:
+                title = c.get('title', '').lower()
+                snippet = c.get('snippet', '').lower()
+                has_name = creator_name and creator_name in title
+                has_marker = any(m in title or m in snippet for m in collab_markers)
+                
+                # Check if LLM already verified it as PUBLIC_FACTS
+                llm_relation = c.get('relation', '').upper()
+                
+                if llm_relation == "PUBLIC_FACTS" and c.get('confidence', 0) >= 0.5:
+                    relation = "AFFILIATED" # Map to AFFILIATED to pass filter
+                    score = 0.7
+                elif has_name and has_marker:
+                    relation = "AFFILIATED"
+                    score = 0.8
+                elif has_name:
+                    relation = "AFFILIATED" # Fallback if we know it's them but can't verify channel ID
+                    score = 0.75 # Boost from 0.6 to pass thresholds more easily
+                else:
+                    relation = "OTHER"
+                    score = 0.1
+            
+            if relation in ("SELF", "AFFILIATED"):
+                c['relation'] = relation
+                c['ownership_score'] = score
+                c['confidence'] = min(1.0, c.get('confidence', 0.5) * score)
+                logger.info(f"ResearchProvider: Accepted candidate '{c.get('title')}' as {relation} (score={score})")
+                verified.append(c)
+        
+        verified.sort(key=lambda x: (x['relation'] == 'SELF', x['confidence']), reverse=True)
+        return verified
 
 class GeminiResearchProvider(ResearchProvider):
     def __init__(self):
@@ -105,12 +204,16 @@ class GeminiResearchProvider(ResearchProvider):
         conversation_history: Optional[List[Dict[str, str]]] = None,
         intent_metadata: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
+        """
+        Legacy research mode: Uses Gemini to synthesize search results.
+        """
         if not self.enabled:
             return []
-            
-        creator_id = creator_profile['id']
+
+        creator_name = creator_profile.get('name', 'The Creator')
+        creator_id = creator_profile.get('id')
         
-        # Consistently extract seen titles using alpha-numeric normalization
+        # Consistent exclusion logic
         seen_titles_ultra = []
         if conversation_history:
             for m in conversation_history[-15:]:
@@ -143,284 +246,49 @@ class GeminiResearchProvider(ResearchProvider):
         if not yt_id:
             yt_id = yt_config.get('channel_id') or yt_config.get('id')
 
-        domains = creator_profile.get('official_domains') or []
-        search_targets = []
-        if yt_handle: search_targets.append(f"YouTube @{yt_handle.strip('@')}")
-        if yt_id: search_targets.append(f"YouTube channel {yt_id}")
-        if domains: search_targets.append(f"Official domains: {', '.join(domains)}")
-        target_str = " AND ".join(search_targets)
-
-        logger.info(f"GeminiResearch: Searching for '{query}' (Excluding {len(seen_titles_ultra)} previous titles)")
-        
-        exclude_instruction = ""
-        if seen_titles_ultra:
-            # We don't send the scrambled alpha-numeric to the LLM, we send the original if we can, 
-            # but for exclusions, the LLM is smart enough if we provide a few readable examples.
-            # For now, we'll extract readable seen titles for the prompt but use IDs/Norm for the actual filter.
-            readable_seen = []
-            for m in conversation_history[-10:]:
-                readable_seen.extend(re.findall(r'"([^"]+)"', m.get("content","")+m.get("text","")))
-            
-            if readable_seen:
-                titles_str = ", ".join([f"'{t[:40]}'" for t in list(set(readable_seen))[:5]])
-                exclude_instruction = f"5. EXCLUDE these already recommended resources (STRICT): {titles_str}. Do NOT return them."
-
-        # Prepare specific guidance from intent metadata
-        user_level = (intent_metadata or {}).get("user_level", "unknown")
-        learning_phase = (intent_metadata or {}).get("learning_phase", "overview")
-        thematic_keywords = (intent_metadata or {}).get("topic_depth", "")
+        # Temporal Context for Gemini
+        now = datetime.now(timezone.utc)
+        time_context = f"TODAY'S DATE: {now.strftime('%Y-%m-%d')}. CURRENT TIME: {now.strftime('%H:%M:%S')} UTC."
 
         prompt = f"""
-
-Find as many UNIQUE {creator_profile.get('name')} resources (videos, articles, or lessons) as possible that relate to the intent: "{query}".
-
-YOU ARE A CHANNEL EXPLORER & RESEARCH AGENT.
-Your goal is to provide deep and varied content from this channel: {target_str}.
-
-User Context: {user_level} level, currently in the '{learning_phase}' phase.
-Thematic guidance: {thematic_keywords}
+{time_context}
+You are an expert Research Assistant for {creator_name}. 
+Your goal is to find UNIQUE resources (videos, articles, or course lessons) that help answer: "{query}"
 
 CRITICAL CONSTRAINTS:
-1. PRIMARY TARGET: ONLY return content OWNED by this creator on their official channels ({target_str}).
-2. GUEST/COLLAB (SECOND PRIORITY): If and ONLY if you cannot find enough specific content on the main channel, you may include high-quality appearances by {creator_profile.get('name')} on other channels (e.g., podcasts, interviews, collaborations). 
-3. DO NOT return random videos from other creators that just mention the name. The creator MUST be the primary speaker/teacher in the resource.
-4. CONTENT > TITLES: Find videos where the creator TEACHES this topic, even if the title is generic.
-5. {exclude_instruction}
-6. NO REPEATS: You MUST return DIFFERENT content from the archives if the user is asking for more.
+1. ONLY return content OWNED by {creator_name} (from their YouTube, Site, or course).
+2. DO NOT return random content from other creators.
+3. EXCLUDE these already shown titles: {seen_titles_ultra}
+4. Provide a helpful 'snippet' explaining why this specific result helps answer the user's intent.
 
-Output a JSON array of objects (limit to top 40 unique fits):
+SEARCH FILTER:
+If you use Google Search, try to isolate {creator_name}'s content:
+- site:youtube.com "@{yt_handle or creator_name}"
+- site:{creator_profile.get('official_domains', ['-'])[0]}
+
+Output a JSON array of objects:
 [
   {{
     "title": "Exact Title",
     "url": "Full URL",
-    "snippet": "Specifically WHY this video is the best fit for a {user_level} trader interested in {query}. Mention what they will learn.",
+    "snippet": "Specifically WHY this video/link is a good fit.",
     "resource_type": "video" | "article" | "course_lesson",
-    "is_playlist": boolean,
-    "series_index": number (optional),
     "confidence": 0.0-1.0
   }}
 ]
 Respond with JSON ONLY.
 """
         
-        text = self._call_gemini_rest(prompt)
+        text = self._call_gemini_rest(prompt, search_enabled=True)
         if not text:
             return []
-
-    def _parse_json(self, text: str) -> Any:
-        try:
-            # Clean markdown formatting
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                # Remove ```json or ``` at start and ``` at end
-                cleaned = re.sub(r'^```(?:json)?\n?', '', cleaned)
-                cleaned = re.sub(r'\n?```$', '', cleaned)
             
-            # Simple fallback for missing commas or other minor issues 
-            # (In a real app, you might use 'dirtyjson' or similar)
-            return json.loads(cleaned)
-        except Exception:
-            # Try regex extraction if direct parse fails
-            try:
-                json_match = re.search(r'\[\s*\{.*\}\s*\]|\{.*\}', cleaned, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group(0))
-            except Exception as e:
-                logger.error(f"GeminiResearch: Failed to parse JSON even after cleanup: {e}")
-            return None
-
-    def search(
-        self, 
-        query: str, 
-        creator_profile: Dict[str, Any], 
-        resource_type: str = "any", 
-        conversation_history: Optional[List[Dict[str, str]]] = None,
-        intent_metadata: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        if not self.enabled:
-            return []
-            
-        creator_id = creator_profile['id']
-        
-        # Consistently extract seen titles using alpha-numeric normalization
-        seen_titles_ultra = []
-        if conversation_history:
-            for m in conversation_history[-15:]:
-                content = (m.get("content") or m.get("text") or "").lower()
-                # Extract quoted titles
-                quoted = re.findall(r'"([^"]+)"', content)
-                # Catch "watch [title]" patterns
-                natural = re.findall(r'(?:watch|check out|video|resource|lesson)\s+([\w\s\-\(\):]+)', content)
-                for t in quoted + natural:
-                    norm = re.sub(r'[^a-z0-9]', '', t)
-                    if len(norm) > 6: seen_titles_ultra.append(norm)
-        
-        seen_titles_ultra = list(set(seen_titles_ultra))
-        cache_salt = ",".join(sorted(seen_titles_ultra))
-        
-        # Check cache once with clean salt
-        cached = self._get_cache(creator_id, query, "gemini", cache_salt=cache_salt)
-        if cached:
-            logger.info(f"GeminiResearch: Cache hit for '{query}' (seen={len(seen_titles_ultra)})")
-            return cached
-
-        yt_handle = creator_profile.get('youtube_handle')
-        yt_id = creator_profile.get('youtube_channel_id')
-        
-        # Fallback to platform_configs if primary columns are empty
-        configs = creator_profile.get('platform_configs') or {}
-        yt_config = configs.get('youtube', {})
-        if not yt_handle:
-            yt_handle = yt_config.get('handle') or yt_config.get('username')
-        if not yt_id:
-            yt_id = yt_config.get('channel_id') or yt_config.get('id')
-        if not yt_handle and not yt_id:
-            # Only use platforms if no youtube-specific ID found
-            platforms = creator_profile.get('platforms') or []
-            yt_p = next((p for p in platforms if p.get('platform') == 'youtube'), {})
-            yt_handle = yt_p.get('handle')
-            yt_id = yt_p.get('channel_id')
-
-        domains = creator_profile.get('official_domains') or []
-        search_targets = []
-        if yt_handle: search_targets.append(f"YouTube @{yt_handle.strip('@')}")
-        if yt_id: search_targets.append(f"YouTube channel {yt_id}")
-        if domains: search_targets.append(f"Official domains: {', '.join(domains)}")
-        target_str = " AND ".join(search_targets)
-
-        logger.info(f"GeminiResearch: Searching for '{query}' (Excluding {len(seen_titles_ultra)} previous titles)")
-        
-        exclude_instruction = ""
-        if seen_titles_ultra:
-            readable_seen = []
-            for m in conversation_history[-10:]:
-                readable_seen.extend(re.findall(r'"([^"]+)"', m.get("content","")+m.get("text","")))
-            
-            if readable_seen:
-                titles_str = ", ".join([f"'{t[:40]}'" for t in list(set(readable_seen))[:5]])
-                exclude_instruction = f"5. EXCLUDE these already recommended resources (STRICT): {titles_str}. Do NOT return them."
-
-        # Prepare specific guidance from intent metadata
-        user_level = (intent_metadata or {}).get("user_level", "unknown")
-        learning_phase = (intent_metadata or {}).get("learning_phase", "overview")
-        thematic_keywords = (intent_metadata or {}).get("topic_depth", "")
-
-        history_context = ""
-        if conversation_history:
-            recent_msgs = [f"{m.get('role', 'user').upper()}: {m.get('content', m.get('text', ''))}" for m in conversation_history[-4:]]
-            history_context = (
-                "Recent Conversation Context:\n" + "\n".join(recent_msgs) + 
-                "\n\nCRITICAL CONTEXT RULE: If the user's intent is ambiguous (e.g. 'do you have a link', 'what was that video'), "
-                "use the Recent Conversation Context to determine exactly WHICH video or topic they are asking about, and search for that specific video."
-            )
-
-        prompt = f"""
-Find as many UNIQUE {creator_profile.get('name')} resources (videos, articles, or lessons) as possible that relate to the intent: "{query}".
-
-{history_context}
-
-YOU ARE A CHANNEL EXPLORER & RESEARCH AGENT.
-Your goal is to provide deep and varied content from this channel: {target_str}.
-
-User Context: {user_level} level, currently in the '{learning_phase}' phase.
-Thematic guidance: {thematic_keywords}
-
-CRITICAL CONSTRAINTS:
-1. PRIMARY TARGET: ONLY return content OWNED by this creator on their official channels ({target_str}).
-2. GUEST/COLLAB (SECOND PRIORITY): If and ONLY if you cannot find enough specific content on the main channel, you may include high-quality appearances by {creator_profile.get('name')} on other channels (e.g., podcasts, interviews, collaborations). 
-3. DO NOT return random videos from other creators that just mention the name. The creator MUST be the primary speaker/teacher in the resource.
-4. CONTENT > TITLES: Find videos where the creator TEACHES this topic, even if the title is generic.
-5. {exclude_instruction}
-6. NO REPEATS: You MUST return DIFFERENT content from the archives if the user is asking for more.
-
-Output a JSON array of objects (limit to top 40 unique fits).
-Respond with JSON ONLY. Do not add conversational text.
-
-[
-  {{
-    "title": "Exact Title",
-    "url": "Full URL",
-    "snippet": "Specifically WHY this video is the best fit for a {user_level} trader interested in {query}. Mention what they will learn.",
-    "resource_type": "video" | "article" | "course_lesson",
-    "is_playlist": boolean,
-    "confidence": 0.0-1.0
-  }}
-]
-"""
-        
-        text = self._call_gemini_rest(prompt)
-        if not text:
-            return []
-
         candidates = self._parse_json(text)
         if not candidates or not isinstance(candidates, list):
             return []
-
+        
         verified = self._enforce_cog(candidates, creator_profile)
-        accepted_count = len(verified)
-        logger.info(f"GeminiResearch Results: Query='{query}', Accepted={accepted_count}")
-        
         self._save_cache(creator_id, query, "gemini", verified, cache_salt=cache_salt)
-        return verified
-
-    def _enforce_cog(self, candidates: List[Dict[str, Any]], creator_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # Same as before, logic is solid
-        yt_id = (creator_profile.get('youtube_channel_id') or "").lower()
-        yt_handle = (creator_profile.get('youtube_handle') or "").lower().strip("@")
-        
-        configs = creator_profile.get('platform_configs') or {}
-        yt_config = configs.get('youtube', {})
-        if not yt_handle:
-            yt_handle = (yt_config.get('handle') or yt_config.get('username') or "").lower().strip("@")
-        if not yt_id:
-            yt_id = (yt_config.get('channel_id') or yt_config.get('id') or "").lower()
-
-        official_domains = [d.lower() for d in (creator_profile.get('official_domains') or [])]
-        course_base_urls = [u.lower() for u in (creator_profile.get('course_base_urls') or [])]
-        creator_name = (creator_profile.get('name') or "").lower()
-        
-        verified = []
-        collab_markers = ["interview", "podcast", "guest", "featuring", "presents", "collab", "conversation", "mentorship"]
-
-        for c in candidates:
-            url = c.get('url', "").lower()
-            if not url: continue
-            
-            relation = "OTHER"
-            score = 0.0
-            
-            is_self = False
-            if "youtube.com" in url or "youtu.be" in url:
-                if yt_id and yt_id in url: is_self = True
-                elif yt_handle and (f"@{yt_handle}" in url or f"/{yt_handle}" in url): is_self = True
-            
-            domain = urlparse(url).netloc.lower()
-            if any(d in domain for d in official_domains): is_self = True
-            if any(url.startswith(u) for u in course_base_urls): is_self = True
-
-            if is_self:
-                relation = "SELF"
-                score = 1.0
-            else:
-                title = c.get('title', '').lower()
-                snippet = c.get('snippet', '').lower()
-                has_name = creator_name and creator_name in title
-                has_marker = any(m in title or m in snippet for m in collab_markers)
-                
-                if has_name and has_marker:
-                    relation = "AFFILIATED"
-                    score = 0.8
-                elif has_name:
-                    relation = "OTHER"
-                    score = 0.3
-            
-            if relation in ("SELF", "AFFILIATED"):
-                c['relation'] = relation
-                c['ownership_score'] = score
-                c['confidence'] = min(1.0, c.get('confidence', 0.5) * score)
-                verified.append(c)
-        
-        verified.sort(key=lambda x: (x['relation'] == 'SELF', x['confidence']), reverse=True)
         return verified
 
     def search_general(self, query: str, creator_id: int, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -606,3 +474,347 @@ Respond ONLY with the JSON array. Do not add intro or outro.
         results = self._parse_json(text) or {}
         logger.info(f"GeminiResearch: Dossier synthesized for {creator_name}. Keys found: {list(results.keys())}")
         return results
+
+class SerpApiResearchProvider(ResearchProvider):
+    def __init__(self):
+        self.api_key = settings.SEARCH_API_KEY
+        self.enabled = bool(self.api_key)
+        self.base_url = "https://serpapi.com/search"
+
+    def search(
+        self, 
+        query: str, 
+        creator_profile: Dict[str, Any], 
+        resource_type: str = "any", 
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        intent_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+            
+        creator_id = creator_profile['id']
+        creator_name = creator_profile.get('name', 'Creator')
+        
+        # Consistent exclusion logic
+        seen_titles_ultra = []
+        if conversation_history:
+            for m in conversation_history[-15:]:
+                content = (m.get("content") or m.get("text") or "").lower()
+                quoted = re.findall(r'"([^"]+)"', content)
+                natural = re.findall(r'(?:watch|check out|video|resource|lesson)\s+([\w\s\-\(\):]+)', content)
+                for t in quoted + natural:
+                    norm = re.sub(r'[^a-z0-9]', '', t)
+                    if len(norm) > 6: seen_titles_ultra.append(norm)
+        
+        seen_titles_ultra = list(set(seen_titles_ultra))
+        cache_salt = ",".join(sorted(seen_titles_ultra))
+        
+        cached = self._get_cache(creator_id, query, "serpapi", cache_salt=cache_salt)
+        if cached:
+            logger.info(f"SerpApiResearch: Cache hit for '{query}'")
+            return cached
+
+        # Prepare Search Query
+        name = creator_profile.get('name', '')
+        yt_handle = creator_profile.get('youtube_handle', '').strip('@')
+        domains = creator_profile.get('official_domains') or []
+        
+        # Broaden the query to ensure we get results
+        search_query = f"{name} {query}"
+        if yt_handle:
+            search_query += f" {yt_handle}"
+        
+        # We'll let GPT-5.2 filter the results rather than being too restrictive in the search query itself
+        
+        logger.info(f"SerpApiResearch: Searching Google for '{search_query}'")
+        
+        params = {
+            "q": search_query,
+            "api_key": self.api_key,
+            "engine": "google",
+            "num": 20
+        }
+        
+        try:
+            response = requests.get(self.base_url, params=params, timeout=15)
+            logger.info(f"SerpApi Status: {response.status_code}")
+            if response.status_code != 200:
+                logger.error(f"SerpApi Error {response.status_code}: {response.text}")
+                return []
+            
+            data = response.json()
+            logger.info(f"SerpApi Data Keys: {list(data.keys())}")
+            organic_results = data.get("organic_results", [])
+            logger.info(f"SerpApi: Found {len(organic_results)} organic results")
+            
+            if not organic_results:
+                logger.warning(f"SerpApi: No organic results found for '{search_query}'. Full Data: {json.dumps(data)[:500]}...")
+                return []
+                
+        except Exception as e:
+            logger.error(f"SerpApi Exception: {e}")
+            return []
+
+        # Synthesis with GPT-5.2 (MODEL_VERIFY)
+        logger.info(f"SerpApiResearch: Synthesizing {len(organic_results)} results with {settings.MODEL_VERIFY}")
+        
+        results_text = ""
+        for i, r in enumerate(organic_results[:10]):
+            results_text += f"[{i}] TITLE: {r.get('title')}\nURL: {r.get('link')}\nSOURCE: {r.get('source')}\nSNIPPET: {r.get('snippet')}\n\n"
+
+        prompt = f"""
+SEARCH RESULTS:
+{results_text}
+
+Synthesize them into a structured JSON array of resources.
+
+CRITICAL CATEGORIES:
+1. SELF/OWNED: Content owned by {creator_name} (YouTube channel, official site, courses).
+2. AFFILIATED: High-quality appearances (podcasts, interviews, guest features).
+3. PUBLIC_FACTS: For general knowledge queries (e.g. market prices, news, definitions) where the user isn't strictly asking about {creator_name}'s opinion.
+
+CRITICAL CONSTRAINTS:
+1. PRIORITIZE {creator_name}'s owned content if it exists for the query.
+2. If the user is asking a GENERAL question (like "price of ETH"), provide the most accurate PUBLIC_FACTS from reputable sources.
+3. DO NOT return random content from other creators as if it were {creator_name}'s.
+4. Provide a helpful 'snippet' explaining why this specific result helps answer the user's intent.
+
+Output a JSON array of objects:
+[
+  {{
+    "title": "Exact Title",
+    "url": "Full URL",
+    "snippet": "Specifically WHY this video/link is a good fit.",
+    "resource_type": "video" | "article" | "course_lesson",
+    "relation": "SELF" | "AFFILIATED" | "PUBLIC_FACTS",
+    "confidence": 0.0-1.0
+  }}
+]
+Respond with JSON ONLY.
+"""
+        
+        try:
+            messages = [{"role": "system", "content": "You are a professional research synthesiser."}, {"role": "user", "content": prompt}]
+            # Use MODEL_VERIFY as requested (GPT-5.2 level)
+            text = rag.generate_chat_completion(messages, model=settings.MODEL_VERIFY, json_mode=True)
+            
+            if not text:
+                return []
+                
+            # Use inherited parser and enforcer
+            candidates = self._parse_json(text)
+            
+            if isinstance(candidates, dict):
+                # Try to extract list if wrapped
+                for key in ["results", "resources", "items"]:
+                    if key in candidates and isinstance(candidates[key], list):
+                        candidates = candidates[key]
+                        break
+                else:
+                    # If it's a single result object, wrap it
+                    if all(k in candidates for k in ["title", "url"]):
+                        candidates = [candidates]
+                    else:
+                        candidates = []
+
+            if not candidates or not isinstance(candidates, list):
+                return []
+                
+            verified = self._enforce_cog(candidates, creator_profile)
+            self._save_cache(creator_id, query, "serpapi", verified, cache_salt=cache_salt)
+            return verified
+            
+        except Exception as e:
+            logger.error(f"SerpApi Synthesis Error: {e}")
+            return []
+
+class OpenAIResearchProvider(ResearchProvider):
+    def __init__(self):
+        self.enabled = bool(settings.OPENAI_API_KEY)
+        self.model = settings.MODEL_VERIFY # gpt-5.2 or fallback
+
+    def search(
+        self, 
+        query: str, 
+        creator_profile: Dict[str, Any], 
+        resource_type: str = "any", 
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        intent_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+            
+        creator_id = creator_profile['id']
+        creator_name = creator_profile.get('name', 'Creator')
+
+        # Check Cache
+        cached = self._get_cache(creator_id, query, "openai_search")
+        if cached:
+            logger.info(f"OpenAIResearch: Cache hit for '{query}'")
+            return cached
+
+        # Investigative Prompt for ChatGPT-native search
+        # We explicitly request it to use its search capability and return structured results.
+        prompt = f"""
+        INVESTIGATE: "{query}" relative to the creator "{creator_name}".
+        
+        TASK:
+        Use your web search capabilities to find the most accurate, current information or resources (videos, articles) that answer this query.
+        
+        CRITICAL CATEGORIES:
+        1. SELF/OWNED: Content owned by {creator_name} (YouTube, site, courses).
+        2. PUBLIC_FACTS: Reliable external data (prices, news, general facts).
+        
+        Output a JSON array of objects:
+        [
+          {{
+            "title": "Exact Title",
+            "url": "Full URL",
+            "snippet": "Summary of findings",
+            "resource_type": "video" | "article" | "web",
+            "relation": "SELF" | "PUBLIC_FACTS",
+            "confidence": 0.0-1.0
+          }}
+        ]
+        Respond with JSON ONLY.
+        """
+
+        from concurrent.futures import ThreadPoolExecutor
+        
+        try:
+            from services.search_engine import SearchEngine
+            engine = SearchEngine()
+            
+            # STEP 1: Deep Investigation (Instructional Call)
+            # Use a faster model for query generation to reduce latency
+            investigation_prompt = f"""
+            User Query: "{query}"
+            Identify potential titles and years of {creator_name}'s very first YouTube upload.
+            Generate 3 highly specific search queries to find the exact video and its narrative story.
+            IMPORTANT: Every query MUST include the name "{creator_name}".
+            Example: "{creator_name} earliest upload 2017", "YouTube first video {creator_name}".
+            
+            Output ONLY a JSON array of 3 strings.
+            """
+            
+            logger.info(f"OpenAIResearch: Deep Investigation - Generating queries for '{query}'")
+            iq_text = rag.generate_chat_completion(
+                [{"role": "user", "content": investigation_prompt}],
+                model=settings.MODEL_FALLBACK_SMART, # Faster model (e.g. GPT-4o)
+                json_mode=False
+            )
+            
+            search_queries = [f"{creator_name} {query}"]
+            try:
+                match = re.search(r'\[.*\]', iq_text, re.DOTALL)
+                if match:
+                    parsed_iq = json.loads(match.group())
+                    if isinstance(parsed_iq, list):
+                        # Ensure every query is anchored to the creator
+                        for q_cand in parsed_iq:
+                            if creator_name.lower() not in q_cand.lower():
+                                q_cand = f"{creator_name} {q_cand}"
+                            search_queries.append(q_cand)
+                        search_queries = list(set(search_queries))[:5]
+            except Exception as e:
+                logger.warning(f"OpenAIResearch: Failed to parse queries from {iq_text[:100]}: {e}")
+
+            # STEP 2: Parallel Multi-Pass Retrieval
+            all_raw = []
+            seen_urls = set()
+            
+            logger.info(f"OpenAIResearch: Parallel Retrieval - Running {len(search_queries)} passes")
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(engine.search, sq, 6): sq for sq in search_queries}
+                for future in futures:
+                    try:
+                        res = future.result()
+                        for r in res:
+                            url = r.get('link') or r.get('url')
+                            if url and url not in seen_urls:
+                                all_raw.append(r)
+                                seen_urls.add(url)
+                    except Exception as e:
+                        logger.error(f"Search pass failed for {futures[future]}: {e}")
+            
+            if not all_raw:
+                logger.warning(f"OpenAIResearch: No results found after {len(search_queries)} passes.")
+                return []
+                
+            # STEP 3: Multi-Layer Synthesis (Matching ChatGPT 5.2 Quality)
+            # We use MODEL_VERIFY (gpt-5.2) for the high-IQ synthesis only.
+            results_text = "\n".join([
+                f"[{i}] {r.get('title')}\nURL: {r.get('link') or r.get('url')}\nSnippet: {r.get('snippet')}\n"
+                for i, r in enumerate(all_raw[:15])
+            ])
+            
+            synthesis_prompt = f"""
+            GOAL: Match the depth and narrative quality of ChatGPT 5.2.
+            CREATOR: {creator_name}
+            QUERY: {query}
+            
+            WEB DATA:
+            {results_text}
+            
+            TASK:
+            1. Find the definitive answer (e.g. {creator_name}'s first video).
+            2. For the main answer, provide a "NARRATIVE SNIPPET" (3-4 sentences total).
+            3. CRITICAL: If you found a result that matches {creator_name}'s channel or handles, assign confidence 0.95-1.0. 
+            4. Output only the JSON array of objects below.
+            
+            [
+              {{
+                "title": "Exact Title",
+                "url": "Full URL",
+                "snippet": "Detailed narrative summary with context",
+                "resource_type": "video" | "article" | "web",
+                "relation": "SELF" | "PUBLIC_FACTS",
+                "confidence": 0.0-1.0
+              }}
+            ]
+            """
+            
+            logger.info(f"OpenAIResearch: Final Synthesis - Analyzing {len(all_raw)} results with {self.model}")
+            text = rag.generate_chat_completion(
+                [{"role": "user", "content": synthesis_prompt}], 
+                model=self.model, 
+                json_mode=False
+            )
+            
+            if not text:
+                return []
+                
+            candidates = []
+            try:
+                match = re.search(r'\[.*\]', text, re.DOTALL)
+                if match:
+                    candidates = json.loads(match.group())
+                else:
+                    candidates = self._parse_json(text)
+            except Exception as e:
+                logger.error(f"OpenAIResearch: Final parse error: {e}")
+                return []
+                
+            if not candidates or not isinstance(candidates, list):
+                logger.warning(f"OpenAIResearch: No candidates extracted from LLM text: {text[:200]}...")
+                return []
+                
+            logger.info(f"OpenAIResearch: Synthesis raw candidates: {json.dumps(candidates, indent=2)}")
+            verified = self._enforce_cog(candidates, creator_profile)
+            logger.info(f"OpenAIResearch: Verified results after COG: {len(verified)}")
+            self._save_cache(creator_id, query, "openai_search", verified)
+            return verified
+            
+        except Exception as e:
+            logger.error(f"OpenAIResearch Error: {e}")
+            return []
+
+def get_research_provider() -> ResearchProvider:
+    """Factory to return the appropriate research provider based on settings."""
+    # Priority: OpenAI (if specifically requested by user via new default) -> SerpApi -> Gemini
+    # We'll default to OpenAIResearchProvider now as requested.
+    if settings.OPENAI_API_KEY:
+        return OpenAIResearchProvider()
+    if settings.SEARCH_API_KEY:
+        return SerpApiResearchProvider()
+    return GeminiResearchProvider()
