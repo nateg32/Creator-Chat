@@ -270,7 +270,8 @@ function AppInner() {
           role: m.role,
           text: m.content,
           ts: m.created_at,
-          images: m.images // Include images from backend response
+          images: m.images, // Include images from backend response
+          cards: m.cards    // Include recommendation cards from backend response
         })),
         isTemporary: false
       };
@@ -1123,7 +1124,12 @@ function AppInner() {
                   setLoading={() => { }}
                   onResetChat={handleResetChat}
 
-                  onChangePersona={() => {
+                  onChangePersona={(switchId) => {
+                    if (typeof switchId === "number") {
+                      handleSelectThreadWrapper(null, switchId);
+                      handleNewThreadWrapper(switchId);
+                      return;
+                    }
                     if (activeChat.creatorId) {
                       dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
                       dispatch({ type: "SET_CREATOR_INFO", creatorName: activeChat.creatorName || activeChat.handle || "", handle: activeChat.handle || "", creatorAvatarUrl: activeChat.creatorAvatarUrl || "", url: "", platform: "", source: "" });

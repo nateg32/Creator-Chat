@@ -8,8 +8,7 @@ const RESPONSE_STYLES = [
     "Step-by-step explanations",
     "Friendly and conversational",
     "Professional and direct",
-    "Examples-first explanations",
-    "Bullet-point heavy"
+    "Examples-first explanations"
 ];
 
 export function UserSettingsModal({
@@ -153,7 +152,7 @@ export function UserSettingsModal({
                     {/* Response Preferences Section */}
                     <div className="settings-section">
                         <h3>Bot Response Preferences</h3>
-                        <p className="section-desc">Control how creators respond to you. These settings apply to all chats.</p>
+                        <p className="section-desc">Personalize how every creator talks to you. The more you share, the more personal your experience feels.</p>
 
                         <div className="presets-grid">
                             {RESPONSE_STYLES.map(style => (
@@ -172,8 +171,8 @@ export function UserSettingsModal({
                             <textarea
                                 value={customPref}
                                 onChange={e => setCustomPref(e.target.value)}
-                                placeholder="e.g. 'Explain things like I'm 5', 'Challenge my thinking', etc."
-                                rows={3}
+                                placeholder={"Tell creators about yourself so they can personalize responses for you.\n\nExamples:\n• \"I'm into basketball — use sports analogies\"\n• \"I'm a complete beginner, explain from scratch\"\n• \"Challenge my thinking, don't just agree\"\n• \"I run a small agency with 5 employees\""}
+                                rows={4}
                             />
                         </div>
                     </div>

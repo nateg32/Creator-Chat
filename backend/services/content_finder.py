@@ -25,6 +25,8 @@ class ContentFinder:
             from db import db
             self.db = db
         self.embedding_client = embedding_client
+        from services.research_provider import GeminiResearchProvider
+        self.research_provider = GeminiResearchProvider()
 
     def _parse_duration_seconds(self, raw: Any) -> Optional[int]:
         if raw is None:
@@ -125,7 +127,7 @@ class ContentFinder:
             "asset_class": asset_class,
             "style": style,
         }
-        
+
     def find_content_card(
         self, 
         creator_id: int, 
@@ -134,82 +136,367 @@ class ContentFinder:
         specificity: str = "recommendation",
         history_messages: Optional[List[Dict[str, Any]]] = None,
         user_level_estimate: Optional[str] = None,
+        exclude_titles: Optional[Set[str]] = None,
+        exclude_ids: Optional[Set[str]] = None,
+        intent_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Main entry point. Returns a result dict with possible multiple cards.
-        Enforces Creator Ownership Gate (COG).
+        Now prioritizes Gemini Research for exact matching.
         """
-        logger.info(f"ContentFinder: Query '{query}' (Type: {resource_type}, Specificity: {specificity})")
+        logger.info(f"ContentFinder: Discovery Strategy = Gemini-First. Query: '{query}'")
         
         # Fetch creator identity profile
         creator_profile = self.db.execute_one(
-            "SELECT id, name, handle, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, profile_picture_url FROM creators WHERE id = %s",
+            "SELECT id, name, handle, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, platform_configs, profile_picture_url FROM creators WHERE id = %s",
             (creator_id,)
         )
         if not creator_profile:
             return self._format_defer("LOW", 0.0, creator_profile=None, query=query)
-        if not creator_profile.get("youtube_channel_id") and not creator_profile.get("youtube_handle"):
-            return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=query)
-
+            
         need = self._interpret_user_need(query, history_messages, user_level_estimate)
         if specificity:
             need["specificity"] = specificity
 
-        # 1/2) Creator inventory retrieval only (no web).
-        ingest_candidates = self._search_ingested_multi(creator_id, query)
-        verified_candidates = [
-            c for c in ingest_candidates
-            if self._verify_ownership(c, creator_profile)["relation"] == "SELF" and c.get("url")
-        ]
-
-        # 4. Filter by Resource Type
-        if resource_type != "any":
-            if resource_type == "course_lesson":
-                filtered = [c for c in verified_candidates if "lesson" in c["title"].lower() or "module" in c["title"].lower()]
-                if not filtered: filtered = verified_candidates
+        # --- Phase 1: Primary Gemini Research ---
+        # Gemini with Search Grounding is the best at finding the "Exact" resource requested.
+        logger.info("ContentFinder: Running Primary Gemini Research...")
+        research_result = self._trigger_research(
+            query, creator_profile, resource_type, 
+            history_messages=history_messages,
+            intent_metadata=intent_metadata
+        )
+        
+        # If Gemini finds a very high confidence "Exact" match (1.0 or high), return it immediately
+        if research_result["status"] == "FOUND" and research_result.get("confidence_score", 0) >= 0.85:
+            # DEDUPLICATION CHECK: Ensure Gemini's first result isn't something we just saw
+            first_card = research_result["cards"][0]
+            c_url = (first_card.get("url") or "").lower()
+            c_title = (first_card.get("title") or "").lower()
+            c_vid_match = re.search(r"(?:v=|be/)([\w-]+)", c_url)
+            c_vid_id = c_vid_match.group(1) if c_vid_match else c_url
+            
+            clean_c_title = re.sub(r'[^a-z0-9]', '', c_title)
+            
+            is_seen = (exclude_ids and c_vid_id in exclude_ids) or (exclude_titles and clean_c_title in exclude_titles)
+            if not is_seen and exclude_titles:
+                for t in exclude_titles:
+                    if t in clean_c_title or clean_c_title in t:
+                        is_seen = True; break
+            
+            if is_seen:
+                logger.info("ContentFinder: Gemini returned a seen resource. Continuing to Phase 2.")
             else:
-                filtered = [c for c in verified_candidates if c.get("type") == resource_type]
-                if not filtered: filtered = verified_candidates
-        else:
-            filtered = verified_candidates
+                logger.info(f"ContentFinder: High confidence Gemini match found ({research_result['confidence_score']}). Returning.")
+                return research_result
 
-        # 5) Best-next scoring + safety gate.
-        if not filtered:
-            return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=need["topic"])
+        # --- Phase 2: Secondary RAG / Ingested Search ---
+        # If Gemini is unsure or finds nothing, look through local ingested content.
+        logger.info("ContentFinder: Running Secondary RAG discovery...")
+        clean_query = query.lower()
+        
+        # Aggressively strip conversational prefixes
+        prefixes = [
+            r"^(what|which|show|find|give|tell|reccomend|recommend|suggest|can you|could you|would you|do you|any|do u|u|you).*(about|for|on|recommended|recommendation|video|videos|tutorial|lesson|content|regarding) ",
+            r"^what video (would|should) (u|you) (reccomend|recommend) for ",
+            r"^can (u|you) (reccomend|recommend) a video for ",
+            r"^(reccomend|recommend) a video for ",
+            r"^(show|find|give) (me|us) (a|the) video (about|for) ",
+            r"^(what|which) video (is|are) best (for|about) "
+        ]
+        for p in prefixes:
+            clean_query = re.sub(p, "", clean_query).strip()
+        
+        # Final pass: remove common noise words
+        noise = ["reccomend", "recommend", "video", "videos", "tutorial", "lesson", "content", "please", "thanks"]
+        for nw in noise:
+            clean_query = re.sub(rf"\b{nw}\b", "", clean_query).strip()
 
-        has_transcript_candidates = any((c.get("snippet") or "").strip() for c in filtered)
-        strong_threshold = self.STRONG_MATCH_THRESHOLD
-        moderate_threshold = self.MODERATE_MATCH_THRESHOLD
-        if not has_transcript_candidates:
-            strong_threshold = max(0.0, strong_threshold - self.LOW_TRANSCRIPT_THRESHOLD_ADJUST)
-            moderate_threshold = max(0.0, moderate_threshold - self.LOW_TRANSCRIPT_THRESHOLD_ADJUST)
+        logger.info(f"ContentFinder: Original='{query}' -> Cleaned='{clean_query}'")
+        
+        # 1. Retrieve top K relevant chunks from multiple search angles
+        search_terms = {clean_query, need.get("topic", "trading")}
+        if intent_metadata and intent_metadata.get("topic_depth"):
+            search_terms.add(intent_metadata["topic_depth"])
 
-        for c in filtered:
-            c["score"] = self._best_next_score(c, need, query=query)
-        filtered.sort(key=lambda x: x["score"], reverse=True)
+        all_retrieved_chunks = []
+        for term in search_terms:
+            if not term or len(term) < 3:
+                continue
+            logger.info(f"ContentFinder: Searching for chunks with term='{term}'")
+            results = self._get_relevant_chunks(creator_id, term, limit=40)
+            if results:
+                all_retrieved_chunks.extend(results)
 
-        top = filtered[0]
-        second = filtered[1] if len(filtered) > 1 else None
-        margin = top["score"] - (second["score"] if second else 0.0)
+        if all_retrieved_chunks:
+            # 2. Group by document_id and aggregate scores
+            scored_docs = self._aggregate_document_scores(all_retrieved_chunks, query, intent_metadata=intent_metadata)
 
-        if top["score"] >= strong_threshold and margin >= self.AMBIGUITY_MARGIN:
-            return {"status": "FOUND", "cards": [self._to_preview_card(top)], "confidence_score": top["score"]}
+            # 3. Filter by Resource Type if requested
+            if resource_type != "any":
+                if resource_type == "course_lesson":
+                    scored_docs = [d for d in scored_docs if "lesson" in d["title"].lower() or "module" in d["title"].lower()]
+                else:
+                    scored_docs = [d for d in scored_docs if d.get("type") == resource_type]
 
-        if top["score"] >= moderate_threshold:
-            moderate = [c for c in filtered[:3] if c["score"] >= moderate_threshold]
-            if moderate:
-                return {
-                    "status": "FOUND",
-                    "cards": [self._to_preview_card(c) for c in moderate],
-                    "confidence_score": top["score"],
-                }
+            if scored_docs:
+                # Deduplicate scored_docs before picking best
+                filtered_scored = []
+                for d in scored_docs:
+                    d_url = d["url"].lower()
+                    d_title = d["title"].lower()
+                    d_vid_match = re.search(r"(?:v=|be/)([\w-]+)", d_url)
+                    d_vid_id = d_vid_match.group(1) if d_vid_match else d_url
+                    clean_d_title = re.sub(r'[^a-z0-9]', '', d_title)
+
+                    is_seen = (exclude_ids and d_vid_id in exclude_ids) or (exclude_titles and clean_d_title in exclude_titles)
+                    if not is_seen and exclude_titles:
+                        for t in exclude_titles:
+                            if t in clean_d_title or clean_d_title in t:
+                                if abs(len(clean_d_title) - len(t)) < 5:
+                                    is_seen = True; break
+                    if not is_seen:
+                        filtered_scored.append(d)
+
+                if filtered_scored:
+                    top_matches = filtered_scored[:3]
+                    cards = [self._to_preview_card(d) for d in top_matches]
+                    logger.info(f"ContentFinder: Found {len(cards)} RAG matches. Best Score: {top_matches[0]['video_score']:.2f}")
+                    return {
+                        "status": "FOUND",
+                        "cards": cards,
+                        "confidence_score": top_matches[0]["video_score"]
+                    }
+
+        # --- Phase 3: Merging & Fallback ---
+        if research_result["status"] == "FOUND":
+             return research_result
+
+        # Final Fallback to Channel Search Card
+        logger.info("ContentFinder: All exact search methods failed. Returning channel search fallback.")
+        return {
+            "status": "FOUND",
+            "cards": [self._channel_search_card(creator_profile, query if len(query.split()) > 1 else need["topic"])],
+            "confidence_score": 0.4,
+            "is_fallback": True,
+        }
+
+    def _trigger_research(self, query: str, creator_profile: Dict, resource_type: str, history_messages: Optional[List[Dict]] = None, intent_metadata: Optional[Dict] = None) -> Dict:
+        results = self.research_provider.search(
+            query, creator_profile, resource_type,
+            conversation_history=history_messages,
+            intent_metadata=intent_metadata
+        )
+        if not results:
+            return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=query)
+
+        cards = []
+        for res in results[:3]:
+            subtitle = res.get("resource_type", "video").title()
+            if res.get("relation") == "AFFILIATED":
+                subtitle = f"Guest Appearance • {subtitle}"
+            elif res.get("is_playlist"):
+                subtitle = "Playlist"
+            elif res.get("series_index"):
+                subtitle = f"Part {res.get('series_index')}"
+
+            cards.append({
+                "type": "preview_card",
+                "resource_type": res.get("resource_type", "video"),
+                "title": res["title"],
+                "subtitle": subtitle,
+                "thumbnail_url": self._get_thumbnail_url(res["url"]),
+                "url": res["url"],
+                "short_snippet": (res.get("snippet") or "")[:150],
+                "action_label": "Watch" if res.get("resource_type") == "video" else "Read",
+            })
 
         return {
             "status": "FOUND",
-            "cards": [self._channel_search_card(creator_profile, need["topic"])],
-            "confidence_score": top["score"],
-            "is_fallback": True,
+            "cards": cards,
+            "confidence_score": results[0].get("confidence", 0.8)
         }
+
+    def _get_relevant_chunks(self, creator_id: int, query: str, limit: int = 60) -> List[Dict]:
+        from rag import get_client, settings
+        client = self.embedding_client or get_client()
+        try:
+            emb_resp = client.embeddings.create(
+                model=settings.EMBEDDING_MODEL,
+                input=query
+            )
+            q_emb = emb_resp.data[0].embedding
+        except Exception as e:
+            logger.error(f"ContentFinder: Error getting embedding for query '{query}': {e}")
+            return []
+
+        emb_str = "[" + ",".join(map(str, q_emb)) + "]"
+
+        sql = """
+            SELECT
+                d.id as doc_id,
+                d.title,
+                d.url,
+                d.source,
+                d.source_id,
+                d.metadata,
+                c.chunk_index,
+                c.chunk_text,
+                (e.embedding <=> %s::vector) as distance
+            FROM chunks c
+            JOIN embeddings e ON c.id = e.chunk_id
+            JOIN documents d ON c.document_id = d.id
+            WHERE d.creator_id = %s
+            AND e.model = %s
+            ORDER BY distance ASC
+            LIMIT %s
+        """
+        results = self.db.execute_query(sql, (emb_str, creator_id, settings.EMBEDDING_MODEL, limit))
+        return results
+
+    def _aggregate_document_scores(self, chunks: List[Dict], query: str, intent_metadata: Optional[Dict] = None) -> List[Dict]:
+        """
+        Group chunks by video and calculate a weighted quality score.
+        """
+        docs = {}
+        query_keywords = set(self._normalize_keywords(query))
+        user_level = (intent_metadata or {}).get("user_level", "unknown")
+        learning_phase = (intent_metadata or {}).get("learning_phase", "unknown") # e.g., "foundational", "advanced"
+        thematic_keywords = set(self._normalize_keywords((intent_metadata or {}).get("topic_depth", "")))
+
+        for c in chunks:
+            doc_id = c["doc_id"]
+            if doc_id not in docs:
+                # URL Reconstruction for YouTube if missing
+                url = c["url"]
+                # Use source and source_id from top-level if available
+                source = c.get("source") or "youtube"
+                sid = c.get("source_id")
+                
+                metadata = c["metadata"] or {}
+                if isinstance(metadata, str):
+                    try: metadata = json.loads(metadata)
+                    except: metadata = {}
+
+                if not url and sid:
+                     if source == "youtube":
+                         url = f"https://www.youtube.com/watch?v={sid}"
+
+                if not url:
+                    # Skip if no URL can be found or built
+                    continue
+
+                docs[doc_id] = {
+                    "doc_id": doc_id,
+                    "title": c["title"],
+                    "url": url,
+                    "metadata": metadata,
+                    "similarities": [],
+                    "chunk_indices": set(),
+                    "texts": [],
+                    "matches": 0
+                }
+            
+            sim = max(0, 1 - float(c["distance"]))
+            docs[doc_id]["similarities"].append(sim)
+            docs[doc_id]["chunk_indices"].add(c["chunk_index"])
+            docs[doc_id]["texts"].append(c["chunk_text"] or "")
+
+        aggregated = []
+        for doc_id, data in docs.items():
+            sims = sorted(data["similarities"], reverse=True)
+            
+            # --- Similarity Stretching ---
+            # OpenAI text-embedding-3-small cosine distances usually fall between 0.4 and 0.7 for relevant results.
+            # We map the 0.3-0.6 similarity range to 0.6-1.0 for better threshold alignment.
+            def stretch(s):
+                return max(0.2, min(1.0, (s - 0.20) / (0.45 - 0.20) * 0.4 + 0.5))
+
+            peak = stretch(sims[0])
+            avg_top_5 = sum(sims[:5]) / min(len(sims), 5)
+            density = stretch(avg_top_5)
+            
+            coverage = len(sims)
+            
+            # spread_score: count unique buckets of 6 chunks
+            buckets = {idx // 6 for idx in data["chunk_indices"]}
+            spread_score = min(1.0, len(buckets) / 4.0)
+            
+            # teaching_signal
+            combined_text = " ".join(data["texts"]).lower()
+            teaching_patterns = [
+                r"here's how", r"how to", r"steps?", r"framework", r"rule",
+                r"example", r"lesson", r"tutorial", r"guide", r"pattern",
+                r"concept", r"principle", r"technique", r"method", r"first", r"second"
+            ]
+            matches = sum(1 for p in teaching_patterns if re.search(p, combined_text))
+            teaching_signal = 1.0 if matches >= 3 else (0.5 if matches >= 1 else 0.0)
+
+            # Level Match Signal
+            level_match_score = 0.5 # Neutral
+            if user_level == "beginner":
+                beginner_patterns = [r"introduction", r"basics", r"beginner", r"starting", r"roadmap", r"entry level"]
+                if any(re.search(p, combined_text + " " + data["title"].lower()) for p in beginner_patterns):
+                    level_match_score = 1.0
+                elif any(re.search(p, combined_text + " " + data["title"].lower()) for p in [r"advanced", r"complex", r"institutional"]):
+                    level_match_score = 0.2
+            elif user_level == "advanced":
+                advanced_patterns = [r"advanced", r"complex", r"institutional", r"nuances", r"in-depth", r"advanced concept"]
+                if any(re.search(p, combined_text + " " + data["title"].lower()) for p in advanced_patterns):
+                    level_match_score = 1.0
+                elif any(re.search(p, combined_text + " " + data["title"].lower()) for p in [r"beginner", r"intro", r"basics"]):
+                    level_match_score = 0.2
+
+            # video_score formula (EVOLVED: Added Level Match)
+            coverage_score = min(1.0, coverage / 6.0)
+            video_score = (
+                0.35 * peak +
+                0.20 * density +
+                0.15 * coverage_score +
+                0.10 * spread_score +
+                0.10 * teaching_signal +
+                0.10 * level_match_score
+            )
+            
+            # Title overlap bonus
+            title_keywords = set(self._normalize_keywords(data["title"]))
+            overlap = len(query_keywords.intersection(title_keywords))
+            if overlap > 0:
+                video_score += min(0.12, 0.04 * overlap)
+            
+            # THEMATIC BONUS: if intent router found specific thematic keywords
+            theme_overlap = len(thematic_keywords.intersection(title_keywords))
+            if theme_overlap > 0:
+                video_score += min(0.08, 0.02 * theme_overlap)
+
+            # Duration formatting meta
+            duration_seconds = self._parse_duration_seconds(data["metadata"].get("duration_seconds"))
+            subtitle_bits = []
+            if data["metadata"].get("published_at"):
+                subtitle_bits.append(str(data["metadata"].get("published_at"))[:10])
+            if duration_seconds:
+                subtitle_bits.append(f"{duration_seconds//60}m")
+            
+            # Skip candidates with no URL - they cannot be previewed
+            if not data.get("url"):
+                continue
+
+            aggregated.append({
+                **data,
+                "peak": peak,
+                "density": density,
+                "coverage": coverage,
+                "spread_score": spread_score,
+                "teaching_signal": teaching_signal,
+                "video_score": min(1.0, video_score),
+                "type": "video" if "youtube" in str(data["url"] or "").lower() or data["metadata"].get("type") == "video" else "article",
+                "subtitle": " • ".join(subtitle_bits) or "Content",
+                "thumbnail": data["metadata"].get("thumbnail_url") or "",
+                "snippet": data["texts"][0] # Just for preview
+            })
+
+        aggregated.sort(key=lambda x: x["video_score"], reverse=True)
+        return aggregated
 
     def _best_next_score(self, candidate: Dict[str, Any], need: Dict[str, str], query: str = "") -> float:
         topic_weight = 0.40
@@ -251,13 +538,15 @@ class ContentFinder:
         return max(0.0, min(1.0, score))
 
     def _to_preview_card(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        url = candidate.get("url") or ""
+        thumbnail = candidate.get("thumbnail") or candidate.get("thumbnail_url") or self._get_thumbnail_url(url)
         return {
             "type": "preview_card",
             "resource_type": candidate.get("type", "video"),
             "title": candidate["title"],
             "subtitle": candidate.get("subtitle", "YouTube"),
-            "thumbnail_url": candidate.get("thumbnail", ""),
-            "url": candidate.get("url") or "",
+            "thumbnail_url": thumbnail,
+            "url": url,
             "short_snippet": (candidate.get("snippet") or "")[:150],
             "action_label": "Watch",
         }
@@ -265,8 +554,16 @@ class ContentFinder:
     def _channel_search_card(self, creator_profile: Dict[str, Any], topic: str) -> Dict[str, Any]:
         handle = creator_profile.get("youtube_handle")
         channel_id = creator_profile.get("youtube_channel_id")
+        
+        # Fallback to platform_configs
+        configs = creator_profile.get("platform_configs") or {}
+        yt_config = configs.get("youtube", {})
+        if not handle: handle = yt_config.get("handle") or yt_config.get("username")
+        if not channel_id: channel_id = yt_config.get("channel_id") or yt_config.get("id")
+
         if handle:
-            url = f"https://www.youtube.com/@{handle}/search?query={quote(topic)}"
+            handle_clean = handle.strip("@")
+            url = f"https://www.youtube.com/@{handle_clean}/search?query={quote(topic)}"
         else:
             url = f"https://www.youtube.com/channel/{channel_id}/search?query={quote(topic)}"
         return {
@@ -281,8 +578,14 @@ class ContentFinder:
 
     def _format_defer(self, label, score, creator_profile: Optional[Dict[str, Any]], query: str):
         cards = []
-        if creator_profile and (creator_profile.get("youtube_handle") or creator_profile.get("youtube_channel_id")):
-            cards = [self._channel_search_card(creator_profile, query or "trading")]
+        if creator_profile:
+            handle = creator_profile.get("youtube_handle")
+            channel_id = creator_profile.get("youtube_channel_id")
+            configs = creator_profile.get("platform_configs") or {}
+            yt_config = configs.get("youtube", {})
+            
+            if handle or channel_id or yt_config.get("handle") or yt_config.get("channel_id"):
+                cards = [self._channel_search_card(creator_profile, query or "trading")]
         return {
             "status": "DEFER" if not cards else "FOUND",
             "card": None,
@@ -309,6 +612,15 @@ class ContentFinder:
         # Identity fields
         yt_channel = creator_profile.get("youtube_channel_id")
         yt_handle = creator_profile.get("youtube_handle")
+
+        # Fallback to platform_configs
+        configs = creator_profile.get("platform_configs") or {}
+        yt_config = configs.get("youtube", {})
+        if not yt_handle:
+            yt_handle = yt_config.get("handle") or yt_config.get("username")
+        if not yt_channel:
+            yt_channel = yt_config.get("channel_id") or yt_config.get("id")
+
         official_domains = creator_profile.get("official_domains") or []
         course_domains = creator_profile.get("course_domains") or []
         creator_name = creator_profile.get("name", "").lower()
@@ -361,6 +673,7 @@ class ContentFinder:
 
         return {"relation": "OTHER", "confidence": 0.1}
 
+    # --- Reference ---
     def _normalize_keywords(self, text: str) -> List[str]:
         # Broader stopword list for strict matching
         stopwords = {
@@ -388,137 +701,18 @@ class ContentFinder:
         # Filter duplicates while preserving order
         return list(dict.fromkeys(keywords))
 
-    # --- Ingest Scoring ---
-    def _search_ingested_multi(self, creator_id: int, query: str) -> List[Dict]:
-        from rag import get_client, settings
-        
-        # Get query embedding
-        client = self.embedding_client or get_client()
-        try:
-            emb_resp = client.embeddings.create(
-                model=settings.EMBEDDING_MODEL,
-                input=query
-            )
-            q_emb = emb_resp.data[0].embedding
-        except Exception:
-            return []
+    def _get_thumbnail_url(self, url: str) -> str:
+        if not url: return ""
+        # YouTube
+        if "youtube.com" in url or "youtu.be" in url:
+            video_id = None
+            if "v=" in url:
+                video_id = url.split("v=")[1].split("&")[0]
+            elif "youtu.be/" in url:
+                video_id = url.split("youtu.be/")[1].split("?")[0]
             
-        emb_str = "[" + ",".join(map(str, q_emb)) + "]"
-        
-        # We need semantic similarity (S)
-        sql = """
-            SELECT 
-                d.title,
-                d.url,
-                d.metadata,
-                c.chunk_text,
-                (e.embedding <=> %s::vector) as distance
-            FROM chunks c
-            JOIN embeddings e ON c.id = e.chunk_id
-            JOIN documents d ON c.document_id = d.id
-            WHERE d.creator_id = %s
-            AND e.model = %s
-            ORDER BY distance ASC
-            LIMIT 30
-        """
-        results = self.db.execute_query(sql, (emb_str, creator_id, settings.EMBEDDING_MODEL))
-        
-        if not results:
-            return []
-            
-        candidates = []
-        
-        # Keywords for K score
-        keywords = self._normalize_keywords(query)
-        if not keywords: keywords = [""] # Avoid div zero
-        
-        for r in results:
-            # 1. Semantic Similarity (S) = 1 - distance
-            S = max(0, 1 - float(r["distance"]))
-            
-            title = r["title"] or ""
-            text = r["chunk_text"] or ""
-            content_lower = (title + " " + text).lower()
-            
-            # 2. Keyword Match (K)
-            # Check for root matches
-            matches = 0
-            for k in keywords:
-                # Basic check: k in content OR k+"s" in content OR k[:-1] in content
-                if k in content_lower:
-                    matches += 1
-                elif k.endswith('s') and k[:-1] in content_lower:
-                    matches += 1
-                elif k + "s" in content_lower:
-                    matches += 1
-                    
-            K = matches / max(1, len(keywords))
-            
-            # 3. Exact Phrase Bonus (P)
-            # Check for full query phrase match (implicit) or quoted phrases (explicit)
-            P = 0.0
-            query_clean = re.sub(r'[^\w\s]', '', query).lower()
-            if len(query_clean.split()) > 1 and query_clean in content_lower:
-                P = 1.0
-            else:
-                 # Standard quoted check
-                 quoted = re.findall(r'"([^"]*)"', query)
-                 if quoted:
-                    for phrase in quoted:
-                        if phrase.lower() in content_lower:
-                            P = 1.0
-                            break
-            
-            # 4. Topic/Tag Alignment (T)
-            T = 1.0 if any(k in title.lower() for k in keywords) else 0.5
-            
-            # Derived feature scores for best-next ranking
-            topic_match = max(0.0, min(1.0, (0.75 * S) + (0.25 * K)))
-            intent_match = max(0.0, min(1.0, (0.70 * K) + (0.30 * P)))
-
-            level_fit = 0.6
-            level_text = f"{title} {text}".lower()
-            if any(w in level_text for w in ["beginner", "basics", "start", "foundation"]):
-                level_fit = 1.0
-            elif any(w in level_text for w in ["advanced", "pro", "institutional"]):
-                level_fit = 0.4
-
-            duration_seconds = self._parse_duration_seconds((r.get("metadata") or {}).get("duration_seconds"))
-            format_fit = 0.5
-            if duration_seconds is not None:
-                format_fit = 1.0 if duration_seconds <= 900 else 0.7
-
-            recency = 0.6
-            continuity = T
-
-            meta = r.get("metadata") or {}
-            subtitle_bits = []
-            if meta.get("published_at"):
-                subtitle_bits.append(str(meta.get("published_at"))[:10])
-            if duration_seconds is not None:
-                subtitle_bits.append(f"{duration_seconds//60}m")
-            subtitle = " • ".join(subtitle_bits) or "YouTube"
-
-            if not r.get("url"):
-                continue
-
-            candidates.append({
-                "title": title,
-                "url": r["url"],
-                "snippet": text,
-                "topic_match_score": topic_match,
-                "intent_match_score": intent_match,
-                "level_fit_score": level_fit,
-                "recency_score": recency,
-                "format_fit_score": format_fit,
-                "continuity_score": continuity,
-                "creator_match_score": 1.0,
-                "type": "video" if "youtube" in (r["url"] or "") else "article",
-                "source_opt": "Ingested Content",
-                "thumbnail": meta.get("thumbnail_url") or meta.get("thumbnail") or "",
-                "subtitle": subtitle,
-                "has_transcript": bool(text.strip()),
-            })
-            
-        candidates.sort(key=lambda x: x.get("topic_match_score", 0.0), reverse=True)
-        return candidates
+            if video_id:
+                # Try hqdefault or mqdefault
+                return f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+                
+        return ""

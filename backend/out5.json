@@ -1,0 +1,166 @@
+{
+  "answer": "If you\u2019re starting dropshipping, I\u2019d watch this one first because it gives you the whole \u201cfrom broke to it actually working\u201d timeline and the exact mistakes to avoid: How I Went From -$30k to $15 Million (Copy Me) (https://www.youtube.com/watch?v=Ic_TU2ScN-M).\n\nNathan, the reason I\u2019d start there is it\u2019ll stop you from doing the classic beginner thing: testing a bunch of random junk, bouncing niches every 3 days, and burning money with no system. The big takeaway is simple: pick one product with real demand, build a clean offer around it, and commit long enough to get data (then iterate fast).\n\nAfter that, if you\u2019re trying to build something that actually works going into 2026, especially with AI plus content, watch this too: 4 BEST AI Businesses To Start Before 2026 (For Beginners) (https://www.youtube.com/watch?v=cgFFQmry8n4).\n\nAre you trying to run paid ads on TikTok or Meta, or are you trying to start with organic TikTok and Instagram first?",
+  "retrieved": [
+    {
+      "chunk_id": 7869,
+      "chunk_index": 1,
+      "distance": 0.44825962494256255,
+      "content": "Since high school, I&#39;ve been starting and failing with many different online businesses. And I didn&#39;t have my first success until I was 18 years old when I discovered drop shipping. This is the first business that made me over a million dollars online. So, let me break it down. In my life, I&#39;ve had two successful drop shipping stores. And the first one I started all the way back in 2017. This business was called Pluto Deals. It was a general drop shipping store where we sold pretty much every product under the sun. Back in the day, this was the best strategy for drop shipping. You test as many products as possible on a general store. You find a couple products that work, you scale them up, you throw them out, and you move on to the next one.",
+      "source_ref": {
+        "platform": "youtube",
+        "content_id": "Ic_TU2ScN-M",
+        "canonical_url": "https://www.youtube.com/watch?v=Ic_TU2ScN-M",
+        "title": "How I Went From -$30k to $15 Million (Copy Me)",
+        "published_at": "2025-09-16 07:34:35+10:00",
+        "content_type": "video"
+      },
+      "document_id": 647
+    },
+    {
+      "chunk_id": 7876,
+      "chunk_index": 8,
+      "distance": 0.49889674776177007,
+      "content": "I didn&#39;t even want to be here anymore. But from what my mom set up and what she did for me, that gave me the encouragement I needed to give this drop shipping thing one last try. So, I started a new business. It was called Sleepband. My goal with this was to write all the wrongs that I made with my last drop shipping store. Instead of testing a bunch of random products, let&#39;s find one and become the number one seller of that product. And that&#39;s exactly what we did. In just 20 days of starting this business on my mom&#39;s couch, I grew it from zero to over $10,000 in profit. It only took me a month after that to completely get out of debt and move over to Miami where I was able to fully lock in on this business. I took out all the distractions.",
+      "source_ref": {
+        "platform": "youtube",
+        "content_id": "Ic_TU2ScN-M",
+        "canonical_url": "https://www.youtube.com/watch?v=Ic_TU2ScN-M",
+        "title": "How I Went From -$30k to $15 Million (Copy Me)",
+        "published_at": "2025-09-16 07:34:35+10:00",
+        "content_type": "video"
+      },
+      "document_id": 647
+    },
+    {
+      "chunk_id": 7956,
+      "chunk_index": 20,
+      "distance": 0.5233323574066162,
+      "content": "It&#39;s more on the medium side simply because you have to pay for Shopify, you have to pay for some of these tools, and you also got to put a little bit of money towards ads. But the trade-off is the potential is extremely high with just one product starting to get sales. You can consistently make over $1,000 a day and more importantly, keep it going for a very long time. The same product that we found for the beginner Daniel in July is still selling today in November. and he&#39;s still making over $1,000 a day. That is the power of AI commerce. Once it starts working, there&#39;s almost nothing that is more sustainable.",
+      "source_ref": {
+        "platform": "youtube",
+        "content_id": "cgFFQmry8n4",
+        "canonical_url": "https://www.youtube.com/watch?v=cgFFQmry8n4",
+        "title": "4 BEST AI Businesses To Start Before 2026 (For Beginners)",
+        "published_at": "2025-11-07 04:37:02+11:00",
+        "content_type": "video"
+      },
+      "document_id": 655
+    }
+  ],
+  "sources": [
+    {
+      "platform": "youtube",
+      "content_id": "Ic_TU2ScN-M",
+      "canonical_url": "https://www.youtube.com/watch?v=Ic_TU2ScN-M",
+      "title": "How I Went From -$30k to $15 Million (Copy Me)",
+      "published_at": "2025-09-16 07:34:35+10:00",
+      "content_type": "video"
+    },
+    {
+      "platform": "youtube",
+      "content_id": "cgFFQmry8n4",
+      "canonical_url": "https://www.youtube.com/watch?v=cgFFQmry8n4",
+      "title": "4 BEST AI Businesses To Start Before 2026 (For Beginners)",
+      "published_at": "2025-11-07 04:37:02+11:00",
+      "content_type": "video"
+    }
+  ],
+  "cards": [],
+  "meta": {
+    "gen_debug": {
+      "plan": {
+        "route": "ROUTE_2_TASK",
+        "routing": "IN_DOMAIN",
+        "smile_signal": "SOCIAL_OPEN",
+        "domain_profile": {
+          "primary_domains": [],
+          "secondary_domains": [],
+          "bridge_rules": [],
+          "forbidden_domains": [],
+          "confidence": 0.5
+        },
+        "request_domain": {
+          "request_domain": "general",
+          "goal_guess": "unknown",
+          "specificity": "low"
+        },
+        "stage": "GREETING",
+        "mode": "EXECUTE",
+        "verbosity_budget": {
+          "max_lines": 12,
+          "max_bullets": 0
+        },
+        "missing_info": [],
+        "next_question": null,
+        "answer_outline": [],
+        "confidence": 1.0,
+        "grounding": {
+          "requires_sources": true,
+          "source_policy": "RELAXED",
+          "if_insufficient_sources": "ASK_CLARIFY",
+          "video_policy": "one_if_helpful"
+        },
+        "persona_controls": {
+          "tone": "neutral",
+          "humor_level": 0,
+          "directness": 1,
+          "metaphor_level": 0,
+          "sentence_style": "mixed",
+          "signature_patterns_allowed": []
+        },
+        "safety": {
+          "disallowed": false,
+          "reason": null
+        }
+      },
+      "route": "ROUTE_2_TASK",
+      "routing": "IN_DOMAIN",
+      "mvc_score": 0
+    },
+    "plan_obj": {
+      "route": "ROUTE_2_TASK",
+      "routing": "IN_DOMAIN",
+      "smile_signal": "SOCIAL_OPEN",
+      "domain_profile": {
+        "primary_domains": [],
+        "secondary_domains": [],
+        "bridge_rules": [],
+        "forbidden_domains": [],
+        "confidence": 0.5
+      },
+      "request_domain": {
+        "request_domain": "general",
+        "goal_guess": "unknown",
+        "specificity": "low"
+      },
+      "stage": "GREETING",
+      "mode": "EXECUTE",
+      "verbosity_budget": {
+        "max_lines": 12,
+        "max_bullets": 0
+      },
+      "missing_info": [],
+      "next_question": null,
+      "answer_outline": [],
+      "confidence": 1.0,
+      "grounding": {
+        "requires_sources": true,
+        "source_policy": "RELAXED",
+        "if_insufficient_sources": "ASK_CLARIFY",
+        "video_policy": "one_if_helpful"
+      },
+      "persona_controls": {
+        "tone": "neutral",
+        "humor_level": 0,
+        "directness": 1,
+        "metaphor_level": 0,
+        "sentence_style": "mixed",
+        "signature_patterns_allowed": []
+      },
+      "safety": {
+        "disallowed": false,
+        "reason": null
+      }
+    }
+  }
+}

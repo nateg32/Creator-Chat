@@ -6,6 +6,7 @@ import re
 from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 
 _client = None
+_async_client = None
 
 def get_client():
     """Lazy initialization of OpenAI client to avoid import-time errors"""
@@ -14,35 +15,93 @@ def get_client():
         _client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
     return _client
 
+def get_async_client():
+    """Lazy initialization of AsyncOpenAI client"""
+    global _async_client
+    if _async_client is None:
+        _async_client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    return _async_client
+
 
 def generate_chat_completion(
     messages: List[Dict[str, str]],
     model: str = settings.CHAT_MODEL,
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
-    json_mode: bool = False
-) -> str:
+    json_mode: bool = False,
+    stream: bool = False
+) -> Any:
     """
     Wrapper for OpenAI chat completion.
+    Returns string if stream=False, else returns a generator.
     """
+    # GPT-5 and o1/o3 models require max_completion_tokens and often don't support temperature
+    is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
+    
     kwargs = {
         "model": model,
         "messages": messages,
-        "temperature": temperature,
+        "stream": stream
     }
-    if max_tokens:
-        kwargs["max_tokens"] = max_tokens
+    
+    if is_reasoning_model:
+        # Temperature must be 1.0 or omitted for reasoning models
+        kwargs["temperature"] = 1.0
+        if max_tokens:
+            kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["temperature"] = temperature
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
     
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
     try:
         response = get_client().chat.completions.create(**kwargs)
+        if stream:
+            return response
         return response.choices[0].message.content.strip()
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Chat completion failed: {e}")
+        raise e
+
+async def generate_chat_completion_async(
+    messages: List[Dict[str, str]],
+    model: str = settings.CHAT_MODEL,
+    temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
+    json_mode: bool = False,
+    stream: bool = False
+) -> Any:
+    """Async wrapper for OpenAI chat completion."""
+    is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "stream": stream
+    }
+    if is_reasoning_model:
+        kwargs["temperature"] = 1.0
+        if max_tokens: kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["temperature"] = temperature
+        if max_tokens: kwargs["max_tokens"] = max_tokens
+    
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    try:
+        response = await get_async_client().chat.completions.create(**kwargs)
+        if stream:
+            return response
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Async chat completion failed: {e}")
         raise e
 
 def get_persona(creator_id: int) -> Optional[str]:
@@ -83,6 +142,8 @@ def retrieve_chunks(
             c.id as chunk_id,
             c.chunk_index,
             c.chunk_text,
+            d.title as doc_title,
+            COALESCE(NULLIF(d.url, ''), d.metadata->>'canonical_url', d.metadata->>'source_url') as source_url,
             (e.embedding <=> %s::vector) as distance
         FROM chunks c
         JOIN embeddings e ON c.id = e.chunk_id
@@ -111,7 +172,9 @@ def retrieve_chunks(
             "chunk_id": r["chunk_id"],
             "chunk_index": r["chunk_index"],
             "distance": float(r["distance"]),
-            "content": r["chunk_text"]
+            "content": r["chunk_text"],
+            "url": r["source_url"],
+            "title": r.get("doc_title")
         }
         for r in results
     ]
@@ -143,15 +206,14 @@ User Question: {question}
 """
     
     try:
-        response = get_client().chat.completions.create(
-            model=settings.CHAT_MODEL,
+        answer = generate_chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
+            model=settings.CHAT_MODEL,
             temperature=0.7
         )
-        answer = response.choices[0].message.content.strip()
         
         # Strip style analysis tags
         if "<style_analysis>" in answer:

@@ -1,0 +1,26 @@
+WITHOUT HISTORY:
+  yo                                       => GREETING
+  hello                                    => GREETING
+  hi                                       => GREETING
+  im thinking fitness                      => SMALL_TALK
+  not sure yet                             => SMALL_TALK
+  i want to start trading                  => TASK
+  what are the different markets           => TASK
+
+WITH QUESTION IN HISTORY:
+  im thinking fitness                      => TASK_CONTINUATION
+  probably stocks                          => TASK_CONTINUATION
+  not sure yet                             => TASK_CONTINUATION
+  fitness                                  => TASK_CONTINUATION
+  lol                                      => SMALL_TALK
+  yo                                       => GREETING
+  hey                                      => GREETING
+  yeah                                     => SMALL_TALK
+  ok                                       => SMALL_TALK
+  not sure                                 => TASK_CONTINUATION
+
+SUBSTRING BUG TESTS:
+  thinking (should NOT be greeting)        => SMALL_TALK
+  im thinking (should NOT be greeting)     => SMALL_TALK
+  hi (SHOULD be greeting)                  => GREETING
+  hi there (SHOULD be greeting)            => GREETING

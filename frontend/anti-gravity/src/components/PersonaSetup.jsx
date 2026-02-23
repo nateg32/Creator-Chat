@@ -1,20 +1,19 @@
 import { useState, useEffect } from "react";
-import { getPersona, getQueueItems } from "../api/client";
+import { getFingerprintStatus, getQueueItems } from "../api/client";
 import "./PersonaSetup.css";
 
-export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
-  const [concise, setConcise] = useState(5);
-  const [serious, setSerious] = useState(5);
-  const [direct, setDirect] = useState(5);
-  const [creativity, setCreativity] = useState(5);
-  const [energy, setEnergy] = useState(5);
+export function PersonaSetup({ creatorId, onContinue, loading }) {
   const [hasContent, setHasContent] = useState(false);
   const [contentLoading, setContentLoading] = useState(true);
-  const [initialPersonaLoaded, setInitialPersonaLoaded] = useState(false);
+  const [fingerprint, setFingerprint] = useState(null);
+  const [status, setStatus] = useState("idle"); // idle, processing, error
+  const [pollInterval, setPollInterval] = useState(null);
 
   useEffect(() => {
     if (creatorId) {
       setContentLoading(true);
+
+      // 1. Initial check for content
       getQueueItems(creatorId)
         .then((data) => {
           const items = data.items || [];
@@ -26,188 +25,99 @@ export function PersonaSetup({ creatorId, onSave, onContinue, loading }) {
         })
         .finally(() => setContentLoading(false));
 
-      getPersona(creatorId)
-        .then((data) => {
-          if (data && data.persona) {
-            parsePersona(data.persona);
-            setInitialPersonaLoaded(true);
-          }
-        })
-        .catch(err => console.error("Failed to load persona:", err));
+      // 2. Poll for fingerprint
+      fetchStatus();
+      const interval = setInterval(fetchStatus, 3000);
+      setPollInterval(interval);
+      return () => clearInterval(interval);
     }
   }, [creatorId]);
 
-  function parsePersona(text) {
-    const styleMatch = text.match(/Style:\s*(.*)/i);
-    if (styleMatch) {
-      const styles = styleMatch[1].toLowerCase();
-      setConcise(5); setSerious(5); setDirect(5); setCreativity(5); setEnergy(5);
-
-      if (styles.includes("detailed")) setConcise(2);
-      if (styles.includes("concise")) setConcise(8);
-      if (styles.includes("playful")) setSerious(2);
-      if (styles.includes("serious")) setSerious(8);
-      if (styles.includes("gentle")) setDirect(2);
-      if (styles.includes("direct")) setDirect(8);
-      if (styles.includes("bold")) setCreativity(8);
-      if (styles.includes("literal")) setCreativity(2);
-      if (styles.includes("hype")) setEnergy(8);
-      if (styles.includes("calm")) setEnergy(2);
+  const fetchStatus = async () => {
+    try {
+      const data = await getFingerprintStatus(creatorId);
+      setStatus(data.status);
+      if (data.has_fingerprint) {
+        setFingerprint({
+          style: data.style,
+          identity: data.identity
+        });
+        if (data.status === "idle") {
+          // We have it and it's done, maybe slow down or stop polling
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load fingerprint:", err);
     }
-  }
-
-  function buildPersonaText() {
-    const parts = [];
-    const styleParts = [];
-    if (concise <= 3) styleParts.push("Detailed");
-    else if (concise >= 7) styleParts.push("Concise");
-
-    if (serious <= 3) styleParts.push("Playful");
-    else if (serious >= 7) styleParts.push("Serious");
-
-    if (direct <= 3) styleParts.push("Gentle");
-    else if (direct >= 7) styleParts.push("Direct");
-
-    if (creativity <= 3) styleParts.push("Literal");
-    else if (creativity >= 7) styleParts.push("Bold");
-
-    if (energy <= 3) styleParts.push("Calm");
-    else if (energy >= 7) styleParts.push("Hype");
-
-    if (styleParts.length > 0) {
-      parts.push(`Style: ${styleParts.join(", ")}`);
-    } else {
-      parts.push("Style: Balanced");
-    }
-
-    return parts.join("\n");
-  }
-
-  async function handleSave() {
-    const personaText = buildPersonaText();
-    await onSave(personaText);
-  }
-
-  const getWeightClass = (val) => {
-    if (val <= 3) return "left";
-    if (val >= 7) return "right";
-    return "neutral";
   };
+
+  const getStatements = () => {
+    if (!fingerprint) return [];
+    const traits = fingerprint.style?.traits || [];
+    const bio = fingerprint.identity?.bio;
+    const mission = fingerprint.identity?.mission;
+
+    let statements = [...traits];
+    if (bio && bio !== "Profile in progress.") {
+      // Limit bio length for the card
+      const cleanBio = bio.length > 120 ? bio.slice(0, 120) + "..." : bio;
+      statements.unshift(cleanBio);
+    }
+
+    return statements.slice(0, 5); // Max 5 for visual clarity
+  };
+
+  const stats = getStatements();
 
   return (
     <div className="persona-setup-card">
       <div className="persona-header">
-        <h2>Persona</h2>
-        <p className="persona-subtitle">Tune your creator's communication style.</p>
+        <h2>Style Fingerprint</h2>
+        <p className="persona-subtitle">
+          {status === "processing"
+            ? "Analyzing content to build unique identity..."
+            : "Data-driven identity generated from public records and content."}
+        </p>
       </div>
 
-      <div className="persona-form">
-        <div className="mixing-board">
-          {/* Row 1 */}
-          <div className="mixing-row">
-            <div className={`mixing-label ${getWeightClass(concise)}`}>
-              <span className="side-label label-left">Detailed</span>
-              <span className="middle-label">Conciseness</span>
-              <span className="side-label label-right">Pushy</span>
+      <div className="persona-form read-only">
+        {status === "processing" && (
+          <div className="fingerprint-loading">
+            <div className="progress-bar-container">
+              <div className="progress-bar-fill animate"></div>
             </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={concise}
-              onChange={(e) => setConcise(Number(e.target.value))}
-              className="mixing-slider"
-              disabled={loading}
-            />
+            <p className="loading-text">Extracting voice patterns & verified facts...</p>
           </div>
+        )}
 
-          {/* Row 2 */}
-          <div className="mixing-row">
-            <div className={`mixing-label ${getWeightClass(serious)}`}>
-              <span className="side-label label-left">Playful</span>
-              <span className="middle-label">Vibe</span>
-              <span className="side-label label-right">Serious</span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={serious}
-              onChange={(e) => setSerious(Number(e.target.value))}
-              className="mixing-slider"
-              disabled={loading}
-            />
+        {stats.length > 0 ? (
+          <div className="fingerprint-glass-card">
+            {stats.map((text, i) => (
+              <div key={i} className="fingerprint-statement">
+                <div className="statement-bullet"></div>
+                <p className="statement-text">{text}</p>
+              </div>
+            ))}
           </div>
+        ) : !contentLoading && status !== "processing" && (
+          <p className="muted-notice">No content analyzed yet. Approve some content to build the fingerprint.</p>
+        )}
 
-          {/* Row 3 */}
-          <div className="mixing-row">
-            <div className={`mixing-label ${getWeightClass(direct)}`}>
-              <span className="side-label label-left">Gentle</span>
-              <span className="middle-label">Directness</span>
-              <span className="side-label label-right">Blunt</span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={direct}
-              onChange={(e) => setDirect(Number(e.target.value))}
-              className="mixing-slider"
-              disabled={loading}
-            />
-          </div>
+        {fingerprint?.identity?.is_verified && (
+          <div className="identity-badge"> Verified Identity Layer Active </div>
+        )}
 
-          {/* Row 4 */}
-          <div className="mixing-row">
-            <div className={`mixing-label ${getWeightClass(creativity)}`}>
-              <span className="side-label label-left">Literal</span>
-              <span className="middle-label">Expression</span>
-              <span className="side-label label-right">Bold</span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={creativity}
-              onChange={(e) => setCreativity(Number(e.target.value))}
-              className="mixing-slider"
-              disabled={loading}
-            />
-          </div>
-
-          {/* Row 5 */}
-          <div className="mixing-row">
-            <div className={`mixing-label ${getWeightClass(energy)}`}>
-              <span className="side-label label-left">Stoic</span>
-              <span className="middle-label">Energy</span>
-              <span className="side-label label-right">Hype</span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={energy}
-              onChange={(e) => setEnergy(Number(e.target.value))}
-              className="mixing-slider"
-              disabled={loading}
-            />
-          </div>
+        <div className="disclaimer-text">
+          This profile is generated based on publicly available information and ingested content.
         </div>
 
-        <div className="button-group">
-          <button
-            onClick={handleSave}
-            className="secondary-button"
-            disabled={loading}
-          >
-            {loading ? "Saving..." : "Apply Settings"}
-          </button>
+        <div className="button-group single-center">
           <button
             onClick={onContinue}
             className="primary-button"
-            disabled={loading}
+            disabled={loading || (status === "processing" && stats.length === 0)}
           >
-            Finish & Chat
+            {status === "processing" && stats.length === 0 ? "Building Profile..." : "Finish & Chat"}
           </button>
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ask } from "../api/client";
+import { ask, askStream } from "../api/client";
 import { resizeImage, compressChatImage } from "../utils/image";
 import { formatCreatorName, formatMessageText } from "../utils/format";
 import "./ChatPanel.css";
@@ -159,122 +159,6 @@ export function ChatPanel({
     setAttachmentError(null);
   };
 
-  // Cleanup object URLs on unmount
-  useEffect(() => {
-    return () => {
-      selectedImages.forEach(img => {
-        if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
-      });
-      if (errorTimeoutRef.current) clearTimeout(errorTimeoutRef.current);
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-scroll to the latest message
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages, loading]);
-
-  useEffect(() => {
-    if (!debug) setDebugInfo(null);
-  }, [debug]);
-
-  async function send() {
-    const q = input.trim();
-    if ((!q && selectedImages.length === 0) || loading) return;
-
-    setLocalLoading(true);
-    let imagesPayload = [];
-
-    // Compress images before sending
-    try {
-      if (selectedImages.length > 0) {
-        const compressedImages = await Promise.all(
-          selectedImages.map(img => compressChatImage(img.file))
-        );
-        imagesPayload = compressedImages.map(img => ({
-          data_url: img.dataUrl,
-          detail: "auto"
-        }));
-      }
-    } catch (err) {
-      setError("Failed to process images: " + err.message);
-      setLocalLoading(false);
-      return;
-    }
-
-    const userMessage = {
-      id: Date.now(),
-      role: "user",
-      content: q,
-      text: q,
-      images: imagesPayload, // Use the compressed dataUrls for consistent local display
-      ts: new Date().toISOString(),
-    };
-
-    setMessages((m) => [...m, userMessage]);
-
-    // Clear inputs immediately
-    setInput("");
-    setSelectedImages([]); // This triggers effect cleanup? No, strictly need to revoke? 
-    // Actually, we shouldn't revoke immediately if we want to show them in the chat history using the same URLs?
-    // Wait, we are replacing them with the compressed dataURLs in the message object above. So we CAN revoke the previews.
-    selectedImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
-
-    setError(null);
-    if (!debug) setDebugInfo(null);
-
-    try {
-      const history = messages
-        .filter((m) => m.role !== "system-notice")
-        .map((m) => ({
-          role: m.role,
-          content: m.content ?? m.text ?? "",
-        }));
-      const result = await ask({
-        creator_id: creatorId,
-        thread_id: threadId,
-        question: q,
-        top_k: topK,
-        max_distance: maxDistance,
-        messages: history,
-        debug,
-        images: imagesPayload.length > 0 ? imagesPayload : undefined,
-      });
-      if (debug && result.debug_info) setDebugInfo(result.debug_info);
-
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now() + 1,
-          role: "assistant",
-          content: result.answer,
-          text: result.answer,
-          retrieved: result.retrieved || [],
-          ts: new Date().toISOString(),
-        },
-      ]);
-
-      if (onInteraction) onInteraction();
-    } catch (e) {
-      setError(e.message);
-      if (debug) setDebugInfo(null);
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now() + 2,
-          role: "assistant",
-          content: `Sorry, something went wrong: ${e.message}`,
-          text: `Sorry, something went wrong: ${e.message}`,
-          ts: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setLocalLoading(false);
-    }
-  }
-
   const handleAvatarClick = (type) => {
     setActiveAvatarEdit(type);
     if (fileInputRef.current) {
@@ -317,7 +201,8 @@ export function ChatPanel({
   // Auto-scroll to the latest message
   useEffect(() => {
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+      // Use 'auto' instead of 'smooth' for streaming performance
+      messagesEndRef.current.scrollIntoView({ behavior: "auto" });
     }
   }, [messages, loading]);
 
@@ -354,7 +239,7 @@ export function ChatPanel({
       role: "user",
       content: q,
       text: q,
-      images: imagesPayload, // Use the compressed dataUrls for consistent local display
+      images: imagesPayload,
       ts: new Date().toISOString(),
     };
 
@@ -362,13 +247,25 @@ export function ChatPanel({
 
     // Clear inputs immediately
     setInput("");
-    setSelectedImages([]); // This triggers effect cleanup? No, strictly need to revoke? 
-    // Actually, we shouldn't revoke immediately if we want to show them in the chat history using the same URLs?
-    // Wait, we are replacing them with the compressed dataURLs in the message object above. So we CAN revoke the previews.
+    setSelectedImages([]);
     selectedImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
 
     setError(null);
     if (!debug) setDebugInfo(null);
+
+    const assistantMessageId = Date.now() + 1;
+
+    // Add an empty assistant message to be filled via stream
+    setMessages((m) => [
+      ...m,
+      {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "",
+        text: "",
+        ts: new Date().toISOString(),
+      },
+    ]);
 
     try {
       const history = messages
@@ -377,46 +274,43 @@ export function ChatPanel({
           role: m.role,
           content: m.content ?? m.text ?? "",
         }));
-      const result = await ask({
+
+      await askStream({
         creator_id: creatorId,
         thread_id: threadId,
         question: q,
         top_k: topK,
         max_distance: maxDistance,
         messages: history,
-        debug,
         images: imagesPayload.length > 0 ? imagesPayload : undefined,
-      });
-      if (debug && result.debug_info) setDebugInfo(result.debug_info);
-
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now() + 1,
-          role: "assistant",
-          content: result.answer,
-          text: result.answer,
-          retrieved: result.retrieved || [],
-          card: result.card,
-          cards: result.cards,
-          ts: new Date().toISOString(),
+        onToken: (token) => {
+          setLocalLoading(false); // Stop "Thinking" indicator as soon as first token arrives
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? { ...msg, content: msg.content + token, text: msg.text + token }
+                : msg
+            )
+          );
         },
-      ]);
+        onComplete: (fullAnswer) => {
+          if (onInteraction) onInteraction();
+        },
+        onError: (e) => {
+          setError(e.message);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? { ...msg, content: `Sorry, something went wrong: ${e.message}`, text: `Sorry, something went wrong: ${e.message}` }
+                : msg
+            )
+          );
+        }
+      });
 
-      if (onInteraction) onInteraction();
     } catch (e) {
       setError(e.message);
       if (debug) setDebugInfo(null);
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now() + 2,
-          role: "assistant",
-          content: `Sorry, something went wrong: ${e.message}`,
-          text: `Sorry, something went wrong: ${e.message}`,
-          ts: new Date().toISOString(),
-        },
-      ]);
     } finally {
       setLocalLoading(false);
     }
@@ -508,45 +402,122 @@ export function ChatPanel({
                       </div>
                     )}
 
-                    {/* Text Content */}
-                    {(m.content || m.text) && (
-                      <div className="msg-text">{formatMessageText(m.content ?? m.text, creatorDisplayName)}</div>
+                    {/* Text Content / Thinking Indicator */}
+                    {(m.content || m.text) ? (
+                      <div className="msg-text">
+                        {(() => {
+                          const text = formatMessageText(m.content ?? m.text, creatorDisplayName);
+                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g;
+                          const parts = [];
+                          let lastIndex = 0;
+                          let match;
+
+                          while ((match = regex.exec(text)) !== null) {
+                            if (match.index > lastIndex) {
+                              parts.push(text.substring(lastIndex, match.index));
+                            }
+                            parts.push(
+                              <a key={match.index} href={match[2]} target="_blank" rel="noopener noreferrer" className="chat-link">
+                                {match[1]}
+                              </a>
+                            );
+                            lastIndex = regex.lastIndex;
+                          }
+                          if (lastIndex < text.length) {
+                            parts.push(text.substring(lastIndex));
+                          }
+                          return parts.length > 0 ? parts : text;
+                        })()}
+                      </div>
+                    ) : (
+                      m.role === "assistant" && loading && (
+                        <div className="thinking-indicator">
+                          <span>Thinking</span>
+                          <span className="thinking-dots">...</span>
+                        </div>
+                      )
+                    )}
+
+                    {/* Mode Chip (Subtle debug) */}
+                    {debug && m.role === "assistant" && m.meta?.plan_obj && (
+                      <div className="mode-chip">
+                        {m.meta.plan_obj.mode}
+                      </div>
                     )}
 
                     {/* Preview Cards */}
-                    {m.cards && m.cards.length > 0 && (
-                      <div className="msg-cards">
-                        {m.cards.map((card, idx) => (
-                          <PreviewCard key={idx} card={card} />
-                        ))}
-                      </div>
-                    )}
+                    {(() => {
+                      let displayCards = [...(m.cards || [])];
+                      // If no backend cards, extract dynamically from text
+                      if (displayCards.length === 0 && (m.content || m.text)) {
+                        const rawText = m.content ?? m.text;
+                        const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g;
+                        let match;
+                        while ((match = regex.exec(rawText)) !== null) {
+                          const title = match[1];
+                          const url = match[2];
+                          let thumbnail_url = "";
+                          let resource_type = "article";
+
+                          if (url.includes("youtube.com") || url.includes("youtu.be")) {
+                            resource_type = "video";
+                            let videoId = "";
+                            if (url.includes("v=")) videoId = url.split("v=")[1].split("&")[0];
+                            else if (url.includes("youtu.be/")) videoId = url.split("youtu.be/")[1].split("?")[0];
+                            if (videoId) thumbnail_url = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+                          }
+                          displayCards.push({
+                            type: "preview_card",
+                            resource_type,
+                            title,
+                            url,
+                            thumbnail_url
+                          });
+                        }
+                      }
+
+                      if (displayCards.length === 0) return null;
+
+                      return (
+                        <div className="msg-cards">
+                          {displayCards.map((card, idx) => (
+                            <PreviewCard key={`card-${idx}`} card={card} />
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {/* Backward compatibility for single card */}
                     {!m.cards && m.card && <PreviewCard card={m.card} />}
+
+                    {/* Switch Creator CTA */}
+                    {m.meta?.domain_action === "DECLINE_HANDOFF" && m.meta?.suggestions && (
+                      <div className="switch-creator-cta">
+                        <div className="cta-label">Suggesting other experts:</div>
+                        <div className="suggestion-chips">
+                          {m.meta.suggestions.map((s) => (
+                            <button key={s.id} onClick={() => onChangePersona(s.id)} className="suggestion-chip">
+                              {s.profile_picture_url && <img src={s.profile_picture_url} alt={s.name} />}
+                              <span>{formatCreatorName(s.name)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Greeting Quick Actions */}
+                    {m.role === "assistant" && m.meta?.plan_obj?.stage === "GREETING" && idx === messages.length - 1 && (
+                      <div className="quick-actions">
+                        <button className="quick-action-btn" onClick={() => { setInput("Give me some advice"); }}>Get advice</button>
+                        <button className="quick-action-btn" onClick={() => { setInput("Help me build a plan"); }}>Build a plan</button>
+                        <button className="quick-action-btn" onClick={() => { setInput("Tell me more about yourself"); }}>Ask about creator</button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )
             })
           )}
 
-          {loading && (
-            <div className="msg-row msg-assistant">
-              <div
-                className="msg-avatar clickable"
-                title="Change bot avatar"
-                onClick={() => handleAvatarClick("creator")}
-              >
-                {creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />}
-              </div>
-              <div className="msg-bubble">
-                <div className="msg-sender" style={{ color: visualConfig.creatorNameColor || "#4285F4" }}>{formatCreatorName(creatorDisplayName)}</div>
-                <div className="thinking-indicator">
-                  <span>Thinking</span>
-                  <span className="thinking-dots">...</span>
-                </div>
-              </div>
-            </div>
-          )}
 
           {error && <div className="error-banner">Error: {error}</div>}
 
@@ -597,7 +568,11 @@ export function ChatPanel({
             </button>
             <input
               className="gemini-input"
-              placeholder={`Ask ${formatCreatorName(creatorDisplayName)} anything...`}
+              placeholder={
+                messages.length > 0 && messages[messages.length - 1].role === "assistant" && messages[messages.length - 1].meta?.plan_obj?.mode === "CLARIFY"
+                  ? (messages[messages.length - 1].meta.plan_obj.next_question || "Answer the question above...")
+                  : `Ask ${formatCreatorName(creatorDisplayName)} anything...`
+              }
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {

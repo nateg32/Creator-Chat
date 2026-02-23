@@ -78,6 +78,11 @@ class IngestWorker:
                 (job_id,)
             )
 
+            # Trigger Fingerprint Evolution if new knowledge was added
+            if job_type == 'EMBED':
+                from services.fingerprint_service import fingerprint_service
+                await fingerprint_service.generate_fingerprint_async(job['creator_id'])
+
         except Exception as e:
             # Handle Failure & Retry
             attempts = job['attempts'] + 1
@@ -110,5 +115,21 @@ class IngestWorker:
 
     async def _do_transcription(self, item_id: str):
         """Call Transcription Service (Whisper/etc)."""
-        await asyncio.sleep(2.0) # Mock time
-        pass
+        # Fetch item video_url/source_url
+        item = db.execute_one("SELECT source_url, metadata FROM scrape_items WHERE id = %s", (item_id,))
+        if not item: return
+        
+        meta = item.get("metadata") or {}
+        if isinstance(meta, str): meta = json.loads(meta)
+        
+        video_url = meta.get("video_url") or item.get("source_url")
+        if not video_url: return
+        
+        from lib.transcription import transcribe_video
+        # transcribe_video is sync, but we are in async worker
+        transcript = await asyncio.to_thread(transcribe_video, video_url)
+        if transcript:
+            db.execute_update(
+                "UPDATE scrape_items SET transcript = %s, transcript_status = 'present' WHERE id = %s",
+                (transcript, item_id)
+            )

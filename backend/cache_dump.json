@@ -1,0 +1,20 @@
+[
+  {
+    "query_hash": "74bd10185d5ac1da90e281339154ae3a2640618a25dd305946c3f2110e308df3",
+    "provider": "gemini",
+    "created_at": "2026-02-23 09:10:01.482953+11:00",
+    "results": []
+  },
+  {
+    "query_hash": "77158ebbf03edbffde1911192bf9021479be1d90e68aa794d235e44aeb760ba1",
+    "provider": "gemini",
+    "created_at": "2026-02-23 09:04:37.844157+11:00",
+    "results": []
+  },
+  {
+    "query_hash": "d1db2be78b9862a28d485aca19f84f1c5399eab1084cc25c7942e42239fd6b24",
+    "provider": "gemini",
+    "created_at": "2026-02-22 21:58:42.816545+11:00",
+    "results": []
+  }
+]

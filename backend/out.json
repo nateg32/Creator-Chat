@@ -1,0 +1,166 @@
+{
+  "answer": "If you\u2019re starting ecom from scratch, I don\u2019t have a specific link pulled up to send you right this second, but the one \u201ctype\u201d of video I\u2019d tell you to watch is the full start-to-finish build where I literally go: find a product with AI, build the store with AI, and make the ads with AI. That\u2019s the bread and butter because it shows you the whole workflow, not just theory.\n\nAnd honestly bro, don\u2019t get stuck binge-watching. Watch that style of video once, then immediately do it yourself the same day. There\u2019s a window of time right now where moving fast with AI is an unfair advantage.\n\nIf you want, tell me which lane you\u2019re trying to do: dropshipping with TikTok/Meta ads, or more \u201cfaceless\u201d content that funnels into a product?",
+  "retrieved": [
+    {
+      "chunk_id": 8105,
+      "chunk_index": 9,
+      "distance": 0.605782687664032,
+      "content": "Now, lucky for you, ecom is easier than it&#39;s ever been thanks to the introduction of AI. For his store, we found the product with AI, built the website with AI, and even made all of our ads 100% with AI. It is absolutely insane. And if you&#39;re looking to start an e-commerce business, I&#39;ve got something for you. You can get a custom store built 100% by my AI software for 100% free at the link in the description. And once you get your store, I&#39;ll be giving you an in-depth beginnerfriendly training program that will take you from zero to your first sale in just 3 days. This is the same exact strategy we use to take a store from zero to over $1,500 a day in just under a week. And inside of the program, you&#39;ll be getting an in-depth case study on exactly how we did that.",
+      "source_ref": {
+        "platform": "youtube",
+        "content_id": "0RTKKBn0R2k",
+        "canonical_url": "https://www.youtube.com/watch?v=0RTKKBn0R2k",
+        "title": "If I Wanted to Become a Millionaire by 2026, This is What I\u2019d Do",
+        "published_at": "2025-07-28 21:44:04+10:00",
+        "content_type": "video"
+      },
+      "document_id": 672
+    },
+    {
+      "chunk_id": 9746,
+      "chunk_index": 24,
+      "distance": 0.652999233841985,
+      "content": "But if you&#39;re just looking for a side hustle that you can make a couple thousand bucks a month with that&#39;s simple to set up that you don&#39;t have to show your face for, then for 99% of you, I think the simplest option of the three is obviously going to be AI commerce. [music] If I were starting over in business today, this is without a doubt what I will be focusing on. And in the last couple of months, I&#39;ve helped hundreds of beginners build profitable AI commerce stores from scratch using the exact same systems, tools, [music] and strategies that I spent the last 10 years mastering. If you want to start your own store this year and want my help along the way, click the link in the description and book a free call with my team to see if you&#39;re the right fit.",
+      "source_ref": {
+        "platform": "youtube",
+        "content_id": "ujaqG-LnoSE",
+        "canonical_url": "https://www.youtube.com/watch?v=ujaqG-LnoSE",
+        "title": "How To Start A 1-Person AI Business ($0 to $1M)",
+        "published_at": "2026-02-19 04:53:20+11:00",
+        "content_type": "video"
+      },
+      "document_id": 1067
+    },
+    {
+      "chunk_id": 9729,
+      "chunk_index": 7,
+      "distance": 0.6550065772237352,
+      "content": "Make sure when you&#39;re trying to generate digital products or pictures or anything, you always ask CHAGBT to give you the prompt because these tools know how to communicate with each other way better than we know how to communicate with them. So, here&#39;s the prompt. It says, &quot;You&#39;re a top tier digital product creator and resell expert.&quot; And it goes through and explains exactly how it&#39;s structured, exactly what we need. And then now we can take that prompt and we can generate our own digital product. So, what we&#39;ll do is we&#39;ll open up a new chat. We&#39;ll paste this script completely from the other chat and we&#39;ll put it here. And it should immediately start to get to work on our digital product.",
+      "source_ref": {
+        "platform": "youtube",
+        "content_id": "ujaqG-LnoSE",
+        "canonical_url": "https://www.youtube.com/watch?v=ujaqG-LnoSE",
+        "title": "How To Start A 1-Person AI Business ($0 to $1M)",
+        "published_at": "2026-02-19 04:53:20+11:00",
+        "content_type": "video"
+      },
+      "document_id": 1067
+    }
+  ],
+  "sources": [
+    {
+      "platform": "youtube",
+      "content_id": "0RTKKBn0R2k",
+      "canonical_url": "https://www.youtube.com/watch?v=0RTKKBn0R2k",
+      "title": "If I Wanted to Become a Millionaire by 2026, This is What I\u2019d Do",
+      "published_at": "2025-07-28 21:44:04+10:00",
+      "content_type": "video"
+    },
+    {
+      "platform": "youtube",
+      "content_id": "ujaqG-LnoSE",
+      "canonical_url": "https://www.youtube.com/watch?v=ujaqG-LnoSE",
+      "title": "How To Start A 1-Person AI Business ($0 to $1M)",
+      "published_at": "2026-02-19 04:53:20+11:00",
+      "content_type": "video"
+    }
+  ],
+  "cards": [],
+  "meta": {
+    "gen_debug": {
+      "plan": {
+        "route": "ROUTE_2_TASK",
+        "routing": "IN_DOMAIN",
+        "smile_signal": "SOCIAL_OPEN",
+        "domain_profile": {
+          "primary_domains": [],
+          "secondary_domains": [],
+          "bridge_rules": [],
+          "forbidden_domains": [],
+          "confidence": 0.5
+        },
+        "request_domain": {
+          "request_domain": "general",
+          "goal_guess": "unknown",
+          "specificity": "low"
+        },
+        "stage": "GREETING",
+        "mode": "EXECUTE",
+        "verbosity_budget": {
+          "max_lines": 12,
+          "max_bullets": 0
+        },
+        "missing_info": [],
+        "next_question": null,
+        "answer_outline": [],
+        "confidence": 1.0,
+        "grounding": {
+          "requires_sources": true,
+          "source_policy": "RELAXED",
+          "if_insufficient_sources": "ASK_CLARIFY",
+          "video_policy": "one_if_helpful"
+        },
+        "persona_controls": {
+          "tone": "neutral",
+          "humor_level": 0,
+          "directness": 1,
+          "metaphor_level": 0,
+          "sentence_style": "mixed",
+          "signature_patterns_allowed": []
+        },
+        "safety": {
+          "disallowed": false,
+          "reason": null
+        }
+      },
+      "route": "ROUTE_2_TASK",
+      "routing": "IN_DOMAIN",
+      "mvc_score": 0
+    },
+    "plan_obj": {
+      "route": "ROUTE_2_TASK",
+      "routing": "IN_DOMAIN",
+      "smile_signal": "SOCIAL_OPEN",
+      "domain_profile": {
+        "primary_domains": [],
+        "secondary_domains": [],
+        "bridge_rules": [],
+        "forbidden_domains": [],
+        "confidence": 0.5
+      },
+      "request_domain": {
+        "request_domain": "general",
+        "goal_guess": "unknown",
+        "specificity": "low"
+      },
+      "stage": "GREETING",
+      "mode": "EXECUTE",
+      "verbosity_budget": {
+        "max_lines": 12,
+        "max_bullets": 0
+      },
+      "missing_info": [],
+      "next_question": null,
+      "answer_outline": [],
+      "confidence": 1.0,
+      "grounding": {
+        "requires_sources": true,
+        "source_policy": "RELAXED",
+        "if_insufficient_sources": "ASK_CLARIFY",
+        "video_policy": "one_if_helpful"
+      },
+      "persona_controls": {
+        "tone": "neutral",
+        "humor_level": 0,
+        "directness": 1,
+        "metaphor_level": 0,
+        "sentence_style": "mixed",
+        "signature_patterns_allowed": []
+      },
+      "safety": {
+        "disallowed": false,
+        "reason": null
+      }
+    }
+  }
+}

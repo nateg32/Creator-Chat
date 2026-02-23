@@ -40,6 +40,7 @@ class MessageResponse(BaseModel):
     content: str
     created_at: Any
     images: Optional[List[Dict[str, Any]]] = None # To return attached images
+    cards: Optional[List[Dict[str, Any]]] = None  # To return recommendation cards
 
 class IngestRequest(BaseModel):
     creator_id: int

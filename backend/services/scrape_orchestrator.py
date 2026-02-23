@@ -104,6 +104,17 @@ class ScrapeOrchestrator:
                 )
                 results.append({"platform": key, "status": "FAILED", "error": str(e)})
 
+        # Final trigger: Update Fingerprint if any new content was found
+        if any(r.get("stats", {}).get("new", 0) > 0 for r in results):
+             import asyncio
+             from services.fingerprint_service import fingerprint_service
+             # Fire and forget if running in an async context, 
+             # but ScrapeOrchestrator.run might be synchronous.
+             # We assume orchestrator is called in background_tasks or threaded.
+             loop = asyncio.new_event_loop()
+             asyncio.set_event_loop(loop)
+             loop.run_until_complete(fingerprint_service.generate_fingerprint_async(self.creator_id))
+
         return results
 
     def _mock_fetch(self, platform: str, config: Dict, since_id=None) -> List[Dict]:

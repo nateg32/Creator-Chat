@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, HTTPException, Cookie, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,8 +26,9 @@ from models import (
     CreateThreadRequest, ThreadResponse, MessageResponse, UpdateThreadRequest
 )
 from rag import get_persona
+import rag
 from creator_engine import ask as creator_ask
-from grounded_rag import grounded_rag_ask
+from grounded_rag import grounded_rag_ask, grounded_rag_stream
 from ingest import ingest_document
 from apify_service import search_all, search_instagram_reels
 from lib.instagram_parser import parse_instagram_url
@@ -42,6 +44,9 @@ from scraper_router import run_search_router, PLATFORM_MAPPERS
 from db import db
 from settings import settings
 from personality_analyzer import PersonalityAnalyzer
+from core.interaction_engine import interaction_engine
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Creator Bot API")
 
@@ -193,9 +198,15 @@ def require_auth(session_id: Optional[str] = Cookie(None)) -> Dict[str, Any]:
 async def startup():
     """Initialize database connection"""
     db.connect()
-    # Migration: Add profile_picture_url if missing
+    # Migration: Add soul and fingerprint columns if missing
     try:
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS identity_fingerprint JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS style_fingerprint JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS soul_md TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS research_summary JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_status TEXT DEFAULT 'idle'")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
     except Exception as e:
         print(f"[STARTUP] Migration warning: {e}")
 
@@ -916,40 +927,32 @@ async def delete_creator(creator_id: int):
             # But maybe the user clicked delete twice. Let's return 404.
             raise HTTPException(status_code=404, detail="Creator not found")
 
-        # Delete associated data in order
-        # 1. Embeddings (linked to chunks)
-        # Note: chunks table might not have creator_id in older schemas?
-        # Let's check if chunks has creator_id. 
-        # ingest.py shows INSERT INTO chunks (creator_id, ...) so it does.
+        # Delete associated data in strict foreign-key dependency order
         
-        # It's safer to delete embeddings first.
-        try:
-             db.execute_update("""
-                DELETE FROM embeddings 
-                WHERE chunk_id IN (SELECT id FROM chunks WHERE creator_id = %s)
-            """, (creator_id,))
-        except Exception as e:
-            print(f"Error deleting embeddings: {e}")
-
-        # 2. Chunks
-        try:
-            db.execute_update("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
-        except Exception as e:
-            print(f"Error deleting chunks: {e}")
-
-        # 3. Documents
-        try:
-            db.execute_update("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
-        except Exception as e:
-             print(f"Error deleting documents: {e}")
-
-        # 4. Scrape Queue
-        try:
-            db.execute_update("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
-        except Exception as e:
-             print(f"Error deleting scrape_queue: {e}")
-
-        # 5. Creator
+        # 1. User preferences & facts & turns
+        db.execute_update("DELETE FROM user_creator_preferences WHERE creator_id = %s", (creator_id,))
+        db.execute_update("DELETE FROM verified_facts WHERE creator_id = %s", (creator_id,))
+        db.execute_update("DELETE FROM conversation_turns WHERE creator_id = %s", (creator_id,))
+        
+        # 2. Chat Threads & Messages
+        db.execute_update("DELETE FROM chat_messages WHERE thread_id IN (SELECT id FROM chat_threads WHERE creator_id = %s)", (creator_id,))
+        db.execute_update("DELETE FROM chat_threads WHERE creator_id = %s", (creator_id,))
+        
+        # 3. Search Jobs & Items
+        db.execute_update("DELETE FROM search_items WHERE search_id IN (SELECT id FROM search_jobs WHERE creator_id = %s)", (creator_id,))
+        db.execute_update("DELETE FROM search_jobs WHERE creator_id = %s", (creator_id,))
+        
+        # 4. Scrape Runs & Items (if schema uses run_id)
+        db.execute_update("DELETE FROM search_items WHERE scrape_id IN (SELECT id FROM scrape_runs WHERE creator_id = %s)", (creator_id,))
+        db.execute_update("DELETE FROM scrape_runs WHERE creator_id = %s", (creator_id,))
+        
+        # 5. Embeddings, Chunks & Documents & Queue
+        db.execute_update("DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE creator_id = %s)", (creator_id,))
+        db.execute_update("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
+        db.execute_update("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
+        db.execute_update("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
+        
+        # 6. Finally, delete the creator
         count = db.execute_update("DELETE FROM creators WHERE id = %s", (creator_id,))
         if count == 0:
              raise HTTPException(status_code=404, detail="Creator not found during delete")
@@ -1124,8 +1127,121 @@ async def health():
         traceback.print_exc()
         raise
 
+@app.post("/ask-stream")
+async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
+    """
+    Streaming version of /ask. 
+    Bypasses deep classification/planning for immediate time-to-first-token.
+    """
+    try:
+        # Pre-chat check: Ensure soul assets exist
+        from services.fingerprint_service import fingerprint_service
+        creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
+        if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
+            print(f"[CHAT] Missing soul for creator {request.creator_id}, triggering background generation...")
+            background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
+
+        # 1. Fetch user prefs & history (Sync/Fast)
+        user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
+        user_prefs = None
+        user_name = None
+        if user_row:
+            up = user_row.get("response_preferences")
+            user_name = user_row.get("display_name")
+            if isinstance(up, str):
+                try: user_prefs = json.loads(up)
+                except: pass
+            elif isinstance(up, dict): user_prefs = up
+
+        # 2. Thread Logic & History
+        # Simplified for streaming: fetch history first, then stream, then save user msg.
+        conversation_history = []
+        if request.thread_id:
+            try:
+                uuid.UUID(str(request.thread_id))
+                msgs_rows = db.execute_query("""
+                    SELECT role, content FROM chat_messages 
+                    WHERE thread_id = %s 
+                    ORDER BY created_at DESC 
+                    LIMIT 10
+                """, (request.thread_id,))
+                if msgs_rows:
+                    msgs_rows.reverse()
+                    conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
+            except ValueError:
+                request.thread_id = None
+
+        # 3. Generator Wrapper to capture full answer
+        async def stream_wrapper():
+            full_answer = ""
+            async for chunk in grounded_rag_stream(
+                creator_id=request.creator_id,
+                question=request.question,
+                thread_id=request.thread_id,
+                conversation_history=conversation_history,
+                user_preferences=user_prefs,
+                user_name=user_name,
+                user_id=1 # Default user
+            ):
+                full_answer += chunk
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
+            
+            # 4. Finalize (Post-stream)
+            # After the stream is exhausted, we do the background work
+            if request.thread_id:
+                finalize_stream_interaction(request.thread_id, request.question, full_answer)
+                # Check for title update
+                thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
+                    background_tasks.add_task(_update_thread_title_background, request.thread_id)
+            
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
+
+    except Exception as e:
+        logger.error(f"Streaming failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def finalize_stream_interaction(thread_id: str, question: str, answer: str):
+    """Save the final interaction to DB after stream completion."""
+    try:
+        # Save User Message
+        db.execute_update("""
+            INSERT INTO chat_messages (thread_id, role, content)
+            VALUES (%s, 'user', %s)
+        """, (thread_id, question))
+
+        # Save Assistant Message
+        db.execute_update("""
+            INSERT INTO chat_messages (thread_id, role, content)
+            VALUES (%s, 'assistant', %s)
+        """, (thread_id, answer))
+
+        # Update thread preview
+        preview = answer[:60] + "..." if len(answer) > 60 else answer
+        db.execute_update("""
+            UPDATE chat_threads 
+            SET last_message_at = NOW(), last_preview = %s 
+            WHERE id = %s
+        """, (preview, thread_id))
+        
+        # Sync memory in background
+        # (This is already handled by grounded_rag_stream calling memory_service if we wanted, 
+        # but InteractionEngine.store_interaction is also an option)
+        interaction_engine.store_interaction("1", "1", thread_id, question, answer) # Dummy IDs for now
+    except Exception as e:
+        logger.error(f"Failed to finalize stream: {e}")
+
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
+    # Pre-chat check: Ensure soul assets exist
+    from services.fingerprint_service import fingerprint_service
+    creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
+    if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
+        print(f"[ASK] Missing soul for creator {request.creator_id}, triggering background generation...")
+        background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
+
     """
     Ask a question using Grounded-RAG Loop algorithm.
     Uses broad retrieval + re-ranking + answer contract + grounding validation.
@@ -1155,7 +1271,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
              try:
                  uuid.UUID(str(request.thread_id))
                  # Verify thread exists
-                 thread = db.execute_one("SELECT id, title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                 thread = db.execute_one("SELECT id, user_id, title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
              except ValueError:
                  print(f"[WARN] Invalid UUID received for thread_id: {request.thread_id}. Treating as new thread.")
                  request.thread_id = None
@@ -1212,7 +1328,13 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
         try:
             cr = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (request.creator_id,))
             if cr:
-                creator_name = cr.get("name") or cr.get("handle") or "Creator"
+                creator_name = (cr.get("name") or "").strip()
+                if not creator_name:
+                    creator_name = (cr.get("handle") or "").strip()
+                    if creator_name.startswith("@"):
+                        creator_name = creator_name[1:]
+                if not creator_name:
+                    creator_name = "Creator"
         except: pass
         
         # Prepare images for vision model
@@ -1238,17 +1360,24 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
             user_name=user_name,
             creator_name=creator_name,
             images=images_payload,
+            user_id=thread.get("user_id", 1) if thread else 1,
+            thread_id=request.thread_id
         )
         
         answer_text = result["answer"]
         
         # Post-Processing: Save Assistant Message & Update Thread
         if request.thread_id and thread:
-             # Save assistant message
+             # Save assistant message with cards in metadata
+             assistant_metadata = {}
+             cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
+             if cards:
+                 assistant_metadata["cards"] = cards
+
              db.execute_update("""
-                INSERT INTO chat_messages (thread_id, role, content)
-                VALUES (%s, 'assistant', %s)
-             """, (request.thread_id, answer_text))
+                INSERT INTO chat_messages (thread_id, role, content, metadata)
+                VALUES (%s, 'assistant', %s, %s::jsonb)
+             """, (request.thread_id, answer_text, json.dumps(assistant_metadata)))
              
              # Update thread metadata
              preview = answer_text[:60] + "..." if len(answer_text) > 60 else answer_text
@@ -1968,7 +2097,8 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2, background_tasks: B
         
         if not approved_item_ids:
             if doc_ids_to_delete:
-                background_tasks.add_task(PersonalityAnalyzer.analyze_creator, request.creator_id)
+                from services.fingerprint_service import fingerprint_service
+                background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
             return ApproveIngestResponseNew(approved=0, ingested=[])
         
         # Fetch approved items
@@ -2212,7 +2342,8 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2, background_tasks: B
                 continue
         
         if ingested:
-            background_tasks.add_task(PersonalityAnalyzer.analyze_creator, request.creator_id)
+            from services.fingerprint_service import fingerprint_service
+            background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
             
         return ApproveIngestResponseNew(approved=len(approved_item_ids), ingested=ingested)
     except HTTPException:
@@ -2541,7 +2672,8 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                 }
             }
             if ingested or doc_ids_to_delete:
-                background_tasks.add_task(PersonalityAnalyzer.analyze_creator, request.creator_id)
+                from services.fingerprint_service import fingerprint_service
+                background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
             
             yield f"data: {json.dumps(result)}\n\n"
             
@@ -2831,7 +2963,8 @@ def list_thread_messages_endpoint(thread_id: str):
             role=r['role'] or "user",
             content=r['content'] or "",
             created_at=r['created_at'],
-            images=meta.get("images")
+            images=meta.get("images"),
+            cards=meta.get("cards")
         ))
         
     return results
@@ -2927,16 +3060,15 @@ def _update_thread_title_background(thread_id: str):
         )
         
         try:
-            response = get_client().chat.completions.create(
-                model=settings.CHAT_MODEL,
+            title = rag.generate_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Conversation:\n{history_text}\n\nTitle:"}
                 ],
+                model=settings.CHAT_MODEL,
                 temperature=0.3,
                 max_tokens=25
             )
-            title = response.choices[0].message.content.strip()
             
             # Cleanup & Enforce Constraints
             title = title.replace('"', '').replace("'", "").replace("\n", "")
@@ -3133,13 +3265,28 @@ async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/ingest/worker/start")
-async def start_ingest_worker(background_tasks: BackgroundTasks):
-    """
-    DEV ONLY: Start the async ingest worker in this process.
-    In production, this should be a separate service/container.
-    """
-    worker = IngestWorker(concurrency=2)
-    background_tasks.add_task(worker.run)
-    return {"message": "Worker started in background"}
+@app.get("/creators/{creator_id}/fingerprint/status")
+async def get_fingerprint_status(creator_id: int):
+    """Get the current fingerprinting status and timestamps."""
+    row = db.execute_one(
+        "SELECT fingerprint_status, fingerprint_updated_at, style_fingerprint, identity_fingerprint FROM creators WHERE id = %s",
+        (creator_id,)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Creator not found")
+        
+    return {
+        "status": row.get("fingerprint_status") or "idle",
+        "updated_at": row.get("fingerprint_updated_at"),
+        "has_fingerprint": bool(row.get("style_fingerprint") or row.get("identity_fingerprint")),
+        "style": row.get("style_fingerprint") or {},
+        "identity": row.get("identity_fingerprint") or {}
+    }
+
+@app.post("/creators/{creator_id}/fingerprint/generate")
+async def trigger_fingerprint_generation(creator_id: int, background_tasks: BackgroundTasks):
+    """Manually trigger or force refresh the Style Fingerprint."""
+    from services.fingerprint_service import fingerprint_service
+    background_tasks.add_task(fingerprint_service.generate_fingerprint_async, creator_id)
+    return {"message": "Fingerprint generation started"}
 

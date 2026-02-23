@@ -21,33 +21,93 @@ class PersonalityAnalyzer:
         """
         docs = db.execute_query(query, (creator_id,))
         if not docs:
-            print(f"No content found for creator {creator_id} to analyze.")
-            return
+            print(f"[IDENTITY] No content found (outside persona) for creator {creator_id}. Cannot analyze.")
+            return {"traits": [], "tone_intensity": "low", "impact": "neutral", "mechanical": "none", "lexicon": []}
         
         # Combine snippets for analysis
         corpus = "\n---\n".join([d['content'][:1000] for d in docs])
         
         system_prompt = """
-        You are a master linguistic profiler. Analyze the following content and extract a 'Style Fingerprint' for the author.
+        You are a master linguistic and psychological profiler. Analyze the following content and extract a 'Style Fingerprint' that reverse-engineers the creator's brain.
         
-        Focus on:
-        1. MECHANICAL VOICE: (Punctuation habits, sentence length, capitalization quirks, use of emojis).
-        2. IMPACT MODE: (How do they provide value? Coaching, Educating, Comedic Reframing, Blunt Challenge, Motivation?).
-        3. QUESTION PROFILE: (Do they ask questions often? What style? Opener or Closer?).
-        4. LEXICON: (Specific signature words, slang, or frameworks they use).
-        5. TONE: (Intensity, warmth, irony, or authoritative levels).
-        6. GREETING & HOOKS: (How do they typically start a video or thought? Do they use "So...", "What's up", "Listen...", etc?).
-        7. SMALL TALK STYLE: (How do they handle casual interaction? Are they blunt and dismissive of fluff, or warm and welcoming?).
+        EXTRACT STATEMENTS FOR:
+        1. LINGUISTIC DNA: (N-grams, sentence length, rhetorical questions, swearing level, emoji usage, analogies/metaphors, statistics vs stories).
+        2. BEHAVIORAL PATTERNS: (Response to pressure/disagreement, escalation style, emotional baseline, confidence level, absolutes vs hedging).
+        3. COGNITIVE STYLE: (Big-picture vs tactical, data-driven vs anecdotal, abstract vs concrete, philosophical vs practical, optimism vs cynicism).
+        4. RHETORICAL MOVES: (Signature ways of speaking: "truth bombs", analogies, tough love, "steps-based" teaching, call-out vs reframe).
+        5. WORLDVIEW & VALUES: (Origin story elements, core beliefs, values, "enemies" conceptually, what they believe is right/wrong with the world).
+        6. HUMOR PROFILE: (Type: sarcasm, deadpan, absurdist, mockery, etc.; Usage: tension relief vs dominance; Frequency).
+        7. AUDIENCE & POWER: (Perceived audience: beginners, hustlers, etc.; Power dynamic: mentor, challenger, friend, authority).
+        8. EMOTIONAL SIGNATURE: (Temperature: warm/intense/calm; Validation style; Praise frequency).
         
-        Output ONLY a JSON object representing this fingerprint.
+        CONTENT-TRUTH MINING (CRITICAL):
+        Search for ANY mentions of:
+        - Specific numbers (revenue, debt, costs, followers).
+        - Specific dates or timelines (years, months, "first year").
+        - Specific proper names (business names, product names, software used, people mentioned).
+        - Specific winning products or "winners" they describe.
+
+        Output ONLY a JSON object:
+        {
+            "linguistic_dna": {
+                "swearing": "none|low|frequent",
+                "emoji": "none|low|high",
+                "humor": "description",
+                "sentence_structure": "short|long|varied",
+                "n_grams": ["phrase1", "phrase2"],
+                "opening_closing": "description"
+            },
+            "behavioral_patterns": {
+                "pressure_response": "description",
+                "disagreement_handling": "mock|educate|dismiss|escalate",
+                "confidence_level": "low|medium|high",
+                "hedging_vs_absolutes": "description"
+            },
+            "cognitive_style": {
+                "depth": "big-picture|tactical",
+                "evidence": "data-driven|anecdotal",
+                "outlook": "optimistic|cynical"
+            },
+            "rhetorical_moves": ["analogy", "tough love", "..."],
+            "worldview": {
+                "core_beliefs": ["..."],
+                "values": ["..."],
+                "conceptual_enemies": ["..."],
+                "moral_hierarchy": ["..."]
+            },
+            "humor_profile": {
+                "type": "...",
+                "usage": "..."
+            },
+            "audience_and_power": {
+                "target_audience": "...",
+                "dynamic": "mentor|challenger|friend|authority"
+            },
+            "emotional_signature": {
+                "temperature": "warm|intense|calm|sarcastic",
+                "validation": "..."
+            },
+            "content_truth": {
+                "milestones": ["$1,000 student loan", "2017 start"],
+                "businesses": ["Pluto Deals"],
+                "products": ["Fidget spinners"],
+                "named_individuals": []
+            },
+            "lexicon": ["words"],
+            "traits": ["{Name} is...", "{Name} loves to..."]
+        }
         """
         
         try:
             client = get_client()
+            # Fetch creator name for statements
+            name_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (creator_id,))
+            display_name = name_row.get("name") or name_row.get("handle") or "The Creator"
+
             response = client.chat.completions.create(
                 model=settings.CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": system_prompt.replace("{Name}", display_name)},
                     {"role": "user", "content": f"Content Samples:\n{corpus}"}
                 ],
                 response_format={ "type": "json_object" },

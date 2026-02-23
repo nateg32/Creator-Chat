@@ -57,6 +57,60 @@ export function ask({ creator_id, question, top_k, max_distance, messages, debug
   return postJson("/ask", body);
 }
 
+export async function askStream({ creator_id, question, top_k, max_distance, messages, thread_id, images, onToken, onComplete, onError }) {
+  const body = { creator_id, question, top_k, max_distance, messages, thread_id, images };
+
+  const response = await fetch(`${API_BASE_URL}/ask-stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed (${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullAnswer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        if (part.startsWith("data: ")) {
+          const dataStr = part.slice(6);
+          if (dataStr === "[DONE]") {
+            if (onComplete) onComplete(fullAnswer);
+            return { answer: fullAnswer };
+          }
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.content) {
+              fullAnswer += data.content;
+              if (onToken) onToken(data.content);
+            }
+          } catch (e) {
+            console.error("Error parsing stream chunk:", e);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (onError) onError(err);
+    else throw err;
+  }
+}
+
 export function ingest({ creator_id, title, content, source, source_id, doc_type }) {
   return postJson("/ingest", { creator_id, title, content, source, source_id, doc_type });
 }
@@ -305,6 +359,14 @@ export function getScrapeItems(scrape_id) {
 // Get search progress
 export function getSearchProgress(search_id) {
   return getJson(`/search/${search_id}/progress`);
+}
+
+export async function getFingerprintStatus(creatorId) {
+  return getJson(`/creators/${creatorId}/fingerprint/status`);
+}
+
+export async function generateFingerprint(creatorId) {
+  return postJson(`/creators/${creatorId}/fingerprint/generate`, { creator_id: creatorId });
 }
 
 // Alias for backward compatibility

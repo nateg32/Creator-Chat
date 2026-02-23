@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import json
 import logging
+import math
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime, timezone, timedelta
 from db import db
@@ -17,6 +18,23 @@ from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 from services.style_distiller import StyleDistiller
 from services.style_scorer import StyleScorer
 from services.content_finder import ContentFinder
+from services.research_provider import GeminiResearchProvider
+from services.memory_service import memory_service
+from services.greeting_service import greeting_service
+from services.personal_bio_service import personal_bio_service
+from services.persona_filter import apply_persona_surface_filter
+from services.curiosity_service import curiosity_service
+from services.rhythm_shaper import rhythm_shaper
+from services.user_priority_service import user_priority_service
+from services.greeting_service import greeting_service
+from services.memory_loop_service import memory_loop_service
+from services.steering_service import steering_service
+from services.classifiers import classifiers
+from services.stronghold_guard import stronghold_guard
+from core.interaction_engine import interaction_engine, InteractionPlan, strip_all_markdown
+from services.web_verify import web_verify
+from services.grammar_normalizer import grammar_normalizer
+from services.assumption_blocker import assumption_blocker
 
 
 logger = logging.getLogger(__name__)
@@ -96,6 +114,10 @@ def build_search_query(question: str, history: Optional[List[Dict[str, str]]] = 
     When user asks for "links for both/those", augment with last assistant message
     so retrieval favors the same items we just recommended.
     """
+    # 1. Detect if this is a "request for more" follow-up
+    more_triggers = ["another", "other", "more", "else", "different", "next"]
+    is_request_more = any(t in question.lower() for t in more_triggers)
+    
     query_parts = [question]
 
     # Follow-up "links for both/those": bias retrieval toward same items as last reply
@@ -111,6 +133,26 @@ def build_search_query(question: str, history: Optional[List[Dict[str, str]]] = 
             clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean)  # keep link text, drop URL
             query_parts.append(clean[:500])
 
+    elif history and is_request_more:
+        # PIVOT: Find the last few mentioned videos and EXPLICITLY ask for something else
+        seen_recent = []
+        for m in reversed(history[-10:]):
+            if (m.get("role") or "").lower() == "assistant":
+                text = m.get("content") or m.get("text") or ""
+                quoted = re.findall(r'"([^"]+)"', text)
+                seen_recent.extend(quoted)
+        
+        if seen_recent:
+            # Broaden the query but exclude the exact titles
+            query_parts.append(f"content about trading psychology and strategy excluding {', '.join(seen_recent[:2])}")
+            # Add a bit of noise to break cache/bias
+            import random
+            noise = random.choice(["fresh perspectives", "deep dives", "masterclasses", "untouched topics"])
+            query_parts.append(noise)
+        else:
+            recent_text = " ".join([msg.get("content", "") for msg in history[-3:] if msg.get("role") == "user"])
+            query_parts.append(recent_text)
+
     elif history:
         # Extract 3-6 keywords from last few user turns
         recent_text = " ".join([
@@ -125,6 +167,64 @@ def build_search_query(question: str, history: Optional[List[Dict[str, str]]] = 
 
     return " ".join(query_parts)
 
+
+def rewrite_queries(intent_plan: Dict[str, Any], creator_profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Stage 1: Multi-stage Query Rewriting.
+    Turns structured intent into 3-8 query variants + negative keywords.
+    """
+    import rag
+    import json
+    
+    creator_name = creator_profile.get("name") if creator_profile else "the creator"
+    topic_str = ", ".join(intent_plan.get("topic_entities", []))
+    
+    system_prompt = f"""
+You are a Search Query Architect. Your goal is to rewrite a user's intent into 5-8 highly effective search queries for YouTube and internal DBs.
+
+Output ONLY a JSON object:
+{{
+  "queries": [
+    "exact variant",
+    "expanded variant",
+    "semantic variant",
+    "format-targeted variant"
+  ],
+  "negatives": ["-shorts", "-reaction"]
+}}
+
+GUIDELINES:
+- Include at least 2 queries with the creator name: "{creator_name}".
+- Create "Exact" queries for the specific topic: "{topic_str}".
+- Create "Expanded" queries with educational intent (e.g., 'how to', 'tutorial').
+- Create "Semantic" queries focusing on the underlying concepts.
+- Create "Format-targeted" queries based on the user's help criteria: {intent_plan.get('help_criteria', [])}.
+- Generate negative keywords from constraints: {intent_plan.get('constraints', [])}.
+"""
+
+    user_prompt = f"Intent Plan: {json.dumps(intent_plan)}"
+    
+    try:
+        response_text = rag.generate_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model=settings.REWRITE_MODEL,
+            temperature=0.0,
+            json_mode=True
+        )
+        data = json.loads(response_text)
+        # Ensure creator filter is in queries
+        if creator_name and creator_name != "the creator":
+            for i in range(len(data.get("queries", []))):
+                if creator_name.lower() not in data["queries"][i].lower():
+                    if i % 2 == 0: # Add to every other query if missing
+                         data["queries"][i] = f"{data['queries'][i]} {creator_name}"
+        return data
+    except Exception as e:
+        logger.error(f"Query rewrite failed: {e}")
+        return {"queries": [intent_plan.get("query", "")], "negatives": []}
 
 def retrieve_candidates(
     creator_id: int,
@@ -243,18 +343,21 @@ def retrieve_candidates(
 
 def needs_links(user_msg: str) -> bool:
     """
-    True if the user is asking for links/sources/proof.
+    True if the user is asking for links/sources/proof, or asking for a video recommendation.
     Only include links in the final answer when this is True.
     """
     t = (user_msg or "").lower()
+    
+    # Robust intent matching for video requests (e.g., "what video", "whats a video", "video youd recommend")
+    if any(media in t for media in ["video", "reel", "post"]):
+        if any(action in t for action in ["what", "which", "any", "recommend", "reccomend", "send", "show", "link", "url", "best", "good", "watch"]):
+            return True
+            
+    # Direct explicit triggers
     triggers = [
-        "link", "source", "where did", "which post", "which video", "which reel",
-        "show me", "send me", "url", "proof", "prove it", "are you sure",
-        "reference", "references", "cite", "citation", "from which",
-        "best video", "best reel", "best post", "video is best", "reel to watch",
-        "any other videos", "more videos", "other videos", "any more videos",
-        "what else can i watch", "what else to watch", "any other video",
-        "give me the links", "links for", "links to those", "links to both",
+        "link", "source", "url", "proof", "prove it", "are you sure",
+        "reference", "references", "cite", "citation", "give me the links",
+        "links for", "links to those", "links to both"
     ]
     return any(x in t for x in triggers)
 
@@ -342,6 +445,12 @@ def needs_cta(user_msg: str) -> bool:
 
 _INTENT_PATTERNS = [
     ([
+        "how old are you", "your age", "when were you born", "where do you live", "where are you from", "where did you grow up",
+        "are you married", "do you have a wife", "do you have a husband", "do you have kids", "your family",
+        "your background", "your education", "where did you go to school", "your degree", "your story",
+        "who are you really", "tell me about yourself", "personal question"
+    ], "personal_bio_question"),
+    ([
         "what's your name", "what is your name", "who are you", "what do you do", "your name",
         "what's my name", "what is my name", "do you know my name", "my name"
     ], "identity"),
@@ -353,24 +462,70 @@ _INTENT_PATTERNS = [
 ]
 
 
+def analyze_user_style(question: str) -> Dict[str, Any]:
+    """Analyze user style: tone, length, question type."""
+    q = (question or "").lower().strip()
+    words = q.split()
+    word_count = len(words)
+    
+    style = {
+        "tone": "neutral",
+        "length": word_count,
+        "length_category": "short", # short (<10), medium (10-40), long (>40)
+        "question_type": "none"
+    }
+
+    if word_count > 40: style["length_category"] = "long"
+    elif word_count > 10: style["length_category"] = "medium"
+    
+    # Hyped signals
+    if "!" in q or any(w in q for w in ["best", "insane", "literally", "excited", "wow", "pumped", "yo "]):
+        style["tone"] = "hyped"
+    # Serious/Technical signals
+    elif any(w in q for w in ["technical", "specifically", "explain in detail", "scientific", "data"]):
+        style["tone"] = "serious"
+        
+    # Question type
+    if "?" in q or any(q.startswith(w) for w in ["what", "how", "why", "when", "can you"]):
+        if word_count < 8 and "what" in q:
+            style["question_type"] = "vague"
+        else:
+            style["question_type"] = "specific"
+            
+    return style
+
+
 def classify_intent(question: str) -> str:
-    """Rule-based intent: identity | small_talk | start_business | how_to | deep_strategy | request_sources."""
+    """Rule-based intent: greeting_only | small_talk | identity | request | followup."""
     q = (question or "").lower().strip()
     if not q:
-        return "small_talk"
+        return "greeting_only"
     
     # 1. Check explicit patterns
-    for patterns, intent in _INTENT_PATTERNS:
+    for patterns, type_label in _INTENT_PATTERNS:
+        # Check strict matches first for short phrases
+        if any(p == q for p in patterns):
+            return type_label
+        # Then check substring matches
         if any(p in q for p in patterns):
-            return intent
+            if type_label == "small_talk":
+                # Distinguish greeting_only ("yo") vs small_talk ("how are you")
+                greetings = ["hey", "hello", "hi", "yo", "hi there", "hey there"]
+                if q in greetings or len(q.split()) == 1:
+                    return "greeting_only"
+            return type_label
             
-    # 2. Heuristic for low-intent: Very short messages (1-2 words) that don't match specific business triggers
+    # 2. Heuristic for low-intent
     words = q.split()
     if len(words) <= 2:
-        # If it's short but NOT asking for links/proof, it's probably a greeting or small talk
-        return "small_talk"
+        return "greeting_only"
         
-    return "how_to"  # default
+    # 3. Vague request detection
+    if len(words) < 5:
+        if "?" in q or any(q.startswith(w) for w in ["how", "what", "can", "why", "help"]):
+            return "vague_request"
+            
+    return "request"  # default
 
 
 def classify_resource_intent(
@@ -408,20 +563,44 @@ You are an Intent Router for a Creator AI. Your goal is to detect when the user 
 Output ONLY a JSON object:
 {{
   "needs_resource": true/false,
+  "request_type": "explicit" | "implicit" | "none",
+  "intent_type": "recommend_content" | "answer_question" | "how_to" | "opinion",
+  "task_axis": "training" | "nutrition" | "mindset" | "business" | "other",
+  "explicit_constraints": ["under 15 min", "from creator only", "recent"],
+  "implicit_goal": "what the user is really trying to achieve",
+  "must_terms": ["exact keyword"],
+  "avoid_terms": ["undesired concept"],
+  "help_criteria": ["step-by-step", "practical", "science-based", "quick summary"],
   "resource_type": "video" | "article" | "course_lesson" | "any",
   "specificity": "specific" | "recommendation" | "evidence",
-  "query": "the search query to use",
+  "user_level": "beginner" | "intermediate" | "advanced" | "unknown",
+  "learning_phase": "overview" | "execution" | "refinement" | "troubleshooting",
+  "query": "a clean 2-3 word search query",
+  "topic_depth": "deep technical keywords",
   "reason": "short explanation",
   "confidence": 0.0-1.0
 }}
 
+Set request_type="explicit" when the user asks for links, videos, or where to watch.
+Set request_type="implicit" when the user asks a technical or how-to question where a video would be helpful but they didn't ask for one.
+Set request_type="none" for casual chat or meta questions.
+
 Set needs_resource=true when the user intent implies:
-- Finding where something exists (e.g., "where did you talk about X?")
-- Requesting what to watch/read/do next (learning path/recommendations)
+- Identifying as a beginner or asking for a roadmap (e.g., "I'm new, where do I start?").
+- Finding where something exists (e.g., "where did you talk about X?").
+- Requesting what to watch/read/do next (learning path/recommendations).
 - Requesting proof, source, clip, episode, or lesson.
-- Wanting a resource recommendation related to a topic.
-- Asking "how to learn X" where the creator likely has content covering it.
-- Asking a specific question that is best answered by pointing to a foundational video or lesson.
+- Asking a specific technical question that is best answered by a foundational video (e.g., "How does BOS work?").
+- Any situation where a 10-minute video explanation from the creator would be 10x more valuable than a text summary.
+
+SMART REASONING:
+- Act like an AI Research Agent. Your goal is AUTHENTICITY. 
+- Only set needs_resource=true if a specific video provides significantly more depth than a text answer.
+- Detect "Value Gaps": If a user asks a technical question like "How to use order blocks?", a text summary is risky; a video is AUTHENTIC.
+- Explicit Requests: If the user says "link", "video", "resource", "show me", "send me", set request_type="explicit".
+- High-Value Opportunities: If the user describes a struggle or mistake, look for a "Fix" video and set request_type="implicit".
+- AVOID REPEATS: If the conversation history shows similar topics were already addressed with links, be more conservative.
+- AUTHENTICITY CHECK: Is this a "core" topic for the creator? If yes, find the MASTERCLASS or most-viewed foundational video.
 
 {profile_info}
 """
@@ -434,6 +613,7 @@ Set needs_resource=true when the user intent implies:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
+            model=settings.ROUTER_MODEL,
             temperature=0.0,
             json_mode=True
         )
@@ -442,6 +622,7 @@ Set needs_resource=true when the user intent implies:
         logger.error(f"Intent Router failed: {e}")
         return {
             "needs_resource": False,
+            "request_type": "none",
             "resource_type": "any",
             "specificity": "recommendation",
             "query": question,
@@ -450,31 +631,101 @@ Set needs_resource=true when the user intent implies:
         }
 
 
-def response_length_instruction(intent: str) -> str:
-    """Instruction for model response length based on intent."""
+def get_energy_constraints(energy_bucket: str, intent: str = "how_to") -> Dict[str, Any]:
+    """Return hard constraints based on energy bucket (LOW, MID, HIGH)."""
+    # Defaults
+    constraints = {
+        "max_words": 150,
+        "emoji_rate": "low",
+        "punctuation_intensity": "medium",
+        "punchiness": "balanced"
+    }
+    
+    if energy_bucket == "LOW":
+        constraints["max_words"] = 60 if intent in ["greeting_only", "small_talk"] else 140
+        constraints["min_words"] = 40 if intent in ["greeting_only", "small_talk"] else 80
+        constraints["emoji_rate"] = "none/rare"
+        constraints["punctuation_intensity"] = "low"
+        constraints["punchiness"] = "low (calm, gentle)"
+    elif energy_bucket == "MID":
+        constraints["max_words"] = 70 if intent in ["greeting_only", "small_talk"] else 220
+        constraints["min_words"] = 50 if intent in ["greeting_only", "small_talk"] else 100
+        constraints["emoji_rate"] = "low"
+        constraints["punctuation_intensity"] = "medium"
+        constraints["punchiness"] = "balanced"
+    elif energy_bucket == "HIGH":
+        # High energy = short but fast and punchy
+        constraints["max_words"] = 50 if intent in ["greeting_only", "small_talk"] else 180
+        constraints["min_words"] = 30 if intent in ["greeting_only", "small_talk"] else 80
+        constraints["emoji_rate"] = "low-medium"
+        constraints["punctuation_intensity"] = "high"
+        constraints["punchiness"] = "high (direct, confident, rhetorical)"
+
+    return constraints
+
+
+def response_length_instruction(
+    intent: str, 
+    mode: str = "ANSWER_NOW", 
+    energy_bucket: str = "MID", 
+    tone_mirror_limit: int = 0,
+    user_priority_constraints: Optional[Dict[str, Any]] = None
+) -> str:
+    """Instruction for model response length based on intent, policy mode, energy, and USER PRIORITY."""
+    # Compute energy constraints
+    constraints = get_energy_constraints(energy_bucket, intent)
+    budget = constraints["max_words"]
+    if tone_mirror_limit > 0:
+        budget = min(budget, tone_mirror_limit)
+        
+    if mode == "ASK_ONE_QUESTION":
+        budget = 80 if energy_bucket == "HIGH" else 100
+
+    upc = user_priority_constraints or {}
+    max_sent = upc.get("max_sentences", 6)
+    complexity = upc.get("complexity", "moderate")
+
+    base_dm_rule = f"""
+    DM STYLE RULES:
+    - Reveal Budget: Max {budget} words.
+    - Max Sentences: {max_sent}.
+    - Complexity: {complexity}.
+    - Jargon: {'Allowed but clear' if upc.get('jargon_allowed', True) else 'STRICTLY FORBIDDEN'}.
+    - NO headings (###), NO bold intros, NO 'Hope this helps'.
+    - Keep paragraphs short (1-2 sentences).
+    - Use a human, 1-to-1 conversational tone.
+    - Punchiness: {constraints['punchiness']}
+    - Punctuation Intensity: {constraints['punctuation_intensity']}
+    - Emoji usage: {constraints['emoji_rate']}
+    """
+
+    if mode == "ASK_ONE_QUESTION":
+        return base_dm_rule + f" GOAL: Ask exactly ONE short, high-signal question. Max {budget} words. DO NOT explain why you are asking."
+
+    if intent in ["greeting", "greeting_only"]:
+        return base_dm_rule + f"""
+        GOAL: Just greet them back in character. 
+        - Max {min(3, max_sent)} sentences total.
+        - Max {budget} words.
+        - DO NOT give advice yet.
+        - BANNED PHRASES: "I don't have enough information", "To better assist you", "Based on what you said".
+        - STRUCTURE: Greeting -> Short optional hook -> One short question (optional).
+        """
+
     if intent == "identity":
-        return "Respond naturally in 1–2 sentences. Then ask a question in the creator's style to learn about the USER."
+        return base_dm_rule + " Respond naturally in 1–2 sentences. Then ask a question in the creator's style to learn about the USER."
     if intent == "small_talk":
-        return (
-            "Just greet them briefly in character using their specific hooks and small talk style. "
-            "Do NOT use generic advisor phrases. Ask a unique question that matches the creator's persona to open the floor. "
-            "Do NOT use retrieved content. 1-2 sentences max."
-        )
-    if intent == "start_business":
-        return "Give a high-level response in character. Share one key piece of mindset advice from the creator's worldview, then ask 1-2 clarifying questions to understand their situation better."
+        return base_dm_rule + f" Greet them briefly. Ask a unique question to open the floor. Max {budget} words."
+    if intent == "start_business" or intent == "start_goal":
+        return base_dm_rule + " Give a high-level response + one key piece of mindset advice. Use the 'Reveal Budget' strictly."
     if intent == "how_to":
-        return "Provide actionable steps in the creator's voice. Use their specific vocabulary and frameworks. Be thorough but don't overwhelm."
+        return base_dm_rule + " Provide actionable steps. Be thorough but concise. No lists longer than 4 points."
     if intent == "deep_strategy":
-        return "Provide a detailed, structured strategy session. Use the creator's mental models. Be as long as necessary to be comprehensive."
-    if intent == "request_sources":
-        return (
-            "Recommend 1–3 sources most relevant to their question. "
-            "For each: (a) a brief summary of the video/post, "
-            "(b) how it helps their specific request, and (c) the link. "
-            "If details are missing from a transcript, be honest about it. "
-            "Inline the links with your summaries."
-        )
-    return "Match the length and depth the creator usually provides in their content."
+        return base_dm_rule + f" Provide a detailed, structured strategy session. Even if deep, stay under {min(budget + 50, 250)} words."
+    if intent == "introduce_content":
+        return base_dm_rule + f" Answer core question briefly, then introduce the video as the essential next step. Max {budget} words."
+    
+    return base_dm_rule + f" Match the creator's natural DM style. Max {budget} words."
 
 
 # Match URLs for stripping or collecting
@@ -580,6 +831,67 @@ def source_quality_score(content_type: str) -> float:
     return SOURCE_QUALITY_MAP.get(content_type.lower(), 0.7)
 
 
+def _aggregate_document_evidence(chunks: List[Dict[str, Any]], sim_threshold: float = 0.55) -> List[Dict[str, Any]]:
+    """
+    Stage 2: Evidence-first chunk scoring.
+    Groups chunks by document and computes:
+    - max_chunk_sim
+    - mean_top3_chunk_sim
+    - evidence_density (count of chunks > threshold)
+    """
+    docs = {}
+    for c in chunks:
+        doc_id = c.get("document_id")
+        if not doc_id: continue
+        
+        if doc_id not in docs:
+            docs[doc_id] = {
+                "id": doc_id,
+                "title": c["source_ref"].get("title"),
+                "url": c["source_ref"].get("canonical_url"),
+                "thumbnail": c["source_ref"].get("thumbnail"), # assuming thumbnail might be there
+                "platform": c["source_ref"].get("platform"),
+                "chunks": []
+            }
+        
+        # Distance to Similarity conversion for metrics
+        sim = max(0.0, 1.0 - (c["distance"] / 1.15))
+        c["sim"] = sim
+        docs[doc_id]["chunks"].append(c)
+        
+    aggregated = []
+    for d_id, d in docs.items():
+        sorted_chunks = sorted(d["chunks"], key=lambda x: x["sim"], reverse=True)
+        top5 = sorted_chunks[:5]
+        
+        max_sim = top5[0]["sim"] if top5 else 0.0
+        mean_top3 = sum(c["sim"] for c in top5[:3]) / min(len(top5), 3) if top5 else 0.0
+        density = len([c for c in sorted_chunks if c["sim"] >= sim_threshold])
+        
+        d["max_chunk_sim"] = max_sim
+        d["mean_top3_chunk_sim"] = mean_top3
+        d["evidence_density"] = density
+        d["evidence_metrics"] = {
+            "max_sim": max_sim,
+            "mean_top3": mean_top3,
+            "density": density
+        }
+        # Take the top chunk as the primary "snippet" for the document
+        d["content"] = top5[0]["content"] if top5 else ""
+        d["chunk_id"] = top5[0]["chunk_id"] if top5 else ""
+        d["distance"] = top5[0]["distance"] if top5 else 1.15
+        d["source_ref"] = {
+            "title": d["title"],
+            "canonical_url": d["url"],
+            "platform": d["platform"],
+            "content_type": top5[0]["source_ref"].get("content_type") if top5 else "unknown"
+        }
+        
+        aggregated.append(d)
+        
+    return aggregated
+
+
 def query_term_overlap(query: str, text: str) -> float:
     """Calculate overlap between query terms and chunk text."""
     query_words = set(re.findall(r'\b[a-z]{3,}\b', query.lower()))
@@ -595,50 +907,55 @@ def query_term_overlap(query: str, text: str) -> float:
 def rerank_candidates(
     candidates: List[Dict[str, Any]],
     query: str,
+    intent_plan: Dict[str, Any],
     k_final: int = K_FINAL
 ) -> List[Dict[str, Any]]:
     """
     Step 3: Re-rank tightly using composite score.
-    Score = 0.55*semantic + 0.20*recency + 0.15*source_quality + 0.10*term_overlap
+    Enhanced with Stage 2 metrics and Stage 3 compatibility.
     """
     scored = []
+    user_goal = intent_plan.get("intent_type", "how_to")
     
     for cand in candidates:
-        # Normalize distance to similarity (0-1, higher is better)
-        # Distance 0 = perfect match, distance 1.15 = threshold
-        similarity = max(0.0, 1.0 - (cand["distance"] / 1.15))
+        # 1. Base Evidence Score (from Stage 2 Metrics)
+        # Using a blend of peak similarity and density
+        metrics = cand.get("evidence_metrics", {})
+        similarity = metrics.get("max_sim", 0.0)
+        density_bonus = min(0.15, metrics.get("density", 0) * 0.02)
         
-        # Recency boost
+        # 2. Recency boost
         recency = recency_boost(cand["source_ref"].get("published_at"))
         
-        # Source quality
+        # 3. Source quality
         quality = source_quality_score(cand["source_ref"].get("content_type", ""))
         
-        # Term overlap
+        # 4. Term overlap
         overlap = query_term_overlap(query, cand["content"])
         
+        # 5. Stage 3: Compatibility Score
+        # Simple rule-based compatibility for now
+        comp_boost = 0.0
+        c_type = cand["source_ref"].get("content_type", "").lower()
+        if user_goal == "how_to" and ("tutorial" in c_type or "guide" in c_type):
+            comp_boost = 0.15
+        elif user_goal == "recommend_content" and "video" in c_type:
+            comp_boost = 0.1
+            
         # Composite score
         score = (
-            0.55 * similarity +
-            0.20 * recency +
-            0.15 * quality +
-            0.10 * overlap
+            0.45 * similarity +
+            0.15 * density_bonus +
+            0.15 * recency +
+            0.10 * quality +
+            0.05 * overlap +
+            0.10 * comp_boost
         )
         
-        scored.append({
-            **cand,
-            "rerank_score": score,
-            "score_components": {
-                "similarity": similarity,
-                "recency": recency,
-                "quality": quality,
-                "overlap": overlap,
-            }
-        })
+        cand["rerank_score"] = score
+        scored.append(cand)
     
-    # Sort by rerank_score descending
     scored.sort(key=lambda x: x["rerank_score"], reverse=True)
-    
     return scored[:k_final]
 
 
@@ -695,36 +1012,130 @@ def generate_meaning_draft(
     context: str,
     verified_facts: str,
     intent: str,
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    target_title: Optional[str] = None,
+    backup_titles: Optional[List[str]] = None,
+    mode: str = "ANSWER_NOW",
+    memory_context: str = "",
+    user_state: Optional[Dict[str, Any]] = None,
+    steering_guidance: str = "",
+    steering_move: str = ""
 ) -> Dict[str, Any]:
     """
     Step 3: Generate a Neutral Meaning Draft (Content Plan).
     This step focuses purely on WHAT to say, ignoring HOW to say it.
     """
     
-    system_prompt = """
-You are a Neutral Content Planner. 
-Your goal is to extract the core information needed to answer the user's question based ONLY on the provided content.
+    intent_guidance = ""
+    if mode == "ASK_ONE_QUESTION":
+        intent_guidance = """
+        IMPORTANT: Your goal is NOT to answer fully. 
+        1. Give ONE tiny quick win or high-level value line (max 1 sentence).
+        2. Identify the single most important piece of missing information (a slot/gap).
+        3. PLAN to ask for that missing information in a natural way.
+        DO NOT provide a full list of steps.
+        """
+    elif intent == "introduce_content":
+        # Note: Specific title enforcement is now handled via explicit instructions in the prompt.
+        # We rely on Source 1 being the 'Currently Recommended' video as defined in the context.
+        intent_guidance = """
+        IMPORTANT: A high-confidence video/resource HAS been found and is provided in Source 1. 
+        Your goal is to PLAN a mentorship response that:
+        1. Gives a specific piece of advice or technical answer based on Source 1's snippet.
+        2. Explicitly RECOMMENDS the resource in Source 1 by its FULL TITLE.
+        
+        CRITICAL: Ignore recommendations from previous conversation history. 
+        You MUST use the title from Source 1. 
+        Source 1 is the ONLY 'Currently Recommended' video for THIS response.
+        
+        DO NOT be generic. Use the specific title provided in Source 1.
+        Set uncertainty_handling = 'exact_required'.
+        """
+        if backup_titles:
+            intent_guidance += f"\n\nBACKUP OPPORTUNITY: You have {len(backup_titles)} other relevant resources: {', '.join(backup_titles)}. Include them in 'backup_resources' with brief reasons why they might be good alternates (e.g. 'shorter', 'more technical', 'for beginners')."
+    elif intent == "introduce_fallback":
+         intent_guidance = """
+         IMPORTANT: No exact video was found, but a channel search card is provided in Source 1.
+         Your goal is to PLAN a response that:
+         1. Acknowledges you don't have a specific video for the exact query.
+         2. Suggests the user search your channel for the specific topic mentioned in Source 1 (the 'Title' of Source 1).
+         
+         CRITICAL: If you previously recommended a specific video, acknowledge this is a request for a NEW or DIFFERENT one.
+         """
+    elif intent == "request_sources":
+        intent_guidance = """
+        IMPORTANT: The user is asking for links or proof. Plan to provide 1-3 specific sources from the context with brief explanations of why they are relevant.
+        """
+    elif intent in ["greeting", "greeting_only"]:
+        intent_guidance = "Plan a short, authentic creator greeting. Do NOT provide advice. Focus on being welcoming and open. IGNORE any retrieved content as it is not relevant to a simple greeting."
+    elif intent == "small_talk":
+        intent_guidance = "Plan a friendly, brief greeting. Do NOT use retrieved context information."
+
+    system_prompt = f"""
+You are a Neutral Content Planner (User Outcome Engine). 
+Your goal is to figure out EXACTLY what the user needs and pick the single best next step.
 Do NOT write the final answer. Do NOT use any persona.
+
+OFPO STEP 0 - USER SIGNAL LOCK:
+- Goal Guess: {user_state.get('goal_guess', 'extract from last message') if user_state else 'unknown'}
+- User Stage: {user_state.get('user_stage', 'unknown') if user_state else 'unknown'}
+- Missing Info: {user_state.get('missing_info', []) if user_state else []}
+
+OFPO STEP 1 - NEXT ACTION SELECTION:
+Pick exactly ONE action from this menu based on the user's need:
+- Clarify (ask 1 laser question if info is missing)
+- Plan (give 3-5 steps, no extra)
+- Execute (write the thing / produce the output)
+- Diagnose (find what's broken + fix path)
+- Compare (pick between options)
+- Coach (mindset/behavior change with 1 exercise)
+- Entertain (only if user explicitly asked or is idle-chatting)
+
+OFPO STEP 4 - HELPING STYLE MAP:
+(SKIP THIS IF IT IS A GREETING)
+Adapt the help format based on the creator category:
+- Business/Money → Identify constraint → Smallest revenue action → Numbers/Offer.
+- Fitness/Health → Metric/Goal → One actionable exercise/habit → Next check-in.
+- Relationship/Life → Emotion → Belief reframe → Reflection question.
+- Comedian/Entertainer → Quick joke/setup (plan this) → Real helpful move → Playful question.
+- Trader/Technical → Risk first → Scenarios → Specific rule check.
+
+{intent_guidance}
+
+OFPO STEP 5 - USER-CENTEREDNESS CHECK:
+1. Did I reference what the user actually said? (If they only said hello, ONLY greet them back).
+2. Did I give exactly one next step? (For greetings, the step is asking what's on their mind).
+3. If info is missing, did I stop at the question?
+4. Is the plan concise and outcome-first?
+
 Output a JSON object with the following structure:
-{
+{{
+    "goal_guess": "1 sentence summary",
+    "user_stage": "exploring|deciding|executing|stuck",
+    "next_action": "Clarify|Plan|Execute|Diagnose|Compare|Coach|Entertain",
+    "missing_info_request": "Specific question if info is missing, else null",
+    "help_format": "business|fitness|relationship|comedian|technical",
+    "target_resource_title": "THE EXACT TITLE FROM CURRENT CONTEXT",
     "answer_points": ["Point 1", "Point 2"],
-    "required_facts": [{"claim": "...", "confidence": "HIGH/MEDIUM/LOW", "source": "Source 1"}],
-    "uncertainty_handling": "exact_required" | "admit_unknown" | "general_advice",
-    "followup_question": "Optional clarifying question if needed",
+    "concrete_action_step": "One specific step the user can take today",
+    "uncertainty_handling": "exact_required" | "admit_unknown",
     "tone_guidance": "neutral"
-}
+}}
 """
+    if target_title:
+        system_prompt += f"\nCRITICAL: The current video we are recommending is LITERALLY titled: '{target_title}'. REJECT any other titles mentioned earlier in the chat history."
     history_text = ""
     if conversation_history:
-        history_text = "\\nRecent History:\\n" + "\\n".join([f"{m.get('role', 'unknown')}: {m.get('content', '')}" for m in conversation_history[-3:]])
+        history_text = "\nRecent History:\n" + "\n".join([f"{m.get('role', 'unknown')}: {m.get('content', '')}" for m in conversation_history[-3:]])
 
     user_prompt = f"""
 Context:
-{context}
+{context if intent not in ["greeting", "greeting_only", "small_talk"] else "None (Greeting/Small talk mode - do not use RAG context)"}
 
 Verified Facts:
-{verified_facts}
+{verified_facts if intent not in ["greeting", "greeting_only", "small_talk"] else "None"}
+
+{memory_context if intent not in ["greeting", "greeting_only", "small_talk"] else ""}
 
 Question: {question}
 {history_text}
@@ -732,15 +1143,12 @@ Question: {question}
 Draft the content plan.
 """
 
-    # Use rag.generate_chat_completion (assuming it handles json_mode if accessible, or just instruct json)
-    # The current rag module might not expose json_mode directly in generate_chat_completion signature based on how it's called elsewhere.
-    # I'll rely on the prompt instructions.
-    
     response = rag.generate_chat_completion(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
+        model=settings.MODEL_SYNTHESIS,
         temperature=0.0, # Strict facts
         json_mode=True
     )
@@ -759,8 +1167,13 @@ Draft the content plan.
     except Exception as e:
         logger.error(f"Failed to parse Meaning Draft JSON: {e}")
         return {
+            "goal_guess": "Unknown",
+            "user_stage": "exploring",
+            "next_action": "Explain",
+            "missing_info_request": None,
+            "help_format": "business",
             "answer_points": ["Could not parse plan"], 
-            "required_facts": [], 
+            "concrete_action_step": "Try asking a more specific question.",
             "uncertainty_handling": "admit_unknown",
             "tone_guidance": "neutral"
         }
@@ -784,6 +1197,19 @@ def generate_grounded_answer(
     style_fingerprint: Optional[Dict[str, Any]] = None,
     images: Optional[List[Dict[str, Any]]] = None,
     creator_id: Optional[int] = None,
+    target_title: Optional[str] = None,
+    backup_titles: Optional[List[str]] = None,
+    mode: str = "ANSWER_NOW",
+    voice_profile: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = 1,
+    decision_policy: Optional[Dict[str, Any]] = None,
+    memory_guidance: str = "",
+    current_memory: Optional[Dict[str, Any]] = None,
+    steering_guidance: str = "",
+    mvc_score: int = 0,
+    creator_profile: Optional[Dict[str, Any]] = None,
+    thread_id: Optional[str] = None,
+    user_state: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     SDD-CVR Implementation:
@@ -791,6 +1217,43 @@ def generate_grounded_answer(
     2. Voice Render (Creator Persona + Style DNA)
     3. Verification & Repair Loop
     """
+    from services.decision_service import decision_service
+    
+    # Resolve decision policy
+    policy = decision_policy or decision_service.DEFAULT_POLICY
+    q_type, topic, sufficiency = decision_service.classify_question(question, intent)
+    move = decision_service.choose_move(policy, q_type, topic, intent=intent, sufficiency=sufficiency)
+    
+    # --- User Priority & Real Conversation Engine ---
+    # Use passed state if available, else detect
+    if not user_state:
+        user_state = user_priority_service.detect_user_state(question, conversation_history, current_memory=current_memory)
+    
+    conv_mode = user_priority_service.select_response_mode(user_state, q_type, mvc_score)
+    mode_constraints = user_priority_service.get_mode_constraints(conv_mode, user_state)
+    
+    logger.info(f"User State: {user_state}")
+    logger.info(f"Conversation Mode: {conv_mode}")
+    logger.info(f"Decision Move: {move}")
+
+    # --- Conversation Steering Layer ---
+    if not steering_guidance:
+        steering_result = steering_service.determine_steering_move(user_state, current_memory or {}, question)
+        steering_move = steering_result["steering_move"]
+        steering_guidance = steering_result["steering_guidance"]
+    else:
+        # If passed, we still might want steering_move for the prompt
+        # But we'll trust the caller for most things
+        steering_move = "GUIDED_RESPONSE" 
+    
+    # Update progress stage and topic tracking in memory
+    if current_memory and not steering_guidance:
+        current_memory["progress_stage"] = steering_result["new_stage"]
+        current_memory["current_topic"] = steering_result["detected_topic"]
+        current_memory["topic_depth_level"] = steering_result["topic_depth"]
+        logger.info(f"Steering: Move={steering_move}, Topic='{current_memory['current_topic']}', Depth={current_memory['topic_depth_level']}")
+
+    logger.info(f"Steering Move: {steering_move}")
     
     # --- Dependencies ---
     distiller = StyleDistiller()
@@ -803,8 +1266,16 @@ def generate_grounded_answer(
         source = chunk["source_ref"]
         platform = source.get("platform", "unknown")
         title = source.get("title", "")
+        
+        # Add origin tag to help model distinguish between creator voice and public info
+        origin = "Ingested"
+        if chunk.get("is_research"):
+            origin = "Creator-Verified Research"
+        elif chunk.get("is_public_info"):
+            origin = "Public Info (General Knowledge)"
+            
         context_parts.append(
-            f"[Source {i+1} - {platform}" + (f": {title}" if title else "") + "]:\n"
+            f"[Source {i+1} - {platform} - {origin}" + (f": {title}" if title else "") + "]:\n"
             + chunk["content"]
         )
     context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
@@ -816,19 +1287,169 @@ def generate_grounded_answer(
     if creator_id:
         verified_facts_str = fv_service.get_verified_facts_formatted(creator_id)
 
+    # --- Fetch Conversational Memory ---
+    memory_context_str = ""
+    if user_id and creator_id and thread_id:
+        mem_facts = memory_service.get_relevant_context(user_id, creator_id, thread_id, question)
+        if mem_facts:
+            memory_context_str = "RELEVANT USER FACTS (Conversational Memory):\n"
+            for f in mem_facts:
+                val = f.get('value', '')
+                slot = f.get('slot', '')
+                memory_context_str += f"- {slot}: {val}\n"
+
     # --- Step 1: Meaning Draft (Neutral) ---
-    logger.info("Generating Meaning Draft...")
-    draft = generate_meaning_draft(question, context, verified_facts_str, intent, conversation_history)
+    logger.info(f"Generating Meaning Draft (Mode: {mode})...")
+    
+    if conv_mode == "CURIOSITY_GATE" and creator_profile:
+        curious_q = user_priority_service.get_curious_question(creator_profile, user_state)
+        # Seed the draft with the curious question
+        # If we have a goal in the current thread memory, acknowledge it. Otherwise, just ask.
+        has_goal = current_memory.get("user_goal") if current_memory else None
+        draft = {
+            "meaning_draft": f"Acknowledge the user's intent and ask: {curious_q}" if not has_goal else f"Briefly acknowledge the goal of '{has_goal}' and ask: {curious_q}",
+            "is_meaning_complete": True,
+            "facts_used": []
+        }
+    else:
+        draft = generate_meaning_draft(
+            question, 
+            context, 
+            verified_facts_str, 
+            intent, 
+            conversation_history, 
+            target_title=target_title, 
+            backup_titles=backup_titles, 
+            mode=mode, 
+            memory_context=memory_context_str, 
+            user_state=user_state,
+            steering_guidance=steering_guidance,
+            steering_move=steering_move
+        )
+    
+    # --- Step 1.5: Fast Path for Greetings (GreetingService) ---
+    if intent in ["greeting", "greeting_only"] and conv_mode == "GREETING_MODE":
+        logger.info("Fast Path: Using GreetingService for greeting.")
+        try:
+            # Deterministic greeting to prevent hallucinations
+            simple_greeting = greeting_service.generate_greeting(user_name, voice_profile or {})
+            # We still might want the LLM to 'voice' it slightly if the DNA is complex,
+            # but for now, returning the simple greeting is safer.
+            # To maintain compatibility with the polish layer, we update the draft.
+            draft["meaning_draft"] = simple_greeting
+            draft["is_meaning_complete"] = True
+        except Exception as e:
+            logger.error(f"GreetingService failed: {e}")
     
     # --- Step 2: Voice Render (Creator Persona) ---
     logger.info("Rendering Voice...")
+    
+    # Energy Modulation & Tone Mirroring
+    energy_data = voice_profile.get("energy", {"default_score": 0.5, "bucket": "MID"})
+    current_score = energy_data.get("default_score", 0.5)
+    
+    # Analyze user style
+    user_style = analyze_user_style(question)
+    user_tone = user_style["tone"]
+    user_len = user_style["length"]
+    
+    # Tone Mirroring: Calculate target length
+    # rule: reply_target_length = clamp(user_length * 2, min=15 words, max=80 words)
+    # Only apply strictly if it's a greeting or short exchange
+    tone_mirror_limit = 0
+    if intent in ["greeting_only", "small_talk", "identity"]:
+        target = max(15, min(80, user_len * 2))
+        tone_mirror_limit = target
+        logger.info(f"Tone Mirroring Active: User={user_len} words, Target Limit={target}")
+    
+    # Modulate score (don't modulate on FIRST message after switch if we wanted it "obvious", 
+    # but the prompt handles that. Let's apply slight modulation)
+    if user_tone == "serious":
+        current_score *= 0.9
+    elif user_tone == "hyped":
+        current_score *= 1.05
+    current_score = max(0.0, min(1.0, current_score))
+    
+    # Determine bucket from modulated score
+    energy_bucket = "MID"
+    if current_score < 0.35: energy_bucket = "LOW"
+    elif current_score > 0.70: energy_bucket = "HIGH"
+    
+    logger.info(f"Energy: baseline={energy_data.get('bucket')}, modulated_score={current_score:.2f}, bucket={energy_bucket}")
+
     style_dna = distiller.get_style_dna(creator_id or 0, style_fingerprint or {})
-    dna_instruction = distiller.format_for_prompt(style_dna)
+    dna_instruction = distiller.format_for_prompt(style_dna, voice_profile=voice_profile)
+    
+    # Intent-specific length and behavioral guidance
+    len_guidance = response_length_instruction(intent, mode=mode, energy_bucket=energy_bucket, tone_mirror_limit=tone_mirror_limit, user_priority_constraints=mode_constraints)
+    intent_specific_rule = ""
+    if intent == "introduce_content":
+        intent_specific_rule = """
+        7. SPECIFIC RECOMMENDATION: The Neutral Plan mentions a specific video/resource title from my context. 
+           Your task is to mention this video LITERALLY by its title (e.g. "Check out my video 'Exact Title'"). 
+           Explain WHY this specific video is the bridge to their next level.
+           DO NOT use generic phrases like "seek out videos on this topic". NAME THE VIDEO.
+        """
+    elif intent == "introduce_fallback":
+        intent_specific_rule = """
+        7. SEARCH SUGGESTION: Tell the user to use the 'Search Channel' card attached to find content about the topic mentioned in the plan.
+        """
+    elif intent in ["greeting", "greeting_only", "small_talk", "vague_request"]:
+        intent_specific_rule = """
+        7. GREETING MODE: You are in a high-speed messaging mode.
+           - NO explanations of what you can do.
+           - NO instructions to the user.
+           - Sentence 1: Pick one literal opener from the ALLOWED GREETINGS list.
+           - Sentence 2: Ask one short, domain-aware question (e.g. "What's the goal today?").
+           - MAXIMUM 2 sentences total.
+        """
+    
+    # Decide Move-Specific Guidance
+    move_guidance = ""
+    if move == "ANSWER_DIRECTLY":
+        move_guidance = "Answer the user directly and concisely based on the neutral plan."
+    elif move == "ANSWER_WITH_QUALIFIER":
+        move_guidance = "Answer with caution. Use phrases like 'From what I've shared publicly...' or 'If I recall...'"
+    elif move == "DECLINE_PRIVATE":
+        move_guidance = "Do NOT provide the information. Politely state that you keep that side of your life private."
+    elif move == "DEFLECT_WITH_HUMOR":
+        move_guidance = "Do NOT answer directly. Make a creator-appropriate joke or funny deflection, then pivot."
+    elif move == "REFRAME_TO_DOMAIN":
+        move_guidance = "Acknowledge the question but quickly pivot to a lesson, principle, or domain topic (business/training)."
+    elif move == "BOUNDARY_PUSHBACK":
+        move_guidance = "Firmly refuse to answer or entertain the question. Be polite but maintain the boundary."
+    elif move == "ASK_CLARIFY":
+        move_guidance = """
+        Mode: ASK_CLARIFY. DO NOT explain why you are asking. DO NOT mention that the user was vague. 
+        HUMAN STYLE: 'Hey! Glad you're here. How can I help you today?' or 'Yo! What's on your mind?'
+        BANNED STYLE: 'I need more info', 'Since you only said hello', or assuming any specific business goal.
+        One sentence greeting + one sentence question. MAX 2 sentences total.
+        """
+
+    # If intent is a greeting, ZERO OUT the support set context completely.
+    # This ensures the final renderer cannot use any retrieved business facts during a hello.
+    if intent in ["greeting", "greeting_only", "small_talk"]:
+        context = "No relevant context (Greeting Mode)."
+        support_set = []
     
     # Construct Render Prompt
     render_system_prompt = f"""
-You are {creator_name or 'the creator'}.
-{persona or ''}
+You are {creator_name or 'the creator'}. 
+
+OFPO STEP 3 - PERSONA OVERLAY (Shader, not Driver):
+Your persona is a "filter" applied to the NEUTRAL PLAN. 
+- You control: sentence length, punchiness, metaphors, slang, and directness.
+- You are BLOCKED from: changing the chosen "Next Action", adding extra steps, adding unrelated anecdotes, or adding "fun facts".
+- Follow the NEUTRAL PLAN exactly. Do NOT add new sections.
+
+ACTION: {mode_constraints.get('next_action', 'Explain')}
+BUDGET: Max {mode_constraints.get('max_sentences', 4)} sentences, {mode_constraints.get('max_bullets', 0)} bullets.
+
+STEERING: {steering_move} ({steering_guidance})
+
+{memory_guidance}
+
+{persona if intent not in ["greeting", "greeting_only", "small_talk", "vague_request"] else f"I am {creator_name or 'the creator'}. I am greeting a user. I will be warm, welcoming, and direct. I will NOT talk about business, plans, or advice."}
 
 MISSION:
 Rewrite the NEUTRAL CONTENT PLAN below into your unique voice and style.
@@ -836,13 +1457,18 @@ Strictly adhere to the STYLE DNA constraints.
 
 {dna_instruction}
 
+STRICT RULE: If CONVERSATION MODE is 'GREETING_MODE', you MUST NOT provide advice, plans, or mention any specific business topics. Simply greet and ask one open-ended question.
+
 RULES:
-1. NO SOURCES: Do NOT mention "Source 1" or include URLs. Speak as if you know this info.
-2. NO FILLER: Do not say "Here is a plan" or "I hope this helps". Dive straight in.
-3. HONESTY: If the plan says "uncertainty_handling: admit_unknown", admit you don't know in your voice.
-4. FORMAT: Use the structure defined in the DNA (e.g. valid frameworks, list style).
-5. USER: You are talking to {user_name or 'a friend'}.
-6. NO LINKS: Do not output any http links.
+1. CONTEXT DOMINANCE: Use ONLY the video title and facts provided in the "NEUTRAL PLAN". 
+2. NO SOURCES: Do NOT mention "Source 1" or include URLs. Speak as if you know this info.
+3. NO FILLER: Do not say "Here is a plan" or "I hope this helps". Dive straight in.
+4. HONESTY: If the plan says "uncertainty_handling: admit_unknown", admit you don't know in your voice.
+5. FORMAT: Use the structure defined in the DNA.
+6. USER: You are talking to {user_name or 'a friend'}.
+7. NO LINKS: Do not output any http links manually.
+8. PERSONA PROTECTION: Strictly PURGE all meta-talk like "I don't have enough info" or "Based on my data". NEVER mention being an AI.
+9. VERBOSITY: Strictly stay within the BUDGET. Cut content if necessary.
 
 NEUTRAL PLAN:
 {json.dumps(draft, indent=2)}
@@ -867,9 +1493,57 @@ NEUTRAL PLAN:
     # Pass 1
     response_text = rag.generate_chat_completion(
         messages=messages,
+        model=settings.FINAL_RESPONSE_MODEL,
         temperature=0.7,
         max_tokens=1000
     )
+    
+    # --- Human Compression Filter & Energy Check ---
+    word_count = len(response_text.split())
+    # Derive max_words from len_guidance extraction or get_energy_constraints
+    # The prompt already has it, but let's be robust.
+    max_w = get_energy_constraints(energy_bucket, intent)["max_words"]
+    if tone_mirror_limit > 0:
+        max_w = min(max_w, tone_mirror_limit)
+    if mode == "ASK_ONE_QUESTION": 
+        max_w = 80 if energy_bucket == "HIGH" else 100
+    
+    # Check for banned explanation phrases
+    banned_phrases = ["i don't have enough information", "based on what you said", "to better assist you", "in order to help", "i'm not going to guess"]
+    has_banned = any(b in response_text.lower() for b in banned_phrases)
+    
+    # User Priority Guardrail: Check for jargon if beginner
+    has_jargon_failure = False
+    if user_state.get("skill_level") == "beginner" and not mode_constraints.get("jargon_allowed", True):
+        # Heuristic: check for complex technical terms
+        technical_terms = ["asymptotic", "liquidity sweep", "order block", "hypertrophy", "gluconeogenesis", "scalability", "monetization", "retention rate"]
+        found_jargon = [t for t in technical_terms if t in response_text.lower()]
+        if found_jargon:
+            has_jargon_failure = True
+            logger.info(f"Jargon detected in beginner response: {found_jargon}")
+
+    if word_count > max_w * 1.2 or (intent == "greeting_only" and has_banned) or has_jargon_failure:
+        reason = f"Response over limit ({word_count}/{max_w})" if word_count > max_w * 1.2 else "Contains banned explanation phrases"
+        if has_jargon_failure: reason = "Contains technical jargon for a beginner"
+        
+        logger.info(f"{reason}. Compressing...")
+        compression_prompt = f"""
+        {render_system_prompt}
+        
+        CRITICAL: Your previous response needed editing: {reason}.
+        1. Remove ALL explanation phrases like "I don't have enough info" or "Based on...".
+        2. Remove technical jargon if the user is a beginner.
+        3. Ensure the message is under {max_w} words.
+        4. Maintain the PUNCHINESS and creators style.
+        
+        Current Draft:
+        {response_text}
+        """
+        response_text = rag.generate_chat_completion(
+            messages=[{"role": "system", "content": compression_prompt}],
+            model=settings.REWRITE_MODEL, # Fast edit
+            temperature=0.3
+        )
     
     # Verify
     score_result = scorer.score_response(response_text)
@@ -900,13 +1574,15 @@ Rewrite the response to fix these violations.
         
         final_response = rag.generate_chat_completion(
             messages=messages,
+            model=settings.REWRITE_MODEL, # Fast edit
             temperature=0.75
         )
 
     # --- Step 4: Post-Processing ---
     # Strip URLs to enforce "No sources shown in chat" (just in case model hallucinated them)
     try:
-        final_response = strip_urls_from_text(final_response)
+        if not include_links_in_output:
+            final_response = strip_urls_from_text(final_response)
     except:
         pass
 
@@ -925,6 +1601,43 @@ Rewrite the response to fix these violations.
                 "published_at": ref.get("published_at"),
                 "content_type": ref.get("content_type", ""),
             })
+
+    # --- Step 5: Grounding & Rhythm application ---
+    # Prepare draft for validation (map keys)
+    draft["sources"] = answer_contract.get("sources", [])
+    if "facts" not in draft:
+        draft["facts"] = draft.get("required_facts", [])
+
+    grounding_report = validate_grounding(final_response, draft, support_set)
+    
+    # --- Steering Validation ---
+    steering_report = steering_service.validate_steering(final_response, steering_move, intent)
+    if steering_report.get("drift_detected") or steering_report.get("overwhelmed"):
+        logger.warning(f"Steering Violation: {steering_report.get('reason')}")
+        # Mark for repair
+        grounding_report["steering_violation"] = steering_report.get("reason")
+        grounding_report["is_grounded"] = False 
+    final_response = repair_answer(
+        final_response,
+        draft,
+        support_set,
+        grounding_report,
+        question,
+        persona,
+        allow_cta,
+        enabled_platforms,
+        intent,
+        voice_profile=voice_profile
+    )
+    
+    # --- Step 6: Final Persona Surface Filter ---
+    # Guaranteed removal of system voice / meta-statements
+    final_response = apply_persona_surface_filter(
+        final_response, 
+        intent, 
+        voice_profile, 
+        creator_name=creator_name or "The Creator"
+    )
 
     debug_info = {
         "draft": draft,
@@ -989,6 +1702,7 @@ def repair_answer(
     allow_sources: bool = True,
     enabled_platforms: Optional[List[str]] = None,
     intent: str = "how_to",
+    voice_profile: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Step 7: Repair answer if grounding validation failed.
@@ -996,9 +1710,34 @@ def repair_answer(
     When intent is request_sources, skip Sources block (links are inline only).
     """
     if grounding_report["is_grounded"]:
-        return answer
+        # Apply Speech Rhythm Micro-Hesitations
+        return apply_speech_rhythm(answer, voice_profile, intent)
 
     repaired = answer
+
+    # --- Steering Repair ---
+    if grounding_report.get("steering_violation"):
+        logger.info("Applying Steering Repair...")
+        repair_prompt = f"""
+        REPAIR INSTRUCTION: The following response violated conversation steering rules.
+        Issue: {grounding_report['steering_violation']}
+        
+        TASK:
+        1. Remove any unrelated tangents or "drift" concepts.
+        2. If too long/overwhelming, trim to the CRITICAL next step only.
+        3. Maintain the original persona and voice.
+        
+        Original Response:
+        {answer}
+        """
+        try:
+            repaired = rag.generate_chat_completion(
+                messages=[{"role": "system", "content": repair_prompt}],
+                model=settings.REWRITE_MODEL,
+                temperature=0.0
+            )
+        except Exception as e:
+            logger.error(f"Steering repair failed: {e}")
 
     # Add source citation only when links allowed, not request_sources, and missing; skip URLs already in answer
     if (
@@ -1015,18 +1754,272 @@ def repair_answer(
         if extra:
             repaired = (repaired.rstrip() + "\n\n" + extra).strip()
 
+    # If grounding strength is low, do NOT add meta disclaimers like "Based on available content".
+    # Rely on the Persona Surface Filter to handle low confidence naturally.
     if grounding_report["support_strength"] < 0.3:
-        repaired = (
-            "Based on the available content, here's what I can share:\n\n" + repaired
-            + "\n\nNote: Some aspects may be general advice rather than specific to this creator's documented content."
-        )
+        pass # Do nothing
+
+    # Apply Speech Rhythm Micro-Hesitations
+    repaired = apply_speech_rhythm(repaired, voice_profile, intent)
 
     return repaired
 
+def apply_speech_rhythm(text: str, voice_profile: Dict[str, Any], intent: str) -> str:
+    """
+    Injects micro-hesitations and rhythm markers based on creator profile.
+    - Max 1-2 insertions per message.
+    - Only at natural boundaries (start, after comma).
+    """
+    import random
+    
+    # Skip for very short or structured outputs
+    if len(text.split()) < 20 or "1." in text or "-" in text[:5]:
+        return text
+        
+    rhythm = voice_profile.get("speech_rhythm", {})
+    fillers = rhythm.get("fillers", [])
+    rate = rhythm.get("filler_rate", 0.1)
+    
+    if not fillers or random.random() > rate:
+        return text
+        
+    # Insertion Logic
+    sentences = text.split(". ")
+    if len(sentences) < 2:
+        # Maybe insert at start
+        if random.random() < 0.3:
+            filler = random.choice(fillers)
+            return f"{filler}, {text[0].lower() + text[1:]}"
+        return text
+        
+    # Insert filler at start of 2nd or later sentence
+    idx = random.randint(1, len(sentences) - 1)
+    filler = random.choice(fillers)
+    
+    # Don't break flow if sentence starts with capital
+    original = sentences[idx]
+    if original[0].isupper():
+        sentences[idx] = f"{filler}, {original[0].lower() + original[1:]}"
+    else:
+        sentences[idx] = f"{filler}, {original}"
+        
+    return ". ".join(sentences)
+
+
+def _get_suggested_resources(history: Optional[List[Dict[str, str]]]) -> Dict[str, Set[str]]:
+    """Helper to extract all YouTube/Resource URLs and Titles mentioned in chat history."""
+    seen = {"ids": set(), "titles": set()}
+    if not history:
+        return seen
+    
+    # Scan a deeper history window to ensure a truly unique experience
+    for m in history[-50:]:
+        content = (m.get("content") or m.get("text") or "").lower()
+        # 1. Match youtube IDs
+        matches = re.findall(r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([\w-]+)", content)
+        for vid_id in matches:
+            seen["ids"].add(vid_id)
+            
+        # 2. Match titles in quotes and patterns
+        quoted_titles = re.findall(r'"([^"]+)"', content)
+        natural = re.findall(r'(?:watch|check out|video|resource|lesson|recommend|suggest)\s+([\w\s\-\(\):]+)', content)
+        
+        for t in quoted_titles + natural:
+            # ULTRA REGRESSIVE NORMALIZATION
+            clean_t = re.sub(r'[^a-z0-9]', '', t).strip()
+            if len(clean_t) > 5:
+                seen["titles"].add(clean_t)
+            
+    return seen
+
+def llm_rerank(candidates: List[Dict[str, Any]], intent_plan: Dict[str, Any], top_n: int = 5) -> List[Dict[str, Any]]:
+    """
+    Stage 4: Helpful Rerank (LLM-based).
+    Take top candidates and rerank using direct goal fit, actionability, clarity, and evidence.
+    """
+    if not candidates: return []
+    import rag
+    import json
+    
+    # Prepare candidate list for LLM
+    candidate_meta = []
+    for c in candidates[:15]: # Review top 15
+        candidate_meta.append({
+            "id": c.get("id") or c.get("chunk_id"),
+            "title": c.get("title") or c.get("source_ref", {}).get("title"),
+            "snippet": c.get("snippet") or c.get("content")[:400],
+            "type": c.get("resource_type") or c.get("source_ref", {}).get("content_type"),
+            "evidence_metrics": c.get("evidence_metrics", {})
+        })
+
+    user_level = intent_plan.get("user_level", "unknown")
+    
+    system_prompt = f"""
+You are a Content Quality Reranker. Your goal is to identify the SINGLE MOST HELPFUL resource for the user.
+
+USER INTENT: {intent_plan.get('intent_type')}
+GOAL: {intent_plan.get('implicit_goal')}
+AXIS: {intent_plan.get('task_axis')}
+USER LEVEL: {user_level}
+HELP CRITERIA: {intent_plan.get('help_criteria')}
+
+For each candidate, provide a Score (0-100) based on:
+1. Direct Goal Fit: Does this directly answer the user's implicit goal?
+2. Actionability: Does it provide concrete steps the user can take today?
+3. Clarity/Level: Is it appropriate for a {user_level} user?
+4. Evidence Strength: Based on the snippets and evidence metrics.
+5. Creator Authenticity: Does this reflect the creator's "signature" style and unique frameworks?
+
+Output ONLY a JSON object:
+{{
+  "scores": [
+    {{ "id": "...", "score": 85, "internal_rationale": "..." }},
+    ...
+  ]
+}}
+"""
+
+    user_prompt = f"Candidates: {json.dumps(candidate_meta)}"
+    
+    try:
+        response_text = rag.generate_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model=settings.RERANK_MODEL,
+            temperature=0.0,
+            json_mode=True
+        )
+        scores_data = json.loads(response_text).get("scores", [])
+        score_map = { s["id"]: s for s in scores_data }
+        
+        # Merge scores back into candidates
+        for c in candidates:
+            cid = c.get("id") or c.get("chunk_id")
+            s_entry = score_map.get(cid)
+            if s_entry:
+                c["rerank_score"] = s_entry["score"] / 100.0
+                c["internal_rationale"] = s_entry.get("internal_rationale")
+            else:
+                c["rerank_score"] = 0.0
+
+        return sorted(candidates, key=lambda x: x.get("rerank_score", 0), reverse=True)
+    except Exception as e:
+        logger.error(f"llm_rerank failed: {e}")
+        return candidates
+
+def calculate_gate_confidence(candidates: List[Dict[str, Any]], temperature: float = 0.1) -> float:
+    """
+    Stage 5: ONE-PICK decision policy (confidence gate).
+    gap = score(top1) - score(top2)
+    confidence = sigmoid(gap / temperature)
+    """
+    if not candidates:
+        return 0.0
+    if len(candidates) == 1:
+        # If we only have 1 good candidate, confidence depends on its own score
+        base_score = candidates[0].get("rerank_score", 0)
+        return 0.75 if base_score > 0.7 else 0.4
+    
+    s1 = candidates[0].get("rerank_score", 0)
+    s2 = candidates[1].get("rerank_score", 0)
+    gap = s1 - s2
+    
+    try:
+        # Sharpness temperature (default 0.1) creates a sharp cut-off
+        val = gap / temperature
+        conf = 1 / (1 + math.exp(-val))
+        return conf
+    except OverflowError:
+        return 1.0 if gap > 0 else 0.0
+        
+def recommend_one_content(
+    user_id: int, 
+    creator_id: int, 
+    user_message: str, 
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    creator_row: Optional[Dict[str, Any]] = None,
+    debug: bool = False
+) -> Dict[str, Any]:
+    """
+    Advanced, creator-aware 'ONE BEST CONTENT' recommender.
+    Returns exactly ONE recommended piece of content or a clarifying question.
+    """
+    # Stage 0: Request parsing + creator context
+    resource_intent = classify_resource_intent(user_message, conversation_history, creator_row)
+    q_search = resource_intent.get("query", user_message)
+    
+    # Early Exit for Small Talk or non-resource turns
+    if not resource_intent.get("needs_resource") and resource_intent.get("request_type") == "none":
+        logger.info(f"Recommender: Intent 'none' and no resource needed. Falling back to chat.")
+        return {"recommended": None, "confidence": 0.0, "should_fallback": True, "resource_intent": resource_intent, "q_emb": None}
+    
+    # Stage 1: Candidate retrieval (Broad + Fast)
+    # Get embedding for semantic search
+    from rag import get_client
+    try:
+        emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=q_search)
+        q_emb = emb_resp.data[0].embedding
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        return {"answer": "I'm having trouble searching my content right now.", "recommended": None}
+
+    # Broad Vector Search
+    enabled_platforms = get_enabled_platforms_for_creator(creator_id)
+    raw_chunks = retrieve_candidates(creator_id, q_emb, K_RETRIEVE * 2, enabled_platforms=enabled_platforms)
+    
+    # Platform Preference: YouTube if user wants to "watch"
+    wants_video = "video" in user_message.lower() or "watch" in user_message.lower()
+    
+    # Stage 2: Evidence-first chunk scoring
+    candidates = _aggregate_document_evidence(raw_chunks)
+    
+    # Stage 3: Goal/Intent compatibility + Contradiction handling
+    # (Incorporated into rerank_candidates)
+    candidates = rerank_candidates(candidates, q_search, resource_intent)
+    
+    # Stage 4: Helpfulness rerank (LLM)
+    candidates = llm_rerank(candidates, resource_intent)
+    
+    # Stage 5: ONE-PICK decision policy (Confidence Gate)
+    confidence = calculate_gate_confidence(candidates)
+    
+    if confidence < 0.65:
+        # LOW CONFIDENCE: Ask clarifying question
+        cl_question = candidates[0].get("llm_reason") if candidates and candidates[0].get("llm_reason") else "Could you tell me more about what you're looking for so I can give you the best pick?"
+        # The prompt for clarification should be short and creator-voiced (handled in render stage)
+        return {
+            "recommended": None,
+            "confidence": confidence,
+            "clarify_question": cl_question,
+            "candidates": candidates[:1], # Pass top 1 for context
+            "resource_intent": resource_intent,
+            "q_emb": q_emb
+        }
+    
+    # HIGH CONFIDENCE: Pick top 1
+    best_one = candidates[0]
+    return {
+        "recommended": {
+            "id": best_one.get("id"),
+            "title": best_one.get("title"),
+            "url": best_one.get("url"),
+            "thumbnail": best_one.get("thumbnail"),
+            "platform": best_one.get("platform"),
+            "creator_id": creator_id
+        },
+        "confidence": confidence,
+        "clarify_question": None,
+        "best_candidate": best_one,
+        "resource_intent": resource_intent,
+        "q_emb": q_emb
+    }
 
 def grounded_rag_ask(
     creator_id: int,
     question: str,
+    thread_id: Optional[str] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
     top_k: int = K_FINAL,
     max_distance: float = 1.15,
@@ -1035,275 +2028,500 @@ def grounded_rag_ask(
     user_name: Optional[str] = None,
     creator_name: Optional[str] = None,
     images: Optional[List[Dict[str, Any]]] = None,
+    user_id: int = 1,
 ) -> Dict[str, Any]:
+    
+    def apply_final_polish(result_dict: Dict[str, Any], profile: Dict[str, Any], state_mgr: Any, mvc_score: int = 0, plan: Optional[InteractionPlan] = None) -> Dict[str, Any]:
+        if "answer" in result_dict:
+            answer = result_dict["answer"]
+            
+            # The interaction engine already handles voice, structure, reduction,
+            # and markdown stripping. The old post-processors are fully bypassed.
+            
+            is_light_route = plan and getattr(plan, 'route', '') in ["ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK"]
+            
+            # ABSOLUTE FIRST: strip any remaining markdown artifacts
+            allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none" if plan else False
+            result_dict["answer"] = strip_all_markdown(answer.strip(), allow_links=allow_links)
+            
+            if is_light_route:
+                logger.info(f"apply_final_polish: Light route {plan.route} — strip only")
+                state_mgr.save_state()
+                return result_dict
+            
+            # --- Memory Tracking (ASYNC — runs in background, doesn't block response) ---
+            import threading
+            def _async_memory_tracking(answer_text, state_mgr_ref):
+                try:
+                    tracking_prompt = f"""Analyze the following message. Extract:
+1. Any specific actionable STEPS given (brief list).
+2. Any specific RESOURCE/CONTENT recommended (title).
+Output JSON only: {{"steps": ["step 1"], "recommendation": "title or null"}}
+Message: {answer_text[:500]}"""
+                    resp = rag.generate_chat_completion(
+                        messages=[{"role": "system", "content": tracking_prompt}],
+                        model=settings.ROUTER_MODEL,
+                        temperature=0.0,
+                        json_mode=True
+                    )
+                    tracking = json.loads(resp)
+                    mem = state_mgr_ref.state.get("memory_loop", {})
+                    if tracking.get("steps"):
+                        mem["previous_steps_given"] = list(set(mem.get("previous_steps_given", []) + tracking["steps"]))
+                    if tracking.get("recommendation"):
+                        mem["last_recommendation"] = tracking["recommendation"]
+                    state_mgr_ref.save_state()
+                    logger.info(f"Async Memory Tracking Update: {tracking}")
+                except Exception as e:
+                    logger.error(f"Async memory tracking failed: {e}")
+            
+            # Fire and forget — response returns immediately
+            threading.Thread(
+                target=_async_memory_tracking, 
+                args=(answer, state_mgr), 
+                daemon=True
+            ).start()
+            
+        return result_dict
     """
     Main Grounded-RAG Loop function.
-    Returns answer with sources and debug info.
+    Funnels into ONE BEST CONTENT engine.
     """
     import json
     
-    # Step 1: Build search query
-    q_search = build_search_query(question, conversation_history)
-    
+    # --- Step 1: Fetch Profiles & State ---
     from db import db
-    # Fetch creator personality metadata and configurations
-    creator_row = db.execute_one("SELECT name, handle, style_fingerprint, platform_configs FROM creators WHERE id = %s", (creator_id,))
-    sf = creator_row.get("style_fingerprint") if creator_row else {}
-    if isinstance(sf, str): sf = json.loads(sf)
+    from services.conversation_state_manager import ConversationStateManager
     
-    # Get query embedding
-    from rag import get_client
-    try:
-        embedding_response = get_client().embeddings.create(
-            model=settings.EMBEDDING_MODEL,
-            input=q_search
-        )
-        query_embedding = embedding_response.data[0].embedding
-    except Exception as e:
-        raise Exception(f"Failed to get query embedding: {str(e)}")
-    
-    # Step 2: Retrieve broadly
+    creator_row = db.execute_one("""
+        SELECT id, name, handle, style_fingerprint, voice_profile, 
+               identity_fingerprint, research_summary, soul_md,
+               decision_policy, stronghold_json, rhythm_profile_json,
+               creator_category, persona_style_json, controller_overrides_json
+        FROM creators WHERE id = %s
+    """, (creator_id,))
+    if not creator_row:
+        raise Exception(f"Creator {creator_id} not found.")
+
+    # Prioritize soul_md from creators table over legacy persona document
+    persona = creator_row.get("soul_md") or rag.get_persona(creator_id)
     enabled_platforms = get_enabled_platforms_for_creator(creator_id)
-    candidates = retrieve_candidates(
-        creator_id, query_embedding, K_RETRIEVE, max_distance,
-        enabled_platforms=enabled_platforms,
-        debug=debug,
-    )
+    
+    # Ensure thread_id is available
+    if not thread_id:
+        import uuid
+        thread_id = str(uuid.uuid4())
+        
+    csm = ConversationStateManager(user_id=user_id, creator_id=creator_id, thread_id=thread_id)
+    
+    # Load Stronghold Config
+    stronghold_config = creator_row.get("stronghold_json") or {}
+    if isinstance(stronghold_config, str): stronghold_config = json.loads(stronghold_config)
 
-    if not candidates:
-        return {
-            "answer": "I don't have enough content about this creator yet. Please search and ingest some content first.",
-            "retrieved": [],
-            "sources": [],
-            "debug": {"error": "No candidates found"} if debug else None,
-        }
+    # --- Step 2: Classify + Route (GPT-4.1) ---
+    logger.info("Pipeline Step 2: Classifying User Input...")
+    user_state = classifiers.classify_all(question, conversation_history or [], creator_row)
     
-    # Step 3: Re-rank
-    support_set = rerank_candidates(candidates, q_search, top_k)
+    intent = user_state.get("intent", "unknown")
+    if user_state.get("flags", {}).get("greeting_only_flag") or intent in ["greeting", "small_talk"]:
+        intent = "greeting_only"
+        user_state["intent"] = "greeting_only"
+        user_state["request_type"] = "casual"
     
-    # Step 4: Build answer contract
-    answer_contract = build_answer_contract(support_set, question)
+    # Calculate MVC Score
+    mvc_score = user_priority_service.calculate_mvc_score(user_state, csm.state.get("memory_loop", {}))
+    logger.info(f"MVC Score: {mvc_score}")
     
-    # Early intent classification
-    has_images = images and len(images) > 0
-    persona = rag.get_persona(creator_id)
-    
-    # --- Semantic Intent Router (Resource-First Policy) ---
-    logger.info("ContentFinder: Running Semantic Intent Router...")
-    resource_intent = classify_resource_intent(question, conversation_history, creator_row)
-    logger.info(f"Intent Router Output: {json.dumps(resource_intent)}")
-    
-    is_strict_content = resource_intent.get("needs_resource") and resource_intent.get("confidence", 0) >= 0.70
-    intent = "request_sources" if is_strict_content else classify_intent(question)
-
-    if is_strict_content:
-        logger.info(f"ContentFinder: Semantic trigger activated (Reason: {resource_intent.get('reason')})")
-        from services.content_finder import ContentFinder
-        finder = ContentFinder(db, get_client())
-        
-        # Use Router's query and types
-        router_query = resource_intent.get("query") or question
-        cf_result = finder.find_content_card(
-            creator_id,
-            router_query,
-            resource_type=resource_intent.get("resource_type", "any"),
-            specificity=resource_intent.get("specificity", "recommendation"),
-            history_messages=conversation_history,
-        )
-        
-        if cf_result["status"] == "DEFER":
-             logger.info("ContentFinder: Deferring response.")
-             return {
-                 "answer": cf_result["defer_message"],
-                 "retrieved": [],
-                 "sources": [],
-                 "cards": [],
-                 "debug": {"cf_result": cf_result} if debug else None
-             }
-        
-        # If FOUND, we still want to generate a persona response that introduces the card
-        # We override support_set to be just the found item to force focus
-        if cf_result["status"] == "FOUND" and cf_result.get("cards"):
-             cards = cf_result["cards"]
-             first_card = cards[0] if cards else {}
-             card_url = first_card.get("url") or ""
-             snippet = first_card.get("short_snippet", "") or first_card.get("title", "")
-             
-             # Mock support set with the first result
-             is_fallback = cf_result.get("is_fallback", False)
-             content_desc = "Specific Video" if not is_fallback else "Creator Channel/Search"
-             
-             support_set = [{
-                 "chunk_id": "content_finder_match",
-                 "chunk_index": 0,
-                 "distance": 0.0,
-                 "rerank_score": 1.0,
-                 "content": f"Resource Found: {content_desc}\nTitle: {first_card.get('title', 'Recommended content')}\nSnippet: {snippet}",
-                 "source_ref": {
-                     "platform": "youtube" if "youtube" in card_url else "web",
-                     "title": first_card.get("title", "Recommended content"),
-                     "canonical_url": card_url,
-                     "published_at": None,
-                     "content_type": first_card.get("resource_type", "video")
-                 }
-             }]
-             
-             # Force answering with this content
-             answer_contract = build_answer_contract(support_set, question)
-             
-             answer, gen_debug = generate_grounded_answer(
-                question, support_set, answer_contract, persona, conversation_history,
-                intent="introduce_content", # Custom intent to guide style?
-                include_links_in_output=False, # We use card, not text links
-                allow_cta=False,
-                enabled_platforms=enabled_platforms,
-                user_preferences=user_preferences,
-                creator_name=creator_name,
-                style_fingerprint=sf,
-                creator_id=creator_id,
+    # --- Step 3: Memory Loop Update (ASYNC — doesn't block response) ---
+    # Memory loop output isn't used by routing, retrieval, or rendering in this request.
+    # Fire it in background to save ~1-2s latency.
+    import threading
+    def _async_memory_update(q, mem_state, u_state, hist, csm_ref):
+        try:
+            logger.info("Pipeline Step 3 (async): Updating Memory...")
+            updated = memory_loop_service.extract_memory_updates(
+                q, mem_state, u_state, history=hist
             )
-             
-             return {
-                 "answer": answer,
-                 "retrieved": support_set,
-                 "sources": [], 
-                 "cards": cards,
-                 "debug": gen_debug if debug else None 
-             }
-        
-    # --- Standard RAG Path --- (if no strict content found or triggered)
-
-    # When images are attached, override small_talk — images need full analysis
-    if has_images and intent in ("small_talk", "identity"):
-        intent = "how_to"
+            csm_ref.state["memory_loop"] = updated
+            csm_ref.save_state()
+            logger.info("Pipeline Step 3 (async): Memory updated OK")
+        except Exception as e:
+            logger.error(f"Async memory update failed: {e}")
     
-    # For small talk and identity (no images), don't retrieve content to avoid tempting the model
-    if intent in ("small_talk", "identity"):
-        support_set = []
-        answer_contract = {
-            "facts": [],
-            "gaps": [],
-            "sources": [],
-            "total_chunks": 0,
-        }
-        
-        answer, gen_debug = generate_grounded_answer(
-            question, support_set, answer_contract, persona, conversation_history,
-            intent=intent,
-            include_links_in_output=False,
-            allow_cta=False,
-            enabled_platforms=enabled_platforms,
-            follow_up_requesting_links=False,
-            user_preferences=user_preferences,
-            creator_name=creator_name,
-            style_fingerprint=sf,
-            creator_id=creator_id,
+    threading.Thread(
+        target=_async_memory_update,
+        args=(question, csm.state.get("memory_loop", {}), user_state, conversation_history, csm),
+        daemon=True
+    ).start()
+
+    # --- Step 4: Stronghold Guard ---
+    logger.info("Pipeline Step 4: Stronghold Check...")
+    domain_action = stronghold_guard.calculate_domain_match(
+        question, 
+        stronghold_config, 
+        user_state.get("primary_domain", "general")
+    )
+    
+    if domain_action == "DECLINE_HANDOFF":
+        logger.info("Stronghold: Triggering DECLINE_HANDOFF")
+        answer = stronghold_guard.generate_boundary_message(
+            creator_row["name"], persona, stronghold_config, question
         )
+        # Suggest 2-3 other creators
+        suggestions = db.execute_query("""
+            SELECT id, name, handle, profile_picture_url 
+            FROM creators WHERE id != %s LIMIT 3
+        """, (creator_id,))
         
-        return {
+        return apply_final_polish({
             "answer": answer,
             "retrieved": [],
             "sources": [],
-            "debug": gen_debug if debug else None,
-        }
-    
-    # Normal retrieval flow for advice/help questions
-    intent = classify_intent(question)
-    want_links = needs_links(question) or debug
-    allow_cta = needs_cta(question)
-    follow_up_requesting_links = is_follow_up_requesting_links(question, conversation_history)
-
-    # Step 5: Generate answer
-    answer, gen_debug = generate_grounded_answer(
-        question, support_set, answer_contract, persona, conversation_history,
-        intent=intent,
-        include_links_in_output=want_links,
-        allow_cta=allow_cta,
-        enabled_platforms=enabled_platforms,
-        follow_up_requesting_links=follow_up_requesting_links,
-        user_preferences=user_preferences,
-        user_name=user_name,
-        creator_name=creator_name,
-        style_fingerprint=sf,
-        images=images,
-        creator_id=creator_id,
-    )
-    
-    # Step 6: Validate grounding
-    grounding_report = validate_grounding(answer, answer_contract, support_set)
-    
-    # Step 7: Repair if needed (no sources block when link gating off or request_sources)
-    if not grounding_report["is_grounded"]:
-        answer = repair_answer(
-            answer, answer_contract, support_set, grounding_report, question, persona,
-            allow_sources=want_links,
-            enabled_platforms=enabled_platforms,
-            intent=intent,
-        )
-
-    # Platform-pure sources only (filter by enabled_platforms when set)
-    contract_sources = _filter_sources_by_platform(
-        answer_contract.get("sources") or [], enabled_platforms
-    )
-
-    # Link gating: only include links when requested (or debug)
-    if not want_links:
-        answer = strip_urls_from_text(answer)
-    elif want_links and contract_sources and intent != "request_sources":
-        # For "which video/post/link" requests, the model links inline—no "Sources:" block.
-        exclude_urls = _urls_in_text(answer)
-        extra = sources_section(
-            contract_sources, max_links=3,
-            enabled_platforms=enabled_platforms,
-            exclude_urls=exclude_urls,
-        )
-        if extra and "Sources:" not in answer:
-            answer = (answer.rstrip() + "\n\n" + extra).strip()
-
-    # Build unique sources for response (platform-filtered)
-    sources = []
-    seen_urls: Set[str] = set()
-    for source_data in contract_sources:
-        ref = source_data.get("source_ref") or {}
-        url = ref.get("canonical_url", "")
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            sources.append({
-                "platform": ref.get("platform", ""),
-                "canonical_url": url,
-                "title": ref.get("title", ""),
-                "published_at": ref.get("published_at"),
-                "content_type": ref.get("content_type", ""),
-            })
-    
-    result = {
-        "answer": answer,
-        "retrieved": [
-            {
-                "chunk_id": c["chunk_id"],
-                "chunk_index": c["chunk_index"],
-                "distance": round(c["distance"], 3),
-                "rerank_score": round(c.get("rerank_score", 0), 3),
-                "preview": c["content"][:200],
-                "source_ref": c["source_ref"],
+            "cards": [],
+            "meta": {
+                "domain_action": "DECLINE_HANDOFF", 
+                "suggested_mode": "DECLINE",
+                "suggestions": suggestions
             }
-            for c in support_set
-        ],
-        "sources": sources,
-    }
-    
-    if debug:
-        result["debug"] = {
-            "search_query": q_search,
-            "enabled_platforms": enabled_platforms,
-            "intent": intent,
-            "needs_links": want_links,
-            "follow_up_requesting_links": follow_up_requesting_links,
-            "candidates_count": len(candidates),
-            "support_set_size": len(support_set),
-            "answer_contract": answer_contract,
-            "grounding_report": grounding_report,
-            "generation_debug": gen_debug,
-        }
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
 
-    return result
+    # --- Step 5: Personal / Factual Check (Web Verify) ---
+    verified_fact_data = None
+    if user_state.get("flags", {}).get("personal_question_flag"):
+        logger.info("Pipeline Step 5: Web Verifying Personal Question...")
+        verified_fact_data = web_verify.verify_fact(question)
+        if verified_fact_data["confidence"] < 0.4:
+            # Low confidence fallback logic
+            verified_fact_data["answer"] = "I'm not quite sure about that one myself, best to check my official sources."
+
+    # --- Step 6: RAG Retrieval ---
+    logger.info("Pipeline Step 6: Retrieval & Synthesis...")
+    # Use existing recommendation/retrieval engine
+    # BYPASS RAG for greetings to prevent hallucinations
+    if intent in ["greeting", "greeting_only", "small_talk"]:
+        logger.info("Bypassing Retrieval/Recommendation for greeting mode.")
+        rec_result = {"best_candidate": None, "q_emb": [0.0]*1536}
+    else:
+        rec_result = recommend_one_content(
+            user_id=user_id,
+            creator_id=creator_id,
+            user_message=question,
+            conversation_history=conversation_history,
+            creator_row=creator_row
+        )
+    
+    # Synthesis (Compact Support Pack)
+    if intent in ["greeting", "greeting_only", "small_talk"]:
+        support_set = []
+    else:
+        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3]
+        if not support_set:
+            # Fallback to standard RAG if no recommendation
+            q_emb = rec_result.get("q_emb") or [0.0]*1536
+            support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
+            
+        # --- NEW: Real-Time Web Search Fallback (Sync) ---
+        # Check context: Did the bot just talk about a video/link?
+        last_bot_msg = ""
+        if conversation_history:
+            for m in reversed(conversation_history):
+                if m.get("role") == "assistant":
+                    last_bot_msg = (m.get("content") or "").lower()
+                    break
+        
+        context_needs_video = any(w in last_bot_msg for w in ["video", "watch my", "point you to", "send you"])
+        wants_link = needs_links(question) or context_needs_video
+        
+        needs_fallback = False
+        if not support_set:
+            needs_fallback = True
+        elif min([c.get("distance", 1.0) for c in support_set]) > 0.65:
+            needs_fallback = True
+        elif wants_link and not any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in support_set):
+            needs_fallback = True # Force fallback if they asked for a link but DB has no URL
+            
+        if needs_fallback and wants_link:
+            logger.info("RAG weak/empty & links requested. Triggering Live Web Search Fallback...")
+            rp = GeminiResearchProvider()
+            web_results = rp.search(
+                question, 
+                creator_row, 
+                conversation_history=conversation_history
+            )
+            
+            # Inject Live Search results as faux-chunks
+            for i, w in enumerate(web_results[:3]):
+                faux_chunk = {
+                    "chunk_id": f"web_{i}",
+                    "chunk_index": i,
+                    "distance": 0.1,  # Force high priority
+                    "content": f"[LIVE WEB SEARCH RESULT] {w.get('snippet', '')}",
+                    "source_ref": {
+                        "platform": "web",
+                        "canonical_url": w.get("url", ""),
+                        "title": w.get("title", ""),
+                    }
+                }
+                support_set.insert(i, faux_chunk)
+
+    # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
+
+    logger.info("Pipeline Step 7: UCR Classification + Interaction Planning...")
+    
+    plan_obj = interaction_engine.build_interaction_plan(
+        question, 
+        conversation_history or [], 
+        creator_row, 
+        support_set
+    )
+    
+    logger.info(f"UCR Route: {plan_obj.route} | Mode: {plan_obj.mode} | Stage: {plan_obj.stage} | Routing: {plan_obj.routing}")
+
+    # --- Step 8: PASS 2 - Persona Rendering (Route-Aware) ---
+    logger.info(f"Pipeline Step 8: Rendering ({plan_obj.route})...")
+    
+    answer = interaction_engine.render_response(
+        plan_obj, 
+        creator_row, 
+        support_set,
+        creator_id,
+        user_id,
+        thread_id,
+        user_name=user_name,
+        user_msg=question,
+        persona=persona,
+        history=conversation_history or [],
+        user_preferences=user_preferences
+    )
+    
+    # Log the turn
+    interaction_engine.log_turn(
+        creator_id,
+        user_id,
+        thread_id,
+        "assistant",
+        answer,
+        plan_obj,
+        len(support_set) > 0,
+        len(support_set)
+    )
+    
+    # Store in Mem0 Persistent Memory
+    try:
+        interaction_engine.store_interaction(str(creator_id), str(user_id), str(thread_id), question, answer)
+    except Exception as e:
+        logger.error(f"Mem0 store failed: {e}")
+
+    # gen_debug for compatibility (includes UCR route info)
+    gen_debug = {
+        "plan": plan_obj.dict(),
+        "route": plan_obj.route,
+        "routing": plan_obj.routing,
+        "mvc_score": mvc_score
+    }
+
+    # --- Step 9: Video Recommendation (ONE ONLY) ---
+    card = []
+    if plan_obj.grounding.video_policy in ["one_if_helpful", "forced"] and rec_result.get("best_candidate"):
+        best = rec_result["best_candidate"]
+        card = [{
+            "type": "preview_card",
+            "title": best["title"],
+            "url": best.get("url", ""),
+            "thumbnail_url": f"https://img.youtube.com/vi/{best.get('url', '').split('v=')[-1].split('&')[0]}/mqdefault.jpg" if "youtube.com" in best.get("url", "") else ""
+        }]
+
+    # --- Step 10: Persist + Return ---
+    logger.info("Pipeline Step 10: Finalizing Output...")
+    
+    # Update CSM with router metadata
+    csm.state["last_router_meta"] = {
+        "mode": plan_obj.mode,
+        "domain_action": domain_action or "GENERAL_CHAT",
+        "user_state": user_state
+    }
+    csm.save_state()
+
+    # --- Step 11: Background Memory Update (Long-term Facts) ---
+    try:
+        memory_service.update_memory(user_id, creator_id, thread_id, question)
+    except Exception as e:
+        logger.error(f"Background memory update failed: {e}")
+
+    return apply_final_polish({
+        "answer": answer,
+        "retrieved": support_set,
+        "sources": build_source_list(support_set),
+        "cards": card,
+        "meta": {
+            "gen_debug": gen_debug,
+            "plan_obj": plan_obj.dict() if plan_obj else None
+        }
+    }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=plan_obj)
+
+async def grounded_rag_stream(
+    creator_id: int,
+    question: str,
+    thread_id: Optional[str] = None,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    top_k: int = K_FINAL,
+    user_preferences: Optional[Dict[str, Any]] = None,
+    user_name: Optional[str] = None,
+    user_id: int = 1,
+):
+    """
+    ZERO-WAIT streaming version of the Grounded-RAG pipeline.
+    Optimized for sub-500ms TTFT by early-routing and parallel execution.
+    """
+    from db import db
+    import asyncio
+    
+    # 1. Deterministic Routing (Instant) - MUST BE FIRST
+    route = interaction_engine.classify_route(question, conversation_history or [])
+    
+    # 2. Launch Basic Metadata Tasks (Fast/Async)
+    creator_task = asyncio.to_thread(db.execute_one, """
+        SELECT id, name, handle, creator_category, rhythm_profile_json,
+               identity_fingerprint, research_summary, soul_md, style_fingerprint
+        FROM creators WHERE id = %s
+    """, (creator_id,))
+    persona_task = asyncio.to_thread(rag.get_persona, creator_id)
+    
+    # 3. Handle Context Gathering (Skip embeddings for greetings)
+    support_set = []
+    mems = []
+    
+    if route == "ROUTE_2_TASK":
+        # Full RAG Route: Needs Embeddings
+        # Expand question with context if needed
+        question_for_search = question
+        if conversation_history:
+            last_msg = ""
+            for m in reversed(conversation_history):
+                if m.get("role") != "user":
+                    last_msg = m.get("content", "")
+                    break
+            if len(question.split()) < 10 and last_msg:
+                # Truncate last output to 30 words to avoid muddying the embedding too much
+                last_snippet = " ".join(last_msg.split()[:30])
+                question_for_search = f"Context: {last_snippet} | Query: {question}"
+
+        # Launch embedding task
+        embedding_task = rag.get_async_client().embeddings.create(
+            input=question_for_search,
+            model="text-embedding-3-small"
+        )
+        
+        # Await metadata while embedding is in flight
+        creator_row, persona_legacy, embedding_resp = await asyncio.gather(
+            creator_task, persona_task, embedding_task
+        )
+        persona = creator_row.get("soul_md") or persona_legacy
+        
+        q_emb = embedding_resp.data[0].embedding
+        
+        # Launch Search Tasks (Parallel)
+        mems_task = interaction_engine.memory.search_with_embedding_async(
+            str(creator_id), str(user_id), str(thread_id or "new"), q_emb
+        )
+        retrieve_task = asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
+        
+        support_set, mems = await asyncio.gather(retrieve_task, mems_task)
+        
+        # --- NEW: Real-Time Web Search Fallback ---
+        # Check context: Did the bot just talk about a video/link?
+        last_bot_msg = ""
+        if conversation_history:
+            for m in reversed(conversation_history):
+                if m.get("role") == "assistant":
+                    last_bot_msg = (m.get("content") or "").lower()
+                    break
+        
+        context_needs_video = any(w in last_bot_msg for w in ["video", "watch my", "point you to", "send you"])
+        wants_link = needs_links(question) or context_needs_video
+        
+        # If no strict RAG match or weak match, ask Gemini to search live
+        needs_fallback = False
+        if not support_set:
+            needs_fallback = True
+        elif min([c.get("distance", 1.0) for c in support_set]) > 0.65:
+            needs_fallback = True
+        elif wants_link and not any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in support_set):
+            needs_fallback = True
+            
+        if needs_fallback and wants_link:
+            logger.info("RAG weak/empty & links requested (or context implied). Triggering Live Web Search Fallback...")
+            rp = GeminiResearchProvider()
+            web_results = await asyncio.to_thread(
+                rp.search, 
+                question, 
+                creator_row, 
+                conversation_history=conversation_history
+            )
+            
+            # Inject Live Search results as faux-chunks
+            for i, w in enumerate(web_results[:3]):
+                faux_chunk = {
+                    "chunk_id": f"web_{i}",
+                    "chunk_index": i,
+                    "distance": 0.1,  # Force high priority
+                    "content": f"[LIVE WEB SEARCH RESULT] {w.get('snippet', '')}",
+                    "source_ref": {
+                        "platform": "web",
+                        "canonical_url": w.get("url", ""),
+                        "title": w.get("title", ""),
+                    }
+                }
+                support_set.insert(i, faux_chunk)
+
+    else:
+        # Greeting/Small-talk Route: No Embeddings needed for TTFT
+        # Just await metadata
+        creator_row, persona_legacy = await asyncio.gather(creator_task, persona_task)
+        persona = creator_row.get("soul_md") or persona_legacy
+        
+        if route == "ROUTE_0_GREETING":
+            mems = []
+        else:
+            # For small talk, we can still use memory if we want
+            mems = await interaction_engine.memory.search_async(
+                str(creator_id), str(user_id), str(thread_id or "new"), question
+            )
+
+    if not creator_row:
+        yield "I couldn't find information about that creator."
+        return
+
+    # 4. Async Synthesis Stream (Instant Start)
+    stream = await interaction_engine.render_combined_pass_stream_async(
+        creator_profile=creator_row,
+        rag_chunks=support_set,
+        creator_id=creator_id,
+        user_id=user_id,
+        thread_id=thread_id or "new",
+        user_name=user_name,
+        user_msg=question,
+        persona=persona,
+        history=conversation_history or [],
+        user_preferences=user_preferences,
+        pre_fetched_memories=mems,
+        route=route
+    )
+
+    async for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
+
+def build_source_list(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert support_set chunks into a flat list of unique source references."""
+    seen = set()
+    sources = []
+    for chunk in support_set:
+        ref = chunk.get("source_ref")
+        if not ref: continue
+        url = ref.get("canonical_url")
+        if url and url not in seen:
+            seen.add(url)
+            sources.append(ref)
+    return sources

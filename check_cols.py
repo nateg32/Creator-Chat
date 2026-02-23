@@ -1,3 +1,8 @@
-from backend.db import db
-res = db.execute_query("SELECT column_name FROM information_schema.columns WHERE table_name = 'creators'")
-print([r['column_name'] for r in res])
+
+import sys
+import os
+sys.path.append(os.path.join(os.getcwd(), 'backend'))
+from db import db
+rows = db.execute_query("SELECT column_name FROM information_schema.columns WHERE table_name = 'documents'")
+for r in rows:
+    print(r['column_name'])

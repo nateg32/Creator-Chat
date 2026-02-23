@@ -241,8 +241,8 @@ export function ChatSidebar({
                 className="thread-dropdown-menu portal-menu"
                 ref={menuRef}
                 style={{
-                    top: activeMenu.top,
-                    bottom: activeMenu.bottom,
+                    top: activeMenu.top !== undefined ? activeMenu.top : 'auto',
+                    bottom: activeMenu.bottom !== undefined ? activeMenu.bottom : 'auto',
                     left: activeMenu.left,
                     position: 'fixed',
                     transform: 'translateX(-100%)', // Align right edge
