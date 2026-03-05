@@ -301,6 +301,17 @@ def _creator_display_column() -> str:
     return "display_name"
 
 
+def _creator_has_column(column_name: str) -> bool:
+    try:
+        row = db.execute_one(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+            ("creators", column_name),
+        )
+        return bool(row)
+    except Exception:
+        return False
+
+
 def _creators_has_platforms_column() -> bool:
     """
     Some installs have an older `creators` table without the `platforms` column.
@@ -370,25 +381,28 @@ def get_or_create_creator_for_handle(handle: str, platform: str = "instagram") -
     # No existing creator: attach to first user (or 1 as fallback)
     user_row = db.execute_one("SELECT id FROM users ORDER BY id LIMIT 1", ())
     user_id = user_row["id"] if user_row and "id" in user_row else 1
+    has_name_col = _creator_has_column("name")
+    has_display_name_col = _creator_has_column("display_name")
+
+    insert_cols = ["user_id", "handle"]
+    insert_vals: List[Any] = [user_id, handle]
+
+    if has_name_col:
+        insert_cols.append("name")
+        insert_vals.append(handle)
+    if has_display_name_col:
+        insert_cols.append("display_name")
+        insert_vals.append(handle)
+
     if has_platforms:
-        platforms_json = json.dumps([platform])
-        creator_id = db.execute_insert(
-            """
-            INSERT INTO creators (user_id, name, handle, platforms)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id
-            """,
-            (user_id, handle, handle, platforms_json),
-        )
-    else:
-        creator_id = db.execute_insert(
-            """
-            INSERT INTO creators (user_id, handle, display_name)
-            VALUES (%s, %s, %s)
-            RETURNING id
-            """,
-            (user_id, handle, handle),
-        )
+        insert_cols.append("platforms")
+        insert_vals.append(json.dumps([platform]))
+
+    placeholders = ", ".join(["%s"] * len(insert_cols))
+    creator_id = db.execute_insert(
+        f"INSERT INTO creators ({', '.join(insert_cols)}) VALUES ({placeholders}) RETURNING id",
+        tuple(insert_vals),
+    )
     return creator_id
 
 def insert_scrape_queue_items(conn, creator_id: int, source: str, items: List[Dict[str, Any]]) -> List[int]:
@@ -792,22 +806,38 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         user_row = db.execute_one("SELECT id FROM users ORDER BY id LIMIT 1", ())
         user_id = user_row["id"] if user_row and user_row.get("id") else 1
 
-        try:
-            row = db.execute_one(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
-                ("creators", "platform_configs"),
-            )
-        except Exception:
-            row = None
-        has_pc = bool(row)
+        has_pc = _creator_has_column("platform_configs")
+        has_name_col = _creator_has_column("name")
+        has_display_name_col = _creator_has_column("display_name")
 
         dcol = _creator_display_column()
+
+        def _creator_name_updates() -> List[str]:
+            updates = []
+            if has_name_col:
+                updates.append("name = %s")
+            if has_display_name_col:
+                updates.append("display_name = %s")
+            if not updates:
+                updates.append(f"{dcol} = %s")
+            return updates
+
+        def _creator_name_params() -> List[Any]:
+            params = []
+            if has_name_col:
+                params.append(name)
+            if has_display_name_col:
+                params.append(name)
+            if not params:
+                params.append(name)
+            return params
+
         # If creator already exists for this handle, update config instead of failing on unique constraint.
         existing = db.execute_one("SELECT id FROM creators WHERE handle = %s LIMIT 1", (handle,))
         if existing and existing.get("id"):
             creator_id = existing["id"]
-            updates = [f"{dcol} = %s"]
-            params = [name]
+            updates = _creator_name_updates()
+            params = _creator_name_params()
             if has_pc:
                 updates.append("platform_configs = %s")
                 params.append(json.dumps(configs))
@@ -815,24 +845,45 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
             db.execute_update(f"UPDATE creators SET {', '.join(updates)} WHERE id = %s", tuple(params))
         else:
             try:
+                insert_cols = ["user_id", "handle"]
+                insert_vals: List[Any] = [user_id, handle]
+
+                if has_name_col:
+                    insert_cols.append("name")
+                    insert_vals.append(name)
+                if has_display_name_col:
+                    insert_cols.append("display_name")
+                    insert_vals.append(name)
+                if not has_name_col and not has_display_name_col:
+                    insert_cols.append(dcol)
+                    insert_vals.append(name)
+
+                insert_cols.extend([
+                    "profile_picture_url",
+                    "youtube_channel_id",
+                    "youtube_handle",
+                    "official_domains",
+                    "course_domains",
+                    "course_base_urls",
+                ])
+                insert_vals.extend([
+                    request.profile_picture_url,
+                    request.youtube_channel_id,
+                    request.youtube_handle,
+                    request.official_domains,
+                    request.course_domains,
+                    request.course_base_urls,
+                ])
+
                 if has_pc:
-                    creator_id = db.execute_insert(
-                        f"""
-                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url, platform_configs, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING id
-                        """,
-                        (user_id, handle, name, request.profile_picture_url, json.dumps(configs), request.youtube_channel_id, request.youtube_handle, request.official_domains, request.course_domains, request.course_base_urls),
-                    )
-                else:
-                    creator_id = db.execute_insert(
-                        f"""
-                        INSERT INTO creators (user_id, handle, {dcol}, profile_picture_url, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING id
-                        """,
-                        (user_id, handle, name, request.profile_picture_url, request.youtube_channel_id, request.youtube_handle, request.official_domains, request.course_domains, request.course_base_urls),
-                    )
+                    insert_cols.append("platform_configs")
+                    insert_vals.append(json.dumps(configs))
+
+                placeholders = ", ".join(["%s"] * len(insert_cols))
+                creator_id = db.execute_insert(
+                    f"INSERT INTO creators ({', '.join(insert_cols)}) VALUES ({placeholders}) RETURNING id",
+                    tuple(insert_vals),
+                )
             except Exception as e:
                 # Handle races / uniqueness: if handle already exists, update it instead.
                 msg = str(e)
@@ -840,8 +891,8 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
                     existing = db.execute_one("SELECT id FROM creators WHERE handle = %s LIMIT 1", (handle,))
                     if existing and existing.get("id"):
                         creator_id = existing["id"]
-                        updates = [f"{dcol} = %s"]
-                        params = [name]
+                        updates = _creator_name_updates()
+                        params = _creator_name_params()
                         if has_pc:
                             updates.append("platform_configs = %s")
                             params.append(json.dumps(configs))
