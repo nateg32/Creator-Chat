@@ -245,9 +245,9 @@ def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
 
     # Determine transcript_status
     if transcript:
-        transcript_status = "completed"
+        transcript_status = "present"
     else:
-        transcript_status = "none"
+        transcript_status = "missing"
 
     insert_sql = """
         INSERT INTO scrape_items (
@@ -256,7 +256,7 @@ def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
             published_at, metadata, canonical_key, content_fingerprint,
             review_status, status
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'pending', 'pending')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'pending_review', 'pending')
         ON CONFLICT (canonical_key) DO NOTHING
     """
     db.execute_update(insert_sql, (
