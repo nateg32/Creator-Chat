@@ -9,7 +9,28 @@ import { SourcesPanel } from "./components/SourcesPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { NewChatModal } from "./components/NewChatModal";
 import { UserSettingsModal } from "./components/UserSettingsModal";
-import { scrape, approveIngestV2Stream, savePersona, getScrapeItems, health, listCreators, createCreator, getQueueItems, updateCreator, getUserSettings, updateUserSettings, createThread, listThreads, getThreadMessages, deleteThread, getLastActiveThread, getCreatorConfig, updateThread, deleteCreator } from "./api/client";
+import {
+  scrape,
+  approveIngestCommit,
+  getJobProgress,
+  savePersona,
+  getScrapeItems,
+  health,
+  listCreators,
+  createCreator,
+  getQueueItems,
+  updateCreator,
+  getUserSettings,
+  updateUserSettings,
+  createThread,
+  listThreads,
+  getThreadMessages,
+  deleteThread,
+  getLastActiveThread,
+  getCreatorConfig,
+  updateThread,
+  deleteCreator,
+} from "./api/client";
 import "./App.css";
 
 // Error Boundary to prevent blank-page crashes
