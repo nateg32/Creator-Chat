@@ -80,6 +80,20 @@ def mark_job_failed(job_id: str, error: str):
 # Job handlers
 # ---------------------------------------------------------------------------
 
+def _ensure_scrape_run(search_run_id: str, source_url: str, platform_tag: str, creator_handle: str):
+    """Ensure scrape_runs row exists for worker-mode searches (scrape_items FK depends on it)."""
+    if not search_run_id:
+        return
+    db.execute_update(
+        """
+        INSERT INTO scrape_runs (id, source_url, platform, mode, creator_handle, items_found)
+        VALUES (%s::uuid, %s, %s, %s, %s, 0)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (search_run_id, source_url or "", platform_tag or "multi", "profile", creator_handle or ""),
+    )
+
+
 def handle_scrape(job_id: str, payload: dict):
     """
     Run scrapers for a creator, then persist items to scrape_items table.
@@ -111,6 +125,7 @@ def handle_scrape(job_id: str, payload: dict):
             "error": None,
             "message": "Preparing search...",
         })
+        _ensure_scrape_run(search_run_id, source_url, platform_tag, creator_handle)
 
     def progress_callback(platform_key: str, status: str, current: int, total: int):
         if total > 0:
@@ -156,7 +171,8 @@ def handle_scrape(job_id: str, payload: dict):
             _save_scrape_item(item, creator_id, search_run_id)
             saved += 1
         except Exception as e:
-            logger.error(f"Failed to save item: {e}")
+            item_url = item.get("source_url") or item.get("url")
+            logger.error(f"Failed to save item ({item_url}): {e}")
             failed += 1
 
     # Update scrape_runs table
@@ -225,44 +241,47 @@ def handle_scrape(job_id: str, payload: dict):
 def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
     """
     Persist a single scraped item into scrape_items table.
-    Mirrors _execute_search_run logic from app.py.
+    Uses schema-compatible columns and source_url upsert semantics.
     """
-    from backend.services.duplicate_detection import compute_canonical_key, compute_content_fingerprint
-
-    source_url = item.get("source_url") or item.get("url") or ""
+    source_url = item.get("source_url") or item.get("url") or f"generated:{uuid.uuid4()}"
     caption = item.get("caption") or item.get("text") or ""
     transcript = item.get("transcript") or ""
     platform = item.get("platform") or item.get("source") or "unknown"
     creator_handle = item.get("creator_handle") or ""
     content_id = item.get("content_id") or str(uuid.uuid4())
     metadata = item.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata = {
+        **metadata,
+        "platform": metadata.get("platform") or platform,
+        "content_id": metadata.get("content_id") or content_id,
+    }
     published_at = item.get("published_at") or item.get("timestamp") or None
     content_type = item.get("content_type") or "post"
 
-    # Compute dedup keys
-    canonical_key = compute_canonical_key(source_url, caption) if source_url or caption else str(uuid.uuid4())
-    content_fingerprint = compute_content_fingerprint(caption or transcript)
-
-    # Determine transcript_status
-    if transcript:
-        transcript_status = "present"
-    else:
-        transcript_status = "missing"
+    transcript_status = "present" if transcript else "missing"
 
     insert_sql = """
         INSERT INTO scrape_items (
-            creator_id, scrape_run_id, creator_handle, source_url,
-            caption, transcript, transcript_status, platform, content_type,
-            published_at, metadata, canonical_key, content_fingerprint,
-            review_status, status
+            id, scrape_run_id, creator_handle, content_type, source_url,
+            caption, transcript, transcript_status, published_at, metadata, review_status
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'pending_review', 'pending')
-        ON CONFLICT (canonical_key) DO NOTHING
+        VALUES (%s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'pending_review')
+        ON CONFLICT (source_url) DO UPDATE SET
+            scrape_run_id = EXCLUDED.scrape_run_id,
+            creator_handle = EXCLUDED.creator_handle,
+            content_type = EXCLUDED.content_type,
+            caption = EXCLUDED.caption,
+            transcript = EXCLUDED.transcript,
+            transcript_status = EXCLUDED.transcript_status,
+            published_at = EXCLUDED.published_at,
+            metadata = EXCLUDED.metadata,
+            review_status = 'pending_review'
     """
     db.execute_update(insert_sql, (
-        creator_id, search_run_id, creator_handle, source_url,
-        caption, transcript, transcript_status, platform, content_type,
-        published_at, json.dumps(metadata), canonical_key, str(content_fingerprint)
+        str(uuid.uuid4()), search_run_id, creator_handle, content_type, source_url,
+        caption, transcript, transcript_status, published_at, json.dumps(metadata)
     ))
 
 

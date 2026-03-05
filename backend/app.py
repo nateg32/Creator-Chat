@@ -91,9 +91,7 @@ def _ensure_search_progress_table():
 
 
 def _get_search_progress(search_id: str) -> Optional[Dict[str, Any]]:
-    """Get progress from memory or DB."""
-    if search_id in _search_progress:
-        return _search_progress[search_id]
+    """Get progress from DB first, then local memory fallback."""
     try:
         row = db.execute_one(
             "SELECT progress_data FROM search_progress WHERE search_id = %s",
@@ -103,9 +101,14 @@ def _get_search_progress(search_id: str) -> Optional[Dict[str, Any]]:
             data = row["progress_data"]
             if isinstance(data, str):
                 data = json.loads(data)
-            return dict(data) if isinstance(data, dict) else None
+            if isinstance(data, dict):
+                _search_progress[search_id] = dict(data)
+                return _search_progress[search_id]
+            return None
     except Exception:
         pass
+    if search_id in _search_progress:
+        return _search_progress[search_id]
     return None
 
 
