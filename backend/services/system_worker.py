@@ -293,7 +293,7 @@ def handle_transcript(job_id: str, payload: dict):
 
 
 def handle_ingest(job_id: str, payload: dict):
-    from backend.services.ingest import chunk_text_structured, embed_chunks
+    from backend.ingest import chunk_text_structured, embed_chunks
 
     update_job_progress(job_id, 10, "processing", "Starting ingestion...")
     decisions = payload.get("decisions", [])
