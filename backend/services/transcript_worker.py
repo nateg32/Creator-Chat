@@ -4,7 +4,6 @@ import re
 from typing import List, Dict, Any, Optional
 from backend.db import db
 from backend.lib.transcription import transcribe_video
-from youtube_transcript_api import YouTubeTranscriptApi
 import tempfile
 import subprocess
 import json
@@ -81,6 +80,7 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
             if video_id_match:
                 video_id = video_id_match.group(1)
                 try:
+                    from youtube_transcript_api import YouTubeTranscriptApi
                     yt_transcript = YouTubeTranscriptApi.get_transcript(video_id)
                     transcript_text = " ".join([t['text'] for t in yt_transcript])
                     status = "present"
@@ -171,7 +171,7 @@ def run_transcripts_for_search(search_run_id: str):
             prog = _get_search_progress(search_run_id)
             if prog:
                 prog["transcripts_done"] = i + 1
-                prog["percent"] = 70.0 + ((i + 1) / total) * 30.0
+                prog["percent"] = 90.0 + ((i + 1) / total) * 10.0
                 _set_search_progress(search_run_id, prog)
                 
         # Done

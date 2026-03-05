@@ -1949,7 +1949,8 @@ def _run_search_background(
             "platform_statuses": current_data.get("platform_statuses", {}),
             "items_found": 0,
             "error": None,
-            "message": "Preparing search..."
+            "message": "Preparing search...",
+            "phase": "search"
         })
         
         def progress_callback(platform_key: str, status: str, current: int, total: int):
@@ -1996,7 +1997,8 @@ def _run_search_background(
                     "completed": current,
                     "total": total,
                     "status": "running",
-                    "stage": "scraping",
+                    "stage": "search",
+                    "phase": "search",
                     "percent": round(percent, 1),
                     "platform_statuses": platform_statuses_progress,
                     "message": msg
@@ -2037,6 +2039,7 @@ def _run_search_background(
         _set_search_progress(search_run_id, {
             **(_get_search_progress(search_run_id) or {}),
             "stage": "finalizing",
+            "phase": "search",
             "percent": 90.0,
             "message": "Finalizing..."
         })
@@ -2073,7 +2076,7 @@ def _run_search_background(
                 "platform_statuses": platform_statuses,
                 "platform_summary": platform_summary,
                 "completed": enabled_count,
-                "message": "Scrape complete, processing transcripts..."
+                "message": "Search complete, processing transcripts..."
             })
             _set_search_progress(search_run_id, prog)
             print(f"[SEARCH] Final summary for search {search_run_id}:")
@@ -2256,7 +2259,7 @@ async def get_search_progress(search_id: str):
         **progress,
         "percentage": percentage,
         "percent": percentage,
-        "phase": progress.get("phase", "scrape"),
+        "phase": progress.get("phase", "search"),
         "counts": counts
     }
 

@@ -4,6 +4,7 @@ import "./ScrapeProgress.css";
 
 const STAGE_CAPS = {
   initializing: 4.8,
+  search: 79.5,
   scraping: 79.5,
   transcripts: 89.5,
   finalizing: 95.0,
@@ -45,7 +46,8 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
         setData(res);
 
         const backendPercent = Number(res.percent ?? res.percentage ?? 0);
-        const phase = String(res.phase || res.stage || "scraping").toLowerCase();
+        const rawStage = String(res.stage || res.phase || "search").toLowerCase();
+        const phase = (rawStage === "scrape" || rawStage === "scraping") ? "search" : rawStage;
         const status = String(res.status || "running").toLowerCase();
 
         const isDone = phase === "done" || backendPercent >= 100 || status === "completed";
@@ -172,11 +174,13 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
   }
 
   let displayMsg = "Preparing search...";
-  const stage = data?.phase || data?.stage || stateRef.current.stage;
+  const rawStage = String(data?.stage || data?.phase || stateRef.current.stage || "search").toLowerCase();
+  const stage = (rawStage === "scrape" || rawStage === "scraping") ? "search" : rawStage;
 
-  if (isFinishing || stage === "finalizing") displayMsg = "Finalizing...";
-  else if (stage === "scraping") displayMsg = data?.message || "Collecting content...";
-  else if (stage === "transcripts") displayMsg = "Understanding context...";
+  if (data?.message) displayMsg = data.message;
+  else if (isFinishing || stage === "finalizing") displayMsg = "Finalizing...";
+  else if (stage === "search") displayMsg = "Searching sources...";
+  else if (stage === "transcripts") displayMsg = "Processing transcripts...";
   else if (stage === "done") displayMsg = "Completed.";
 
   return (
