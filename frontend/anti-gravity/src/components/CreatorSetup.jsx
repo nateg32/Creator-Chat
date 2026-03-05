@@ -10,6 +10,7 @@ import {
   getSearchProgress,
 } from "../api/client";
 import { resizeImage } from "../utils/image";
+import { normalizeCreatorName } from "../utils/nameFormatter";
 import "./CreatorSetup.css";
 
 const TIME_MODES = [
@@ -40,6 +41,11 @@ export function CreatorSetup({
   const [saveLoading, setSaveLoading] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [testStatus, setTestStatus] = useState({});
+
+  const [nameError, setNameError] = useState(null);
+  const [nameHint, setNameHint] = useState(null);
+  const [nameOriginalBeforeFormat, setNameOriginalBeforeFormat] = useState(null);
+  const [nameSuggestedAcronym, setNameSuggestedAcronym] = useState(null);
 
   useEffect(() => {
     getPlatforms()
@@ -103,13 +109,14 @@ export function CreatorSetup({
   };
 
   const valid = useCallback(() => {
+    if (!creatorName.trim() || nameError) return false;
     if (selected.size === 0) return false;
     for (const k of selected) {
       const c = config[k];
       if (!c || !(c.url || "").trim()) return false;
     }
     return true;
-  }, [selected, config]);
+  }, [selected, config, creatorName, nameError]);
 
   const handleTestLink = async (key) => {
     const c = config[key];
@@ -149,6 +156,14 @@ export function CreatorSetup({
   const handleSave = async (e) => {
     e.preventDefault();
     if (!valid() || saveLoading) return;
+
+    // Final backend-parity check
+    const norm = normalizeCreatorName(creatorName);
+    if (!norm.isValid) {
+      setNameError(norm.error);
+      return;
+    }
+
     setError(null);
     setSaveLoading(true);
     try {
@@ -248,14 +263,75 @@ export function CreatorSetup({
 
       <form onSubmit={(e) => e.preventDefault()} className="setup-form">
         <div className="form-group">
-          <label>Creator name (optional)</label>
+          <label>Creator name</label>
           <input
             type="text"
+            className={nameError ? "input-error" : ""}
             value={creatorName}
-            onChange={(e) => setCreatorName(e.target.value)}
+            onChange={(e) => {
+              setCreatorName(e.target.value);
+              if (!e.target.value.trim()) setNameError("Enter a creator name.");
+              else if (e.target.value.trim().length < 2) setNameError("Name is too short.");
+              else setNameError(null);
+              setNameHint(null);
+              setNameSuggestedAcronym(null);
+            }}
+            onBlur={() => {
+              const res = normalizeCreatorName(creatorName);
+              if (!res.isValid) {
+                setNameError(res.error);
+              } else {
+                setNameError(null);
+                if (res.flags.changed) {
+                  if (!nameOriginalBeforeFormat) {
+                    setNameOriginalBeforeFormat(creatorName);
+                  }
+                  setCreatorName(res.normalized);
+                  setNameHint(`Formatted to: ${res.normalized}`);
+                }
+                if (res.flags.likelyAcronym && res.suggested) {
+                  setNameSuggestedAcronym(res.suggested);
+                }
+              }
+            }}
             placeholder="e.g. Dan Martell"
             disabled={saveLoading}
           />
+          {nameError && <div className="validation-error">{nameError}</div>}
+          {nameHint && (
+            <div className="validation-hint">
+              {nameHint}{" "}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  setCreatorName(nameOriginalBeforeFormat);
+                  setNameOriginalBeforeFormat(null);
+                  setNameHint(null);
+                  setNameSuggestedAcronym(null);
+                  setNameError(null);
+                }}
+              >
+                Undo
+              </button>
+            </div>
+          )}
+          {nameSuggestedAcronym && (
+            <div className="validation-suggestion">
+              Looks like an acronym —{" "}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  setCreatorName(nameSuggestedAcronym);
+                  setNameSuggestedAcronym(null);
+                  setNameHint(null);
+                }}
+              >
+                Use {nameSuggestedAcronym}
+              </button>
+            </div>
+          )}
         </div>
         <div className="form-group">
           <label>Handle (optional)</label>

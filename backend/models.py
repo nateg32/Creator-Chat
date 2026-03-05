@@ -186,6 +186,9 @@ class SessionResponse(BaseModel):
 class Creator(BaseModel):
     id: int
     name: str
+    name_raw: Optional[str] = None
+    name_suggested: Optional[str] = None
+    name_flags: Optional[Dict[str, Any]] = None
     handle: Optional[str] = None
     platforms: List[str] = []
     item_count: int = 0
@@ -207,7 +210,7 @@ class CreateCreatorRequest(BaseModel):
     platforms: List[str] = []
 
 class CreateCreatorWithConfigRequest(BaseModel):
-    name: Optional[str] = None
+    name: str
     handle: Optional[str] = None
     profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}
@@ -236,6 +239,9 @@ class UpdateCreatorRequest(BaseModel):
 class CreatorWithConfigResponse(BaseModel):
     id: int
     name: str
+    name_raw: Optional[str] = None
+    name_suggested: Optional[str] = None
+    name_flags: Optional[Dict[str, Any]] = None
     handle: Optional[str] = None
     profile_picture_url: Optional[str] = None
     platform_configs: Dict[str, Any] = {}
@@ -247,6 +253,7 @@ class CreatorWithConfigResponse(BaseModel):
     course_domains: List[str] = []
     course_base_urls: List[str] = []
     search_mode: str = "hybrid"
+    status: Optional[Dict[str, Any]] = None
 
     created_at: Optional[str] = None
 

@@ -1,7 +1,7 @@
 import json
-from db import db
-from settings import settings
-from rag import get_client
+from backend.db import db
+from backend.settings import settings
+from backend.rag import get_client
 
 class PersonalityAnalyzer:
     """

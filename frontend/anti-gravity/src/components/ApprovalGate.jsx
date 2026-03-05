@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { retryTranscript } from "../api/client";
 import "./ApprovalGate.css";
 
 const DECISION_PENDING = "pending";
@@ -255,11 +256,33 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
                       </div>
 
                       <div className="transcript-badge">
-                        {transcriptStatus === "present" && (
-                          <span className="badge badge-success">✓ Transcript</span>
-                        )}
-                        {transcriptStatus === "missing" && (
-                          <span className="badge badge-warning">⚠ No transcript</span>
+                        {!item.is_primary && item.duplicate_of_item_id !== undefined ? (
+                          <span className="badge badge-warning">Duplicate</span>
+                        ) : transcriptStatus === "present" ? (
+                          <span className="badge badge-success">✓ Transcript ready</span>
+                        ) : transcriptStatus === "missing" || transcriptStatus === "no_captions" ? (
+                          <span className="badge badge-warning">No captions</span>
+                        ) : transcriptStatus === "error" ? (
+                          <span className="badge badge-error">
+                            Transcript failed
+                            <button
+                              style={{ marginLeft: "6px", fontSize: "10px", padding: "2px 6px" }}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  await retryTranscript(itemKey);
+                                  // Update local state to reflect it's processing
+                                  if (window.location) window.location.reload();
+                                } catch (err) {
+                                  alert(err.message || "Failed to retry");
+                                }
+                              }}
+                            >
+                              Retry
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="badge badge-info">Transcribing...</span>
                         )}
                       </div>
                     </div>

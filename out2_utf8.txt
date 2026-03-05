@@ -1,0 +1,195 @@
+﻿python : INFO:core.memory_i
+ntegration:Initialized 
+Lightweight 
+MemoryIntegration at C:\Use
+rs\Nathan\Documents\Creator
+ Bot\backend\mem0_simple_st
+ore.json
+At line:1 char:1
++ python 
+test_e2e_search.py > 
+out2.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
+    + CategoryInfo         
+     : NotSpecified: (INF  
+  O:core.memor...mple_st   
+ ore.json:String) [], R    
+emoteException
+    + FullyQualifiedErrorI 
+   d : NativeCommandError
+ 
+INFO:core.interaction_engin
+e:classify_route: 
+Conversation continuation 
+detected -> ROUTE_2_TASK
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/embeddings "HTTP/1.1 
+200 OK"
+INFO:grounded_rag:[LATENCY]
+ Explicit video request 
+detected. Forcing web 
+search.
+INFO:services.research_prov
+ider:OpenAISearch: 
+creator_name='Jordanwelch' 
+| query='Context: You mean 
+my first ever upload on my 
+channel, or the first 
+video I ever filmed before 
+I had a channel? | Query: 
+what was your first ever 
+upload'
+INFO:services.research_prov
+ider:[SEARCH-TOPIC] 
+raw='Context: You mean my 
+first ever upload on my 
+channel, or the first 
+video I ever filmed before 
+I had a channel? | Query: 
+what was your first ever 
+upload' \u2192 
+enriched='Context: You 
+mean my first ever upload 
+on my channel, or the 
+first video I ever filmed 
+before I had a channel? | 
+Query: what was your first 
+ever upload'
+INFO:services.research_prov
+ider:[SEARCH-INTENT] 
+'Context: You mean my 
+first ever upload on my 
+channel, or the first 
+video I ever filmed before 
+I had a channel? | Query: 
+what was your first ever 
+upload' \u2192 intent=VIDEO
+INFO:services.research_prov
+ider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/responses "HTTP/1.1 
+200 OK"
+INFO:services.research_prov
+ider:OpenAISearch: 
+Responses API returned 2 
+chars
+WARNING:services.research_p
+rovider:OpenAISearch: 
+Responses API extracted 
+text is invalid JSON: 
+OpenAISearch expected a 
+JSON list, got: <class 
+'list'>
+INFO:services.research_prov
+ider:OpenAISearch: Falling 
+back to 
+gpt-4o-search-preview Chat 
+Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_prov
+ider:OpenAISearch: Chat 
+Completions returned 333 
+chars
+ERROR:services.research_pro
+vider:OpenAISearch: 
+Primary search failed: 
+OpenAISearch expected a 
+JSON list, got: <class 
+'NoneType'>
+INFO:services.research_prov
+ider:OpenAISearch: Falling 
+back to 
+gpt-4o-search-preview Chat 
+Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_prov
+ider:OpenAISearch: Chat 
+Completions returned 388 
+chars
+ERROR:services.research_pro
+vider:OpenAISearch: 
+Fallback search also 
+failed: OpenAISearch 
+expected a JSON list, got: 
+<class 'list'>
+INFO:services.research_prov
+ider:OpenAISearch: 
+Completed in 19.2s ù 0 raw 
+results
+INFO:services.research_prov
+ider:[SEARCH-RETRY] 
+Retrying with targeted 
+query: Jordanwelch 
+"context" OR "mean" OR 
+"first"
+INFO:services.research_prov
+ider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/responses "HTTP/1.1 
+200 OK"
+INFO:services.research_prov
+ider:OpenAISearch: 
+Responses API returned 2 
+chars
+WARNING:services.research_p
+rovider:OpenAISearch: 
+Responses API extracted 
+text is invalid JSON: 
+OpenAISearch expected a 
+JSON list, got: <class 
+'list'>
+INFO:services.research_prov
+ider:OpenAISearch: Falling 
+back to 
+gpt-4o-search-preview Chat 
+Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_prov
+ider:OpenAISearch: Chat 
+Completions returned 85 
+chars
+ERROR:services.research_pro
+vider:[SEARCH-RETRY] Retry 
+failed: OpenAISearch 
+expected a JSON list, got: 
+<class 'list'>
+INFO:grounded_rag:[LATENCY]
+ Search fallback phase: 
+31.19s (fallback=True, 
+results=0)
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/embeddings "HTTP/1.1 
+200 OK"
+INFO:httpx:HTTP Request: 
+POST https://api.openai.com
+/v1/chat/completions 
+"HTTP/1.1 200 OK"
+Creator: @JordanWelch | search_mode=hybrid
+
+[TTFT: 32.6s]
+Unfortunately, I don't have access to that information right now. My channel did start with me teaching e-commerce because my friends and family kept asking how I was making money online, and it grew fast (10k subs in the first ~3 months), but I donÆt have the exact title/link of my very first upload on hand.
+
+Do you mean the first upload on @JordanWelch, or the first video I ever filmed before I had a channel?
+
+=== METRICS ===
+TTFT: 32.6s
+Total: 33.7s
+Length: 414 chars
+Deflected: True
+FAIL: Bot deflected despite web search results being available!

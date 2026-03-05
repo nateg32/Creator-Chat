@@ -1,9 +1,9 @@
 import openai
 from typing import List, Dict, Any, Optional
-from db import db
-from settings import settings
+from backend.db import db
+from backend.settings import settings
 import re
-from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 
 _client = None
 _async_client = None
@@ -31,13 +31,18 @@ def generate_chat_completion(
     json_mode: bool = False,
     stream: bool = False,
     tools: Optional[List[Dict[str, Any]]] = None,
-    tool_choice: Optional[Any] = None
+    tool_choice: Optional[Any] = None,
+    allow_fallback: bool = True
 ) -> Any:
     """
     Wrapper for OpenAI chat completion.
     Returns string if stream=False, else returns a generator.
+    If json_mode is True and parsing fails, auto-escalates to an advanced model (max 1 retry).
     """
-    # GPT-5 and o1/o3 models require max_completion_tokens and often don't support temperature
+    import json
+    import logging
+    logger = logging.getLogger(__name__)
+
     is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
     
     kwargs = {
@@ -49,7 +54,6 @@ def generate_chat_completion(
     }
     
     if is_reasoning_model:
-        # Temperature must be 1.0 or omitted for reasoning models
         kwargs["temperature"] = 1.0
         if max_tokens:
             kwargs["max_completion_tokens"] = max_tokens
@@ -61,17 +65,27 @@ def generate_chat_completion(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     
-    # Filter out None values in kwargs
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
         response = get_client().chat.completions.create(**kwargs)
         if stream:
             return response
-        return response.choices[0].message.content.strip()
+            
+        content = response.choices[0].message.content.strip()
+        
+        # Verify JSON validity if required
+        if json_mode and allow_fallback and not stream:
+            try:
+                json.loads(content)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON from {model}. Escalating to {settings.MODEL_FALLBACK_SMART}...")
+                kwargs["model"] = settings.MODEL_FALLBACK_SMART
+                fallback_response = get_client().chat.completions.create(**kwargs)
+                return fallback_response.choices[0].message.content.strip()
+                
+        return content
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Chat completion failed: {e}")
         raise e
 
@@ -83,9 +97,14 @@ async def generate_chat_completion_async(
     json_mode: bool = False,
     stream: bool = False,
     tools: Optional[List[Dict[str, Any]]] = None,
-    tool_choice: Optional[Any] = None
+    tool_choice: Optional[Any] = None,
+    allow_fallback: bool = True
 ) -> Any:
     """Async wrapper for OpenAI chat completion."""
+    import json
+    import logging
+    logger = logging.getLogger(__name__)
+
     is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
     kwargs = {
         "model": model,
@@ -104,17 +123,26 @@ async def generate_chat_completion_async(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     
-    # Filter out None values in kwargs
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
         response = await get_async_client().chat.completions.create(**kwargs)
         if stream:
             return response
-        return response.choices[0].message.content.strip()
+            
+        content = response.choices[0].message.content.strip()
+        
+        if json_mode and allow_fallback and not stream:
+            try:
+                json.loads(content)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON from {model}. Escalating to {settings.MODEL_FALLBACK_SMART}...")
+                kwargs["model"] = settings.MODEL_FALLBACK_SMART
+                fallback_response = await get_async_client().chat.completions.create(**kwargs)
+                return fallback_response.choices[0].message.content.strip()
+                
+        return content
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Async chat completion failed: {e}")
         raise e
 

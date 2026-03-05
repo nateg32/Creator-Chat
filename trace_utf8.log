@@ -1,0 +1,20 @@
+﻿Testing /ask (Non-streaming)...
+Total Time: 2.06s
+
+[STREAMING] Testing /ask-stream...
+Time to First Byte: 2.04s
+ 
+[ERROR] 'NoneType' object has no attribute 'get'
+
+[TRACE] Traceback (most recent call last):
+  File "C:\Users\Nathan\Documents\Creator Bot\backend\app.py", line 1210, in stream_wrapper
+    async for chunk in grounded_rag_stream(
+    ...<14 lines>...
+        yield f"data: {json.dumps({'content': chunk})}\n\n"
+  File "C:\Users\Nathan\Documents\Creator Bot\backend\grounded_rag.py", line 2521, in grounded_rag_stream
+    persona = creator_row.get("soul_md") or persona_legacy
+              ^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'get'
+
+
+Streaming Total: 2.29s

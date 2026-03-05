@@ -7,9 +7,18 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Callable
 
-from config.platforms import get_platform, validate_url, normalize_url, extract_handle
-from lib.instagram_parser import parse_instagram_url
-from apify_service import (
+# Ensure backend root resolution inside Python path
+import sys
+import os
+# Since worker runs from root 'Creator Bot', we need 'backend' in path
+# so 'from backend.config import' resolves to 'backend/config'
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir not in sys.path:
+    sys.path.append(backend_dir)
+
+from backend.config.platforms import get_platform, validate_url, normalize_url, extract_handle
+from backend.lib.instagram_parser import parse_instagram_url
+from backend.apify_service import (
     search_all,
     search_instagram_reels,
     search_youtube_channel,
@@ -108,7 +117,7 @@ def _map_instagram(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not handle:
         return []
     reel_id = parsed.get("reel_id") if parsed else None
-    max_items = min(int(ctx.get("max_items") or 10), 10)
+    max_items = int(ctx.get("max_items") or 99999)
     items = search_instagram_reels(handle, reel_id, max_items, skip_transcripts=True)
     creator_handle = ctx.get("creator_handle") or handle
     platform = "instagram"
@@ -126,7 +135,7 @@ def _map_youtube(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not url:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "youtube"
-    max_items = min(int(ctx.get("max_items") or 10), 50)
+    max_items = int(ctx.get("max_items") or 99999)
     tf = ctx.get("time_filter") or {}
     items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf, skip_transcripts=True)
     for it in items:
@@ -142,7 +151,7 @@ def _map_youtube_shorts(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not url:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "youtube"
-    max_items = min(int(ctx.get("max_items") or 10), 50)
+    max_items = int(ctx.get("max_items") or 99999)
     tf = ctx.get("time_filter") or {}
     items = search_youtube_channel(url, handle, limit=max_items, time_filter=tf, youtube_shorts_only=True, skip_transcripts=True)
     for it in items:
@@ -166,7 +175,7 @@ def _map_twitter(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not h:
         return []
     creator_handle = ctx.get("creator_handle") or h
-    max_items = min(int(ctx.get("max_items") or 20), 100)
+    max_items = int(ctx.get("max_items") or 99999)
     tf = ctx.get("time_filter") or {}
     items = search_twitter_profile(h, url=url or None, limit=max_items, time_filter=tf)
     for it in items:
@@ -181,7 +190,7 @@ def _map_linkedin(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not url:
         return []
     creator_handle = ctx.get("creator_handle") or "linkedin"
-    max_items = min(int(ctx.get("max_items") or 20), 100)
+    max_items = int(ctx.get("max_items") or 99999)
     items = search_linkedin_posts(url, limit=max_items, deep_search=True)
     for it in items:
         it["creator_handle"] = creator_handle
@@ -197,7 +206,7 @@ def _map_reddit(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not url:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "reddit"
-    max_items = min(int(ctx.get("max_items") or 20), 100)
+    max_items = int(ctx.get("max_items") or 99999)
     tf = ctx.get("time_filter") or {}
     items = search_reddit_user(url, handle, limit=max_items, time_filter=tf)
     for it in items:
@@ -213,7 +222,7 @@ def _map_facebook(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not url:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "facebook"
-    max_items = min(int(ctx.get("max_items") or 20), 100)
+    max_items = int(ctx.get("max_items") or 99999)
     tf = ctx.get("time_filter") or {}
     items = search_facebook_posts(url, handle, limit=max_items, time_filter=tf)
     for it in items:
@@ -229,7 +238,7 @@ def _map_tiktok(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not url:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "tiktok"
-    max_items = min(int(ctx.get("max_items") or 20), 100)
+    max_items = int(ctx.get("max_items") or 99999)
     items = search_tiktok_posts(url, handle, limit=max_items, skip_transcripts=True)
     for it in items:
         it["creator_handle"] = creator_handle
@@ -348,7 +357,7 @@ def run_search_router(
             "url": norm_url,
             "handle": handle,
             "time_filter": cfg.get("timeFilter") or {"mode": "all"},
-            "max_items": min(int(cfg.get("maxItems") or 10), 50),
+            "max_items": int(cfg.get("maxItems") or 99999),
             "creator_handle": creator_handle,
         }
 

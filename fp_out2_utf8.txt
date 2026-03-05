@@ -1,0 +1,125 @@
+﻿python : INFO:services.res
+earch_provider:OpenAISearc
+h: creator_name='Jordan 
+Welch' | query='any other 
+videos'
+At line:1 char:1
++ python 
+test_false_positive.py > 
+fp_out2.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (I  
+  NFO:services.r...y ot   
+ her videos':String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+INFO:services.research_pro
+vider:[SEARCH-TOPIC] 
+raw='any other videos' 
+\u2192 
+enriched='dropshipping ai 
+ads'
+INFO:services.research_pro
+vider:[SEARCH-INTENT] 
+'any other videos' \u2192 
+intent=VIDEO
+INFO:services.research_pro
+vider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/responses "HTTP/1.1 
+200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+Responses API returned 2 
+chars
+INFO:services.research_pro
+vider:OpenAISearch: 
+Falling back to 
+gpt-4o-search-preview 
+Chat Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: Chat 
+Completions returned 238 
+chars
+INFO:services.research_pro
+vider:OpenAISearch: 
+Completed in 15.1s ù 0 
+raw results
+INFO:services.research_pro
+vider:[SEARCH-RETRY] 
+Retrying with targeted 
+query: Jordan Welch 
+"dropshipping" OR "ads"
+INFO:services.research_pro
+vider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/responses "HTTP/1.1 
+200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+Responses API returned 2 
+chars
+INFO:services.research_pro
+vider:OpenAISearch: 
+Falling back to 
+gpt-4o-search-preview 
+Chat Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: Chat 
+Completions returned 432 
+chars
+INFO:services.research_pro
+vider:[SEARCH-RETRY] Got 
+1 relevant results on 
+retry
+ERROR:services.research_pr
+ovider:ResearchProvider: 
+Cache write error: insert 
+or update on table 
+"search_cache" violates 
+foreign key constraint "se
+arch_cache_creator_id_fkey
+"
+DETAIL:  Key 
+(creator_id)=(1) is not 
+present in table 
+"creators".
+Topic Query: dropshipping ai ads
+[DB] execute_update error: insert or update on table "search_cache" violates foreign key constraint "search_cache_creator_id_fkey"
+DETAIL:  Key (creator_id)=(1) is not present in table "creators".
+[DB] Query: 
+            INSERT INTO search_cache (creator_id, query_hash, provider, results, created_at)
+            VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (creator_id, query_hash, provider) 
+            DO UPDATE SET 
+                results = EXCLUDED.results,
+                created_at = now()
+        
+[DB] Params types: ['int', 'str', 'str', 'str']
+[
+  {
+    "title": "How I Make $27,695 Per Week WITHOUT Facebook Ads (Shopify Dropshipping)",
+    "url": "https://www.youtube.com/watch?v=9YgiuhnzCU8",
+    "snippet": "Jordan Welch shares methods to achieve significant weekly earnings on Shopify without using Facebook Ads, focusing on YouTube ads, Google ads, and YouTube influencers.",
+    "resource_type": "video",
+    "relation": "SELF",
+    "confidence": 0.8
+  }
+]

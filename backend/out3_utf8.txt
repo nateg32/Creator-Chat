@@ -1,0 +1,48 @@
+﻿python : INFO:httpx:HTTP 
+Request: POST https://api.o
+penai.com/v1/chat/completio
+ns "HTTP/1.1 200 OK"
+At line:1 char:1
++ python 
+test_ads_search.py > 
+out3.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
+    + CategoryInfo         
+     : NotSpecified: (INF  
+  O:httpx:HTTP...TTP/1.1   
+  200 OK":String) [], R    
+emoteException
+    + FullyQualifiedErrorI 
+   d : NativeCommandError
+ 
+Topic Query: dropshipping, ads dropshipping
+Calling OpenAI Chat Completions...
+
+--- RAW CHAT COMPLETIONS TEXT ---
+```json
+[
+  {
+    "title": "I Tried Dropshipping For One Week! (From Scratch)",
+    "url": "https://www.youtube.com/watch?v=QdT4J1cgk4o",
+    "snippet": "Jordan Welch documents his experience of starting a Shopify dropshipping business from scratch with a $250 budget over the course of one week.",
+    "resource_type": "video",
+    "relation": "SELF",
+    "confidence": 0.8
+  },
+  {
+    "title": "Beginners Guide To Dropshipping In 2026",
+    "url": "https://www.youtube.com/watch?v=QdT4J1cgk4o",
+    "snippet": "Jordan Welch provides a comprehensive guide for beginners on how to start a dropshipping business in 2026.",
+    "resource_type": "video",
+    "relation": "SELF",
+    "confidence": 0.8
+  }
+]
+``` 
+---------------------------------
+
+
+FINAL RESULTS:
+- I Tried Dropshipping For One Week! (From Scratch) | https://www.youtube.com/watch?v=QdT4J1cgk4o
+- Beginners Guide To Dropshipping In 2026 | https://www.youtube.com/watch?v=QdT4J1cgk4o

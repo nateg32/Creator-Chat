@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 import sys
 import os
 

@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 import sys
 
 search_term = "cgFFQmry8n4" # The video ID from the user's message

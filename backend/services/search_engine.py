@@ -4,7 +4,7 @@ Handles interaction with SerpAPI or other search providers.
 """
 from typing import List, Dict, Any, Optional
 import os
-from settings import settings
+from backend.settings import settings
 import logging
 
 class SearchEngine:

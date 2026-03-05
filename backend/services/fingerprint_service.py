@@ -3,10 +3,10 @@ import json
 import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-from db import db
-from personality_analyzer import PersonalityAnalyzer
-from services.research_provider import GeminiResearchProvider
-from settings import settings
+from backend.db import db
+from backend.personality_analyzer import PersonalityAnalyzer
+from backend.services.research_provider import GeminiResearchProvider
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class FingerprintService:
     """
 
     def __init__(self):
-        from services.research_provider import get_research_provider
+        from backend.services.research_provider import get_research_provider
         self.researcher = get_research_provider()
         self.analyzer = PersonalityAnalyzer()
 
@@ -196,7 +196,7 @@ class FingerprintService:
         """
 
         try:
-            from rag import generate_chat_completion
+            from backend.rag import generate_chat_completion
             resp = generate_chat_completion(
                 messages=[
                     {"role": "system", "content": "You are a master of persona synthesis. Create a deep, authentic, and strict soul.md document based on the provided research using the 12-layer blueprint."},

@@ -1,0 +1,232 @@
+﻿python : INFO:services.res
+earch_provider:OpenAISearc
+h: creator_name='Jordan 
+Welch' | query='any other 
+videos'
+At line:1 char:1
++ python 
+test_false_positive.py 
+2>&1 | Out-String | 
+Set-Content -Encodi ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (I  
+  NFO:services.r...y ot   
+ her videos':String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+INFO:services.research_pro
+vider:[SEARCH-TOPIC] 
+raw='any other videos' 
+\u2192 
+enriched='dropshipping 
+ads ai'
+INFO:services.research_pro
+vider:[SEARCH-INTENT] 
+'any other videos' \u2192 
+intent=VIDEO
+INFO:services.research_pro
+vider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/responses "HTTP/1.1 
+200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+Responses API returned 
+1964 chars
+WARNING:services.research_
+provider:OpenAISearch: 
+JSON parse failed: 
+Expecting value: line 1 
+column 2 (char 1)
+WARNING:services.research_
+provider:OpenAISearch: 
+Responses API extracted 
+text is invalid JSON: 
+Could not parse valid 
+JSON array from search 
+response: I searched 
+YouTube for **Jordan 
+Welch + ôdropshipping ads 
+aiö** exactly as 
+requested, and also 
+broadened the query 
+(e.g., *ôJordan Welch AI 
+ads dropshippingö, 
+ôJordan Welch ChatGPT ads 
+dropshippingö, ôJordan 
+Welch 
+buildyourstore.aiö*) to 
+try to catch any 
+directly-related videos.
+
+**Result:** I did **not** 
+find any YouTube search 
+results that clearly 
+match **ôJordan Welchö 
+AND are directly about 
+ôdropshipping ads + AIö** 
+with a YouTube watch URL 
+available from the search 
+results. ([spreaker.com](h
+ttps://www.spreaker.com/ep
+isode/how-i-create-6-figur
+e-viral-ecom-ads-using-cha
+tgpt-that-actually-convert
+--67790743?utm_source=open
+ai))
+
+Because you said:
+- **Only include videos 
+directly about 
+dropshipping ads ai**
+- **Do NOT make up/guess 
+URLsùonly use URLs from 
+actual search results**
+- **Exclude** `youtube.com
+/watch?v=lhYPNtqvhY`
+
+àI canÆt responsibly list 
+any videos (title + full 
+watch URL) without 
+violating your 
+constraints.
+
+### What I *did* find 
+(but canÆt include under 
+your rules)
+- Evidence that Jordan 
+Welch has a video titled 
+**ôBeginners Guide To 
+Dropshipping In 2026ö**, 
+but the sources that 
+mention it 
+(analytics/third-party 
+pages) **donÆt provide a 
+usable 
+`youtube.com/watch?v=...` 
+URL in the search 
+results**, and itÆs not 
+necessarily 
+*specifically* about 
+ôdropshipping ads aiö 
+anyway. ([huntertuber.com]
+(https://huntertuber.com/%
+40JordanWelch/videos))
+
+### If you want, I can 
+try again with a 
+different method
+YouTube sometimes 
+hides/blocks indexing in 
+a way that makes 
+`site:youtube.com` 
+searches flaky. If you 
+want, tell me **either**:
+1) Jordan WelchÆs exact 
+channel handle/URL you 
+care about (e.g. his main 
+channel vs clips), **or** 
+ 
+2) Whether videos that 
+are *a subsection* of a 
+dropshipping tutorial 
+(where he shows AI ad 
+creation) still count as 
+ôDIRECTLY about 
+dropshipping ads aiö.
+
+And IÆll re-run targeted 
+searches and only return 
+items that include 
+**verifiable `https://www.
+youtube.com/watch?v=...` 
+URLs** from actual 
+results.
+INFO:services.research_pro
+vider:OpenAISearch: 
+Trying 
+gpt-4o-search-preview via 
+Chat Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+gpt-4o-search-preview 
+returned 852 chars
+WARNING:services.research_
+provider:OpenAISearch: 
+JSON parse failed: 
+Expecting value: line 1 
+column 2 (char 1)
+INFO:services.research_pro
+vider:OpenAISearch: 
+Extracted 1 URLs from 
+natural text response
+INFO:services.research_pro
+vider:OpenAISearch: 
+Completed in 29.7s ù 1 
+raw results
+INFO:services.research_pro
+vider:[URL-VALIDATE] 
+Verified: 'How I Make 
+$27,695 Per Week WITHOUT 
+Facebook Ads (Shopify 
+Dropshipping)' \u2192 http
+s://www.youtube.com/watch?
+v=9YgiuhnzCU8
+INFO:services.research_pro
+vider:[RELEVANCE] Kept 1 
+strictly relevant 
+results, dropped 0
+INFO:services.research_pro
+vider:OpenAISearch: After 
+relevance scoring ù 1 
+results kept
+ERROR:services.research_pr
+ovider:ResearchProvider: 
+Cache write error: insert 
+or update on table 
+"search_cache" violates 
+foreign key constraint "se
+arch_cache_creator_id_fkey
+"
+DETAIL:  Key 
+(creator_id)=(1) is not 
+present in table 
+"creators".
+Topic Query: dropshipping ads ai
+[DB] execute_update error: insert or update on table "search_cache" violates foreign key constraint "search_cache_creator_id_fkey"
+DETAIL:  Key (creator_id)=(1) is not present in table "creators".
+[DB] Query: 
+            INSERT INTO search_cache (creator_id, query_hash, provider, results, created_at)
+            VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (creator_id, query_hash, provider) 
+            DO UPDATE SET 
+                results = EXCLUDED.results,
+                created_at = now()
+        
+[DB] Params types: ['int', 'str', 'str', 'str']
+
+=== FINAL RESULTS (1) ===
+[
+  {
+    "title": "https://www.youtube.com/watch?v=9YgiuhnzCU8",
+    "url": "https://www.youtube.com/watch?v=9YgiuhnzCU8",
+    "snippet": "",
+    "resource_type": "video",
+    "relation": "SELF",
+    "confidence": 0.8,
+    "platform": "youtube",
+    "_real_title": "How I Make $27,695 Per Week WITHOUT Facebook Ads (Shopify Dropshipping)"
+  }
+]
+

@@ -1,5 +1,5 @@
 import psycopg
-from settings import settings
+from backend.settings import settings
 
 def fix_db():
     try:

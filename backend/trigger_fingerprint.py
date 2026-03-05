@@ -6,7 +6,7 @@ import os
 sys.path.append(os.getcwd())
 
 async def trigger():
-    from services.fingerprint_service import fingerprint_service
+    from backend.services.fingerprint_service import fingerprint_service
     creator_id = 29
     print(f"Triggering fingerprint for creator {creator_id}...")
     await fingerprint_service.generate_fingerprint_async(creator_id)

@@ -1,0 +1,151 @@
+
+--- TABLE: documents ---
+id: bigint (Nullable: NO, Default: nextval('documents_id_seq'::regclass))
+creator_id: bigint (Nullable: NO, Default: None)
+source: text (Nullable: NO, Default: None)
+source_id: text (Nullable: YES, Default: None)
+url: text (Nullable: YES, Default: None)
+title: text (Nullable: YES, Default: None)
+published_at: timestamp with time zone (Nullable: YES, Default: None)
+content: text (Nullable: NO, Default: None)
+metadata: jsonb (Nullable: YES, Default: '{}'::jsonb)
+created_at: timestamp with time zone (Nullable: YES, Default: now())
+Constraints:
+  documents_pkey: PRIMARY KEY (id)
+  documents_source_source_id_key: UNIQUE (source, source_id)
+  documents_creator_id_fkey: FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+Indexes:
+  documents_pkey: CREATE UNIQUE INDEX documents_pkey ON public.documents USING btree (id)
+  documents_source_source_id_key: CREATE UNIQUE INDEX documents_source_source_id_key ON public.documents USING btree (source, source_id)
+  documents_creator_id_idx: CREATE INDEX documents_creator_id_idx ON public.documents USING btree (creator_id)
+  documents_source_idx: CREATE INDEX documents_source_idx ON public.documents USING btree (source)
+
+--- TABLE: chunks ---
+id: bigint (Nullable: NO, Default: nextval('chunks_id_seq'::regclass))
+document_id: bigint (Nullable: NO, Default: None)
+creator_id: bigint (Nullable: NO, Default: None)
+chunk_index: integer (Nullable: NO, Default: None)
+chunk_text: text (Nullable: NO, Default: None)
+token_count: integer (Nullable: YES, Default: None)
+metadata: jsonb (Nullable: YES, Default: '{}'::jsonb)
+created_at: timestamp with time zone (Nullable: YES, Default: now())
+Constraints:
+  chunks_pkey: PRIMARY KEY (id)
+  chunks_document_id_chunk_index_key: UNIQUE (document_id, chunk_index)
+  chunks_document_id_fkey: FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+  chunks_creator_id_fkey: FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+Indexes:
+  chunks_pkey: CREATE UNIQUE INDEX chunks_pkey ON public.chunks USING btree (id)
+  chunks_document_id_chunk_index_key: CREATE UNIQUE INDEX chunks_document_id_chunk_index_key ON public.chunks USING btree (document_id, chunk_index)
+  chunks_creator_id_idx: CREATE INDEX chunks_creator_id_idx ON public.chunks USING btree (creator_id)
+
+--- TABLE: creators ---
+id: bigint (Nullable: NO, Default: nextval('creators_id_seq'::regclass))
+handle: text (Nullable: NO, Default: None)
+display_name: text (Nullable: YES, Default: None)
+created_at: timestamp with time zone (Nullable: YES, Default: now())
+user_id: bigint (Nullable: NO, Default: None)
+platform_configs: jsonb (Nullable: NO, Default: '{}'::jsonb)
+name: text (Nullable: YES, Default: ''::text)
+platforms: jsonb (Nullable: YES, Default: '[]'::jsonb)
+profile_picture_url: text (Nullable: YES, Default: None)
+visual_config: jsonb (Nullable: YES, Default: '{}'::jsonb)
+style_fingerprint: jsonb (Nullable: NO, Default: '{}'::jsonb)
+youtube_channel_id: text (Nullable: YES, Default: None)
+youtube_handle: text (Nullable: YES, Default: None)
+official_domains: ARRAY (Nullable: YES, Default: None)
+course_domains: ARRAY (Nullable: YES, Default: None)
+course_base_urls: ARRAY (Nullable: YES, Default: None)
+voice_profile: jsonb (Nullable: YES, Default: '{}'::jsonb)
+decision_policy: jsonb (Nullable: NO, Default: '{}'::jsonb)
+curiosity_profile: jsonb (Nullable: NO, Default: '{}'::jsonb)
+rhythm_profile: jsonb (Nullable: NO, Default: '{}'::jsonb)
+stronghold_json: jsonb (Nullable: YES, Default: '{}'::jsonb)
+curiosity_profile_json: jsonb (Nullable: YES, Default: '{}'::jsonb)
+rhythm_profile_json: jsonb (Nullable: YES, Default: '{}'::jsonb)
+forbidden_phrases_json: jsonb (Nullable: YES, Default: '[]'::jsonb)
+creator_category: text (Nullable: YES, Default: None)
+persona_style_json: jsonb (Nullable: YES, Default: None)
+controller_overrides_json: jsonb (Nullable: YES, Default: None)
+identity_fingerprint: jsonb (Nullable: YES, Default: '{}'::jsonb)
+fingerprint_updated_at: timestamp with time zone (Nullable: YES, Default: None)
+fingerprint_status: character varying (Nullable: YES, Default: 'idle'::character varying)
+soul_md: text (Nullable: YES, Default: None)
+research_summary: jsonb (Nullable: YES, Default: None)
+search_mode: character varying (Nullable: YES, Default: 'hybrid'::character varying)
+config_version: integer (Nullable: NO, Default: 1)
+last_approved_version: integer (Nullable: NO, Default: 0)
+Constraints:
+  creators_pkey: PRIMARY KEY (id)
+  creators_handle_key: UNIQUE (handle)
+  creators_user_id_fkey: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+Indexes:
+  creators_pkey: CREATE UNIQUE INDEX creators_pkey ON public.creators USING btree (id)
+  creators_handle_key: CREATE UNIQUE INDEX creators_handle_key ON public.creators USING btree (handle)
+  creators_user_id_idx: CREATE INDEX creators_user_id_idx ON public.creators USING btree (user_id)
+  creators_platform_configs_gin_idx: CREATE INDEX creators_platform_configs_gin_idx ON public.creators USING gin (platform_configs)
+
+--- TABLE: user_creator_preferences ---
+user_id: bigint (Nullable: NO, Default: None)
+creator_id: bigint (Nullable: NO, Default: None)
+last_active_thread_id: uuid (Nullable: YES, Default: None)
+updated_at: timestamp with time zone (Nullable: NO, Default: now())
+custom_instructions: text (Nullable: YES, Default: ''::text)
+Constraints:
+  user_creator_preferences_pkey: PRIMARY KEY (user_id, creator_id)
+  user_creator_preferences_user_id_fkey: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  user_creator_preferences_creator_id_fkey: FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+  user_creator_preferences_last_active_thread_id_fkey: FOREIGN KEY (last_active_thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL
+Indexes:
+  user_creator_preferences_pkey: CREATE UNIQUE INDEX user_creator_preferences_pkey ON public.user_creator_preferences USING btree (user_id, creator_id)
+
+--- TABLE: scrape_runs ---
+id: uuid (Nullable: NO, Default: gen_random_uuid())
+source_url: text (Nullable: NO, Default: None)
+platform: text (Nullable: NO, Default: 'instagram'::text)
+mode: text (Nullable: YES, Default: None)
+creator_handle: text (Nullable: YES, Default: None)
+items_found: integer (Nullable: YES, Default: 0)
+created_at: timestamp with time zone (Nullable: NO, Default: now())
+Constraints:
+  scrape_runs_pkey: PRIMARY KEY (id)
+Indexes:
+  scrape_runs_pkey: CREATE UNIQUE INDEX scrape_runs_pkey ON public.scrape_runs USING btree (id)
+  scrape_runs_created_at_idx: CREATE INDEX scrape_runs_created_at_idx ON public.scrape_runs USING btree (created_at DESC)
+  scrape_runs_platform_idx: CREATE INDEX scrape_runs_platform_idx ON public.scrape_runs USING btree (platform)
+
+--- TABLE: scrape_items ---
+id: uuid (Nullable: NO, Default: gen_random_uuid())
+scrape_run_id: uuid (Nullable: NO, Default: None)
+creator_handle: text (Nullable: NO, Default: None)
+content_type: text (Nullable: NO, Default: 'reel'::text)
+source_url: text (Nullable: NO, Default: None)
+caption: text (Nullable: YES, Default: None)
+transcript: text (Nullable: YES, Default: None)
+transcript_status: text (Nullable: NO, Default: 'missing'::text)
+published_at: timestamp with time zone (Nullable: YES, Default: None)
+metadata: jsonb (Nullable: NO, Default: '{}'::jsonb)
+review_status: text (Nullable: NO, Default: 'pending_review'::text)
+created_at: timestamp with time zone (Nullable: NO, Default: now())
+canonical_key: text (Nullable: YES, Default: None)
+duplicate_of_item_id: uuid (Nullable: YES, Default: None)
+duplicate_method: character varying (Nullable: YES, Default: None)
+duplicate_confidence: double precision (Nullable: YES, Default: None)
+is_primary: boolean (Nullable: YES, Default: true)
+content_fingerprint: bigint (Nullable: YES, Default: None)
+Constraints:
+  scrape_items_pkey: PRIMARY KEY (id)
+  scrape_items_source_url_key: UNIQUE (source_url)
+  scrape_items_scrape_run_id_fkey: FOREIGN KEY (scrape_run_id) REFERENCES scrape_runs(id) ON DELETE CASCADE
+  scrape_items_transcript_status_check: CHECK ((transcript_status = ANY (ARRAY['present'::text, 'missing'::text, 'error'::text])))
+  scrape_items_review_status_check: CHECK ((review_status = ANY (ARRAY['pending_review'::text, 'approved'::text, 'denied'::text])))
+Indexes:
+  scrape_items_pkey: CREATE UNIQUE INDEX scrape_items_pkey ON public.scrape_items USING btree (id)
+  scrape_items_source_url_key: CREATE UNIQUE INDEX scrape_items_source_url_key ON public.scrape_items USING btree (source_url)
+  scrape_items_scrape_run_id_idx: CREATE INDEX scrape_items_scrape_run_id_idx ON public.scrape_items USING btree (scrape_run_id)
+  scrape_items_review_status_idx: CREATE INDEX scrape_items_review_status_idx ON public.scrape_items USING btree (review_status)
+  scrape_items_transcript_status_idx: CREATE INDEX scrape_items_transcript_status_idx ON public.scrape_items USING btree (transcript_status)
+  scrape_items_source_url_idx: CREATE INDEX scrape_items_source_url_idx ON public.scrape_items USING btree (source_url)
+  scrape_items_created_at_idx: CREATE INDEX scrape_items_created_at_idx ON public.scrape_items USING btree (created_at DESC)
+  idx_scrape_items_canonical_key: CREATE INDEX idx_scrape_items_canonical_key ON public.scrape_items USING btree (canonical_key)
+  idx_scrape_items_content_fingerprint: CREATE INDEX idx_scrape_items_content_fingerprint ON public.scrape_items USING btree (content_fingerprint)

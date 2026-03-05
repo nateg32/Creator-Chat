@@ -11,30 +11,30 @@ import logging
 import math
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime, timezone, timedelta
-from db import db
-from settings import settings
-import rag
-from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
-from services.style_distiller import StyleDistiller
-from services.style_scorer import StyleScorer
-from services.content_finder import ContentFinder
-from services.research_provider import GeminiResearchProvider
-from services.memory_service import memory_service
-from services.greeting_service import greeting_service
-from services.personal_bio_service import personal_bio_service
-from services.persona_filter import apply_persona_surface_filter
-from services.curiosity_service import curiosity_service
-from services.rhythm_shaper import rhythm_shaper
-from services.user_priority_service import user_priority_service
-from services.greeting_service import greeting_service
-from services.memory_loop_service import memory_loop_service
-from services.steering_service import steering_service
-from services.classifiers import classifiers
-from services.stronghold_guard import stronghold_guard
-from core.interaction_engine import interaction_engine, InteractionPlan, strip_all_markdown
-from services.web_verify import web_verify
-from services.grammar_normalizer import grammar_normalizer
-from services.assumption_blocker import assumption_blocker
+from backend.db import db
+from backend.settings import settings
+import backend.rag as rag
+from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+from backend.services.style_distiller import StyleDistiller
+from backend.services.style_scorer import StyleScorer
+from backend.services.content_finder import ContentFinder
+from backend.services.research_provider import GeminiResearchProvider
+from backend.services.memory_service import memory_service
+from backend.services.greeting_service import greeting_service
+from backend.services.personal_bio_service import personal_bio_service
+from backend.services.persona_filter import apply_persona_surface_filter
+from backend.services.curiosity_service import curiosity_service
+from backend.services.rhythm_shaper import rhythm_shaper
+from backend.services.user_priority_service import user_priority_service
+from backend.services.greeting_service import greeting_service
+from backend.services.memory_loop_service import memory_loop_service
+from backend.services.steering_service import steering_service
+from backend.services.classifiers import classifiers
+from backend.services.stronghold_guard import stronghold_guard
+from backend.core.interaction_engine import interaction_engine, InteractionPlan, strip_all_markdown
+from backend.services.web_verify import web_verify
+from backend.services.grammar_normalizer import grammar_normalizer
+from backend.services.assumption_blocker import assumption_blocker
 
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def rewrite_queries(intent_plan: Dict[str, Any], creator_profile: Optional[Dict[
     Stage 1: Multi-stage Query Rewriting.
     Turns structured intent into 3-8 query variants + negative keywords.
     """
-    import rag
+    import backend.rag as rag
     import json
     
     creator_name = creator_profile.get("name") if creator_profile else "the creator"
@@ -586,7 +586,7 @@ def classify_resource_intent(
     """
     Semantic Intent Router to detect when user needs a resource (video, article, course).
     """
-    import rag
+    import backend.rag as rag
     
     # Prepare profile context
     profile_info = "Available platforms: YouTube, Instagram, Website."
@@ -1267,7 +1267,7 @@ def generate_grounded_answer(
     2. Voice Render (Creator Persona + Style DNA)
     3. Verification & Repair Loop
     """
-    from services.decision_service import decision_service
+    from backend.services.decision_service import decision_service
     
     # Resolve decision policy
     policy = decision_policy or decision_service.DEFAULT_POLICY
@@ -1331,7 +1331,7 @@ def generate_grounded_answer(
     context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
 
     # Fetch verified facts
-    from services.fact_verification import FactVerificationService
+    from backend.services.fact_verification import FactVerificationService
     fv_service = FactVerificationService()
     verified_facts_str = "No verified facts loaded."
     if creator_id:
@@ -1888,7 +1888,7 @@ def llm_rerank(candidates: List[Dict[str, Any]], intent_plan: Dict[str, Any], to
     Take top candidates and rerank using direct goal fit, actionability, clarity, and evidence.
     """
     if not candidates: return []
-    import rag
+    import backend.rag as rag
     import json
     
     # Prepare candidate list for LLM
@@ -2007,7 +2007,7 @@ def recommend_one_content(
     
     # Stage 1: Candidate retrieval (Broad + Fast)
     # Get embedding for semantic search
-    from rag import get_client
+    from backend.rag import get_client
     try:
         emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=q_search)
         q_emb = emb_resp.data[0].embedding
@@ -2140,8 +2140,8 @@ Message: {answer_text[:500]}"""
     import json
     
     # --- Step 1: Fetch Profiles & State ---
-    from db import db
-    from services.conversation_state_manager import ConversationStateManager
+    from backend.db import db
+    from backend.services.conversation_state_manager import ConversationStateManager
     
     creator_row = db.execute_one("""
         SELECT id, name, handle, style_fingerprint, voice_profile, 
@@ -2213,10 +2213,29 @@ Message: {answer_text[:500]}"""
         user_state.get("primary_domain", "general")
     )
     
+<<<<<<< ours
     if domain_action == "DECLINE_HANDOFF":
         logger.info("Stronghold: Triggering DECLINE_HANDOFF")
         answer = stronghold_guard.generate_boundary_message(
             creator_row["name"], persona, stronghold_config, question
+=======
+    is_strict_content = resource_intent.get("needs_resource") and resource_intent.get("confidence", 0) >= 0.70
+    intent = "request_sources" if is_strict_content else classify_intent(question)
+
+    if is_strict_content:
+        logger.info(f"ContentFinder: Semantic trigger activated (Reason: {resource_intent.get('reason')})")
+        from services.content_finder import ContentFinder
+        finder = ContentFinder(db, get_client())
+        
+        # Use Router's query and types
+        router_query = resource_intent.get("query") or question
+        cf_result = finder.find_content_card(
+            creator_id,
+            router_query,
+            resource_type=resource_intent.get("resource_type", "any"),
+            specificity=resource_intent.get("specificity", "recommendation"),
+            history_messages=conversation_history,
+>>>>>>> theirs
         )
         # Suggest 2-3 other creators
         suggestions = db.execute_query("""
@@ -2224,9 +2243,84 @@ Message: {answer_text[:500]}"""
             FROM creators WHERE id != %s LIMIT 3
         """, (creator_id,))
         
+<<<<<<< ours
         return apply_final_polish({
             "answer": answer,
             "retrieved": [],
+=======
+        if cf_result["status"] == "DEFER":
+             logger.info("ContentFinder: Deferring response.")
+             return {
+                 "answer": cf_result["defer_message"],
+                 "retrieved": [],
+                 "sources": [],
+                 "cards": [],
+                 "debug": {"cf_result": cf_result} if debug else None
+             }
+        
+        # If FOUND, we still want to generate a persona response that introduces the card
+        # We override support_set to be just the found item to force focus
+        if cf_result["status"] == "FOUND" and cf_result.get("cards"):
+             cards = cf_result["cards"]
+             first_card = cards[0] if cards else {}
+             card_url = first_card.get("url") or ""
+             snippet = first_card.get("short_snippet", "") or first_card.get("title", "")
+             
+             # Mock support set with the first result
+             is_fallback = cf_result.get("is_fallback", False)
+             content_desc = "Specific Video" if not is_fallback else "Creator Channel/Search"
+             
+             support_set = [{
+                 "chunk_id": "content_finder_match",
+                 "chunk_index": 0,
+                 "distance": 0.0,
+                 "rerank_score": 1.0,
+                 "content": f"Resource Found: {content_desc}\nTitle: {first_card.get('title', 'Recommended content')}\nSnippet: {snippet}",
+                 "source_ref": {
+                     "platform": "youtube" if "youtube" in card_url else "web",
+                     "title": first_card.get("title", "Recommended content"),
+                     "canonical_url": card_url,
+                     "published_at": None,
+                     "content_type": first_card.get("resource_type", "video")
+                 }
+             }]
+             
+             # Force answering with this content
+             answer_contract = build_answer_contract(support_set, question)
+             
+             answer, gen_debug = generate_grounded_answer(
+                question, support_set, answer_contract, persona, conversation_history,
+                intent="introduce_content", # Custom intent to guide style?
+                include_links_in_output=False, # We use card, not text links
+                allow_cta=False,
+                enabled_platforms=enabled_platforms,
+                user_preferences=user_preferences,
+                creator_name=creator_name,
+                style_fingerprint=sf,
+                creator_id=creator_id,
+            )
+             
+             return {
+                 "answer": answer,
+                 "retrieved": support_set,
+                 "sources": [], 
+                 "cards": cards,
+                 "debug": gen_debug if debug else None 
+             }
+        
+    # --- Standard RAG Path --- (if no strict content found or triggered)
+
+    # When images are attached, override small_talk — images need full analysis
+    if has_images and intent in ("small_talk", "identity"):
+        intent = "how_to"
+    
+    # For small talk and identity (no images), don't retrieve content to avoid tempting the model
+    if intent in ("small_talk", "identity"):
+        support_set = []
+        answer_contract = {
+            "facts": [],
+            "gaps": [],
+>>>>>>> theirs
             "sources": [],
             "cards": [],
             "meta": {
@@ -2297,28 +2391,69 @@ Message: {answer_text[:500]}"""
             
         if needs_fallback and search_mode == "hybrid":
             logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
-            from services.research_provider import get_research_provider
+            from backend.services.research_provider import get_research_provider
+            import concurrent.futures
+
             rp = get_research_provider()
-            web_results = rp.search(
-                question, 
-                creator_row, 
-                conversation_history=conversation_history
-            )
+            web_results = []
+            
+            # If no support set, we skip sufficiency check and run web search directly
+            if not support_set:
+                try:
+                    web_results = rp.search(
+                        question, 
+                        creator_row, 
+                        conversation_history=conversation_history
+                    )
+                except Exception as e:
+                    logger.error(f"Sync web search failed: {e}")
+            else:
+                # If we have a small support set, we can run them in parallel
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    suff_future = executor.submit(evaluate_context_sufficiency, question, support_set)
+                    search_future = executor.submit(rp.search, question, creator_row, conversation_history=conversation_history)
+                    
+                    try:
+                        sufficiency = suff_future.result(timeout=2.5)
+                        logger.info(f"Context Sufficiency (Parallel): {sufficiency}")
+                        if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
+                            try:
+                                web_results = search_future.result(timeout=10)
+                            except concurrent.futures.TimeoutError:
+                                logger.warning("Parallel web search timed out.")
+                    except concurrent.futures.TimeoutError:
+                        logger.warning("Parallel sufficiency check timed out, proceeding with existing RAG results.")
             
             # Inject Live Search results as faux-chunks
-            for i, w in enumerate(web_results[:6]):
-                faux_chunk = {
-                    "chunk_id": f"web_{i}",
-                    "chunk_index": i,
-                    "distance": 0.1,  # Force high priority
-                    "content": f"[LIVE WEB SEARCH RESULT] {w.get('snippet', '')}",
-                    "source_ref": {
-                        "platform": "web",
-                        "canonical_url": w.get("url", ""),
-                        "title": w.get("title", ""),
+            if web_results:
+                logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
+                for i, w in enumerate(web_results[:6]):
+                    title = w.get('title', '')
+                    url = w.get('url', '')
+                    snippet = w.get('snippet', '')
+                    content_parts = [f"[LIVE WEB SEARCH RESULT]"]
+                    if title:
+                        content_parts.append(f"Title: {title}")
+                    if url:
+                        content_parts.append(f"URL: {url}")
+                    if snippet:
+                        content_parts.append(f"Summary: {snippet}")
+                    
+                    faux_chunk = {
+                        "chunk_id": f"web_{i}",
+                        "chunk_index": i,
+                        "distance": 0.05,
+                        "content": "\n".join(content_parts),
+                        "url": url,
+                        "title": title,
+                        "source_ref": {
+                            "platform": "web",
+                            "canonical_url": url,
+                            "title": title,
+                        }
                     }
-                }
-                support_set.insert(i, faux_chunk)
+                    logger.info(f"[SEARCH]   [{i}] {title[:60]} -> {url[:80]}")
+                    support_set.insert(i, faux_chunk)
 
     # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
 
@@ -2415,6 +2550,24 @@ Message: {answer_text[:500]}"""
         }
     }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=plan_obj)
 
+import re
+
+def _is_social_request(user_text: str) -> Optional[str]:
+    """Deterministically identifies user requests for social profiles."""
+    text = user_text.lower()
+    if not any(w in text for w in ["what is", "whats", "what's", "where", "link", "handle", "profile", "social"]):
+        return None
+        
+    if re.search(r'\b(instagram|ig|insta)\b', text): return "instagram"
+    if re.search(r'\b(youtube|yt|channel)\b', text): return "youtube"
+    if re.search(r'\b(tiktok)\b', text): return "tiktok"
+    if re.search(r'\b(twitter|x)\b', text): return "x"
+    if re.search(r'\b(linkedin)\b', text): return "linkedin"
+    if re.search(r'\b(facebook|fb)\b', text): return "facebook"
+    if re.search(r'\b(website|site|domain)\b', text): return "website"
+    
+    return None
+
 async def grounded_rag_stream(
     creator_id: int,
     question: str,
@@ -2429,12 +2582,91 @@ async def grounded_rag_stream(
     ZERO-WAIT streaming version of the Grounded-RAG pipeline.
     Optimized for sub-500ms TTFT by early-routing and parallel execution.
     """
-    from db import db
+    from backend.db import db
     import asyncio
     
     # 1. Deterministic Routing (Instant) - MUST BE FIRST
     route = interaction_engine.classify_route(question, conversation_history or [])
     
+    # Early heartbeat yield to drop TTFB to <100ms
+    yield " "
+
+    # FAST-PATH: Social Intent Bypass
+    social_key = _is_social_request(question)
+    if social_key:
+        creator_row = await asyncio.to_thread(
+            db.execute_one, 
+            "SELECT name, handle, platform_configs FROM creators WHERE id = %s", 
+            (creator_id,)
+        )
+        if not creator_row:
+            yield json.dumps({"content": "I don't have a verified profile for this creator."})
+            return
+            
+        pc = creator_row.get("platform_configs") or {}
+        if isinstance(pc, str): pc = json.loads(pc)
+        plat = pc.get(social_key, {})
+        url = plat.get("verified_url") or plat.get("url")
+        
+        creator_name = creator_row.get("name") or creator_row.get("handle") or "the creator"
+
+        if url:
+             card_html = f"Here is the verified link you requested:\n\n[{social_key.title()}]({url})"
+             yield json.dumps({"content": card_html})
+             return
+             
+        # Fallback to research provider SOCIAL_LOOKUP
+        if social_key != "website":
+            from backend.services.research_provider import GeminiResearchProvider
+            rp = GeminiResearchProvider()
+            query = f"site:{social_key}.com \"{creator_name}\" official channel profile"
+            
+            # Execute search in thread to avoid blocking loop
+            candidates = await asyncio.to_thread(
+                rp.search, 
+                query=query, 
+                creator_profile=creator_row, 
+                resource_type="any", 
+                intent_metadata={"intent": "SOCIAL_LOOKUP"}
+            )
+            
+            if candidates:
+                best_match = candidates[0]
+                best_url = best_match.get("url")
+                if best_url:
+                    from backend.services.identity_manager import _grade_social_identity
+                    confidence, reasons = _grade_social_identity(
+                        best_url, social_key, creator_row, 
+                        best_match.get("title", ""), best_match.get("snippet", "")
+                    )
+                    
+                    existing_conf = plat.get("social_confidence", 0.0)
+                    is_user_provided = plat.get("social_source") == "user_provided"
+                    
+                    if confidence >= 0.85 and not is_user_provided and (confidence > existing_conf + 0.15 or not plat.get("verified_url")):
+                        # Update DB configs 
+                        plat["verified_url"] = best_url
+                        plat["social_source"] = "verified_search"
+                        plat["social_confidence"] = confidence
+                        pc[social_key] = plat
+                        await asyncio.to_thread(
+                            db.execute_update, 
+                            "UPDATE creators SET platform_configs = %s WHERE id = %s", 
+                            (json.dumps(pc), creator_id)
+                        )
+                        
+                        card_html = f"I found the verified link for you:\n\n[{social_key.title()}]({best_url})"
+                        yield json.dumps({"content": card_html})
+                        return
+                    elif confidence >= 0.6:
+                        import logging
+                        logging.getLogger(__name__).info(f"SOCIAL_LOOKUP: platform={social_key} confidence={confidence:.2f} action=low_confidence_not_saved reasons=[{reasons}]")
+                    else:
+                        import logging
+                        logging.getLogger(__name__).info(f"SOCIAL_LOOKUP: platform={social_key} confidence={confidence:.2f} action=discard reasons=[{reasons}]")
+
+        yield json.dumps({"content": f"I don't currently have a verified {social_key.title()} link saved for {creator_name}."})
+        return    
     # 2. Launch Basic Metadata Tasks (Fast/Async)
     creator_task = asyncio.to_thread(db.execute_one, """
         SELECT id, name, handle, creator_category, rhythm_profile_json,
@@ -2442,7 +2674,6 @@ async def grounded_rag_stream(
                search_mode
         FROM creators WHERE id = %s
     """, (creator_id,))
-    persona_task = asyncio.to_thread(rag.get_persona, creator_id)
     
     # 3. Handle Context Gathering (Skip embeddings for greetings)
     support_set = []
@@ -2455,7 +2686,7 @@ async def grounded_rag_stream(
         if conversation_history:
             last_msg = ""
             for m in reversed(conversation_history):
-                if m.get("role") != "user":
+                if m and m.get("role") != "user":
                     last_msg = m.get("content", "")
                     break
             if len(question.split()) < 10 and last_msg:
@@ -2470,10 +2701,14 @@ async def grounded_rag_stream(
         )
         
         # Await metadata while embedding is in flight
-        creator_row, persona_legacy, embedding_resp = await asyncio.gather(
-            creator_task, persona_task, embedding_task
+        creator_row, embedding_resp = await asyncio.gather(
+            creator_task, embedding_task
         )
-        persona = creator_row.get("soul_md") or persona_legacy
+        if not creator_row:
+            yield "I'm sorry, I couldn't find the profile for this creator."
+            return
+            
+        persona = creator_row.get("soul_md") or ""
         
         q_emb = embedding_resp.data[0].embedding
         
@@ -2485,62 +2720,127 @@ async def grounded_rag_stream(
         
         support_set, mems = await asyncio.gather(retrieve_task, mems_task)
         
-        # --- NEW: Real-Time Web Search Fallback ---
-        # Check context: Did the bot just talk about a video/link?
+        # --- Optimized Real-Time Web Search Fallback ---
+        import time as _time
+        _t_search_start = _time.time()
+        
+        search_mode = creator_row.get("search_mode") or "hybrid"
+        
+        # Check if bot recently discussed video/link
         last_bot_msg = ""
         if conversation_history:
             for m in reversed(conversation_history):
-                if m.get("role") == "assistant":
+                if m and m.get("role") == "assistant":
                     last_bot_msg = (m.get("content") or "").lower()
                     break
         
         context_needs_video = any(w in last_bot_msg for w in ["video", "watch my", "point you to", "send you"])
         wants_link = needs_links(question) or context_needs_video
         
-        # If no strict RAG match or weak match, ask Gemini to search live
+        # Explicit video intent detection
+        video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
+        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or wants_link
+        
+        # OPTIMIZATION: If RAG returned no results or very few, launch web search
+        # IN PARALLEL with sufficiency check to save ~1.5s
         needs_fallback = False
-        if not support_set:
-            needs_fallback = True
-        else:
-            # SMART EVALUATOR: Instead of keywords, ask LLM if we have enough info
-            sufficiency = await asyncio.to_thread(evaluate_context_sufficiency, question, support_set)
-            logger.info(f"Context Sufficiency: {sufficiency}")
-            if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
+        web_results = []
+        
+        if search_mode == "hybrid":
+            if is_video_request:
+                # User literally asked for a video. RAG is for answering questions, Web Search
+                # is optimized for finding specific videos by title. Force search.
                 needs_fallback = True
-            
-        search_mode = creator_row.get("search_mode") or "hybrid"
-            
-        if needs_fallback and search_mode == "hybrid":
-            logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
-            from services.research_provider import get_research_provider
-            rp = get_research_provider()
-            web_results = await asyncio.to_thread(
-                rp.search, 
-                question, 
-                creator_row, 
-                conversation_history=conversation_history
-            )
-            
+                logger.info(f"[LATENCY] Explicit video request detected. Forcing web search.")
+                from backend.services.research_provider import get_research_provider
+                rp = get_research_provider()
+                web_results = await asyncio.to_thread(
+                    rp.search, question_for_search, creator_row,
+                    conversation_history=conversation_history
+                )
+            elif not support_set:
+                # No RAG results — definitely need web search, skip sufficiency check
+                needs_fallback = True
+                logger.info(f"[LATENCY] RAG empty. Direct web search trigger.")
+                from backend.services.research_provider import get_research_provider
+                rp = get_research_provider()
+                web_results = await asyncio.to_thread(
+                    rp.search, question_for_search, creator_row,
+                    conversation_history=conversation_history
+                )
+            else:
+                # Have RAG results — run sufficiency check
+                # If few results, speculatively launch web search in parallel
+                if len(support_set) <= 2:
+                    # PARALLEL: sufficiency + speculative web search
+                    from backend.services.research_provider import get_research_provider
+                    rp = get_research_provider()
+                    sufficiency_task = asyncio.to_thread(evaluate_context_sufficiency, question, support_set)
+                    search_task = asyncio.to_thread(
+                        rp.search, question_for_search, creator_row,
+                        conversation_history=conversation_history
+                    )
+                    sufficiency, web_results = await asyncio.gather(sufficiency_task, search_task)
+                    logger.info(f"[LATENCY] Parallel sufficiency={sufficiency}, web_results={len(web_results)}")
+                    if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
+                        needs_fallback = True
+                else:
+                    # Standard: sequential sufficiency check
+                    sufficiency = await asyncio.to_thread(evaluate_context_sufficiency, question, support_set)
+                    logger.info(f"Context Sufficiency: {sufficiency}")
+                    if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
+                        needs_fallback = True
+                        from backend.services.research_provider import get_research_provider
+                        rp = get_research_provider()
+                        web_results = await asyncio.to_thread(
+                            rp.search, question_for_search, creator_row,
+                            conversation_history=conversation_history
+                        )
+        
+        _t_search_end = _time.time()
+        logger.info(f"[LATENCY] Search fallback phase: {_t_search_end - _t_search_start:.2f}s (fallback={needs_fallback}, results={len(web_results)})")
+        
+        if needs_fallback and web_results:
             # Inject Live Search results as faux-chunks
+            logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
             for i, w in enumerate(web_results[:6]):
+                title = w.get('title', '')
+                url = w.get('url', '')
+                snippet = w.get('snippet', '')
+                # Include title + URL directly in content so the model can see & cite them
+                content_parts = [f"[LIVE WEB SEARCH RESULT]"]
+                if title:
+                    content_parts.append(f"Title: {title}")
+                if url:
+                    content_parts.append(f"URL: {url}")
+                if snippet:
+                    content_parts.append(f"Summary: {snippet}")
+                
                 faux_chunk = {
                     "chunk_id": f"web_{i}",
                     "chunk_index": i,
-                    "distance": 0.1,  # Force high priority
-                    "content": f"[LIVE WEB SEARCH RESULT] {w.get('snippet', '')}",
+                    "distance": 0.05,  # Force highest priority
+                    "content": "\n".join(content_parts),
+                    "url": url,
+                    "title": title,
                     "source_ref": {
                         "platform": "web",
-                        "canonical_url": w.get("url", ""),
-                        "title": w.get("title", ""),
+                        "canonical_url": url,
+                        "title": title,
                     }
                 }
+                logger.info(f"[SEARCH]   [{i}] {title[:60]} -> {url[:80]}")
                 support_set.insert(i, faux_chunk)
 
     else:
         # Greeting/Small-talk Route: No Embeddings needed for TTFT
         # Just await metadata
-        creator_row, persona_legacy = await asyncio.gather(creator_task, persona_task)
-        persona = creator_row.get("soul_md") or persona_legacy
+        creator_row = await creator_task
+        if not creator_row:
+            yield "I couldn't find information about that creator."
+            return
+        
+        persona = creator_row.get("soul_md") or ""
         
         if route == "ROUTE_0_GREETING":
             mems = []
@@ -2549,10 +2849,6 @@ async def grounded_rag_stream(
             mems = await interaction_engine.memory.search_async(
                 str(creator_id), str(user_id), str(thread_id or "new"), question
             )
-
-    if not creator_row:
-        yield "I couldn't find information about that creator."
-        return
 
     # 4. Async Synthesis Stream (Instant Start)
     stream = await interaction_engine.render_combined_pass_stream_async(

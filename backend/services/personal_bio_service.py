@@ -3,12 +3,12 @@ import logging
 import json
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from db import db
-import rag
-from services.research_provider import GeminiResearchProvider
-from settings import settings
+from backend.db import db
+import backend.rag as rag
+from backend.services.research_provider import GeminiResearchProvider
+from backend.settings import settings
 
-from services.decision_service import decision_service
+from backend.services.decision_service import decision_service
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class PersonalBioService:
     """
 
     def __init__(self):
-        from services.research_provider import get_research_provider
+        from backend.services.research_provider import get_research_provider
         self.researcher = get_research_provider()
 
     def handle_personal_question(

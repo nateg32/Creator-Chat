@@ -1,0 +1,259 @@
+﻿python : INFO:services
+.research_provider:Ope
+nAISearch: 
+creator_name='Jordan 
+Welch' | query='any 
+other videos'
+At line:1 char:1
++ python test_false_po
+sitive.py 2>&1 | 
+Out-String | 
+Set-Content -Encodi 
+...
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : 
+NotSpecified: (I    
+NFO:services.r...y ot 
+   her 
+videos':String) [    
+], RemoteException
+    + 
+FullyQualifiedError   
+ Id : 
+NativeCommandErr    or
+ 
+INFO:services.research
+_provider:[SEARCH-TOPI
+C] raw='any other 
+videos' \u2192 
+enriched='ai 
+dropshipping ads'
+INFO:services.research
+_provider:[SEARCH-INTE
+NT] 'any other 
+videos' \u2192 
+intent=VIDEO
+INFO:services.research
+_provider:OpenAISearch
+: Using raw httpx for 
+Responses API with 
+gpt-5.2
+INFO:httpx:HTTP 
+Request: POST https://
+api.openai.com/v1/resp
+onses "HTTP/1.1 200 
+OK"
+INFO:services.research
+_provider:OpenAISearch
+: Responses API 
+returned 1266 chars
+WARNING:services.resea
+rch_provider:OpenAISea
+rch: JSON parse 
+failed: Expecting 
+value: line 1 column 
+2 (char 1)
+WARNING:services.resea
+rch_provider:OpenAISea
+rch: Responses API 
+JSON parse failed: 
+Could not parse valid 
+JSON array from 
+search response: I 
+searched YouTube (via 
+the query you 
+provided), but I 
+**did not find any 
+actual YouTube video 
+results** that match 
+**Jordan Welch** + 
+**ôAI dropshipping 
+adsö** (or close 
+variants) in the 
+search results 
+returnedùso I canÆt 
+list any qualifying 
+videos without 
+guessing URLs/titles. 
+([music.youtube.com](h
+ttps://music.youtube.c
+om/channel/UCIb4Bvr4kS
+44D8IcVJd9Wzw?utm_sour
+ce=openai))
+
+Also: the only 
+ôJordan Welchö-ish 
+result that appeared 
+was unrelated (it 
+surfaced other 
+ôJordan àö / YouTube 
+Music pages, not 
+Jordan WelchÆs 
+ecommerce 
+channel/videos). ([mus
+ic.youtube.com](https:
+//music.youtube.com/ch
+annel/UC8ejOl9D9j4dJnm
+ol_N7vqA?utm_source=op
+enai))
+
+### Videos found 
+(directly about ôAI 
+dropshipping adsö)
+None found in the 
+available search 
+results. ([music.youtu
+be.com](https://music.
+youtube.com/channel/UC
+Ib4Bvr4kS44D8IcVJd9Wzw
+?utm_source=openai))
+
+---
+
+If you want, I can 
+try again with a 
+broader set of 
+*YouTube-specific* 
+queries (e.g., 
+searching Jordan 
+WelchÆs channel for 
+ôAI adsö, ôChatGPT 
+adsö, ôad creativeö, 
+ôUGC + AIö, etc.). 
+Tell me whether you 
+mean:
+1) **ads created with 
+AI** (creative generat
+ion/editing/voiceover)
+, or  
+2) **ads optimization 
+using AI** (targeting/
+bidding/testing), and 
+whether you care 
+about **TikTok vs 
+Facebook vs YouTube 
+Shorts**.
+INFO:services.research
+_provider:OpenAISearch
+: Extracted 2 URLs 
+from natural text 
+response
+INFO:services.research
+_provider:OpenAISearch
+: Completed in 14.0s 
+ù 2 raw results
+INFO:services.research
+_provider:[URL-FILTER]
+ Dropping non-video 
+URL in VIDEO search: h
+ttps://music.youtube.c
+om/channel/UCIb4Bvr4kS
+44D8IcVJd9Wzw?utm_sour
+ce=openai
+INFO:services.research
+_provider:[URL-FILTER]
+ Dropping non-video 
+URL in VIDEO search: h
+ttps://music.youtube.c
+om/channel/UC8ejOl9D9j
+4dJnmol_N7vqA?utm_sour
+ce=openai
+INFO:services.research
+_provider:[RELEVANCE] 
+Strict filtering 
+dropped all 0 
+results. Returning 
+empty to trigger 
+retry search.
+INFO:services.research
+_provider:OpenAISearch
+: After relevance 
+scoring ù 0 results 
+kept
+INFO:services.research
+_provider:[SEARCH-RETR
+Y] Retrying with 
+targeted query: 
+Jordan Welch 
+"dropshipping" OR 
+"ads"
+INFO:services.research
+_provider:OpenAISearch
+: Trying 
+gpt-4o-search-preview 
+via Chat Completions
+INFO:httpx:HTTP 
+Request: POST https://
+api.openai.com/v1/chat
+/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research
+_provider:OpenAISearch
+: 
+gpt-4o-search-preview 
+returned 503 chars
+WARNING:services.resea
+rch_provider:OpenAISea
+rch: JSON parse 
+failed: Expecting 
+value: line 1 column 
+2 (char 1)
+INFO:services.research
+_provider:OpenAISearch
+: Extracted 1 URLs 
+from natural text 
+response
+INFO:services.research
+_provider:[URL-VALIDAT
+E] Verified: 'How I 
+Make $27,695 Per Week 
+WITHOUT Facebook Ads 
+(Shopify 
+Dropshipping)' \u2192 
+https://www.youtube.co
+m/watch?v=9YgiuhnzCU8
+INFO:services.research
+_provider:[SEARCH-RETR
+Y] Got 1 relevant 
+results on retry 
+(after oEmbed)
+ERROR:services.researc
+h_provider:ResearchPro
+vider: Cache write 
+error: insert or 
+update on table 
+"search_cache" 
+violates foreign key 
+constraint "search_cac
+he_creator_id_fkey"
+DETAIL:  Key 
+(creator_id)=(1) is 
+not present in table 
+"creators".
+Topic Query: ai dropshipping ads
+[DB] execute_update error: insert or update on table "search_cache" violates foreign key constraint "search_cache_creator_id_fkey"
+DETAIL:  Key (creator_id)=(1) is not present in table "creators".
+[DB] Query: 
+            INSERT INTO search_cache (creator_id, query_hash, provider, results, created_at)
+            VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (creator_id, query_hash, provider) 
+            DO UPDATE SET 
+                results = EXCLUDED.results,
+                created_at = now()
+        
+[DB] Params types: ['int', 'str', 'str', 'str']
+
+=== FINAL RESULTS (1) ===
+[
+  {
+    "title": "How I Make $27,695 Per Week WITHOUT Facebook Ads (Shopify Dropshipping)",
+    "url": "https://www.youtube.com/watch?v=9YgiuhnzCU8",
+    "snippet": "",
+    "resource_type": "video",
+    "relation": "SELF",
+    "confidence": 0.8
+  }
+]
+

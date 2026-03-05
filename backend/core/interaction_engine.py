@@ -2,12 +2,17 @@ import re
 import json
 import random
 import logging
+import hashlib
+from typing import Any, Dict, List, Optional
+from functools import lru_cache
+import random
+import logging
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, validator
-import rag
-from settings import settings
-from db import db
-from core.memory_integration import MemoryIntegration
+import backend.rag as rag
+from backend.settings import settings
+from backend.db import db
+from backend.core.memory_integration import MemoryIntegration
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +404,16 @@ class InteractionEngine:
         Deterministic route classification. No LLM needed.
         Returns: ROUTE_0_GREETING | ROUTE_1_SMALL_TALK | ROUTE_2_TASK
         """
+        # Ensure history object itself isn't polluted by frozenset caching logic downstream
+        # by creating a completely isolated string copy
+        history_str = json.dumps(history, sort_keys=True)
+        hist_hash = hashlib.md5(history_str.encode()).hexdigest()
+        
+        return self._cached_classify_route(user_msg, hist_hash, history_str)
+
+    @lru_cache(maxsize=100)
+    def _cached_classify_route(self, user_msg: str, hist_hash: str, history_str: str) -> str:
+        history = json.loads(history_str) if history_str else []
         msg = user_msg.strip().lower()
         words = msg.split()
         word_count = len(words)
@@ -433,7 +448,7 @@ class InteractionEngine:
         if history and not is_social:
             last_msg = None
             for m in reversed(history):
-                if m.get("role") == "assistant":
+                if m and m.get("role") == "assistant":
                     last_msg = m
                     break
             if last_msg and "?" in last_msg.get("content", ""):
@@ -547,6 +562,34 @@ class InteractionEngine:
         creator_profile: Dict[str, Any],
         rag_chunks: List[Dict[str, Any]]
     ) -> InteractionPlan:
+        # Create a hash of the complex arguments for caching
+        history_str = json.dumps(history, sort_keys=True)
+        creator_cat = creator_profile.get("creator_category", "general")
+        creator_name = creator_profile.get("name", "the creator")
+        has_chunks = len(rag_chunks) > 0
+        
+        cache_key = hashlib.md5(f"{user_msg}:{history_str}:{creator_cat}:{creator_name}:{has_chunks}".encode()).hexdigest()
+        
+        return self._cached_build_task_plan(
+            user_msg, 
+            history_str, 
+            creator_cat, 
+            creator_name, 
+            has_chunks,
+            cache_key
+        )
+
+    @lru_cache(maxsize=100)
+    def _cached_build_task_plan(
+        self,
+        user_msg: str,
+        history_str: str,
+        creator_cat: str,
+        creator_name: str,
+        has_chunks: bool,
+        cache_key: str
+    ) -> InteractionPlan:
+        history = json.loads(history_str)
         system_prompt = """You are a task planner. Output valid JSON only.
 
 SPECIALTY LOCK:
@@ -587,9 +630,9 @@ Set `grounding.requires_sources: true` and `grounding.video_policy: "one_if_help
 Set route to "ROUTE_2_TASK". Output valid JSON InteractionPlan."""
 
         context = {
-            "creator_category": creator_profile.get("creator_category", "general"),
-            "creator_name": creator_profile.get("name", "the creator"),
-            "rag_sources_available": len(rag_chunks) > 0,
+            "creator_category": creator_cat,
+            "creator_name": creator_name,
+            "rag_sources_available": has_chunks,
             "history_summary": self._summarize_history(history),
         }
 
@@ -857,8 +900,8 @@ Output ONLY your response."""
 
         history_context = ""
         if history:
-            recent = history[-10:]
-            history_lines = [f"{('User' if t.get('role') == 'user' else creator_name)}: {t.get('content', '')[:1000]}" for t in recent]
+            recent = history[-20:]
+            history_lines = [f"{('User' if t.get('role') == 'user' else creator_name)}: {t.get('content', '')[:1500]}" for t in recent]
             history_context = f"\nRECENT CONVERSATION:\n{chr(10).join(history_lines)}\n"
 
         memory_section = ""
@@ -943,8 +986,23 @@ STRICT IDENTITY LOCK:
             anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent a title. Tell the user you don't have a link for that right now, but give them your best advice instead."
         
         # If we have web search results, ensure the rule allows them
+        has_video_links = any(
+            any(pat in (c.get('url') or '') for pat in ['youtube.com/watch', 'youtu.be/', 'youtube.com/shorts/', 'instagram.com/reel/', 'instagram.com/p/', 'tiktok.com/', 'facebook.com/watch'])
+            or any(pat in (c.get('content') or '') for pat in ['youtube.com/watch', 'instagram.com/reel/', 'tiktok.com/'])
+            for c in rag_chunks
+        )
         if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
-            anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links (labeled 'Live Web Search') to answer the user accurately. These are VERIFIED for this session."
+            if has_video_links:
+                anti_halluc_rule = (
+                    "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have verified video links from a live web search. "
+                    "Share EVERY direct video URL inline in your response using markdown [Title](URL) format. "
+                    "DO NOT redirect the user to a link aggregator, a 'link hub', or tell them to search for it themselves. "
+                    "If you have video links from MULTIPLE platforms (YouTube, Instagram, TikTok, etc.), share them all and briefly explain why each is relevant. "
+                    "PRIORITIZE the platform that best matches what the user asked for. "
+                    "If you're not sure which is best, share 2-3 options and explain the differences."
+                )
+            else:
+                anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links (labeled 'Live Web Search') to answer the user accurately. Share URLs directly using [Title](URL) format."
 
         return f"""IDENTITY: You are {creator_name}.
 {identity_context}

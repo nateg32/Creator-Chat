@@ -30,27 +30,29 @@ def test_ask_stream():
     first_token_time = None
     full_text = ""
     
-    for line in response.iter_content(chunk_size=1):
+    for line in response.iter_lines():
         if line:
             if first_token_time is None:
                 first_token_time = time.time()
                 print(f"Time to First Byte: {first_token_time - start:.2f}s")
             
-            # Note: iter_content(1) is slow for parsing SSE, but good for TTFB.
-            # We'll switch back to something more efficient after TTFB check if needed.
-            pass
-
-    # Re-run with proper SSE parsing for total time
-    response = requests.post(f"{BASE_URL}/ask-stream", json=payload, stream=True)
-    start = time.time()
-    first_data_time = None
-    for line in response.iter_lines():
-        if line:
-            if first_data_time is None:
-                first_data_time = time.time()
-                print(f"Time to First Data Chunk: {first_data_time - start:.2f}s")
-            # Parse data...
-    print(f"Streaming Total: {time.time() - start:.2f}s")
+            line_str = line.decode('utf-8')
+            if line_str.startswith('data: '):
+                data_str = line_str[6:]
+                if data_str != '[DONE]':
+                    try:
+                        data = json.loads(data_str)
+                        if 'content' in data:
+                            full_text += data['content']
+                            print(data['content'], end='', flush=True)
+                        elif 'error' in data:
+                            print(f"\n[ERROR] {data['error']}", flush=True)
+                            if 'traceback' in data:
+                                print(f"\n[TRACE] {data['traceback']}", flush=True)
+                    except json.JSONDecodeError:
+                        pass
+    
+    print(f"\nStreaming Total: {time.time() - start:.2f}s")
 
 if __name__ == "__main__":
     try:

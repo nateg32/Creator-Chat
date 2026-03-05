@@ -7,8 +7,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.interaction_engine import interaction_engine
-from core.interaction_engine import InteractionPlan, VerbosityBudget, GroundingPolicy
+from backend.core.interaction_engine import interaction_engine
+from backend.core.interaction_engine import InteractionPlan, VerbosityBudget, GroundingPolicy
 
 def test_interaction_prompt():
     creator_profile = {

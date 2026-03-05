@@ -5,7 +5,7 @@ import os
 sys.path.append(os.getcwd())
 
 try:
-    from db import db
+    from backend.db import db
     print("DB imported successfully.")
     
     sql = """

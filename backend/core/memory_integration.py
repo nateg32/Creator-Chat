@@ -2,8 +2,8 @@ import os
 import logging
 import json
 from typing import List, Dict, Any, Optional
-from settings import settings
-from core.simple_vector_store import SimpleJSONVectorStore
+from backend.settings import settings
+from backend.core.simple_vector_store import SimpleJSONVectorStore
 # We use OpenAI client directly for embeddings
 from openai import OpenAI
 
@@ -18,7 +18,7 @@ class MemoryIntegration:
         self.vector_store = SimpleJSONVectorStore(self.store_path)
         
         # Initialize OpenAI Clients
-        from rag import get_client, get_async_client
+        from backend.rag import get_client, get_async_client
         self.client = get_client()
         self.async_client = get_async_client()
         self.embedding_model = "text-embedding-3-small"

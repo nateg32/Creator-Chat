@@ -1,11 +1,11 @@
-from db import db
+from backend.db import db
 import json
 import logging
 from datetime import datetime, timezone
 import re
 from typing import Dict, List, Optional, Any, Tuple
-from services.search_engine import SearchEngine
-from settings import settings
+from backend.services.search_engine import SearchEngine
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 

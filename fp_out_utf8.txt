@@ -1,0 +1,100 @@
+﻿python : INFO:services.res
+earch_provider:OpenAISearc
+h: creator_name='Jordan 
+Welch' | query='any other 
+videos'
+At line:1 char:1
++ python 
+test_false_positive.py > 
+fp_out.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (I  
+  NFO:services.r...y ot   
+ her videos':String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+INFO:services.research_pro
+vider:[SEARCH-TOPIC] 
+raw='any other videos' 
+\u2192 enriched='ads 
+dropshipping ai'
+INFO:services.research_pro
+vider:[SEARCH-INTENT] 
+'any other videos' \u2192 
+intent=VIDEO
+INFO:services.research_pro
+vider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/responses "HTTP/1.1 
+200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+Responses API returned 2 
+chars
+INFO:services.research_pro
+vider:OpenAISearch: 
+Falling back to 
+gpt-4o-search-preview 
+Chat Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: Chat 
+Completions returned 522 
+chars
+ERROR:services.research_pr
+ovider:ResearchProvider: 
+Failed to parse JSON: 
+Expecting value: line 1 
+column 1 (char 0)
+WARNING:services.research_
+provider:OpenAISearch: 
+Chat Completions JSON 
+parse failed: 
+OpenAISearch expected a 
+JSON list, got: <class 
+'NoneType'>. Falling back 
+to URL extraction.
+INFO:services.research_pro
+vider:OpenAISearch: 
+Completed in 13.7s ù 0 
+raw results
+INFO:services.research_pro
+vider:[SEARCH-RETRY] 
+Retrying with targeted 
+query: Jordan Welch "ads" 
+OR "dropshipping"
+INFO:services.research_pro
+vider:OpenAISearch: Using 
+Responses API with gpt-5.2
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/responses "HTTP/1.1 
+200 OK"
+ERROR:services.research_pr
+ovider:OpenAISearch: 
+Responses API create() 
+failed: 'typing.Union' 
+object has no attribute 
+'__discriminator__' and 
+no __dict__ for setting 
+new attributes
+ERROR:services.research_pr
+ovider:[SEARCH-RETRY] 
+Retry failed: 
+'typing.Union' object has 
+no attribute 
+'__discriminator__' and 
+no __dict__ for setting 
+new attributes
+Topic Query: ads dropshipping ai
+[]

@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 try:
     print("Connecting to DB...")
     db.connect()

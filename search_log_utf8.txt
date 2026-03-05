@@ -1,0 +1,150 @@
+﻿python : INFO:services.res
+earch_provider:OpenAISearc
+h: creator_name='Jordan 
+Welch' | query='any other 
+videos'
+At line:1 char:1
++ python 
+test_false_positive.py 
+2>&1 | Tee-Object 
+-FilePath search_log. ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (I  
+  NFO:services.r...y ot   
+ her videos':String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+INFO:services.research_pro
+vider:[SEARCH-TOPIC] 
+raw='any other videos' 
+\u2192 enriched='ads 
+dropshipping ai'
+INFO:services.research_pro
+vider:[SEARCH-INTENT] 
+'any other videos' \u2192 
+intent=VIDEO
+INFO:services.research_pro
+vider:OpenAISearch: 
+Trying gpt-5.2 via Chat 
+Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 400 Bad Request"
+WARNING:services.research_
+provider:OpenAISearch: 
+gpt-5.2 failed: Error 
+code: 400 - {'error': 
+{'message': "Unknown 
+parameter: 
+'web_search_options'.", 
+'type': 
+'invalid_request_error', 
+'param': 
+'web_search_options', 
+'code': 
+'unknown_parameter'}}
+INFO:services.research_pro
+vider:OpenAISearch: 
+Trying 
+gpt-4o-search-preview via 
+Chat Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+gpt-4o-search-preview 
+returned 767 chars
+WARNING:services.research_
+provider:ResearchProvider:
+ Failed to parse JSON: 
+Expecting value: line 1 
+column 1 (char 0)
+INFO:services.research_pro
+vider:OpenAISearch: 
+Extracted 1 URLs from 
+natural text response
+INFO:services.research_pro
+vider:OpenAISearch: 
+Completed in 8.8s ù 1 raw 
+results
+INFO:services.research_pro
+vider:[URL-VALIDATE] 
+Verified: 'How I Make 
+$27,695 Per Week WITHOUT 
+Facebook Ads (Shopify 
+Dropshipping)' \u2192 http
+s://www.youtube.com/watch?
+v=9YgiuhnzCU8
+INFO:services.research_pro
+vider:[RELEVANCE] Strict 
+filtering dropped all 1 
+results. Returning empty 
+to trigger retry search.
+INFO:services.research_pro
+vider:OpenAISearch: After 
+relevance scoring ù 0 
+results kept
+INFO:services.research_pro
+vider:[SEARCH-RETRY] 
+Retrying with targeted 
+query: Jordan Welch "ads" 
+OR "dropshipping"
+INFO:services.research_pro
+vider:OpenAISearch: 
+Trying gpt-5.2 via Chat 
+Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 400 Bad Request"
+WARNING:services.research_
+provider:OpenAISearch: 
+gpt-5.2 failed: Error 
+code: 400 - {'error': 
+{'message': "Unknown 
+parameter: 
+'web_search_options'.", 
+'type': 
+'invalid_request_error', 
+'param': 
+'web_search_options', 
+'code': 
+'unknown_parameter'}}
+INFO:services.research_pro
+vider:OpenAISearch: 
+Trying 
+gpt-4o-search-preview via 
+Chat Completions
+INFO:httpx:HTTP Request: 
+POST https://api.openai.co
+m/v1/chat/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research_pro
+vider:OpenAISearch: 
+gpt-4o-search-preview 
+returned 406 chars
+WARNING:services.research_
+provider:OpenAISearch: 
+JSON parse failed: 
+Expecting value: line 1 
+column 2 (char 1)
+INFO:services.research_pro
+vider:OpenAISearch: 
+Extracted 1 URLs from 
+natural text response
+INFO:services.research_pro
+vider:[SEARCH-RETRY] Got 
+0 relevant results on 
+retry
+Topic Query: ads dropshipping ai
+
+=== FINAL RESULTS (0) ===
+[]

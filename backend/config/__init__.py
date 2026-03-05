@@ -1,4 +1,4 @@
-from config.platforms import (
+from backend.config.platforms import (
     PLATFORMS,
     get_platform,
     validate_url,

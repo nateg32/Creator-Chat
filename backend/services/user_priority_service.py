@@ -1,9 +1,9 @@
 
 import logging
 import json
-import rag
+import backend.rag as rag
 from typing import Dict, Any, List, Optional
-from settings import settings
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,8 @@ class UserPriorityService:
         Stage 1: Detect user skill, confusion, and clarity from history.
         Uses comprehensive classifiers.
         """
-        from services.classifiers import classifiers
-        from db import db
+        from backend.services.classifiers import classifiers
+        from backend.db import db
         
         # Resolve creator profile for context
         # In a real scenario, this would be passed in or fetched by creator_id

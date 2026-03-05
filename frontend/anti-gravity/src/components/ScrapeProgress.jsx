@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { getScrapeProgress, getScrapeItems } from "../api/client";
+import { getJobProgress, getScrapeItems } from "../api/client";
 import "./ScrapeProgress.css";
 
 const STAGE_CAPS = {
@@ -38,30 +38,33 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
 
     // Initial jump to show responsiveness
     setPercent(2);
+    let timeoutId;
+    let pollCount = 0;
 
     const poll = async () => {
-      if (stateRef.current.isComplete) return true;
+      if (stateRef.current.isComplete) return;
 
       try {
-        const res = await getScrapeProgress(scrapeId);
+        const res = await getJobProgress(scrapeId);
 
         if (res.status === "completed") {
           stateRef.current.isComplete = true;
           setPercent(100);
           if (onProgressRef.current) onProgressRef.current(100);
           handleCompletion(res);
-          return true; // Stop polling
+          return; // Stop polling
         }
 
         if (res.status === "failed" || res.status === "error") {
           stateRef.current.isComplete = true;
-          setError(res.error || "Search failed");
-          if (onErrorRef.current) onErrorRef.current(res.error || "Search failed");
-          return true;
+          setError(res.error_log || "Search failed");
+          if (onErrorRef.current) onErrorRef.current(res.error_log || "Search failed");
+          return;
         }
 
-        const newBackendPercent = res.percentage || res.percent || 0;
-        const currentStage = res.stage || "initializing";
+        const newBackendPercent = res.progress_percent || 0;
+        // Parse message for stage hints if needed, or default
+        const currentStage = res.message?.toLowerCase().includes("transcript") ? "transcripts" : "scraping";
 
         // Update Ref state
         stateRef.current.stage = currentStage;
@@ -77,21 +80,25 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
         }
 
         setData(res);
-        return false;
       } catch (err) {
         console.error("Poll error", err);
-        return false;
+      }
+
+      if (!stateRef.current.isComplete) {
+        pollCount++;
+        let delay = 1000;
+        if (pollCount > 10) delay = 5000;
+        else if (pollCount > 6) delay = 3000;
+        else if (pollCount > 4) delay = 2000;
+        else if (pollCount > 2) delay = 1500;
+
+        timeoutId = setTimeout(poll, delay);
       }
     };
 
-    const interval = setInterval(async () => {
-      const stop = await poll();
-      if (stop) clearInterval(interval);
-    }, 1000); // 1s polling
-
     poll(); // Immediate first check
 
-    return () => clearInterval(interval);
+    return () => clearTimeout(timeoutId);
   }, [scrapeId]);
 
   // Creep Animation Loop — no callback dependencies, uses refs
@@ -161,11 +168,15 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
   };
 
   if (error) {
+    const errorStr = String(error).toLowerCase();
+    const isDbError = errorStr.includes("violates") || errorStr.includes("sql") || errorStr.includes("exception") || errorStr.includes("constraint");
+    const displayError = isDbError ? "Search couldn't save some items. Please try again." : error;
+
     return (
       <div className="scrape-progress-container error">
         <div className="error-icon">⚠️</div>
         <h3>Search Failed</h3>
-        <p>{error}</p>
+        <p>{displayError}</p>
         <button onClick={() => window.location.reload()} className="secondary-button">Try Again</button>
       </div>
     );

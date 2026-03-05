@@ -1,5 +1,5 @@
-from db import db
-from services.research_provider import GeminiResearchProvider
+from backend.db import db
+from backend.services.research_provider import GeminiResearchProvider
 
 creator_id = 29
 profile = db.execute_one('SELECT * FROM creators WHERE id = %s', (creator_id,))

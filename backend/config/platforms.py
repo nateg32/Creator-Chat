@@ -172,7 +172,7 @@ def extract_handle(url: str, platform_key: str) -> Optional[str]:
     if platform_key == "instagram":
         if re.match(r"^@?[\w.]+$", u):
             return u.lstrip("@")
-        from lib.instagram_parser import parse_instagram_url
+        from backend.lib.instagram_parser import parse_instagram_url
         p = parse_instagram_url(u)
         return p.get("handle") if p else None
     try:

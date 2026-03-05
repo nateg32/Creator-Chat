@@ -1,8 +1,8 @@
 
 import logging
 from typing import Dict, Any, Optional
-import rag
-from settings import settings
+import backend.rag as rag
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 

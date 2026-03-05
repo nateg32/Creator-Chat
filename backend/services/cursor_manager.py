@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
-from db import db
+from backend.db import db
 import json
 
 class CursorManager:

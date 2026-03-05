@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from db import db
+from backend.db import db
 
 def list_tables():
     res = db.execute_query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")

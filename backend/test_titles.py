@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 
 q = """
 SELECT title, url 

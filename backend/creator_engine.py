@@ -11,10 +11,10 @@ from __future__ import annotations
 import re
 from typing import List, Dict, Any, Optional
 
-import rag
-from db import db
-from settings import settings
-from prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+import backend.rag as rag
+from backend.db import db
+from backend.settings import settings
+from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 
 try:
     from openai import OpenAI

@@ -1,5 +1,5 @@
 
-from db import db
+from backend.db import db
 import json
 
 def check_creator_settings():

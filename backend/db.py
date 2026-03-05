@@ -1,44 +1,38 @@
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from typing import Optional, List, Dict, Any
-from settings import settings
+from backend.settings import settings
 
 class Database:
     def __init__(self):
-        self.conn = None
+        self._pool = None
     
-    def connect(self):
-        """Create database connection"""
-        if self.conn is None or self.conn.closed:
-            self.conn = psycopg.connect(
-                host=settings.DB_HOST,
-                port=settings.DB_PORT,
-                dbname=settings.DB_NAME,
-                user=settings.DB_USER,
-                password=settings.DB_PASSWORD
-            )
-        return self.conn
+    @property
+    def pool(self) -> ConnectionPool:
+        """Lazy initialization of connection pool"""
+        if self._pool is None:
+            conninfo = f"host={settings.DB_HOST} port={settings.DB_PORT} dbname={settings.DB_NAME} user={settings.DB_USER} password={settings.DB_PASSWORD}"
+            # min_size 1, max_size 10 provides enough leeway for async workers without draining PG bounds
+            self._pool = ConnectionPool(conninfo=conninfo, min_size=1, max_size=10)
+        return self._pool
     
     def get_cursor(self):
-        """Get a cursor with dict_row for dict-like results"""
-        return self.connect().cursor(row_factory=dict_row)
+        """Not safely supported with pool pattern context-managers. Use execute_ APIs instead."""
+        raise NotImplementedError("Use execute_query, execute_update, or execute_insert instead of raw cursors with ConnectionPool.")
     
     def execute_query(self, query: str, params: tuple = None) -> List[Dict[str, Any]]:
         """Execute SELECT query and return results as list of dicts"""
-        with self.connect().cursor(row_factory=dict_row) as cur:
-            try:
-                cur.execute(query, params)
-                return cur.fetchall()
-            except Exception as e:
-                print(f"[DB] execute_query error: {e}")
-                print(f"[DB] Query: {query}")
-                print(f"[DB] Params type: {type(params)}")
-                if params:
-                    # Print shallow inspect of params to find dicts
-                    p_types = [type(p).__name__ for p in params] if isinstance(params, (list, tuple)) else str(type(params))
-                    print(f"[DB] Params types: {p_types}")
-                self.conn.rollback()
-                raise
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                try:
+                    cur.execute(query, params)
+                    return cur.fetchall()
+                except Exception as e:
+                    print(f"[DB] execute_query error: {e}")
+                    print(f"[DB] Query: {query}")
+                    conn.rollback()
+                    raise
     
     def execute_one(self, query: str, params: tuple = None) -> Optional[Dict[str, Any]]:
         """Execute SELECT query and return single result"""
@@ -47,41 +41,40 @@ class Database:
     
     def execute_update(self, query: str, params: tuple = None) -> int:
         """Execute INSERT/UPDATE/DELETE and return rowcount"""
-        with self.connect().cursor(row_factory=dict_row) as cur:
-            try:
-                cur.execute(query, params)
-                self.conn.commit()
-                return cur.rowcount
-            except Exception as e:
-                print(f"[DB] execute_update error: {e}")
-                print(f"[DB] Query: {query}")
-                if params:
-                    p_types = [type(p).__name__ for p in params] if isinstance(params, (list, tuple)) else str(type(params))
-                    print(f"[DB] Params types: {p_types}")
-                self.conn.rollback()
-                raise
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                try:
+                    cur.execute(query, params)
+                    conn.commit()
+                    return cur.rowcount
+                except Exception as e:
+                    print(f"[DB] execute_update error: {e}")
+                    print(f"[DB] Query: {query}")
+                    conn.rollback()
+                    raise
     
     def execute_insert(self, query: str, params: tuple = None) -> Any:
         """Execute INSERT and return inserted ID (assuming RETURNING clause)"""
-        with self.connect().cursor(row_factory=dict_row) as cur:
-            try:
-                cur.execute(query, params)
-                self.conn.commit()
-                result = cur.fetchone()
-                return result[list(result.keys())[0]] if result else None
-            except Exception as e:
-                print(f"[DB] execute_insert error: {e}")
-                print(f"[DB] Query: {query}")
-                if params:
-                    p_types = [type(p).__name__ for p in params] if isinstance(params, (list, tuple)) else str(type(params))
-                    print(f"[DB] Params types: {p_types}")
-                self.conn.rollback()
-                raise
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                try:
+                    cur.execute(query, params)
+                    conn.commit()
+                    result = cur.fetchone()
+                    return result[list(result.keys())[0]] if result else None
+                except Exception as e:
+                    print(f"[DB] execute_insert error: {e}")
+                    print(f"[DB] Query: {query}")
+                    conn.rollback()
+                    raise
     
     def close(self):
-        """Close connection"""
-        if self.conn and not self.conn.closed:
-            self.conn.close()
+        """Close connection pool"""
+        if self._pool:
+            self._pool.close()
 
 # Global database instance
 db = Database()
+
+def get_pool():
+    return db.pool

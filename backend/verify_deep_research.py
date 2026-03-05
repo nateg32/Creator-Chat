@@ -7,8 +7,8 @@ import os
 # Add current dir to path for imports
 sys.path.append(os.getcwd())
 
-from db import db
-from services.fingerprint_service import fingerprint_service
+from backend.db import db
+from backend.services.fingerprint_service import fingerprint_service
 
 async def verify():
     print("--- DEEP RESEARCH 2.0 VERIFICATION ---")

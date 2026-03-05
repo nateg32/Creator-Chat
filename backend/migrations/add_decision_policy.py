@@ -1,5 +1,5 @@
 
-from db import db
+from backend.db import db
 
 def migrate():
     print("Running migration: Adding decision_policy to creators table...")

@@ -5,7 +5,7 @@ import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
-from settings import settings
+from backend.settings import settings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -141,8 +141,8 @@ def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: in
     Returns:
         List of normalized reel items with transcript handling
     """
-    # Enforce limit of 10
-    limit = min(limit, 10)
+    # No limit enforced for testing
+    limit = max(1, limit)
 
     token = get_apify_token()
     
@@ -600,7 +600,7 @@ def search_youtube_channel(
     Scrape YouTube channel/videos using apidojo/youtube-scraper.
     Input: startUrls (list of strings), maxResults, maxResultsShorts.
     """
-    limit = min(max(1, int(limit)), 50)
+    limit = max(1, int(limit))
     token = get_apify_token()
     # Import time locally to ensure it's defined during parallel execution/reloads
     import time
@@ -765,7 +765,7 @@ def search_twitter_profile(
     Search Twitter/X profile using kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest.
     Uses advanced search fields like `from` and `within_time` / `since`.
     """
-    limit = min(max(1, int(limit)), 100)
+    limit = max(1, int(limit))
     token = get_apify_token()
     if not APIFY_AVAILABLE:
         raise ImportError("apify-client package is not installed. Run: pip install apify-client")

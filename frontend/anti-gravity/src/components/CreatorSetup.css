@@ -391,3 +391,40 @@
   background: #f0f2f5;
   color: #1877f2;
 }
+
+.input-error {
+  border-color: #ff3b30 !important;
+  box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.1) !important;
+}
+
+.validation-error {
+  color: #c62828;
+  font-size: 13px;
+  margin-top: -4px;
+  margin-left: 2px;
+}
+
+.validation-hint,
+.validation-suggestion {
+  color: #86868b;
+  font-size: 13px;
+  margin-top: -4px;
+  margin-left: 2px;
+}
+
+.text-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #007aff;
+  font-size: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 0.2s;
+}
+
+.text-button:hover {
+  text-decoration-color: #007aff;
+}

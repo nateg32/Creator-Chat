@@ -2,9 +2,9 @@
 import json
 import logging
 from typing import List, Dict, Any, Optional
-from db import db
-import rag
-from settings import settings
+from backend.db import db
+import backend.rag as rag
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 

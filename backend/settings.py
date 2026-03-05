@@ -36,10 +36,10 @@ class Settings:
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     
     # --- Production-Grade Model Router Tiering ---
-    MODEL_CLASSIFICATION: str = "gpt-4.1"       # Intent, Emotion, Domain, User State
-    MODEL_MEMORY: str = "gpt-4.1"               # Memory update & Extraction
+    MODEL_CLASSIFICATION: str = "gpt-4o-mini"       # Intent, Emotion, Domain, User State (FAST)
+    MODEL_MEMORY: str = "gpt-4o-mini"               # Memory update & Extraction (FAST)
     MODEL_SYNTHESIS: str = "gpt-5.1"            # RAG Synthesis
-    MODEL_VERIFY: str = "gpt-5.2"               # Web Search & Fact Verify
+    MODEL_VERIFY: str = "gpt-4o-mini"               # Web Search & Fact Verify (FAST)
     MODEL_MAIN_REPLY: str = "gpt-5.2"           # Final Creator Persona Output
     
     # Fallback models if above fail

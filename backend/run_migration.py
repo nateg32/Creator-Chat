@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 
 def migrate():
     print("Running migration: Adding style_fingerprint to creators table...")

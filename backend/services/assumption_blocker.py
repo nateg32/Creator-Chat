@@ -3,8 +3,8 @@ import logging
 import json
 import re
 from typing import Dict, Any, List, Optional
-import rag
-from settings import settings
+import backend.rag as rag
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 import json
 
 creator_id = 26

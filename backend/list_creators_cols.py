@@ -1,4 +1,4 @@
-from db import db
+from backend.db import db
 import json
 
 cols = db.execute_query("SELECT column_name FROM information_schema.columns WHERE table_name = 'creators'")

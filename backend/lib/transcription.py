@@ -4,7 +4,7 @@ Transcription fallback using OpenAI Whisper API
 import os
 import requests
 from typing import Optional
-from settings import settings
+from backend.settings import settings
 
 def transcribe_video(video_url: str) -> Optional[str]:
     """

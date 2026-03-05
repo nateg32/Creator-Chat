@@ -98,6 +98,8 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
             if (data.content) {
               fullAnswer += data.content;
               if (onToken) onToken(data.content);
+            } else if (data.error) {
+              throw new Error(data.error);
             }
           } catch (e) {
             console.error("Error parsing stream chunk:", e);
@@ -116,7 +118,7 @@ export function ingest({ creator_id, title, content, source, source_id, doc_type
 }
 
 // Search: legacy { url, limit } or config-based { creator_id, platform_configs? }
-export function search({ url, limit = 10, creator_id, platform_configs }) {
+export function search({ url, limit = 99999, creator_id, platform_configs }) {
   const body = {};
   if (url != null) body.url = url;
   body.limit = limit;
@@ -287,6 +289,15 @@ export async function approveIngest({ creator_id, queue_ids }) {
   return res.json();
 }
 
+// Backend Worker Migration (V3 Approval)
+export async function approveIngestCommit({ search_id, decisions, creator_id }) {
+  return postJson(`/approvals/${creator_id}/commit`, { search_id, decisions, creator_id });
+}
+
+export function getJobProgress(job_id) {
+  return getJson(`/jobs/${job_id}/progress`);
+}
+
 async function getJson(path) {
   let res;
   try {
@@ -349,6 +360,10 @@ export function getQueueItems(creator_id) {
 // Get items for a search run (new endpoint)
 export function getSearchItems(search_id) {
   return getJson(`/search/${search_id}/items`);
+}
+
+export function retryTranscript(item_id) {
+  return postJson(`/items/${item_id}/retry-transcript`);
 }
 
 // Alias for backward compatibility (scrape_id === search_id)

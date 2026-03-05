@@ -2,8 +2,8 @@ import re
 import json
 import openai
 from typing import List, Dict, Any
-from db import db
-from settings import settings
+from backend.db import db
+from backend.settings import settings
 
 _client = None
 

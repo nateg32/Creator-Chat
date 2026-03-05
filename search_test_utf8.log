@@ -1,0 +1,169 @@
+﻿python : INFO:core.memo
+ry_integration:Initiali
+zed Lightweight 
+MemoryIntegration at C:
+\Users\Nathan\Documents
+\Creator Bot\backend\me
+m0_simple_store.json
+At line:1 char:1
++ python 
+test_e2e_search.py > 
+search_test.log 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+~~~~
+    + CategoryInfo     
+         : NotSpecifi  
+  ed: (INFO:core.mem   
+ or...mple_store.js    
+on:String) [], Rem    
+oteException
+    + FullyQualifiedEr 
+   rorId : NativeComm  
+  andError
+ 
+INFO:core.interaction_e
+ngine:classify_route: 
+Conversation 
+continuation detected 
+-> ROUTE_2_TASK
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/embedd
+ings "HTTP/1.1 200 OK"
+INFO:grounded_rag:[LATE
+NCY] Explicit video 
+request detected. 
+Forcing web search.
+INFO:services.research_
+provider:OpenAISearch: 
+creator_name='Jordanwel
+ch' | query='Context: 
+You mean my first ever 
+upload on my channel, 
+or the first video I 
+ever filmed before I 
+had a channel? | 
+Query: what was your 
+first ever upload'
+INFO:services.research_
+provider:[SEARCH-TOPIC]
+ raw='Context: You 
+mean my first ever 
+upload on my channel, 
+or the first video I 
+ever filmed before I 
+had a channel? | 
+Query: what was your 
+first ever upload' 
+\u2192 
+enriched='Context: You 
+mean my first ever 
+upload on my channel, 
+or the first video I 
+ever filmed before I 
+had a channel? | 
+Query: what was your 
+first ever upload'
+INFO:services.research_
+provider:[SEARCH-INTENT
+] 'Context: You mean 
+my first ever upload 
+on my channel, or the 
+first video I ever 
+filmed before I had a 
+channel? | Query: what 
+was your first ever 
+upload' \u2192 
+intent=VIDEO
+INFO:services.research_
+provider:OpenAISearch: 
+Using Responses API 
+with gpt-5.2
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/respon
+ses "HTTP/1.1 200 OK"
+INFO:services.research_
+provider:OpenAISearch: 
+Responses API returned 
+2 chars
+INFO:services.research_
+provider:OpenAISearch: 
+Falling back to 
+gpt-4o-search-preview 
+Chat Completions
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/chat/c
+ompletions "HTTP/1.1 
+200 OK"
+INFO:services.research_
+provider:OpenAISearch: 
+Chat Completions 
+returned 389 chars
+INFO:services.research_
+provider:OpenAISearch: 
+Completed in 16.1s ù 0 
+raw results
+INFO:services.research_
+provider:[SEARCH-RETRY]
+ Retrying with 
+targeted query: 
+Jordanwelch "context" 
+OR "mean" OR "first"
+INFO:services.research_
+provider:OpenAISearch: 
+Using Responses API 
+with gpt-5.2
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/respon
+ses "HTTP/1.1 200 OK"
+INFO:services.research_
+provider:OpenAISearch: 
+Responses API returned 
+2 chars
+INFO:services.research_
+provider:OpenAISearch: 
+Falling back to 
+gpt-4o-search-preview 
+Chat Completions
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/chat/c
+ompletions "HTTP/1.1 
+200 OK"
+INFO:services.research_
+provider:OpenAISearch: 
+Chat Completions 
+returned 144 chars
+INFO:grounded_rag:[LATE
+NCY] Search fallback 
+phase: 28.20s 
+(fallback=True, 
+results=0)
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/embedd
+ings "HTTP/1.1 200 OK"
+INFO:httpx:HTTP 
+Request: POST https://a
+pi.openai.com/v1/chat/c
+ompletions "HTTP/1.1 
+200 OK"
+Creator: @JordanWelch | search_mode=hybrid
+
+[TTFT: 29.9s]
+Unfortunately, I donÆt have access to the exact title/link of my first ever upload right now.
+
+What I can tell you is the channel started with me just making e-commerce videos because my friends and family kept asking how I was making money onlineùand back then barely anyone was talking about it. The channel popped fast (10K+ subs in the first 3 months) because of that timing.
+
+Do you mean my first upload on @JordanWelch, or the first video I ever filmed before the channel?
+
+=== METRICS ===
+TTFT: 29.9s
+Total: 32.1s
+Length: 478 chars
+Deflected: True
+FAIL: Bot deflected despite web search results being available!

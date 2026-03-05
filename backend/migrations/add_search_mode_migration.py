@@ -4,7 +4,7 @@ import os
 # Add parent directory (backend root) to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import db
+from backend.db import db
 
 def run_migration():
     print("Migrating creators table for search_mode...")

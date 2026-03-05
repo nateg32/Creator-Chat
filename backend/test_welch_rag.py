@@ -1,10 +1,10 @@
-from db import db
-import rag
-from core.interaction_engine import InteractionEngine
+from backend.db import db
+import backend.rag as rag
+from backend.core.interaction_engine import InteractionEngine
 import json
 import os
 from openai import OpenAI
-from settings import settings
+from backend.settings import settings
 
 client = OpenAI(api_key=settings.OPENAI_API_KEY)
 

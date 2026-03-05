@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import asyncio
 from fastapi import BackgroundTasks
-from models import (
+from backend.models import (
     AskRequest, AskResponse,
     IngestRequest, IngestResponse,
     SearchRequest, SearchResponse,
@@ -25,14 +25,15 @@ from models import (
     UserSettings, UpdateUserSettingsRequest,
     CreateThreadRequest, ThreadResponse, MessageResponse, UpdateThreadRequest
 )
-from rag import get_persona
-import rag
-from creator_engine import ask as creator_ask
-from grounded_rag import grounded_rag_ask, grounded_rag_stream
-from ingest import ingest_document
-from apify_service import search_all, search_instagram_reels
-from lib.instagram_parser import parse_instagram_url
-from config.platforms import (
+from backend.rag import get_persona
+import backend.rag as rag
+from backend.creator_engine import ask as creator_ask
+from backend.grounded_rag import grounded_rag_ask, grounded_rag_stream
+from backend.ingest import ingest_document
+from backend.services.identity_manager import autofill_creator_identity
+from backend.apify_service import search_all, search_instagram_reels
+from backend.lib.instagram_parser import parse_instagram_url
+from backend.config.platforms import (
     PLATFORMS,
     get_platform,
     validate_url,
@@ -40,11 +41,12 @@ from config.platforms import (
     extract_handle,
     validate_time_filter,
 )
-from scraper_router import run_search_router, PLATFORM_MAPPERS
-from db import db
-from settings import settings
-from personality_analyzer import PersonalityAnalyzer
-from core.interaction_engine import interaction_engine
+from backend.scraper_router import run_search_router, PLATFORM_MAPPERS
+from backend.db import db
+from backend.settings import settings
+from backend.personality_analyzer import PersonalityAnalyzer
+from backend.core.interaction_engine import interaction_engine
+from backend.utils.name_formatter import normalize_creator_name
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +199,11 @@ def require_auth(session_id: Optional[str] = Cookie(None)) -> Dict[str, Any]:
 @app.on_event("startup")
 async def startup():
     """Initialize database connection"""
-    db.connect()
+    try:
+        db.execute_query("SELECT 1")
+        print("[STARTUP] DB connection OK")
+    except Exception as e:
+        print(f"[STARTUP] DB connection warning: {e}")
     # Migration: Add soul and fingerprint columns if missing
     try:
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")
@@ -497,7 +503,7 @@ async def logout(response: Response, session_id: Optional[str] = Cookie(None)):
 def list_platforms():
     """Returns platform config for UI: key, label, icon, placeholder, time_modes, default_max_items, supports_since_date."""
     print("[SEARCH] GET /platforms", flush=True)
-    from config.platforms import TIME_MODES, LAST_DAYS_OPTIONS
+    from backend.config.platforms import TIME_MODES, LAST_DAYS_OPTIONS
     try:
         result = [
             {
@@ -583,13 +589,20 @@ async def list_creators():
 async def create_creator(request: CreateCreatorRequest):
     """Create a new creator (not used in simplified UI)"""
     try:
+        # Name validation and normalization
+        name_raw = request.name
+        norm_res = normalize_creator_name(name_raw)
+        if not norm_res.is_valid:
+            raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
+        name = norm_res.normalized
+        
         platforms_json = json.dumps(request.platforms or [])
         query = """
             INSERT INTO creators (user_id, name, handle, platforms)
             VALUES (1, %s, %s, %s)
             RETURNING id, name, handle, platforms, created_at
         """
-        result = db.execute_query(query, (request.name, request.handle, platforms_json))
+        result = db.execute_query(query, (name, request.handle, platforms_json))
         
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create creator")
@@ -612,6 +625,61 @@ async def create_creator(request: CreateCreatorRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_creator_status(creator_id: int) -> dict:
+    row = db.execute_one(
+        "SELECT config_version, last_approved_version, fingerprint_status FROM creators WHERE id = %s",
+        (creator_id,)
+    )
+    if not row:
+        return {"ready_to_chat": False, "block_reason": "Creator not found."}
+    
+    config_version = row.get("config_version", 1)
+    last_approved = row.get("last_approved_version", 0)
+    fingerprint_status = row.get("fingerprint_status", "empty")
+    
+    # Needs reapproval if config incremented past last approved
+    needs_reapproval = last_approved < config_version
+    
+    # Get approved item count
+    approved_count = db.execute_one(
+        "SELECT COUNT(*) as count FROM scrape_items WHERE creator_handle = (SELECT handle FROM creators WHERE id = %s) AND review_status = 'approved'",
+        (creator_id,)
+    )
+    approved_item_count = approved_count["count"] if approved_count else 0
+    
+    # Get ingested doc count
+    doc_count = db.execute_one(
+        "SELECT COUNT(*) as count FROM documents WHERE creator_id = %s",
+        (creator_id,)
+    )
+    ingested_doc_count = doc_count["count"] if doc_count else 0
+    
+    ready_to_chat = (
+        not needs_reapproval 
+        and approved_item_count >= 1 
+        and (ingested_doc_count >= 1 or fingerprint_status == "ready")
+    )
+    
+    block_reason = ""
+    if needs_reapproval:
+        block_reason = "Changes detected. Approve content to continue."
+    elif approved_item_count == 0:
+        block_reason = "Approve content to build the fingerprint."
+    elif ingested_doc_count == 0 and fingerprint_status != "ready":
+        block_reason = "Waiting for content to be ingested."
+    elif fingerprint_status == "error":
+        block_reason = "Fingerprint failed to build. Try approving again."
+        
+    return {
+        "fingerprint_status": fingerprint_status,
+        "approved_item_count": approved_item_count,
+        "ingested_doc_count": ingested_doc_count,
+        "needs_reapproval": needs_reapproval,
+        "ready_to_chat": ready_to_chat,
+        "block_reason": block_reason
+    }
 
 def _validate_and_normalize_platform_configs(configs: Dict[str, Any]) -> Dict[str, Any]:
     """Validate URLs and time filters (exactly one mode per platform). Store handle per platform."""
@@ -684,10 +752,26 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         configs = _validate_and_normalize_platform_configs(request.platform_configs)
         if not configs:
             raise HTTPException(status_code=400, detail="At least one enabled platform with URL is required.")
+        
+        # Identity Auto-Fill Hook at Creation
+        dummy_profile = {"platform_configs": configs}
+        # Note: We don't have a creator_id yet, but autofill works purely on the dict currently.
+        # Pass 0 or None as the ID.
+        updated_profile = autofill_creator_identity(0, dummy_profile)
+        configs = updated_profile.get("platform_configs", configs)
+
         handle = request.handle or _derive_handle_from_configs(configs)
         if not handle:
             raise HTTPException(status_code=400, detail="Could not derive handle from URLs. Provide handle or fix platform URLs.")
-        name = (request.name or handle).strip()
+        
+        name_raw = request.name
+        if not name_raw:
+            raise HTTPException(status_code=400, detail={"field": "name", "message": "Creator name is required."})
+        norm_res = normalize_creator_name(name_raw)
+        if not norm_res.is_valid:
+            raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
+        name = norm_res.normalized
+
         user_row = db.execute_one("SELECT id FROM users ORDER BY id LIMIT 1", ())
         user_id = user_row["id"] if user_row and user_row.get("id") else 1
 
@@ -790,6 +874,9 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
             course_domains=creator.get("course_domains") or [],
             course_base_urls=creator.get("course_base_urls") or [],
             created_at=creator["created_at"].isoformat() if creator.get("created_at") and hasattr(creator["created_at"], "isoformat") else None,
+            name_raw=name_raw,
+            name_suggested=norm_res.suggested if norm_res else None,
+            name_flags=norm_res.flags if norm_res else None,
         )
     except HTTPException:
         raise
@@ -810,9 +897,15 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
 
         updates = []
         params = []
+        name_raw = None
+        norm_res = None
         if request.name is not None:
+            name_raw = request.name
+            norm_res = normalize_creator_name(name_raw)
+            if not norm_res.is_valid:
+                raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
             updates.append(f"{dcol} = %s")
-            params.append(request.name.strip())
+            params.append(norm_res.normalized)
         if request.handle is not None:
             updates.append("handle = %s")
             params.append(request.handle.strip())
@@ -821,6 +914,11 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             params.append(request.profile_picture_url)
         if request.platform_configs is not None:
             configs = _validate_and_normalize_platform_configs(request.platform_configs)
+            # Identity Auto-Fill Hook
+            dummy_profile = {"platform_configs": configs}
+            updated_profile = autofill_creator_identity(creator_id, dummy_profile)
+            configs = updated_profile.get("platform_configs", configs)
+
             try:
                 r = db.execute_one(
                     "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
@@ -876,7 +974,8 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
                 search_mode=existing.get("search_mode") or "hybrid",
                 created_at=None,
             )
-
+        updates.append("config_version = config_version + 1")
+        
         params.append(creator_id)
         db.execute_update(
             f"UPDATE creators SET {', '.join(updates)} WHERE id = %s",
@@ -901,6 +1000,9 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
         else:
             sf = json.loads(sf) if isinstance(sf, str) else {}
 
+        
+        status_obj = get_creator_status(creator_id)
+        
         return CreatorWithConfigResponse(
             id=row["id"],
             name=row.get("display_name") or row.get("handle") or "",
@@ -914,8 +1016,10 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             official_domains=row.get("official_domains") or [],
             course_domains=row.get("course_domains") or [],
             course_base_urls=row.get("course_base_urls") or [],
-            search_mode=row.get("search_mode") or "hybrid",
             created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
+            name_raw=row.get("name_raw"),
+            search_mode=row.get("search_mode") or "hybrid",
+            status=status_obj
         )
     except HTTPException:
         raise
@@ -1142,73 +1246,117 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
     Bypasses deep classification/planning for immediate time-to-first-token.
     """
     try:
-        # Pre-chat check: Ensure soul assets exist
-        from services.fingerprint_service import fingerprint_service
-        creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
-        if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
-            print(f"[CHAT] Missing soul for creator {request.creator_id}, triggering background generation...")
-            background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
+        status_obj = get_creator_status(request.creator_id)
+        if not status_obj["ready_to_chat"]:
+            raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
+            
+        import asyncio
+        
+        # 1. Fetch creator soul metadata + Check fingerprint (Async)
+        def _get_creator_meta():
+            creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
+            if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
+                print(f"[CHAT] Missing soul for creator {request.creator_id}, enqueueing FINGERPRINT job...")
+                db.execute_insert(
+                    "INSERT INTO system_jobs (creator_id, job_type, payload, message) VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Auto-enqueued from chat')",
+                    (request.creator_id, json.dumps({"creator_id": request.creator_id}))
+                )
+            return creator_row
+            
+        # 2. Fetch user prefs & history (Async)
+        def _get_user_meta():
+            user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
+            user_prefs = None
+            user_name = None
+            if user_row:
+                up = user_row.get("response_preferences")
+                user_name = user_row.get("display_name")
+                if isinstance(up, str):
+                    try: user_prefs = json.loads(up)
+                    except: pass
+                elif isinstance(up, dict): user_prefs = up
+            return user_prefs, user_name
 
-        # 1. Fetch user prefs & history (Sync/Fast)
-        user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
-        user_prefs = None
-        user_name = None
-        if user_row:
-            up = user_row.get("response_preferences")
-            user_name = user_row.get("display_name")
-            if isinstance(up, str):
-                try: user_prefs = json.loads(up)
-                except: pass
-            elif isinstance(up, dict): user_prefs = up
+        # 3. Thread Logic & History (Async)
+        def _get_thread_history():
+            conversation_history = []
+            if request.thread_id:
+                try:
+                    uuid.UUID(str(request.thread_id))
+                    
+                    # Auto-initialize thread if missing
+                    db.execute_update("""
+                        INSERT INTO chat_threads (id, user_id, creator_id, title)
+                        VALUES (%s, 1, %s, 'New conversation')
+                        ON CONFLICT (id) DO NOTHING
+                    """, (request.thread_id, request.creator_id))
 
-        # 2. Thread Logic & History
-        # Simplified for streaming: fetch history first, then stream, then save user msg.
-        conversation_history = []
-        if request.thread_id:
-            try:
-                uuid.UUID(str(request.thread_id))
-                msgs_rows = db.execute_query("""
-                    SELECT role, content FROM chat_messages 
-                    WHERE thread_id = %s 
-                    ORDER BY created_at DESC 
-                    LIMIT 10
-                """, (request.thread_id,))
-                if msgs_rows:
-                    msgs_rows.reverse()
-                    conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
-            except ValueError:
-                request.thread_id = None
+                    msgs_rows = db.execute_query("""
+                        SELECT role, content FROM chat_messages 
+                        WHERE thread_id = %s 
+                        ORDER BY created_at DESC 
+                        LIMIT 30
+                    """, (request.thread_id,))
+                    if msgs_rows:
+                        msgs_rows.reverse()
+                        conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
+                except ValueError:
+                    request.thread_id = None
+            return conversation_history
+
+        # Execute DB calls sequentially to prevent psycopg connection threading issues
+        # (psycopg single connections are not thread-safe for concurrent queries)
+        _get_creator_meta()
+        user_prefs, user_name = _get_user_meta()
+        conversation_history = _get_thread_history()
 
         # 3. Generator Wrapper to capture full answer
         async def stream_wrapper():
+            import copy
             full_answer = ""
-            async for chunk in grounded_rag_stream(
-                creator_id=request.creator_id,
-                question=request.question,
-                thread_id=request.thread_id,
-                conversation_history=conversation_history,
-                user_preferences=user_prefs,
-                user_name=user_name,
-                user_id=1 # Default user
-            ):
-                full_answer += chunk
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
-            
-            # 4. Finalize (Post-stream)
-            # After the stream is exhausted, we do the background work
-            if request.thread_id:
-                finalize_stream_interaction(request.thread_id, request.question, full_answer)
-                # Check for title update
-                thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
-                if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
-                    background_tasks.add_task(_update_thread_title_background, request.thread_id)
-            
-            yield "data: [DONE]\n\n"
+            try:
+                # Explicitly deepcopy conversation history to prevent frozenset cache poisoning
+                safe_history = copy.deepcopy(conversation_history) if conversation_history else []
+                async for chunk in grounded_rag_stream(
+                    creator_id=request.creator_id,
+                    question=request.question,
+                    thread_id=request.thread_id,
+                    conversation_history=safe_history,
+                    user_preferences=user_prefs,
+                    user_name=user_name,
+                    user_id=1 # Default user
+                ):
+                    if chunk == " ":
+                        # Early TTFB heartbeat
+                        yield f"data: {json.dumps({'content': ' '})}\n\n"
+                        continue
+                        
+                    full_answer += chunk
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+                
+                # 4. Finalize (Post-stream)
+                # After the stream is exhausted, we do the background work
+                if request.thread_id:
+                    finalize_stream_interaction(request.thread_id, request.question, full_answer)
+                    # Check for title update
+                    thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                    if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
+                        background_tasks.add_task(_update_thread_title_background, request.thread_id)
+                
+                yield "data: [DONE]\n\n"
+            except Exception as stream_err:
+                import traceback
+                tb = traceback.format_exc()
+                logger.error(f"Error mid-stream: {stream_err}")
+                logger.debug(tb)
+                yield f"data: {json.dumps({'error': str(stream_err), 'traceback': tb})}\n\n"
 
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
 
     except Exception as e:
-        logger.error(f"Streaming failed: {e}")
+        import traceback
+        logger.error(f"Streaming failed before started: {e}")
+        logger.debug(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 def finalize_stream_interaction(thread_id: str, question: str, answer: str):
@@ -1235,20 +1383,51 @@ def finalize_stream_interaction(thread_id: str, question: str, answer: str):
         """, (preview, thread_id))
         
         # Sync memory in background
-        # (This is already handled by grounded_rag_stream calling memory_service if we wanted, 
-        # but InteractionEngine.store_interaction is also an option)
-        interaction_engine.store_interaction("1", "1", thread_id, question, answer) # Dummy IDs for now
+        from db import interaction_engine
+        interaction_engine.store_interaction("1", "1", thread_id, question, answer)
     except Exception as e:
-        logger.error(f"Failed to finalize stream: {e}")
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        err_msg = str(e).lower()
+        if "foreign key constraint" in err_msg or "violates foreign key" in err_msg:
+            logger.warning(f"Thread {thread_id} was likely deleted during streaming. Ignoring save.")
+        else:
+            logger.error(f"Failed to finalize stream: {e}")
+            logger.debug(traceback.format_exc())
+
+@app.post("/creators/{creator_id}/fingerprint/generate")
+async def generate_fingerprint_endpoint(creator_id: int):
+    """
+    Manually trigger or regenerate a creator fingerprint via background worker queue.
+    """
+    try:
+        creator_row = db.execute_one("SELECT id FROM creators WHERE id = %s", (creator_id,))
+        if not creator_row:
+            raise HTTPException(status_code=404, detail="Creator not found")
+
+        job_id = db.execute_insert(
+            """
+            INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+            VALUES (%s, 'FINGERPRINT', %s::jsonb, 'queued', 0, 'Fingerprint generation enqueued')
+            RETURNING id
+            """,
+            (creator_id, json.dumps({"creator_id": creator_id}))
+        )
+        return {"job_id": job_id, "status": "queued"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
     # Pre-chat check: Ensure soul assets exist
-    from services.fingerprint_service import fingerprint_service
     creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
     if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
-        print(f"[ASK] Missing soul for creator {request.creator_id}, triggering background generation...")
-        background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
+        print(f"[ASK] Missing soul for creator {request.creator_id}, enqueueing FINGERPRINT job...")
+        db.execute_insert(
+            "INSERT INTO system_jobs (creator_id, job_type, payload, message) VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Auto-enqueued from chat')",
+            (request.creator_id, json.dumps({"creator_id": request.creator_id}))
+        )
 
     """
     Ask a question using Grounded-RAG Loop algorithm.
@@ -1256,6 +1435,10 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
     Handles thread persistence if thread_id is provided.
     """
     try:
+        status_obj = get_creator_status(request.creator_id)
+        if not status_obj["ready_to_chat"]:
+            raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
+            
         # Get user preferences
         user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
         user_prefs = None
@@ -1278,6 +1461,14 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
              # Validate UUID format
              try:
                  uuid.UUID(str(request.thread_id))
+                 
+                 # Auto-initialize thread if missing
+                 db.execute_update("""
+                     INSERT INTO chat_threads (id, user_id, creator_id, title)
+                     VALUES (%s, 1, %s, 'New conversation')
+                     ON CONFLICT (id) DO NOTHING
+                 """, (request.thread_id, request.creator_id))
+                 
                  # Verify thread exists
                  thread = db.execute_one("SELECT id, user_id, title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
              except ValueError:
@@ -1476,8 +1667,47 @@ def _normalize_timestamp(ts: Any) -> Optional[datetime]:
     return None
 
 
+_allowed_transcript_statuses = None
+
+def normalize_transcript_status(input_status: str) -> str:
+    global _allowed_transcript_statuses
+    if _allowed_transcript_statuses is None:
+        try:
+            from backend.db import db
+            res = db.execute_query("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'scrape_items_transcript_status_check'")
+            if res and res[0].get('def'):
+                def_str = res[0]['def']
+                import re
+                matches = re.findall(r"'([^']+)'::text", def_str)
+                if matches:
+                    _allowed_transcript_statuses = set(matches)
+        except Exception as e:
+            print(f"Warning: failed to load transcript_status constraint: {e}", flush=True)
+            
+    if not _allowed_transcript_statuses:
+        _allowed_transcript_statuses = {"present", "missing", "error", "not_started", "queued", "processing"}
+        
+    s = str(input_status).lower()
+    if s in _allowed_transcript_statuses:
+        return s
+        
+    print(f"Warning: Normalizing invalid transcript_status '{s}'", flush=True)
+    
+    if "not_started" in _allowed_transcript_statuses:
+        return "not_started"
+    elif "queued" in _allowed_transcript_statuses:
+        return "queued"
+    elif "missing" in _allowed_transcript_statuses:
+        return "missing"
+    elif "pending" in _allowed_transcript_statuses:
+        return "pending"
+    else:
+        return sorted(list(_allowed_transcript_statuses))[0]
+
+from backend.services.duplicate_detection import generate_canonical_key, compute_normalized_text, simhash64, find_duplicate
+
 def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: List[Dict[str, Any]], source_url: str, platform: str, mode: str, search_run_id: Optional[str] = None):
-    """Create scrape_run + scrape_items, return (search_run_id, response_items)."""
+    """Create scrape_run + scrape_items, return (search_run_id, response_items, failed_items)."""
     if not search_run_id:
         search_run_id = str(uuid.uuid4())
     scrape_run_query = """
@@ -1490,6 +1720,7 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
         (search_run_id, source_url, platform, mode, creator_handle, len(normalized_items))
     )
     response_items = []
+    failed_items = []
     for item in normalized_items:
         base_meta = item.get("metadata") or {}
         if not isinstance(base_meta, dict):
@@ -1533,12 +1764,25 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
         published_at_raw = item.get("published_at")
         published_at = _normalize_timestamp(published_at_raw)
         
+        # Duplicate detection
+        canon_key = generate_canonical_key(item["source_url"], item_platform)
+        norm_text = compute_normalized_text(
+            item.get("title", ""),
+            item.get("description", ""),
+            item.get("caption", "")
+        )
+        fingerprint = simhash64(norm_text)
+        is_primary, dup_item_id, dup_method, dup_confidence = find_duplicate(
+            canon_key, fingerprint, item_creator_handle
+        )
+        
         insert_query = """
             INSERT INTO scrape_items (
                 id, scrape_run_id, creator_handle, content_type, source_url,
-                caption, transcript, transcript_status, published_at, metadata, review_status
+                caption, transcript, transcript_status, published_at, metadata, review_status,
+                canonical_key, content_fingerprint, is_primary, duplicate_of_item_id, duplicate_method, duplicate_confidence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_url) DO UPDATE SET
                 scrape_run_id = EXCLUDED.scrape_run_id,
                 creator_handle = EXCLUDED.creator_handle,
@@ -1548,17 +1792,36 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
                 transcript_status = EXCLUDED.transcript_status,
                 published_at = EXCLUDED.published_at,
                 metadata = EXCLUDED.metadata,
-                review_status = 'pending_review'
+                review_status = 'pending_review',
+                canonical_key = EXCLUDED.canonical_key,
+                content_fingerprint = EXCLUDED.content_fingerprint,
+                is_primary = EXCLUDED.is_primary,
+                duplicate_of_item_id = EXCLUDED.duplicate_of_item_id,
+                duplicate_method = EXCLUDED.duplicate_method,
+                duplicate_confidence = EXCLUDED.duplicate_confidence
             RETURNING id
         """
-        db_item_id = db.execute_insert(
-            insert_query,
-            (
-                str(uuid.uuid4()), search_run_id, item_creator_handle, item["content_type"],
-                item["source_url"], item.get("caption"), item.get("transcript"),
-                item["transcript_status"], published_at, metadata_json, "pending_review"
+        
+        norm_status = normalize_transcript_status(item.get("transcript_status", "missing"))
+        
+        try:
+            db_item_id = db.execute_insert(
+                insert_query,
+                (
+                    str(uuid.uuid4()), search_run_id, item_creator_handle, item["content_type"],
+                    item["source_url"], item.get("caption"), item.get("transcript"),
+                    norm_status, published_at, metadata_json, "pending_review",
+                    canon_key, fingerprint, is_primary, dup_item_id, dup_method, dup_confidence
+                )
             )
-        )
+        except Exception as e:
+            print(f"Failed to insert scrape item {item.get('source_url')}: {e}", flush=True)
+            failed_items.append({
+                "url": item.get("source_url"),
+                "reason_sanitized": "Database insertion failed for this item."
+            })
+            continue
+
         preview_text = item.get("transcript") or item.get("caption", "") or ""
         preview = preview_text[:200] + "..." if len(preview_text) > 200 else preview_text
         # Serialize published_at for JSON response
@@ -1574,13 +1837,15 @@ def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: 
             "source_url": item["source_url"],
             "caption": item.get("caption"),
             "creator_handle": item_creator_handle,
-            "transcript_status": item["transcript_status"],
+            "transcript_status": norm_status,
             "published_at": published_at_str,
             "platform": item_platform,
             "metadata": meta,
-            "preview": preview
+            "preview": preview,
+            "is_primary": is_primary,
+            "duplicate_of_item_id": dup_item_id
         })
-    return search_run_id, response_items
+    return search_run_id, response_items, failed_items
 
 
 def _run_search_background(
@@ -1709,7 +1974,7 @@ def _run_search_background(
         })
         
         # Save items to database
-        _execute_search_run(
+        _, response_items, failed_items = _execute_search_run(
             creator_id, creator_handle, normalized_items,
             source_url or f"creator:{creator_id}", platform_tag, "profile",
             search_run_id=search_run_id
@@ -1731,19 +1996,25 @@ def _run_search_background(
                 }
             
             prog.update({
-                "status": "completed",
+                "status": "running",
                 "stage": "finalizing",
-                "percent": 100.0,
-                "items_found": len(normalized_items),
+                "phase": "transcripts",
+                "percent": 70.0,
+                "items_found": len(response_items),
+                "failed_count": len(failed_items),
                 "platform_statuses": platform_statuses,
                 "platform_summary": platform_summary,
                 "completed": enabled_count,
-                "message": "Search completed"
+                "message": "Scrape complete, processing transcripts..."
             })
             _set_search_progress(search_run_id, prog)
             print(f"[SEARCH] Final summary for search {search_run_id}:")
             for key, summary in platform_summary.items():
                 print(f"  {summary['label']}: {summary['status']} ({summary['items_found']} items)" + (f" - {summary['error']}" if summary['error'] else ""))
+                
+        # Sequence transcripts pipeline
+        from backend.services.transcript_worker import run_transcripts_for_search
+        run_transcripts_for_search(search_run_id)
     except BaseException as e:
         msg = str(e) or repr(e) or "Critical unknown error"
         print(f"[SEARCH] Background task CRASH: {msg}", flush=True)
@@ -1826,15 +2097,24 @@ async def search_endpoint(request: SearchRequest, background_tasks: BackgroundTa
                     break
             platform_tag = "multi" if len(pc) > 1 else (list(pc.keys())[0] if pc else "instagram")
             
-            # Start background scraping task
-            background_tasks.add_task(
-                _run_search_background,
-                search_run_id,
-                request.creator_id,
-                creator_handle,
-                pc,
-                source_url or f"creator:{request.creator_id}",
-                platform_tag,
+            # Start background scraping task by enqueuing to system_jobs
+            # We store the required params in the payload
+            job_payload = {
+                "search_id": search_run_id,
+                "creator_id": request.creator_id,
+                "creator_handle": creator_handle,
+                "platform_configs": pc,
+                "source_url": source_url or f"creator:{request.creator_id}",
+                "platform_tag": platform_tag
+            }
+            
+            db.execute_insert(
+                """
+                INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+                VALUES (%s, 'SCRAPE', %s::jsonb, 'queued', 0, 'Scrape job enqueued')
+                RETURNING id
+                """,
+                (request.creator_id, json.dumps(job_payload))
             )
             
             # Return immediately with search_id
@@ -1862,10 +2142,17 @@ async def search_endpoint(request: SearchRequest, background_tasks: BackgroundTa
                 raise HTTPException(status_code=500, detail=f"Apify scraping failed: {str(e)}.")
             if not normalized_items:
                 raise HTTPException(status_code=404, detail=f"No Instagram reels found for @{handle}")
-            search_run_id, response_items = _execute_search_run(
+            search_run_id, response_items, failed_items = _execute_search_run(
                 creator_id, handle, normalized_items, request.url, "instagram", mode
             )
-            return {"search_id": search_run_id, "items": response_items, "creator_id": creator_id}
+            return {
+                "search_id": search_run_id, 
+                "items": response_items, 
+                "creator_id": creator_id,
+                "success_count": len(response_items),
+                "failed_count": len(failed_items),
+                "failed_items": failed_items
+            }
         raise HTTPException(status_code=400, detail="Provide either url or creator_id.")
     except HTTPException:
         raise
@@ -1897,10 +2184,20 @@ async def get_search_progress(search_id: str):
     else:
         percentage = int((progress.get("completed", 0) / progress.get("total", 1) * 100)) if progress.get("total", 0) > 0 else 0
         
+    counts = {
+        "platforms_done": progress.get("completed", 0),
+        "platforms_total": progress.get("total", 0),
+        "items_total": progress.get("items_found", 0),
+        "transcripts_done": progress.get("transcripts_done", 0),
+        "failures": progress.get("failed_count", 0)
+    }
+        
     return {
         **progress,
-        "percentage": percentage,  # frontend expects "percentage" (or we can migrate to "percent")
+        "percentage": percentage,
         "percent": percentage,
+        "phase": progress.get("phase", "scrape"),
+        "counts": counts
     }
 
 
@@ -1934,6 +2231,8 @@ async def get_search_items(search_id: str):
                 "source_url": row["source_url"],
                 "caption": row.get("caption"),
                 "creator_handle": row.get("creator_handle"),
+                "status": row.get("review_status", "pending"),
+                "item_status": row.get("review_status", "pending"),
                 "transcript_status": row.get("transcript_status", "missing"),
                 "published_at": row.get("published_at").isoformat() if row.get("published_at") and hasattr(row.get("published_at"), "isoformat") else str(row.get("published_at")) if row.get("published_at") else None,
                 "platform": platform,
@@ -1981,7 +2280,7 @@ async def approve_ingest(request: ApproveIngestRequestNew):
         ingested = []
 
         # These are the core helpers for chunking + embedding
-        from ingest import chunk_text_structured, embed_chunks
+        from backend.ingest import chunk_text_structured, embed_chunks
 
         # Process each row
         for row in queue_rows:
@@ -2059,11 +2358,10 @@ async def approve_ingest(request: ApproveIngestRequestNew):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/approve_ingest_v2", response_model=ApproveIngestResponseNew)
-async def approve_ingest_v2(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks):
+@app.post("/approvals/{creator_id}/commit")
+async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestRequestV2):
     """
-    Approve/deny items from search_items staging table and ingest approved items.
-    Handles transcript fallback if TRANSCRIBE_ON_INGEST is enabled.
+    Approve items from search_items staging table and enqueue INGEST job.
     """
     try:
         # Separate approved and denied, handling doc_ prefixes
@@ -2088,12 +2386,12 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2, background_tasks: B
                 elif decision == "deny":
                     denied_item_ids.append(raw_id)
 
-        # Delete existing documents if requested
+        # Delete existing documents synchronously since it's fast
         if doc_ids_to_delete:
             db.execute_update("DELETE FROM chunks WHERE document_id = ANY(%s)", (doc_ids_to_delete,))
             db.execute_update("DELETE FROM documents WHERE id = ANY(%s)", (doc_ids_to_delete,))
+            # DB cascades will clean up creator_documents
         
-        # Update review_status for denied items
         sid = request.search_id or request.scrape_id
         if denied_item_ids:
             deny_query = """
@@ -2104,261 +2402,65 @@ async def approve_ingest_v2(request: ApproveIngestRequestV2, background_tasks: B
             db.execute_update(deny_query, (denied_item_ids, sid))
         
         if not approved_item_ids:
+            # If nothing to ingest but things were deleted, we might want to regenerate fingerprint
             if doc_ids_to_delete:
-                from services.fingerprint_service import fingerprint_service
-                background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
-            return ApproveIngestResponseNew(approved=0, ingested=[])
-        
-        # Fetch approved items
-        fetch_query = """
-            SELECT id, creator_handle, source_url, caption, transcript, 
-                   transcript_status, published_at, metadata, content_type
-            FROM scrape_items
-            WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s
-        """
-        items = db.execute_query(fetch_query, (approved_item_ids, sid))
-        
-        if not items:
-            raise HTTPException(status_code=404, detail="No approved items found")
-        
-        # Use creator_id provided by the caller (per-handle creator records)
-        creator_id = request.creator_id
-        
-        ingested = []
-        from ingest import chunk_text_structured, embed_chunks
-        try:
-            from lib.transcription import transcribe_video
-        except ImportError:
-            # Fallback if transcription module not available
-            def transcribe_video(url):
-                return None
-        
-        for item in items:
-            item_id = item["id"]
-            try:
-                # Handle transcript fallback if needed
-                transcript = item.get("transcript") or ""
-                transcript_status = item.get("transcript_status", "missing")
-                
-                if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
-                    # Try to transcribe
-                    metadata = item.get("metadata") or {}
-                    if isinstance(metadata, str):
-                        metadata = json.loads(metadata) if metadata else {}
-                    
-                    # Try various keys for video media link
-                    video_url = metadata.get("video_url") or metadata.get("videoUrl") or metadata.get("video") or ""
-                    
-                    # If it's a YouTube item and we have a videoId, construct the watch URL
-                    # Note: transcribe_video needs a direct media file, but Whisper might work 
-                    # better with different inputs in the future. For now, prioritize media file.
-                    if not video_url:
-                        vid = metadata.get("videoId") or metadata.get("id")
-                        if metadata.get("platform") == "youtube" and vid:
-                            video_url = f"https://www.youtube.com/watch?v={vid}"
-                    
-                    # Fallback to source_url if still no video_url
-                    if not video_url:
-                        video_url = item.get("source_url") or ""
-                    
-                    if video_url:
-                        try:
-                            transcript = transcribe_video(video_url)
-                            if transcript:
-                                transcript_status = "present"
-                                # Update search_items with transcript
-                                update_query = """
-                                    UPDATE scrape_items
-                                    SET transcript = %s, transcript_status = 'present'
-                                    WHERE id = %s::uuid
-                                """
-                                db.execute_update(update_query, (str(transcript), str(item_id)))
-                            else:
-                                transcript_status = "error"
-                        except Exception as e:
-                            print(f"Transcription failed for {item_id}: {e}")
-                            transcript_status = "error"
-                
-                # Use transcript if available, otherwise caption
-                text_content = transcript if transcript and transcript.strip() else (item.get("caption") or "")
-                
-                if not text_content:
-                    print(f"Skipping item {item_id}: no transcript or caption")
-                    continue
-                
-                # Extract source metadata (content_id, platform, title) from item metadata
-                source_url = item["source_url"]
-                item_meta = item.get("metadata") or {}
-                if isinstance(item_meta, str):
-                    try:
-                        item_meta = json.loads(item_meta)
-                    except:
-                        item_meta = {}
-                
-                # Get platform and content_id from metadata (set by scrapers)
-                platform = item_meta.get("platform") or item.get("metadata", {}).get("platform") if isinstance(item.get("metadata"), dict) else None
-                if not platform:
-                    # Fallback: detect from URL
-                    if "instagram.com" in source_url:
-                        platform = "instagram"
-                    elif "youtube.com" in source_url or "youtu.be" in source_url:
-                        platform = "youtube"
-                    elif "twitter.com" in source_url or "x.com" in source_url:
-                        platform = "twitter"
-                    elif "tiktok.com" in source_url:
-                        platform = "tiktok"
-                    elif "linkedin.com" in source_url:
-                        platform = "linkedin"
-                    elif "facebook.com" in source_url:
-                        platform = "facebook"
-                    elif "reddit.com" in source_url:
-                        platform = "reddit"
-                    else:
-                        platform = "unknown"
-                
-                # Get content_id and title from metadata (set by search)
-                content_id = item_meta.get("content_id") or ""
-                title_from_meta = item_meta.get("title") or ""
-                
-                # Fallback extraction if not in metadata
-                if not content_id:
-                    from apify_service import extract_content_id
-                    content_id = extract_content_id(source_url, platform)
-                if not title_from_meta:
-                    from apify_service import extract_title_from_metadata
-                    title_from_meta = extract_title_from_metadata({}, platform, source_url)
-                
-                # Create document with full source metadata
-                doc_metadata = {
-                    "type": "content",
-                    "platform": platform,
-                    "content_type": item.get("content_type", "unknown"),
-                    "creator_handle": item["creator_handle"],
-                    "source_url": source_url,
-                    "content_id": content_id,  # Video/post ID for linking
-                    "canonical_url": source_url,  # Full URL for linking
-                    "search_run_id": sid,
-                    "transcript_status": transcript_status,
-                    "published_at": item.get("published_at"),
-                }
-                # Merge any additional metadata (but don't overwrite our source fields)
-                for k, v in item_meta.items():
-                    if k not in ("platform", "content_id", "canonical_url", "title"):
-                        doc_metadata[k] = v
-                
-                doc_query = """
-                    INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s::jsonb)
-                    ON CONFLICT (source, source_id) DO UPDATE SET
-                        creator_id = EXCLUDED.creator_id,
-                        title = EXCLUDED.title,
-                        content = EXCLUDED.content,
-                        metadata = EXCLUDED.metadata
+                job_id = db.execute_insert(
+                    """
+                    INSERT INTO system_jobs (creator_id, job_type, payload, message)
+                    VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Regenerating fingerprint after deletions')
                     RETURNING id
-                """
-                title = str(title_from_meta) if title_from_meta else "Untitled"
-                source_id = str(content_id) if content_id else f"search_item_{item_id}"
-                # Use platform as source for documents table
-                source_platform = str(platform) if platform else "unknown"
-                
-                document_id = db.execute_insert(
-                    doc_query,
-                    (creator_id, title, text_content, source_platform, str(source_id), json.dumps(doc_metadata, default=str))
+                    """,
+                    (creator_id, json.dumps({"creator_id": creator_id}))
                 )
-                
-                if not document_id:
-                    continue
-                
-                # Chunk the document
-                chunks = chunk_text_structured(
-                    text=text_content,
-                    creator_id=creator_id,
-                    document_id=document_id,
-                    chunk_size=800,
-                    overlap=120
-                )
-                
-                # Store chunks with full source_ref metadata
-                chunk_ids = []
-                for chunk in chunks:
-                    # Build source_ref for this chunk (links back to parent document)
-                    source_ref = {
-                        "platform": platform,
-                        "content_id": content_id,
-                        "canonical_url": source_url,
-                        "title": title,
-                        "published_at": item.get("published_at"),
-                        "content_type": item.get("content_type", "unknown"),
-                    }
-                    
-                    chunk_metadata = {
-                        "platform": platform,
-                        "type": item.get("content_type", "unknown"),
-                        "creator_handle": item["creator_handle"],
-                        "source_url": source_url,
-                        "content_id": content_id,
-                        "canonical_url": source_url,
-                        "title": title,
-                        "search_run_id": request.search_id,
-                        "transcript_status": transcript_status,
-                        "published_at": item.get("published_at"),
-                        "source_ref": source_ref,  # Full source reference for linking
-                    }
-                    
-                    chunk_id = db.execute_insert(
-                        """
-                        INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
-                        VALUES (%s, %s, %s, %s, %s::jsonb)
-                        ON CONFLICT (document_id, chunk_index) DO UPDATE SET
-                            chunk_text = EXCLUDED.chunk_text,
-                            metadata = EXCLUDED.metadata,
-                            creator_id = EXCLUDED.creator_id
-                        RETURNING id
-                        """,
-                        (creator_id, document_id, chunk["index"], chunk["text"], json.dumps(chunk_metadata, default=str))
-                    )
-                    if chunk_id:
-                        chunk_ids.append(chunk_id)
-                
-                # Embed chunks
-                embed_chunks(chunk_ids)
-                
-                # Update search_items status to approved
-                update_status_query = """
-                    UPDATE scrape_items
-                    SET review_status = 'approved'
-                    WHERE id = %s::uuid
-                """
-                db.execute_update(update_status_query, (str(item_id),))
-                
-                ingested.append(
-                    ApproveIngestItem(
-                        queue_id=str(item_id),  # Using item_id as queue_id for compatibility
-                        document_id=document_id,
-                        chunks_inserted=len(chunk_ids)
-                    )
-                )
-            except Exception as e:
-                print(f"Error processing item {item_id}: {e}")
-                # Mark as error but continue
-                error_query = """
-                    UPDATE scrape_items
-                    SET review_status = 'denied', transcript_status = 'error'
-                    WHERE id = %s::uuid
-                """
-                db.execute_update(error_query, (str(item_id),))
-                continue
+                return {"job_id": job_id, "approved": 0}
+            return {"job_id": None, "approved": 0}
         
-        if ingested:
-            from services.fingerprint_service import fingerprint_service
-            background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
+        # Enqueue INGEST job
+        job_payload = {
+            "creator_id": creator_id,
+            "search_id": sid,
+            "approved_item_ids": approved_item_ids
+        }
+        
+        job_id = db.execute_insert(
+            """
+            INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+            VALUES (%s, 'INGEST', %s::jsonb, 'queued', 0, 'Ingest job enqueued')
+            RETURNING id
+            """,
+            (creator_id, json.dumps(job_payload))
+        )
             
-        return ApproveIngestResponseNew(approved=len(approved_item_ids), ingested=ingested)
-    except HTTPException:
-        raise
+        return {"job_id": job_id, "approved": len(approved_item_ids)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/jobs/{job_id}/progress")
+async def get_job_progress(job_id: str):
+    """
+    Universal polling endpoint for all system_jobs. Return status, progress, and error logs.
+    """
+    try:
+        job = db.execute_one(
+            "SELECT id, creator_id, job_type, status, progress_percent, message, error_log FROM system_jobs WHERE id = %s",
+            (job_id,)
+        )
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+            
+        return {
+            "job_id": str(job["id"]),
+            "creator_id": job["creator_id"],
+            "job_type": job["job_type"],
+            "status": job["status"],  # queued, processing, completed, failed
+            "progress_percent": job["progress_percent"],
+            "message": job["message"] or "",
+            "error_log": job["error_log"]
+        }
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/approve_ingest_v2/stream")
 async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks):
@@ -2366,6 +2468,7 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
     Streaming version of approve_ingest_v2 with real-time progress updates via SSE.
     Returns Server-Sent Events with progress information.
     """
+    import asyncio
     async def event_generator():
         try:
             # Separate approved and denied, handling doc_ prefixes
@@ -2433,9 +2536,9 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
             
             creator_id = request.creator_id
             ingested = []
-            from ingest import chunk_text_structured, embed_chunks
+            from backend.ingest import chunk_text_structured, embed_chunks
             try:
-                from lib.transcription import transcribe_video
+                from backend.lib.transcription import transcribe_video
             except ImportError:
                 def transcribe_video(url):
                     return None
@@ -2524,10 +2627,10 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                     title_from_meta = item_meta.get("title") or ""
                     
                     if not content_id:
-                        from apify_service import extract_content_id
+                        from backend.apify_service import extract_content_id
                         content_id = extract_content_id(source_url, platform)
                     if not title_from_meta:
-                        from apify_service import extract_title_from_metadata
+                        from backend.apify_service import extract_title_from_metadata
                         title_from_meta = extract_title_from_metadata({}, platform, source_url)
                     
                     # Create document
@@ -2649,6 +2752,11 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                     """
                     db.execute_update(update_status_query, (str(item_id),))
                     
+                    db.execute_update(
+                        "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
+                        (creator_id,)
+                    )
+                    
                     ingested.append(
                         ApproveIngestItem(
                             queue_id=str(item_id),
@@ -2680,8 +2788,9 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                 }
             }
             if ingested or doc_ids_to_delete:
-                from services.fingerprint_service import fingerprint_service
-                background_tasks.add_task(fingerprint_service.generate_fingerprint_async, request.creator_id)
+                from backend.services.fingerprint_service import fingerprint_service
+                # Use asyncio.create_task since BackgroundTasks inside a generator won't execute after StreamingResponse
+                asyncio.create_task(fingerprint_service.generate_fingerprint_async(request.creator_id))
             
             yield f"data: {json.dumps(result)}\n\n"
             
@@ -2849,10 +2958,44 @@ async def get_queue_items(creator_id: int):
         # Return empty list on error to avoid crashing UI
         return {"search_id": str(creator_id), "items": []}
 
+@app.post("/items/{item_id}/retry-transcript")
+def retry_transcript(item_id: str, background_tasks: BackgroundTasks):
+    """
+    Manually retries processing the transcript for a given scrape_item.
+    """
+    row = db.execute_one(
+        "SELECT id, source_url, platform, caption, is_primary FROM scrape_items WHERE id = %s",
+        (item_id,)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+        
+    if not row.get("is_primary"):
+        raise HTTPException(status_code=400, detail="Cannot retry transcript on duplicate item")
+
+    db.execute_update(
+        "UPDATE scrape_items SET transcript_status = 'queued' WHERE id = %s",
+        (item_id,)
+    )
+
+    from backend.services.transcript_worker import process_transcript_job
+    background_tasks.add_task(
+        process_transcript_job,
+        row["id"],
+        row["source_url"],
+        row.get("platform") or "unknown",
+        row.get("caption") or ""
+    )
+    return {"status": "queued"}
+
 # --- Thread Management Endpoints ---
 
 @app.post("/threads", response_model=ThreadResponse)
 def create_thread_endpoint(req: CreateThreadRequest):
+    status_obj = get_creator_status(req.creator_id)
+    if not status_obj["ready_to_chat"]:
+        raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
+
     # Assume default user_id = 1 for now
     user_id = 1
     
@@ -2989,6 +3132,9 @@ def delete_thread_endpoint(thread_id: str):
     # Delete messages first (cascade usually handles this but being explicit is safer)
     db.execute_update("DELETE FROM chat_messages WHERE thread_id = %s", (thread_id,))
     
+    # Nullify preferences to avoid foreign key constraints
+    db.execute_update("UPDATE user_creator_preferences SET last_active_thread_id = NULL WHERE last_active_thread_id = %s", (thread_id,))
+    
     # Delete thread
     db.execute_update("DELETE FROM chat_threads WHERE id = %s", (thread_id,))
     
@@ -3017,8 +3163,8 @@ def _update_thread_title_background(thread_id: str):
     """
     try:
         # LLM based generation
-        from rag import get_client
-        from settings import settings
+        from backend.rag import get_client
+        from backend.settings import settings
         
         # Verify checking again to be sure (in case of race condition)
         thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (thread_id,))
@@ -3180,8 +3326,8 @@ async def delete_creator_endpoint(creator_id: int):
 # Advanced Scrape Pipeline Endpoints
 # ============================================================================
 
-from services.scrape_orchestrator import ScrapeOrchestrator
-from services.ingest_worker import IngestWorker
+from backend.services.scrape_orchestrator import ScrapeOrchestrator
+from backend.services.ingest_worker import IngestWorker
 from pydantic import BaseModel
 
 class ScrapeRunRequest(BaseModel):
@@ -3294,7 +3440,7 @@ async def get_fingerprint_status(creator_id: int):
 @app.post("/creators/{creator_id}/fingerprint/generate")
 async def trigger_fingerprint_generation(creator_id: int, background_tasks: BackgroundTasks):
     """Manually trigger or force refresh the Style Fingerprint."""
-    from services.fingerprint_service import fingerprint_service
+    from backend.services.fingerprint_service import fingerprint_service
     background_tasks.add_task(fingerprint_service.generate_fingerprint_async, creator_id)
     return {"message": "Fingerprint generation started"}
 

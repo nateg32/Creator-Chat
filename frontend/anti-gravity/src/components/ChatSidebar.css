@@ -137,6 +137,14 @@
     padding-bottom: 8px;
 }
 
+.empty-threads {
+    padding: 6px 10px;
+    font-size: 13px;
+    color: #8b8e98;
+    font-style: italic;
+    margin: 4px 0 2px 0;
+}
+
 .thread-item {
     padding: 6px 10px;
     font-size: 13px;

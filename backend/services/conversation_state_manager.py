@@ -2,10 +2,10 @@
 import json
 import logging
 from typing import Dict, Any, Optional, List
-from db import db
-from services.intent_schemes import INTENT_SLOT_SCHEMES, SLOT_PRIORITY
-import rag
-from settings import settings
+from backend.db import db
+from backend.services.intent_schemes import INTENT_SLOT_SCHEMES, SLOT_PRIORITY
+import backend.rag as rag
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,121 @@
+﻿python : Traceback 
+(most recent call 
+last):
+At line:1 char:1
++ python 
+test_rag_pipeline.py 
+2> error.log
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (Traceback    
+ (most recent call    
+ last)::String) [    
+], RemoteExceptio    n
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+  File "C:\Users\Natha
+n\Documents\Creator Bo
+t\test_rag_pipeline.py
+", line 25, in 
+<module>
+    
+asyncio.run(main())
+    
+~~~~~~~~~~~^^^^^^^^
+  File "C:\Python314\L
+ib\asyncio\runners.py"
+, line 204, in run
+    return 
+runner.run(main)
+           
+~~~~~~~~~~^^^^^^
+  File "C:\Python314\L
+ib\asyncio\runners.py"
+, line 127, in run
+    return self._loop.
+run_until_complete(tas
+k)
+           ~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~^^^^
+^^
+  File "C:\Python314\L
+ib\asyncio\base_events
+.py", line 719, in 
+run_until_complete
+    return 
+future.result()
+           
+~~~~~~~~~~~~~^^
+  File "C:\Users\Natha
+n\Documents\Creator Bo
+t\test_rag_pipeline.py
+", line 20, in main
+    async for chunk 
+in stream:
+        print(chunk, 
+end="")
+  File "C:\Users\Natha
+n\Documents\Creator Bo
+t\backend\grounded_rag
+.py", line 2537, in 
+grounded_rag_stream
+    web_results = 
+await 
+asyncio.to_thread(
+                  ^^^^
+^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    )
+    ^
+  File "C:\Python314\L
+ib\asyncio\threads.py"
+, line 25, in 
+to_thread
+    return await loop.
+run_in_executor(None, 
+func_call)
+           ^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^
+  File "C:\Python314\L
+ib\concurrent\futures\
+thread.py", line 86, 
+in run
+    result = 
+ctx.run(self.task)
+  File "C:\Python314\L
+ib\concurrent\futures\
+thread.py", line 73, 
+in run
+    return fn(*args, 
+**kwargs)
+  File "C:\Users\Natha
+n\Documents\Creator Bo
+t\backend\services\res
+earch_provider.py", 
+line 902, in search
+    topic_query = self
+._extract_topic_from_c
+ontext(query, 
+creator_name, 
+conversation_history)
+  File "C:\Users\Natha
+n\Documents\Creator Bo
+t\backend\services\res
+earch_provider.py", 
+line 705, in _extract_
+topic_from_context
+    recent_messages = 
+conversation_history[-
+6:]  # Last 3 
+exchanges
+                      
+~~~~~~~~~~~~~~~~~~~~^^
+^^^
+TypeError: 'NoneType' 
+object is not 
+subscriptable

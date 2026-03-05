@@ -2,8 +2,8 @@
 import json
 import logging
 from typing import Dict, Any
-from grounded_rag import grounded_rag_ask
-from services.conversation_state_manager import ConversationStateManager
+from backend.grounded_rag import backend.grounded_rag as grounded_rag_ask
+from backend.services.conversation_state_manager import ConversationStateManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PipelineTest")

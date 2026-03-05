@@ -1,5 +1,5 @@
 
-from db import db
+from backend.db import db
 import logging
 
 logger = logging.getLogger(__name__)

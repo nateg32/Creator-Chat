@@ -1,0 +1,220 @@
+﻿python : INFO:services
+.research_provider:Ope
+nAISearch: 
+creator_name='Jordan 
+Welch' | query='any 
+other videos'
+At line:1 char:1
++ python test_false_po
+sitive.py 2>&1 | 
+Out-String | 
+Set-Content -Encodi 
+...
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : 
+NotSpecified: (I    
+NFO:services.r...y ot 
+   her 
+videos':String) [    
+], RemoteException
+    + 
+FullyQualifiedError   
+ Id : 
+NativeCommandErr    or
+ 
+INFO:services.research
+_provider:[SEARCH-TOPI
+C] raw='any other 
+videos' \u2192 enriche
+d='dropshipping ads 
+ai'
+INFO:services.research
+_provider:[SEARCH-INTE
+NT] 'any other 
+videos' \u2192 
+intent=VIDEO
+INFO:services.research
+_provider:OpenAISearch
+: Using Responses API 
+with gpt-5.2
+INFO:httpx:HTTP 
+Request: POST https://
+api.openai.com/v1/resp
+onses "HTTP/1.1 200 
+OK"
+INFO:services.research
+_provider:OpenAISearch
+: Responses API 
+returned 1499 chars
+WARNING:services.resea
+rch_provider:OpenAISea
+rch: JSON parse 
+failed: Expecting 
+value: line 1 column 
+2 (char 1)
+WARNING:services.resea
+rch_provider:OpenAISea
+rch: Responses API 
+JSON parse failed: 
+Could not parse valid 
+JSON array from 
+search response: I 
+ran the exact query 
+you specified 
+(`Jordan Welch 
+"dropshipping ads ai" 
+site:youtube.com`) 
+and a few close 
+variants, and **none 
+of the results 
+returned actual 
+Jordan Welch YouTube 
+videos about 
+ôdropshipping ads 
+aiö**ùin fact, the 
+results were largely 
+irrelevant (e.g., 
+YouTube Music 
+artist/channel 
+pages), and I did 
+**not** get any valid 
+`youtube.com/watch?v=.
+..` results to pull 
+exact titles/URLs 
+from. ([music.youtube.
+com](https://music.you
+tube.com/channel/UCIb4
+Bvr4kS44D8IcVJd9Wzw?ut
+m_source=openai))
+
+Because you 
+explicitly said **not 
+to guess URLs** and 
+to **only use URLs 
+from actual search 
+results**, I canÆt 
+list any qualifying 
+videos right now.
+
+### Videos found 
+(directly about 
+ôdropshipping ads aiö)
+None from the search 
+results I received. ([
+music.youtube.com](htt
+ps://music.youtube.com
+/channel/UCIb4Bvr4kS44
+D8IcVJd9Wzw?utm_source
+=openai))
+
+### If you want, I 
+can try again (likely 
+to work) with one 
+tweak
+YouTube/Google 
+sometimes indexes 
+these better without 
+quotes or with 
+different phrasing. 
+Tell me which is 
+acceptable and IÆll 
+re-run the search:
+
+1) `Jordan Welch 
+dropshipping AI ads si
+te:youtube.com/watch` 
+ 
+2) `Jordan Welch AI 
+ad creative 
+dropshipping 
+site:youtube.com`  
+3) Search **within 
+his channel** (if you 
+confirm his exact 
+channel URL/handle), 
+then filter for ôAI 
+ads / creativesö.
+
+Also: is ôJordan 
+Welchö definitely the 
+e-commerce YouTuber (S
+hopify/dropshipping), 
+and do you mean **AI 
+for ad creatives (imag
+es/videos/scripts)** 
+or **AI for ad 
+targeting/media 
+buying**?
+INFO:services.research
+_provider:OpenAISearch
+: Extracted 1 URLs 
+from natural text 
+response
+INFO:services.research
+_provider:OpenAISearch
+: Completed in 20.2s 
+ù 1 raw results
+INFO:services.research
+_provider:[URL-FILTER]
+ Dropping non-video 
+URL in VIDEO search: h
+ttps://music.youtube.c
+om/channel/UCIb4Bvr4kS
+44D8IcVJd9Wzw?utm_sour
+ce=openai
+INFO:services.research
+_provider:[RELEVANCE] 
+Strict filtering 
+dropped all 0 
+results. Returning 
+empty to trigger 
+retry search.
+INFO:services.research
+_provider:OpenAISearch
+: After relevance 
+scoring ù 0 results 
+kept
+INFO:services.research
+_provider:[SEARCH-RETR
+Y] Retrying with 
+targeted query: 
+Jordan Welch 
+"dropshipping" OR 
+"ads"
+INFO:services.research
+_provider:OpenAISearch
+: Trying 
+gpt-4o-search-preview 
+via Chat Completions
+INFO:httpx:HTTP 
+Request: POST https://
+api.openai.com/v1/chat
+/completions 
+"HTTP/1.1 200 OK"
+INFO:services.research
+_provider:OpenAISearch
+: 
+gpt-4o-search-preview 
+returned 462 chars
+WARNING:services.resea
+rch_provider:ResearchP
+rovider: Failed to 
+parse JSON: Expecting 
+value: line 1 column 
+1 (char 0)
+INFO:services.research
+_provider:OpenAISearch
+: Extracted 1 URLs 
+from natural text 
+response
+INFO:services.research
+_provider:[SEARCH-RETR
+Y] Got 0 relevant 
+results on retry
+Topic Query: dropshipping ads ai
+
+=== FINAL RESULTS (0) ===
+[]
+

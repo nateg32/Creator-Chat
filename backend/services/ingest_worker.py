@@ -1,7 +1,7 @@
 import time
 import asyncio
 from datetime import datetime, timezone, timedelta
-from db import db
+from backend.db import db
 import logging
 
 class IngestWorker:
@@ -80,7 +80,7 @@ class IngestWorker:
 
             # Trigger Fingerprint Evolution if new knowledge was added
             if job_type == 'EMBED':
-                from services.fingerprint_service import fingerprint_service
+                from backend.services.fingerprint_service import fingerprint_service
                 await fingerprint_service.generate_fingerprint_async(job['creator_id'])
 
         except Exception as e:
@@ -125,7 +125,7 @@ class IngestWorker:
         video_url = meta.get("video_url") or item.get("source_url")
         if not video_url: return
         
-        from lib.transcription import transcribe_video
+        from backend.lib.transcription import transcribe_video
         # transcribe_video is sync, but we are in async worker
         transcript = await asyncio.to_thread(transcribe_video, video_url)
         if transcript:

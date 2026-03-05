@@ -668,36 +668,103 @@ function AppInner() {
 
   async function handleApproveSave(decisions) {
     dispatch({ type: "SET_LOADING", loading: true });
-    dispatch({ type: "SET_PROGRESS", progress: { stage: "starting", current: 0, total: 0, message: "Starting..." } });
+    dispatch({ type: "SET_PROGRESS", progress: { stage: "starting", current: 0, total: 100, message: "Starting..." } });
 
     try {
       if (!state.scrapeId) {
         throw new Error("No search ID found");
       }
 
-      const result = await approveIngestV2Stream({
-        scrape_id: state.scrapeId,
+      // Step 1: Commit decisions and get a job_id
+      const res = await approveIngestCommit({
+        search_id: state.scrapeId,
         decisions,
         creator_id: state.creatorId || 1,
-        onProgress: (progressData) => {
-          dispatch({ type: "SET_PROGRESS", progress: progressData });
-        }
       });
 
-      showToast(`Knowledge base updated! ${result.approved} items ingested.`);
-      injectSystemNotice(state.creatorId, "Updated creator knowledge");
-      dispatch({ type: "SET_PROGRESS", progress: null });
-      dispatch({ type: "SET_STEP", step: 4 });
-
-      // Refresh existing creators list ONLY if not a draft
-      if (!state.isDraft) {
-        const data = await listCreators();
-        setExistingCreators(data.creators || []);
+      if (!res.job_id) {
+        // No job needed (e.g. only denials or deletions)
+        showToast("Updates applied successfully.");
+        dispatch({ type: "SET_PROGRESS", progress: null });
+        dispatch({ type: "SET_STEP", step: 4 });
+        dispatch({ type: "SET_LOADING", loading: false });
+        return;
       }
+
+      const jobId = res.job_id;
+
+      // Step 2: Poll the job progress
+      return new Promise((resolve, reject) => {
+        let pollCount = 0;
+        const pollInterval = setInterval(async () => {
+          try {
+            const progress = await getJobProgress(jobId);
+
+            // Update UI progress
+            dispatch({
+              type: "SET_PROGRESS",
+              progress: {
+                stage: progress.status,
+                current: progress.progress_percent,
+                total: 100,
+                message: progress.message || `Processing... ${progress.progress_percent}%`
+              }
+            });
+
+            if (progress.status === "completed") {
+              clearInterval(pollInterval);
+              showToast(`Knowledge base updated! ${res.approved} items queued.`);
+              injectSystemNotice(state.creatorId, "Updated creator knowledge");
+
+              // Update local state to reflect the new approved/denied statuses 
+              const updatedItems = state.scrapedItems.map(item => {
+                const itemKey = item.item_id || item.queue_id;
+                const decisionObj = decisions.find(d => String(d.item_id) === String(itemKey));
+                if (decisionObj) {
+                  const mappedStatus = decisionObj.decision === "approve" ? "approved" :
+                    decisionObj.decision === "deny" ? "denied" : "pending";
+                  return { ...item, status: mappedStatus, item_status: mappedStatus };
+                }
+                return item;
+              });
+              dispatch({ type: "SET_SCRAPED_ITEMS", items: updatedItems });
+
+              dispatch({ type: "SET_PROGRESS", progress: null });
+              dispatch({ type: "SET_STEP", step: 4 });
+
+              if (!state.isDraft) {
+                listCreators().then(data => setExistingCreators(data.creators || []));
+              }
+
+              dispatch({ type: "SET_LOADING", loading: false });
+              resolve();
+            } else if (progress.status === "failed" || progress.status === "error") {
+              clearInterval(pollInterval);
+              showToast(progress.error_log || "Ingestion failed", "error");
+              dispatch({ type: "SET_PROGRESS", progress: null });
+              dispatch({ type: "SET_LOADING", loading: false });
+              reject(new Error(progress.error_log));
+            }
+
+            // Exponential backoff for polling if it takes a while
+            pollCount++;
+            if (pollCount > 60) { // 1+ minute
+              clearInterval(pollInterval);
+              showToast("Job is taking a long time. Check back later.", "error");
+              dispatch({ type: "SET_PROGRESS", progress: null });
+              dispatch({ type: "SET_LOADING", loading: false });
+              resolve(); // Don't reject, it might still finish in background
+            }
+          } catch (pollErr) {
+            console.error("Polling error:", pollErr);
+            // Optionally ignore intermittent network errors during polling
+          }
+        }, 1500); // Poll every 1.5 seconds
+      });
+
     } catch (error) {
       showToast(error.message, "error");
       dispatch({ type: "SET_PROGRESS", progress: null });
-    } finally {
       dispatch({ type: "SET_LOADING", loading: false });
     }
   }
@@ -1010,7 +1077,14 @@ function AppInner() {
     try {
       await deleteThread(threadId);
       refreshThreads(creatorId);
-      if (activeChatId === threadId) setActiveChatId(null);
+
+      // Important: Also remove it from the active `chats` tabs array!
+      setChats(prev => prev.filter(c => String(c.id) !== String(threadId)));
+
+      if (String(activeChatId) === String(threadId)) {
+        setActiveChatId(null);
+        localStorage.removeItem("lastActiveThread");
+      }
       showToast("Conversation deleted", "success");
     } catch (err) {
       console.error("Delete failed", err);

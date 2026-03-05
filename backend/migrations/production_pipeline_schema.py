@@ -4,7 +4,7 @@ import os
 # Add parent directory to path so we can import db and settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import db
+from backend.db import db
 
 def migrate():
     print("Starting production pipeline schema migration...")

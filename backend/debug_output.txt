@@ -1,0 +1,12 @@
+INFO:services.research_provider:OpenAISearch: Using Responses API with gpt-5.2
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+INFO:services.research_provider:OpenAISearch: Responses API returned 2 chars
+INFO:services.research_provider:OpenAISearch: Falling back to gpt-4o-search-preview Chat Completions
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:services.research_provider:OpenAISearch: Chat Completions returned 3 chars
+Testing query: i wanna get into dropshipping, what video would u reccomend for ads
+--- DEBUGGING EXTRACTION ---
+Final Extracted Topic Query: i wanna get into dropshipping, what video would u reccomend for ads
+----------------------------
+
+FINAL RESULTS:

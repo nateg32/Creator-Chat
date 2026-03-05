@@ -1,0 +1,335 @@
+"""
+Durable worker queue daemon.
+Runs as a separate process, claims one job at a time via FOR UPDATE SKIP LOCKED,
+and dispatches to the appropriate handler.
+
+IMPORTANT: Do NOT import backend.app here — that boots all of FastAPI.
+Import only lightweight backend modules directly.
+"""
+import time
+import uuid
+import os
+import sys
+import json
+import logging
+import traceback
+import asyncio
+
+# Ensure the repo root ("Creator Bot") is in sys.path so `backend.*` resolves.
+root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+from backend.db import db
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("system_worker")
+
+WORKER_ID = f"worker-{uuid.uuid4().hex[:8]}"
+
+# ---------------------------------------------------------------------------
+# Progress helpers
+# ---------------------------------------------------------------------------
+
+def update_job_progress(job_id: str, percent: int, status: str = "processing", message: str = ""):
+    db.execute_update(
+        "UPDATE system_jobs SET progress_percent = %s, status = %s, message = %s, updated_at = NOW() WHERE id = %s",
+        (percent, status, message, job_id)
+    )
+
+def mark_job_completed(job_id: str, message: str = "Done"):
+    db.execute_update(
+        "UPDATE system_jobs SET status = 'completed', progress_percent = 100, message = %s, updated_at = NOW() WHERE id = %s",
+        (message, job_id)
+    )
+
+def mark_job_failed(job_id: str, error: str):
+    db.execute_update(
+        "UPDATE system_jobs SET status = 'failed', error_log = %s, updated_at = NOW() WHERE id = %s",
+        (error, job_id)
+    )
+
+# ---------------------------------------------------------------------------
+# Job handlers
+# ---------------------------------------------------------------------------
+
+def handle_scrape(job_id: str, payload: dict):
+    """
+    Run scrapers for a creator, then persist items to scrape_items table.
+    Mirrors _run_search_background from app.py without importing FastAPI.
+    """
+    from backend.scraper_router import run_search_router
+
+    creator_id = payload.get("creator_id")
+    creator_handle = payload.get("creator_handle", "")
+    platform_configs = payload.get("platform_configs", {})
+    search_run_id = payload.get("search_run_id")
+    source_url = payload.get("source_url", f"creator:{creator_id}")
+    platform_tag = payload.get("platform_tag", "profile")
+
+    update_job_progress(job_id, 5, "processing", "Initializing scrapers...")
+
+    def progress_callback(platform_key: str, status: str, current: int, total: int):
+        if total > 0:
+            pct = 5 + int((current / total) * 70)
+        else:
+            pct = 5
+        update_job_progress(job_id, min(75, pct), "processing", f"Scraping {platform_key}...")
+
+    # Run scraper
+    normalized_items, platform_statuses = run_search_router(
+        creator_id, creator_handle, platform_configs,
+        progress_callback=progress_callback
+    )
+
+    update_job_progress(job_id, 80, "processing", "Saving results...")
+
+    # Persist items to DB
+    saved = 0
+    failed = 0
+    for item in normalized_items:
+        try:
+            _save_scrape_item(item, creator_id, search_run_id)
+            saved += 1
+        except Exception as e:
+            logger.error(f"Failed to save item: {e}")
+            failed += 1
+
+    # Update scrape_runs table
+    if search_run_id:
+        db.execute_update(
+            "UPDATE scrape_runs SET status = 'completed', items_found = %s, updated_at = NOW() WHERE id = %s",
+            (saved, search_run_id)
+        )
+
+    update_job_progress(job_id, 95, "processing", "Updating platform config...")
+
+    # Persist updated platform statuses back onto creator
+    pc_updated = {}
+    for k, cfg in (platform_configs or {}).items():
+        c = dict(cfg) if isinstance(cfg, dict) else {}
+        st = platform_statuses.get(k)
+        if st:
+            c["last_search_status"] = st.get("last_scrape_status")
+            c["last_search_at"] = st.get("last_search_at")
+            c["last_error"] = st.get("last_error")
+        pc_updated[k] = c
+    try:
+        db.execute_update(
+            "UPDATE creators SET platform_configs = %s WHERE id = %s",
+            (json.dumps(pc_updated), creator_id),
+        )
+    except Exception as e:
+        logger.warning(f"Could not update platform_configs: {e}")
+
+    mark_job_completed(job_id, f"Scraped {saved} items ({failed} failed)")
+
+
+def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
+    """
+    Persist a single scraped item into scrape_items table.
+    Mirrors _execute_search_run logic from app.py.
+    """
+    from backend.services.duplicate_detection import compute_canonical_key, compute_content_fingerprint
+
+    source_url = item.get("source_url") or item.get("url") or ""
+    caption = item.get("caption") or item.get("text") or ""
+    transcript = item.get("transcript") or ""
+    platform = item.get("platform") or item.get("source") or "unknown"
+    creator_handle = item.get("creator_handle") or ""
+    content_id = item.get("content_id") or str(uuid.uuid4())
+    metadata = item.get("metadata") or {}
+    published_at = item.get("published_at") or item.get("timestamp") or None
+    content_type = item.get("content_type") or "post"
+
+    # Compute dedup keys
+    canonical_key = compute_canonical_key(source_url, caption) if source_url or caption else str(uuid.uuid4())
+    content_fingerprint = compute_content_fingerprint(caption or transcript)
+
+    # Determine transcript_status
+    if transcript:
+        transcript_status = "completed"
+    else:
+        transcript_status = "none"
+
+    insert_sql = """
+        INSERT INTO scrape_items (
+            creator_id, scrape_run_id, creator_handle, source_url,
+            caption, transcript, transcript_status, platform, content_type,
+            published_at, metadata, canonical_key, content_fingerprint,
+            review_status, status
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'pending', 'pending')
+        ON CONFLICT (canonical_key) DO NOTHING
+    """
+    db.execute_update(insert_sql, (
+        creator_id, search_run_id, creator_handle, source_url,
+        caption, transcript, transcript_status, platform, content_type,
+        published_at, json.dumps(metadata), canonical_key, str(content_fingerprint)
+    ))
+
+
+def handle_transcript(job_id: str, payload: dict):
+    from backend.services.transcript_worker import run_transcripts_for_search
+    update_job_progress(job_id, 10, "processing", "Processing transcripts...")
+    run_transcripts_for_search(payload["search_id"])
+    mark_job_completed(job_id, "Transcripts finished")
+
+
+def handle_ingest(job_id: str, payload: dict):
+    from backend.services.ingest import chunk_text_structured, embed_chunks
+
+    update_job_progress(job_id, 10, "processing", "Starting ingestion...")
+    decisions = payload.get("decisions", [])
+    creator_id = payload.get("creator_id")
+    search_id = payload.get("search_id")
+
+    approved_item_ids = [str(d["item_id"]) for d in decisions if d.get("decision") == "approve"]
+
+    if not approved_item_ids:
+        mark_job_completed(job_id, "No items to ingest.")
+        return
+
+    fetch_query = """
+        SELECT id, creator_handle, source_url, caption, transcript,
+               transcript_status, published_at, metadata, content_type
+        FROM scrape_items
+        WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s
+    """
+    items = db.execute_query(fetch_query, (approved_item_ids, search_id))
+
+    total_items = len(items)
+    for idx, item in enumerate(items):
+        item_id = item["id"]
+        current_percent = 10 + int((idx / total_items) * 80)
+        update_job_progress(job_id, current_percent, "processing", f"Ingesting item {idx+1}/{total_items}...")
+
+        try:
+            text_content = item.get("transcript") or item.get("caption") or ""
+            if not text_content:
+                continue
+
+            source_url = item["source_url"]
+            meta = item.get("metadata") or {}
+            platform = meta.get("platform", "unknown")
+            content_id = meta.get("content_id", f"item_{item_id}")
+            title = meta.get("title", source_url)
+
+            doc_metadata = {"type": "content", "platform": platform, "source_url": source_url, "content_id": content_id}
+
+            doc_query = """
+                INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (source, source_id) DO UPDATE SET
+                    creator_id = EXCLUDED.creator_id, title = EXCLUDED.title, content = EXCLUDED.content
+                RETURNING id
+            """
+            document_id = db.execute_insert(
+                doc_query,
+                (creator_id, title, text_content, platform, str(content_id), json.dumps(doc_metadata))
+            )
+
+            db.execute_update(
+                "INSERT INTO creator_documents (creator_id, document_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (creator_id, document_id)
+            )
+
+            chunks = chunk_text_structured(text=text_content, creator_id=creator_id, document_id=document_id, chunk_size=800, overlap=120)
+            chunk_ids = []
+            for chunk in chunks:
+                c_id = db.execute_insert(
+                    "INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text) VALUES (%s, %s, %s, %s) ON CONFLICT (document_id, chunk_index) DO NOTHING RETURNING id",
+                    (creator_id, document_id, chunk["index"], chunk["text"])
+                )
+                if c_id:
+                    chunk_ids.append(c_id)
+
+            embed_chunks(chunk_ids)
+            db.execute_update("UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = %s", (str(item_id),))
+        except Exception as e:
+            logger.error(f"Error ingesting item {item_id}: {e}")
+
+    update_job_progress(job_id, 95, "processing", "Updating creator state...")
+    db.execute_update("UPDATE creators SET last_approved_version = config_version WHERE id = %s", (creator_id,))
+    mark_job_completed(job_id, f"Ingested {total_items} items")
+
+
+def handle_fingerprint(job_id: str, payload: dict):
+    from backend.services.fingerprint_service import fingerprint_service
+    update_job_progress(job_id, 10, "processing", "Analyzing personality traits...")
+    creator_id = payload["creator_id"]
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(fingerprint_service.generate_fingerprint_async(creator_id))
+        mark_job_completed(job_id, "Fingerprint built.")
+    finally:
+        loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Main claim-and-execute loop
+# ---------------------------------------------------------------------------
+
+def claim_and_execute_jobs():
+    logger.info(f"[{WORKER_ID}] System Worker Queue started.")
+
+    # Validate DB connection
+    try:
+        db.execute_query("SELECT 1")
+        logger.info(f"[{WORKER_ID}] DB connection OK.")
+    except Exception as e:
+        logger.error(f"[{WORKER_ID}] DB connection failed: {e}")
+        sys.exit(1)
+
+    while True:
+        try:
+            claim_query = """
+                UPDATE system_jobs
+                SET status = 'processing', locked_at = NOW(), locked_by = %s
+                WHERE id = (
+                    SELECT id FROM system_jobs
+                    WHERE status = 'queued'
+                    ORDER BY created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                RETURNING *;
+            """
+            job = db.execute_one(claim_query, (WORKER_ID,))
+
+            if not job:
+                time.sleep(2)
+                continue
+
+            job_id = str(job['id'])
+            jtype = job['job_type']
+            payload = job.get('payload') or {}
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            logger.info(f"[{WORKER_ID}] Claimed job {job_id} type={jtype}")
+
+            try:
+                if jtype == 'SCRAPE':
+                    handle_scrape(job_id, payload)
+                elif jtype == 'TRANSCRIPT':
+                    handle_transcript(job_id, payload)
+                elif jtype == 'INGEST':
+                    handle_ingest(job_id, payload)
+                elif jtype == 'FINGERPRINT':
+                    handle_fingerprint(job_id, payload)
+                else:
+                    raise ValueError(f"Unknown job type: {jtype}")
+            except Exception as e:
+                err_log = str(e) + "\n" + traceback.format_exc()
+                logger.error(f"Job {job_id} failed: {e}")
+                mark_job_failed(job_id, err_log)
+
+        except Exception as queue_err:
+            logger.error(f"System queue error: {queue_err}")
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    claim_and_execute_jobs()

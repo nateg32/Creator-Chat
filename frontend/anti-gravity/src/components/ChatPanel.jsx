@@ -286,7 +286,9 @@ export function ChatPanel({
         messages: history,
         images: imagesPayload.length > 0 ? imagesPayload : undefined,
         onToken: (token) => {
-          setLocalLoading(false); // Stop "Thinking" indicator as soon as first token arrives
+          if (token.trim() !== "") {
+            setLocalLoading(false); // Stop "Thinking" indicator as soon as actual content arrives
+          }
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId
@@ -378,8 +380,19 @@ export function ChatPanel({
                     )}
                   </div>
                   <div className="msg-bubble">
-                    <div className="msg-sender" style={{ color: m.role === "assistant" ? (visualConfig?.creatorNameColor || "#4285F4") : (visualConfig?.userNameColor || "#5f6368") }}>
-                      {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
+                    <div className="msg-header" style={{ color: m.role === "assistant" ? (visualConfig?.creatorNameColor || "#1a73e8") : (visualConfig?.userNameColor || "#5f6368") }}>
+                      <div className="msg-sender">
+                        {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
+                      </div>
+
+                      {/* Inline Thinking Indicator */}
+                      {m.role === "assistant" && loading && (!m.content && !m.text || (m.content || m.text).trim() === "") && (
+                        <div className="thinking-indicator inline-thinking">
+                          <div className="dot"></div>
+                          <div className="dot"></div>
+                          <div className="dot"></div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Render Images Inside Bubble */}
@@ -405,40 +418,186 @@ export function ChatPanel({
                     )}
 
                     {/* Text Content / Thinking Indicator */}
-                    {(m.content || m.text) ? (
+                    {((m.content || m.text) && (m.content || m.text).trim()) ? (
                       <div className="msg-text">
                         {(() => {
                           const text = formatMessageText(m.content ?? m.text, creatorDisplayName);
-                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g;
-                          const parts = [];
+                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)|(https?:\/\/[^\s\)]+)/g;
+                          const textParts = [];
+                          const linkCards = [];
                           let lastIndex = 0;
                           let match;
+                          let linkCount = 0;
 
                           while ((match = regex.exec(text)) !== null) {
-                            if (match.index > lastIndex) {
-                              parts.push(text.substring(lastIndex, match.index));
+                            let matchUrl = match[2] || match[3];
+                            let rawUrlMatch = !match[2];
+
+                            // If it's a raw URL, strip trailing punctuation
+                            if (rawUrlMatch) {
+                              const trailing = matchUrl.match(/[\.,!?;:)]+$/);
+                              if (trailing) {
+                                const punLength = trailing[0].length;
+                                matchUrl = matchUrl.substring(0, matchUrl.length - punLength);
+                                regex.lastIndex -= punLength;
+                              }
                             }
-                            parts.push(
-                              <a key={match.index} href={match[2]} target="_blank" rel="noopener noreferrer" className="chat-link">
-                                {match[1]}
-                              </a>
-                            );
+
+                            if (match.index > lastIndex) {
+                              textParts.push(text.substring(lastIndex, match.index));
+                            }
+
+                            let isValidUrl = false;
+                            let domain = "";
+                            let isVideo = false;
+                            let videoId = null;
+                            let platform = "web";
+                            let linkTitle = match[1] || "";
+
+                            try {
+                              const urlObj = new URL(matchUrl);
+                              domain = urlObj.hostname.replace('www.', '');
+
+                              // Detect platform and video type
+                              if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+                                isVideo = true;
+                                platform = 'youtube';
+                                if (domain.includes('youtube.com')) {
+                                  videoId = urlObj.searchParams.get('v') || urlObj.pathname.split('/shorts/')[1];
+                                } else if (domain.includes('youtu.be')) {
+                                  videoId = urlObj.pathname.slice(1);
+                                }
+                              } else if (domain.includes('instagram.com')) {
+                                isVideo = matchUrl.includes('/reel/') || matchUrl.includes('/p/');
+                                platform = 'instagram';
+                              } else if (domain.includes('tiktok.com')) {
+                                isVideo = matchUrl.includes('/video/') || matchUrl.includes('/@');
+                                platform = 'tiktok';
+                              } else if (domain.includes('facebook.com')) {
+                                isVideo = matchUrl.includes('/watch') || matchUrl.includes('/reel');
+                                platform = 'facebook';
+                              } else if (domain.includes('twitter.com') || domain.includes('x.com')) {
+                                isVideo = matchUrl.includes('/status/');
+                                platform = 'twitter';
+                              }
+
+                              isValidUrl = true;
+                              if (!linkTitle) {
+                                const platformLabels = {
+                                  youtube: 'YouTube Video',
+                                  instagram: 'Instagram Reel',
+                                  tiktok: 'TikTok Video',
+                                  facebook: 'Facebook Video',
+                                  twitter: 'Tweet',
+                                  web: 'External Resource'
+                                };
+                                linkTitle = platformLabels[platform] || 'External Resource';
+                              }
+                            } catch (e) {
+                              isValidUrl = false;
+                            }
+
+                            if (isValidUrl) {
+                              // Track the card to render at the bottom
+                              linkCount++;
+                              linkCards.push({
+                                id: linkCount,
+                                url: matchUrl,
+                                domain,
+                                isVideo,
+                                videoId,
+                                platform,
+                                title: linkTitle
+                              });
+
+                              // In the text, leave the title if it was a markdown link, otherwise leave nothing (remove raw URLs from text)
+                              if (!rawUrlMatch && match[1]) {
+                                textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{match[1]}</span>);
+                              }
+                            } else {
+                              textParts.push(
+                                <a key={match.index} href={matchUrl} target="_blank" rel="noopener noreferrer" className="chat-link">
+                                  {linkTitle || matchUrl}
+                                </a>
+                              );
+                            }
+
                             lastIndex = regex.lastIndex;
                           }
+
                           if (lastIndex < text.length) {
-                            parts.push(text.substring(lastIndex));
+                            textParts.push(text.substring(lastIndex));
                           }
-                          return parts.length > 0 ? parts : text;
+
+                          return (
+                            <div className="msg-content-wrapper">
+                              <div className="msg-text-blocks">
+                                {textParts.length > 0 ? textParts : text}
+                              </div>
+                              {linkCards.length > 0 && (
+                                <div className="msg-preview-cards">
+                                  {linkCards.map((card, idx) => (
+                                    <a key={`${card.id}-${idx}`} href={card.url} target="_blank" rel="noopener noreferrer" className="chat-link-card">
+                                      {card.platform === 'youtube' && card.videoId && (
+                                        <div className="chat-link-card-thumbnail">
+                                          <img src={`https://img.youtube.com/vi/${card.videoId}/mqdefault.jpg`} alt="thumbnail" />
+                                          <div className="play-overlay">
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+                                              <path d="M8 5v14l11-7z" />
+                                            </svg>
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div className="chat-link-card-content">
+                                        <div className="chat-link-card-domain">
+                                          {card.platform === 'youtube' ? (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#FF0000" xmlns="http://www.w3.org/2000/svg">
+                                              <path d="M21.582 6.186a2.693 2.693 0 0 0-1.895-1.908C17.989 3.8 12 3.8 12 3.8s-5.989 0-7.687.478A2.693 2.693 0 0 0 2.418 6.186C1.94 7.894 1.94 11.5 1.94 11.5s0 3.606.478 5.314a2.693 2.693 0 0 0 1.895 1.908c1.698.478 7.687.478 7.687.478s5.989 0 7.687-.478a2.693 2.693 0 0 0 1.895-1.908c.478-1.708.478-5.314.478-5.314s0-3.606-.478-5.314zM9.95 14.814v-6.628L15.694 11.5l-5.744 3.314z" />
+                                            </svg>
+                                          ) : card.platform === 'instagram' ? (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#E1306C" xmlns="http://www.w3.org/2000/svg">
+                                              <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z" />
+                                            </svg>
+                                          ) : card.platform === 'tiktok' ? (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#000000" xmlns="http://www.w3.org/2000/svg">
+                                              <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 0010.86 4.48V13a8.28 8.28 0 005.58 2.16v-3.45a4.85 4.85 0 01-5.58-1.43V6.69h5.58z" />
+                                            </svg>
+                                          ) : card.platform === 'facebook' ? (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#1877F2" xmlns="http://www.w3.org/2000/svg">
+                                              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+                                            </svg>
+                                          ) : card.platform === 'twitter' ? (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#000000" xmlns="http://www.w3.org/2000/svg">
+                                              <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                                            </svg>
+                                          ) : (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                              <circle cx="12" cy="12" r="10"></circle>
+                                              <line x1="2" y1="12" x2="22" y2="12"></line>
+                                              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                                            </svg>
+                                          )}
+                                          <span>{card.domain}</span>
+                                        </div>
+                                        <div className="chat-link-card-title">{card.title}</div>
+                                      </div>
+                                      {!card.isVideo && (
+                                        <div className="chat-link-card-arrow">
+                                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M5 12h14"></path>
+                                            <path d="M12 5l7 7-7 7"></path>
+                                          </svg>
+                                        </div>
+                                      )}
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
                         })()}
                       </div>
-                    ) : (
-                      m.role === "assistant" && loading && (
-                        <div className="thinking-indicator">
-                          <span>Thinking</span>
-                          <span className="thinking-dots">...</span>
-                        </div>
-                      )
-                    )}
+                    ) : null}
 
                     {/* Mode Chip (Subtle debug) */}
                     {debug && m.role === "assistant" && m.meta?.plan_obj && (
@@ -447,49 +606,8 @@ export function ChatPanel({
                       </div>
                     )}
 
-                    {/* Preview Cards */}
-                    {(() => {
-                      let displayCards = [...(m.cards || [])];
-                      // If no backend cards, extract dynamically from text
-                      if (displayCards.length === 0 && (m.content || m.text)) {
-                        const rawText = m.content ?? m.text;
-                        const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g;
-                        let match;
-                        while ((match = regex.exec(rawText)) !== null) {
-                          const title = match[1];
-                          const url = match[2];
-                          let thumbnail_url = "";
-                          let resource_type = "article";
 
-                          if (url.includes("youtube.com") || url.includes("youtu.be")) {
-                            resource_type = "video";
-                            let videoId = "";
-                            if (url.includes("v=")) videoId = url.split("v=")[1].split("&")[0];
-                            else if (url.includes("youtu.be/")) videoId = url.split("youtu.be/")[1].split("?")[0];
-                            if (videoId) thumbnail_url = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-                          }
-                          displayCards.push({
-                            type: "preview_card",
-                            resource_type,
-                            title,
-                            url,
-                            thumbnail_url
-                          });
-                        }
-                      }
 
-                      if (displayCards.length === 0) return null;
-
-                      return (
-                        <div className="msg-cards">
-                          {displayCards.map((card, idx) => (
-                            <PreviewCard key={`card-${idx}`} card={card} />
-                          ))}
-                        </div>
-                      );
-                    })()}
-                    {/* Backward compatibility for single card */}
-                    {!m.cards && m.card && <PreviewCard card={m.card} />}
 
                     {/* Switch Creator CTA */}
                     {m.meta?.domain_action === "DECLINE_HANDOFF" && m.meta?.suggestions && (

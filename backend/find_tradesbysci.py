@@ -2,7 +2,7 @@ import sys
 import os
 import json
 sys.path.append(os.getcwd())
-from db import db
+from backend.db import db
 
 def check_db():
     try:

@@ -1,7 +1,7 @@
 import hashlib
 import json
 from typing import Dict, Any, Optional
-from db import db
+from backend.db import db
 
 class ContentManager:
     """

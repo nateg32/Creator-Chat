@@ -2,10 +2,10 @@ from datetime import datetime, timezone
 import random
 import time
 from typing import List, Dict, Any, Optional
-from db import db
-from services.content_manager import ContentManager
-from services.cursor_manager import CursorManager
-from config.platforms import PLATFORMS, get_platform
+from backend.db import db
+from backend.services.content_manager import ContentManager
+from backend.services.cursor_manager import CursorManager
+from backend.config.platforms import PLATFORMS, get_platform
 
 class ScrapeOrchestrator:
     """
@@ -107,7 +107,7 @@ class ScrapeOrchestrator:
         # Final trigger: Update Fingerprint if any new content was found
         if any(r.get("stats", {}).get("new", 0) > 0 for r in results):
              import asyncio
-             from services.fingerprint_service import fingerprint_service
+             from backend.services.fingerprint_service import fingerprint_service
              # Fire and forget if running in an async context, 
              # but ScrapeOrchestrator.run might be synchronous.
              # We assume orchestrator is called in background_tasks or threaded.
