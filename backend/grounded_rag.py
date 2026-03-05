@@ -2213,118 +2213,24 @@ Message: {answer_text[:500]}"""
         user_state.get("primary_domain", "general")
     )
     
-<<<<<<< ours
     if domain_action == "DECLINE_HANDOFF":
         logger.info("Stronghold: Triggering DECLINE_HANDOFF")
         answer = stronghold_guard.generate_boundary_message(
             creator_row["name"], persona, stronghold_config, question
-=======
-    is_strict_content = resource_intent.get("needs_resource") and resource_intent.get("confidence", 0) >= 0.70
-    intent = "request_sources" if is_strict_content else classify_intent(question)
-
-    if is_strict_content:
-        logger.info(f"ContentFinder: Semantic trigger activated (Reason: {resource_intent.get('reason')})")
-        from services.content_finder import ContentFinder
-        finder = ContentFinder(db, get_client())
-        
-        # Use Router's query and types
-        router_query = resource_intent.get("query") or question
-        cf_result = finder.find_content_card(
-            creator_id,
-            router_query,
-            resource_type=resource_intent.get("resource_type", "any"),
-            specificity=resource_intent.get("specificity", "recommendation"),
-            history_messages=conversation_history,
->>>>>>> theirs
         )
         # Suggest 2-3 other creators
         suggestions = db.execute_query("""
-            SELECT id, name, handle, profile_picture_url 
+            SELECT id, name, handle, profile_picture_url
             FROM creators WHERE id != %s LIMIT 3
         """, (creator_id,))
-        
-<<<<<<< ours
+
         return apply_final_polish({
             "answer": answer,
             "retrieved": [],
-=======
-        if cf_result["status"] == "DEFER":
-             logger.info("ContentFinder: Deferring response.")
-             return {
-                 "answer": cf_result["defer_message"],
-                 "retrieved": [],
-                 "sources": [],
-                 "cards": [],
-                 "debug": {"cf_result": cf_result} if debug else None
-             }
-        
-        # If FOUND, we still want to generate a persona response that introduces the card
-        # We override support_set to be just the found item to force focus
-        if cf_result["status"] == "FOUND" and cf_result.get("cards"):
-             cards = cf_result["cards"]
-             first_card = cards[0] if cards else {}
-             card_url = first_card.get("url") or ""
-             snippet = first_card.get("short_snippet", "") or first_card.get("title", "")
-             
-             # Mock support set with the first result
-             is_fallback = cf_result.get("is_fallback", False)
-             content_desc = "Specific Video" if not is_fallback else "Creator Channel/Search"
-             
-             support_set = [{
-                 "chunk_id": "content_finder_match",
-                 "chunk_index": 0,
-                 "distance": 0.0,
-                 "rerank_score": 1.0,
-                 "content": f"Resource Found: {content_desc}\nTitle: {first_card.get('title', 'Recommended content')}\nSnippet: {snippet}",
-                 "source_ref": {
-                     "platform": "youtube" if "youtube" in card_url else "web",
-                     "title": first_card.get("title", "Recommended content"),
-                     "canonical_url": card_url,
-                     "published_at": None,
-                     "content_type": first_card.get("resource_type", "video")
-                 }
-             }]
-             
-             # Force answering with this content
-             answer_contract = build_answer_contract(support_set, question)
-             
-             answer, gen_debug = generate_grounded_answer(
-                question, support_set, answer_contract, persona, conversation_history,
-                intent="introduce_content", # Custom intent to guide style?
-                include_links_in_output=False, # We use card, not text links
-                allow_cta=False,
-                enabled_platforms=enabled_platforms,
-                user_preferences=user_preferences,
-                creator_name=creator_name,
-                style_fingerprint=sf,
-                creator_id=creator_id,
-            )
-             
-             return {
-                 "answer": answer,
-                 "retrieved": support_set,
-                 "sources": [], 
-                 "cards": cards,
-                 "debug": gen_debug if debug else None 
-             }
-        
-    # --- Standard RAG Path --- (if no strict content found or triggered)
-
-    # When images are attached, override small_talk — images need full analysis
-    if has_images and intent in ("small_talk", "identity"):
-        intent = "how_to"
-    
-    # For small talk and identity (no images), don't retrieve content to avoid tempting the model
-    if intent in ("small_talk", "identity"):
-        support_set = []
-        answer_contract = {
-            "facts": [],
-            "gaps": [],
->>>>>>> theirs
             "sources": [],
             "cards": [],
             "meta": {
-                "domain_action": "DECLINE_HANDOFF", 
+                "domain_action": "DECLINE_HANDOFF",
                 "suggested_mode": "DECLINE",
                 "suggestions": suggestions
             }
