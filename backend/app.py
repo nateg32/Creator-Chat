@@ -2168,17 +2168,36 @@ async def search_endpoint(request: SearchRequest, background_tasks: BackgroundTa
                     break
             platform_tag = "multi" if len(pc) > 1 else (list(pc.keys())[0] if pc else "instagram")
             
-            # Run scraper pipeline in-process as a background task.
-            # This path updates search_progress directly (used by frontend polling).
-            background_tasks.add_task(
-                _run_search_background,
-                search_run_id,
-                request.creator_id,
-                creator_handle,
-                pc,
-                source_url or f"creator:{request.creator_id}",
-                platform_tag,
-            )
+            execution_mode = os.getenv("SEARCH_EXECUTION_MODE", "inline").strip().lower()
+            if execution_mode == "worker":
+                # Queue into durable system worker.
+                job_payload = {
+                    "search_run_id": search_run_id,
+                    "creator_id": request.creator_id,
+                    "creator_handle": creator_handle,
+                    "platform_configs": pc,
+                    "source_url": source_url or f"creator:{request.creator_id}",
+                    "platform_tag": platform_tag,
+                }
+                db.execute_insert(
+                    """
+                    INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+                    VALUES (%s, 'SCRAPE', %s::jsonb, 'queued', 0, 'Search job enqueued')
+                    RETURNING id
+                    """,
+                    (request.creator_id, json.dumps(job_payload)),
+                )
+            else:
+                # Run search pipeline in-process as a background task.
+                background_tasks.add_task(
+                    _run_search_background,
+                    search_run_id,
+                    request.creator_id,
+                    creator_handle,
+                    pc,
+                    source_url or f"creator:{request.creator_id}",
+                    platform_tag,
+                )
 
             # Return immediately with search_id
             return {

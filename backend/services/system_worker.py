@@ -27,6 +27,33 @@ logger = logging.getLogger("system_worker")
 
 WORKER_ID = f"worker-{uuid.uuid4().hex[:8]}"
 
+
+def _ensure_search_progress_table():
+    db.execute_update(
+        """
+        CREATE TABLE IF NOT EXISTS search_progress (
+            search_id UUID PRIMARY KEY,
+            progress_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+
+
+def _set_search_progress(search_id: str, data: dict):
+    _ensure_search_progress_table()
+    db.execute_update(
+        """
+        INSERT INTO search_progress (search_id, progress_data, updated_at)
+        VALUES (%s::uuid, %s::jsonb, NOW())
+        ON CONFLICT (search_id) DO UPDATE SET
+            progress_data = EXCLUDED.progress_data,
+            updated_at = NOW()
+        """,
+        (search_id, json.dumps(data, default=str)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Progress helpers
 # ---------------------------------------------------------------------------
@@ -63,18 +90,47 @@ def handle_scrape(job_id: str, payload: dict):
     creator_id = payload.get("creator_id")
     creator_handle = payload.get("creator_handle", "")
     platform_configs = payload.get("platform_configs", {})
-    search_run_id = payload.get("search_run_id")
+    search_run_id = payload.get("search_run_id") or payload.get("search_id")
     source_url = payload.get("source_url", f"creator:{creator_id}")
     platform_tag = payload.get("platform_tag", "profile")
 
-    update_job_progress(job_id, 5, "processing", "Initializing scrapers...")
+    update_job_progress(job_id, 5, "processing", "Initializing search...")
+    if search_run_id:
+        enabled_count = sum(1 for cfg in (platform_configs or {}).values() if isinstance(cfg, dict) and cfg.get("enabled"))
+        _set_search_progress(search_run_id, {
+            "status": "running",
+            "stage": "search",
+            "phase": "search",
+            "percent": 2,
+            "completed": 0,
+            "total": enabled_count,
+            "current_platform": None,
+            "current_platform_label": None,
+            "platform_statuses": {},
+            "items_found": 0,
+            "error": None,
+            "message": "Preparing search...",
+        })
 
     def progress_callback(platform_key: str, status: str, current: int, total: int):
         if total > 0:
             pct = 5 + int((current / total) * 70)
         else:
             pct = 5
-        update_job_progress(job_id, min(75, pct), "processing", f"Scraping {platform_key}...")
+        update_job_progress(job_id, min(80, pct), "processing", f"Searching {platform_key}...")
+        if search_run_id:
+            percent = min(80.0, float(pct))
+            _set_search_progress(search_run_id, {
+                "status": "running",
+                "stage": "search",
+                "phase": "search",
+                "percent": round(percent, 1),
+                "completed": current,
+                "total": total,
+                "current_platform": platform_key,
+                "current_platform_label": platform_key,
+                "message": f"Searching {platform_key}...",
+            })
 
     # Run scraper
     normalized_items, platform_statuses = run_search_router(
@@ -82,7 +138,15 @@ def handle_scrape(job_id: str, payload: dict):
         progress_callback=progress_callback
     )
 
-    update_job_progress(job_id, 80, "processing", "Saving results...")
+    update_job_progress(job_id, 82, "processing", "Saving results...")
+    if search_run_id:
+        _set_search_progress(search_run_id, {
+            "status": "running",
+            "stage": "finalizing",
+            "phase": "search",
+            "percent": 82.0,
+            "message": "Saving results...",
+        })
 
     # Persist items to DB
     saved = 0
@@ -97,12 +161,15 @@ def handle_scrape(job_id: str, payload: dict):
 
     # Update scrape_runs table
     if search_run_id:
-        db.execute_update(
-            "UPDATE scrape_runs SET status = 'completed', items_found = %s, updated_at = NOW() WHERE id = %s",
-            (saved, search_run_id)
-        )
+        try:
+            db.execute_update(
+                "UPDATE scrape_runs SET status = 'completed', items_found = %s, updated_at = NOW() WHERE id = %s",
+                (saved, search_run_id)
+            )
+        except Exception:
+            pass
 
-    update_job_progress(job_id, 95, "processing", "Updating platform config...")
+    update_job_progress(job_id, 92, "processing", "Updating platform config...")
 
     # Persist updated platform statuses back onto creator
     pc_updated = {}
@@ -122,7 +189,37 @@ def handle_scrape(job_id: str, payload: dict):
     except Exception as e:
         logger.warning(f"Could not update platform_configs: {e}")
 
-    mark_job_completed(job_id, f"Scraped {saved} items ({failed} failed)")
+    # Run transcript enrichment as part of search completion.
+    if search_run_id:
+        try:
+            update_job_progress(job_id, 94, "processing", "Processing transcripts...")
+            _set_search_progress(search_run_id, {
+                "status": "running",
+                "stage": "transcripts",
+                "phase": "transcripts",
+                "percent": 94.0,
+                "items_found": saved,
+                "failed_count": failed,
+                "platform_statuses": platform_statuses,
+                "message": "Processing transcripts...",
+            })
+            from backend.services.transcript_worker import run_transcripts_for_search
+            run_transcripts_for_search(search_run_id)
+        except Exception as e:
+            logger.warning(f"Transcript step failed for search {search_run_id}: {e}")
+
+        _set_search_progress(search_run_id, {
+            "status": "completed",
+            "stage": "done",
+            "phase": "done",
+            "percent": 100.0,
+            "items_found": saved,
+            "failed_count": failed,
+            "platform_statuses": platform_statuses,
+            "message": "Search complete",
+        })
+
+    mark_job_completed(job_id, f"Searched {saved} items ({failed} failed)")
 
 
 def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):

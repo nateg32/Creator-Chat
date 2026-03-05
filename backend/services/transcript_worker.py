@@ -8,6 +8,52 @@ import tempfile
 import subprocess
 import json
 
+
+def _ensure_search_progress_table():
+    try:
+        db.execute_update("""
+            CREATE TABLE IF NOT EXISTS search_progress (
+                search_id UUID PRIMARY KEY,
+                progress_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+    except Exception:
+        pass
+
+
+def _get_search_progress(search_id: str):
+    try:
+        row = db.execute_one(
+            "SELECT progress_data FROM search_progress WHERE search_id = %s",
+            (search_id,),
+        )
+        if not row:
+            return None
+        data = row.get("progress_data")
+        if isinstance(data, str):
+            data = json.loads(data)
+        return dict(data) if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _set_search_progress(search_id: str, data: Dict[str, Any]):
+    try:
+        _ensure_search_progress_table()
+        db.execute_update(
+            """
+            INSERT INTO search_progress (search_id, progress_data, updated_at)
+            VALUES (%s::uuid, %s::jsonb, NOW())
+            ON CONFLICT (search_id) DO UPDATE SET
+                progress_data = EXCLUDED.progress_data,
+                updated_at = NOW()
+            """,
+            (search_id, json.dumps(data, default=str)),
+        )
+    except Exception:
+        pass
+
 def synthesize_media_url(source_url: str, platform: str) -> Optional[str]:
     """Attempt to get an actual media URL if needed. For now, rely on yt-dlp if available."""
     try:
@@ -148,7 +194,6 @@ def run_transcripts_for_search(search_run_id: str):
         
         if not items:
             print("[TRANSCRIPT] No items need processing")
-            from backend.app import _get_search_progress, _set_search_progress
             prog = _get_search_progress(search_run_id)
             if prog:
                 prog["phase"] = "done"
@@ -156,7 +201,6 @@ def run_transcripts_for_search(search_run_id: str):
             return
             
         # Update progress to transcripts phase
-        from backend.app import _get_search_progress, _set_search_progress
         prog = _get_search_progress(search_run_id)
         if prog:
             prog["phase"] = "transcripts"
