@@ -136,10 +136,9 @@ def debug_env():
         "has_db_password": bool(os.getenv("DB_PASSWORD")),
     }
 
-# CORS middleware - allow common development ports
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+def _get_cors_origins() -> List[str]:
+    """Allow localhost in dev plus deployed frontend URLs via env vars."""
+    default_origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
@@ -148,7 +147,25 @@ app.add_middleware(
         "http://127.0.0.1:5174",
         "http://localhost:5175",
         "http://127.0.0.1:5175",
-    ],
+    ]
+
+    configured_origins = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+
+    frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+    if frontend_url:
+        configured_origins.append(frontend_url)
+
+    return list(dict.fromkeys(default_origins + configured_origins))
+
+
+# CORS middleware - allow common development ports + configured deployed frontend URLs
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
