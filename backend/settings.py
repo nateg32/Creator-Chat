@@ -11,11 +11,11 @@ load_dotenv(BASE_DIR / ".env", override=True)
 class Settings:
     BASE_DIR: Path = BASE_DIR
     # Database
-    DB_HOST: str = os.getenv("DB_HOST", "localhost")
-    DB_PORT: int = int(os.getenv("DB_PORT", "5433"))
-    DB_NAME: str = os.getenv("DB_NAME", "rag_db")
-    DB_USER: str = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
+    DB_HOST: str = os.getenv("DB_HOST", os.getenv("PGHOST", "localhost"))
+    DB_PORT: int = int(os.getenv("DB_PORT", os.getenv("PGPORT", "5433")))
+    DB_NAME: str = os.getenv("DB_NAME", os.getenv("PGDATABASE", "rag_db"))
+    DB_USER: str = os.getenv("DB_USER", os.getenv("PGUSER", "postgres"))
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", os.getenv("PGPASSWORD", ""))
     
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")

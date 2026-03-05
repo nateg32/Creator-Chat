@@ -1,3 +1,4 @@
+import os
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -12,7 +13,13 @@ class Database:
     def pool(self) -> ConnectionPool:
         """Lazy initialization of connection pool"""
         if self._pool is None:
-            conninfo = f"host={settings.DB_HOST} port={settings.DB_PORT} dbname={settings.DB_NAME} user={settings.DB_USER} password={settings.DB_PASSWORD}"
+            # Prefer managed connection strings in cloud environments (e.g. Render).
+            conninfo = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+            if not conninfo:
+                conninfo = (
+                    f"host={settings.DB_HOST} port={settings.DB_PORT} "
+                    f"dbname={settings.DB_NAME} user={settings.DB_USER} password={settings.DB_PASSWORD}"
+                )
             # min_size 1, max_size 10 provides enough leeway for async workers without draining PG bounds
             self._pool = ConnectionPool(conninfo=conninfo, min_size=1, max_size=10)
         return self._pool
