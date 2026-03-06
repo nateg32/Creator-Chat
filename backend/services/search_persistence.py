@@ -181,8 +181,7 @@ def persist_search_items(
             platform = EXCLUDED.platform,
             mode = EXCLUDED.mode,
             creator_handle = EXCLUDED.creator_handle,
-            items_found = EXCLUDED.items_found,
-            updated_at = NOW()
+            items_found = EXCLUDED.items_found
         """,
         (search_run_id, source_url, platform, mode, creator_handle, len(normalized_items)),
     )
