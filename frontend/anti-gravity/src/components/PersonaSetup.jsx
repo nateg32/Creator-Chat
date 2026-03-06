@@ -8,7 +8,6 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
   const [fingerprint, setFingerprint] = useState(null);
   const [status, setStatus] = useState("idle"); // idle, processing, error
   const [creatorStatus, setCreatorStatus] = useState(null);
-  const [pollInterval, setPollInterval] = useState(null);
 
   useEffect(() => {
     if (creatorId) {
@@ -38,7 +37,6 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
       // 2. Poll for fingerprint
       fetchStatus();
       const interval = setInterval(fetchStatus, 3000);
-      setPollInterval(interval);
       return () => clearInterval(interval);
     }
   }, [creatorId]);
@@ -102,6 +100,7 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
   };
 
   const stats = getStatements();
+  const showFinishButton = Boolean(creatorId) && status !== "processing" && (Boolean(fingerprint) || !hasContent);
 
   return (
     <div className="persona-setup-card">
@@ -146,26 +145,25 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
         </div>
 
         <div className="persona-cta-container">
-          <button
-            onClick={async (e) => {
-              if (status !== "processing" && creatorStatus?.ready_to_chat) {
+          {showFinishButton ? (
+            <button
+              onClick={async () => {
                 try {
-                  await onContinue(e);
+                  await onContinue({ creatorStatus, fingerprintStatus: status });
                 } catch (err) {
                   if (err.status && err.status === 409 && err.response?.data?.status) {
                     setCreatorStatus(err.response.data.status);
                   }
                 }
-              }
-            }}
-            className="finish-btn"
-            disabled={loading || status === "processing" || !creatorStatus?.ready_to_chat}
-            aria-disabled={status === "processing" || !creatorStatus?.ready_to_chat ? "true" : undefined}
-          >
-            {status === "processing" ? "Building Profile..." : "Finish & Chat"}
-          </button>
+              }}
+              className="finish-btn"
+              disabled={loading}
+            >
+              Finish & Chat
+            </button>
+          ) : null}
 
-          {!creatorStatus?.ready_to_chat && creatorStatus?.block_reason && (
+          {status !== "processing" && !creatorStatus?.ready_to_chat && creatorStatus?.block_reason && (
             <div className="persona-block-hint">
               {creatorStatus.block_reason}
               {creatorStatus.needs_reapproval && onGoToApprove && (

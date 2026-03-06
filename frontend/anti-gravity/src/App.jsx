@@ -217,11 +217,45 @@ function AppInner() {
   const [toast, setToast] = useState(null);
   const [backendConnected, setBackendConnected] = useState(null);
   const [searchProgress, setSearchProgress] = useState(0);
+  const [workflowOrigin, setWorkflowOrigin] = useState({ fromChat: false, threadId: null, creatorId: null });
+  const [workflowHasDetectedChanges, setWorkflowHasDetectedChanges] = useState(false);
+  const [workflowRequiresApproval, setWorkflowRequiresApproval] = useState(false);
 
   const showToast = (message, type = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 2000);
   };
+
+  function resetWorkflowSession({
+    step = 1,
+    creatorId = null,
+    creatorName = "",
+    handle = "",
+    creatorAvatarUrl = "",
+    visualConfig = {},
+    isDraft = false,
+    fromChat = false,
+    threadId = null,
+  } = {}) {
+    dispatch({ type: "RESET" });
+    dispatch({
+      type: "SET_CREATOR_INFO",
+      creatorName,
+      handle,
+      creatorAvatarUrl,
+      visualConfig,
+      url: "",
+      platform: "",
+      source: "",
+    });
+    dispatch({ type: "SET_CREATOR_ID", creatorId });
+    dispatch({ type: "SET_IS_DRAFT", isDraft });
+    dispatch({ type: "SET_STEP", step });
+    setWorkflowOrigin({ fromChat, threadId, creatorId });
+    setWorkflowHasDetectedChanges(false);
+    setWorkflowRequiresApproval(false);
+    setSearchProgress(0);
+  }
 
   async function refreshCreators() {
     try {
@@ -343,6 +377,61 @@ function AppInner() {
     } catch (err) {
       console.error("Failed to create thread:", err);
       showToast("Failed to create new chat", "error");
+    }
+  }
+
+  async function openChatForCreator({ creatorId, preferredThreadId = null, createFresh = false } = {}) {
+    if (!creatorId) {
+      dispatch({ type: "SET_STEP", step: 5 });
+      return;
+    }
+
+    setActiveCreatorId(creatorId);
+
+    const selectThread = async (threadId) => {
+      if (!threadId) return false;
+      await refreshThreads(creatorId);
+      await handleSelectThreadWrapper(threadId, creatorId);
+      dispatch({ type: "SET_STEP", step: 5 });
+      return true;
+    };
+
+    if (preferredThreadId && await selectThread(preferredThreadId)) {
+      return;
+    }
+
+    if (!createFresh) {
+      try {
+        const lastActive = await getLastActiveThread(creatorId);
+        if (lastActive?.id && await selectThread(lastActive.id)) {
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to load last active thread:", err);
+      }
+    }
+
+    const availableThreads = threadsByCreator[creatorId] || [];
+    if (!createFresh && availableThreads.length > 0 && await selectThread(availableThreads[0].id)) {
+      return;
+    }
+
+    if (!createFresh) {
+      dispatch({ type: "SET_STEP", step: 5 });
+      return;
+    }
+
+    try {
+      const thread = await createThread(creatorId);
+      await refreshThreads(creatorId);
+      await handleSelectThreadWrapper(thread.id, creatorId);
+      dispatch({ type: "SET_STEP", step: 5 });
+    } catch (err) {
+      console.error("Failed to open creator chat:", err);
+      if (!createFresh && availableThreads.length > 0 && await selectThread(availableThreads[0].id)) {
+        return;
+      }
+      showToast(err.message || "Failed to open chat", "error");
     }
   }
 
@@ -487,44 +576,37 @@ function AppInner() {
       if (chatConfig.creatorId) {
         try {
           const data = await getCreatorConfig(chatConfig.creatorId);
-          dispatch({
-            type: "SET_CREATOR_INFO",
+          resetWorkflowSession({
+            step: 1,
+            creatorId: chatConfig.creatorId,
             creatorName: data.name,
             handle: data.handle || "",
             creatorAvatarUrl: data.profile_picture_url || "",
-            url: "", platform: "", source: ""
+            visualConfig: data.visual_config || {},
+            isDraft: false,
           });
-          dispatch({ type: "SET_CREATOR_ID", creatorId: chatConfig.creatorId });
         } catch (error) {
           console.error("Failed to load creator config for new chat:", error);
           showToast("Failed to load creator config. Please try again.", "error");
         }
       } else {
-        dispatch({ type: "RESET" });
-        dispatch({
-          type: "SET_CREATOR_INFO",
+        resetWorkflowSession({
+          step: 1,
           creatorName: chatConfig.name,
           handle: chatConfig.handle || "",
-          url: "", platform: "", source: ""
+          isDraft: false,
         });
       }
-      dispatch({ type: "SET_IS_DRAFT", isDraft: false });
-      dispatch({ type: "SET_STEP", step: 1 });
       setShowNewChatModal(false);
       return;
     } else if (chatConfig.type === "temporary") {
       // Redirect to Setup, BUT Temporary (Draft)
-      dispatch({ type: "RESET" });
-      dispatch({
-        type: "SET_CREATOR_INFO",
+      resetWorkflowSession({
+        step: 1,
         creatorName: chatConfig.name || "Temporary Creator",
         handle: chatConfig.handle || "",
-        url: "",
-        platform: "",
-        source: ""
+        isDraft: true,
       });
-      dispatch({ type: "SET_IS_DRAFT", isDraft: true }); // Temporary / Draft
-      dispatch({ type: "SET_STEP", step: 1 });
       setShowNewChatModal(false);
       return;
     }
@@ -650,9 +732,12 @@ function AppInner() {
     );
   }
 
-  function handleSaveConfig({ creatorId, name, handle, profile_picture_url }) {
+  function handleSaveConfig({ creatorId, name, handle, profile_picture_url, status, visual_config }) {
     dispatch({ type: "SET_CREATOR_ID", creatorId });
-    dispatch({ type: "SET_CREATOR_INFO", creatorName: name || "", handle: handle || "", creatorAvatarUrl: profile_picture_url || "", url: "", platform: "", source: "" });
+    dispatch({ type: "SET_CREATOR_INFO", creatorName: name || "", handle: handle || "", creatorAvatarUrl: profile_picture_url || "", visualConfig: visual_config || {}, url: "", platform: "", source: "" });
+    const needsReapproval = Boolean(status?.needs_reapproval ?? true);
+    setWorkflowHasDetectedChanges(needsReapproval);
+    setWorkflowRequiresApproval(needsReapproval);
     // Refresh list so it shows up in sidebar/modal immediately
     refreshCreators();
   }
@@ -674,6 +759,8 @@ function AppInner() {
     dispatch({ type: "SET_SCRAPED_ITEMS", items: result.items || [] });
     dispatch({ type: "SET_PLATFORM_STATUSES", platformStatuses: result.platform_statuses || null });
     dispatch({ type: "SET_STEP", step: 3 }); // Skip Preview, go straight to Approve
+    setWorkflowHasDetectedChanges(Boolean((result.items || []).length));
+    setWorkflowRequiresApproval(true);
     const n = (result.items || []).length;
     if (n) showToast(`Found ${n} items!`);
     else showToast("Search finished. No items found—check platform statuses.", "error");
@@ -709,6 +796,7 @@ function AppInner() {
         dispatch({ type: "SET_PROGRESS", progress: null });
         dispatch({ type: "SET_STEP", step: 4 });
         dispatch({ type: "SET_LOADING", loading: false });
+        setWorkflowRequiresApproval(false);
         return;
       }
 
@@ -752,6 +840,8 @@ function AppInner() {
 
               dispatch({ type: "SET_PROGRESS", progress: null });
               dispatch({ type: "SET_STEP", step: 4 });
+              setWorkflowHasDetectedChanges(true);
+              setWorkflowRequiresApproval(false);
 
               if (!state.isDraft) {
                 listCreators().then(data => setExistingCreators(data.creators || []));
@@ -810,69 +900,23 @@ function AppInner() {
     }
   }
 
-  function handlePersonaContinue() {
-    // Check Draft Status
-    let finalIsTemporary = false;
-    if (state.isDraft) {
-      // Prompt user
-      const save = window.confirm("Do you want to save this creator to your collection?");
-      if (save) {
-        // "Save" - just proceed, maybe toast
-        showToast("Creator saved to collection.");
-        finalIsTemporary = false;
-      } else {
-        // "Discard" - treat as temporary
-        finalIsTemporary = true;
+  async function handlePersonaContinue({ creatorStatus } = {}) {
+    const requiresSave = Boolean(creatorStatus?.needs_reapproval);
+    if (requiresSave) {
+      const shouldSaveChanges = window.confirm("Changes were detected for this creator. Save them to the knowledge base before returning to chat?");
+      if (shouldSaveChanges) {
+        dispatch({ type: "SET_STEP", step: 3 });
+        return;
       }
     }
 
-    // Check if chat exists for this creator
-    const existingChat = chats.find(c => c.creatorId === state.creatorId);
-
-    if (existingChat) {
-      // Update existing chat metadata and switch to it
-      setChats(prev => prev.map(c => {
-        if (c.id === existingChat.id) {
-          return {
-            ...c,
-            creatorName: state.creatorName || state.handle || "Creator",
-            handle: state.handle || "",
-            creatorAvatarUrl: state.creatorAvatarUrl,
-            // Update temporary status if it changed (e.g. draft saved)
-            isTemporary: finalIsTemporary // state.isDraft only true for new creations, so logic holds
-          };
-        }
-        return c;
-      }));
-      setActiveChatId(existingChat.id);
-      dispatch({ type: "SET_STEP", step: 5 });
-    } else {
-      // Create new chat
-      const newChat = {
-        id: generateChatId(),
-        creatorId: state.creatorId,
-        creatorName: state.creatorName || state.handle || "Creator",
-        handle: state.handle || "",
-        creatorAvatarUrl: state.creatorAvatarUrl,
-        messages: [
-          {
-            id: "welcome",
-            role: "assistant",
-            text: `Hey! I'm ${state.creatorName || state.handle || "the creator"}. Ask me anything!`,
-          },
-        ],
-        isTemporary: finalIsTemporary,
-      };
-
-      setChats((prev) => [...prev, newChat]);
-      setActiveChatId(newChat.id);
-      dispatch({ type: "SET_STEP", step: 5 });
-    }
-
-    // If not temporary, ensure list is refreshed
-    if (!finalIsTemporary) {
-      refreshCreators();
-    }
+    const shouldCreateFreshChat = workflowHasDetectedChanges && !requiresSave;
+    await openChatForCreator({
+      creatorId: state.creatorId,
+      preferredThreadId: workflowOrigin.fromChat && !shouldCreateFreshChat ? workflowOrigin.threadId : null,
+      createFresh: shouldCreateFreshChat || !workflowOrigin.fromChat,
+    });
+    setWorkflowHasDetectedChanges(false);
   }
 
   function handleResetWizard() {
@@ -931,6 +975,7 @@ function AppInner() {
             onBack={handleApproveBack}
             loading={state.loading}
             progress={state.progress}
+            forceShowSave={workflowRequiresApproval && state.scrapedItems.length > 0 && !state.scrapedItems.some((item) => !["ingested", "approved", "completed"].includes(item.status || item.item_status || "pending"))}
           />
         );
       case 4:
@@ -940,6 +985,7 @@ function AppInner() {
             onSave={handlePersonaSave}
             onContinue={handlePersonaContinue}
             loading={state.loading}
+            onGoToApprove={() => dispatch({ type: "SET_STEP", step: 3 })}
           />
         );
       default:
@@ -952,7 +998,21 @@ function AppInner() {
 
   // Handler for global navigation step clicks
   function handleStepClick(step) {
-    // Allow navigation to any step at any time (requirement #1)
+    if (step === 5) {
+      dispatch({ type: "SET_STEP", step });
+      return;
+    }
+
+    if (state.currentStep === 5) {
+      resetWorkflowSession({
+        step,
+        isDraft: false,
+        fromChat: Boolean(activeChatId),
+        threadId: activeChatId,
+      });
+      return;
+    }
+
     dispatch({ type: "SET_STEP", step });
   }
 
@@ -1155,7 +1215,7 @@ function AppInner() {
       <Stepper
         currentStep={state.currentStep}
         steps={STEPS}
-        onStepClick={(s) => dispatch({ type: "SET_STEP", step: s })}
+        onStepClick={handleStepClick}
         searchProgress={searchProgress}
         onUserClick={() => setShowUserSettings(true)}
         userAvatarUrl={userAvatarUrl}
@@ -1197,8 +1257,7 @@ function AppInner() {
               archivedThreadsByCreator={archivedThreadsByCreator}
               onLoadArchived={refreshArchivedThreads}
               onNewCreator={() => {
-                dispatch({ type: "RESET" });
-                dispatch({ type: "SET_STEP", step: 1 });
+                resetWorkflowSession({ step: 1, isDraft: false });
               }}
               onDeleteCreators={handleDeleteCreators}
             />
@@ -1214,7 +1273,7 @@ function AppInner() {
                   <h1 className="empty-title">No creators yet</h1>
                   <p className="empty-subtitle">Create a creator to start chatting</p>
                   <button
-                    onClick={() => dispatch({ type: "SET_STEP", step: 1 })}
+                    onClick={() => resetWorkflowSession({ step: 1, isDraft: false })}
                     className="create-creator-btn"
                   >
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -1240,21 +1299,36 @@ function AppInner() {
 
                   onChangePersona={(switchId) => {
                     if (typeof switchId === "number") {
-                      handleSelectThreadWrapper(null, switchId);
                       handleNewThreadWrapper(switchId);
                       return;
                     }
                     if (activeChat.creatorId) {
-                      dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
-                      dispatch({ type: "SET_CREATOR_INFO", creatorName: activeChat.creatorName || activeChat.handle || "", handle: activeChat.handle || "", creatorAvatarUrl: activeChat.creatorAvatarUrl || "", url: "", platform: "", source: "" });
-                      dispatch({ type: "SET_STEP", step: 4 });
+                      resetWorkflowSession({
+                        step: 4,
+                        creatorId: activeChat.creatorId,
+                        creatorName: activeChat.creatorName || activeChat.handle || "",
+                        handle: activeChat.handle || "",
+                        creatorAvatarUrl: activeChat.creatorAvatarUrl || "",
+                        visualConfig: activeChat.visualConfig || {},
+                        isDraft: false,
+                        fromChat: true,
+                        threadId: activeChat.id,
+                      });
                     }
                   }}
                   onRescrape={() => {
                     if (activeChat.creatorId) {
-                      dispatch({ type: "SET_CREATOR_ID", creatorId: activeChat.creatorId });
-                      dispatch({ type: "SET_CREATOR_INFO", creatorName: activeChat.creatorName || activeChat.handle || "", handle: activeChat.handle || "", creatorAvatarUrl: activeChat.creatorAvatarUrl || "", url: "", platform: "", source: "" });
-                      dispatch({ type: "SET_STEP", step: 1 });
+                      resetWorkflowSession({
+                        step: 1,
+                        creatorId: activeChat.creatorId,
+                        creatorName: activeChat.creatorName || activeChat.handle || "",
+                        handle: activeChat.handle || "",
+                        creatorAvatarUrl: activeChat.creatorAvatarUrl || "",
+                        visualConfig: activeChat.visualConfig || {},
+                        isDraft: false,
+                        fromChat: true,
+                        threadId: activeChat.id,
+                      });
                     }
                   }}
                   creatorAvatarUrl={activeChat.creatorAvatarUrl || state.creatorAvatarUrl}

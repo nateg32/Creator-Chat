@@ -41,11 +41,98 @@ export function CreatorSetup({
   const [saveLoading, setSaveLoading] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [testStatus, setTestStatus] = useState({});
+  const [showSearchConfirm, setShowSearchConfirm] = useState(false);
+  const [searchSummary, setSearchSummary] = useState([]);
+  const [savedConfigSignature, setSavedConfigSignature] = useState("");
 
   const [nameError, setNameError] = useState(null);
   const [nameHint, setNameHint] = useState(null);
   const [nameOriginalBeforeFormat, setNameOriginalBeforeFormat] = useState(null);
   const [nameSuggestedAcronym, setNameSuggestedAcronym] = useState(null);
+
+  const buildPlatformConfigs = useCallback(() => {
+    const platform_configs = {};
+    for (const k of selected) {
+      const c = config[k];
+      const url = (c?.url || "").trim();
+      if (!url) continue;
+      const plat = platforms.find((p) => p.key === k);
+      const maxItems = c?.maxItems ?? plat?.default_max_items ?? 10;
+      const mode = c?.timeFilter?.mode || "all";
+      let timeFilter = { mode };
+      if (mode === "since") {
+        timeFilter.since = (c?.timeFilter?.since || "").trim() || null;
+        timeFilter.days = undefined;
+      } else if (mode === "last_days") {
+        timeFilter.days = c?.timeFilter?.days ?? 30;
+        timeFilter.since = undefined;
+      } else {
+        timeFilter.since = undefined;
+        timeFilter.days = undefined;
+      }
+      platform_configs[k] = {
+        enabled: true,
+        url,
+        timeFilter,
+        maxItems: Math.min(Math.max(1, Number(maxItems) || 10), 50),
+      };
+    }
+    return platform_configs;
+  }, [config, platforms, selected]);
+
+  const buildConfigSignature = useCallback(() => JSON.stringify(buildPlatformConfigs()), [buildPlatformConfigs]);
+
+  const formatTimeFilterSummary = useCallback((timeFilter) => {
+    const mode = timeFilter?.mode || "all";
+    if (mode === "since" && timeFilter?.since) return `Since ${timeFilter.since}`;
+    if (mode === "last_days" && timeFilter?.days) return `Last ${timeFilter.days} days`;
+    return "All available";
+  }, []);
+
+  const validateSelectedLinksForSearch = useCallback(async () => {
+    const platform_configs = buildPlatformConfigs();
+    const nextConfig = { ...config };
+    const summary = [];
+
+    for (const [key, entry] of Object.entries(platform_configs)) {
+      const platform = platforms.find((p) => p.key === key);
+      if (!platform) continue;
+
+      if (key !== "custom") {
+        const res = await validatePlatformUrl(key, entry.url);
+        if (!res.valid) {
+          setTestStatus((s) => ({ ...s, [key]: res.error || "Invalid link" }));
+          throw new Error(`${platform.label}: ${res.error || "Invalid link"}`);
+        }
+        const normalized = res.normalized || entry.url;
+        nextConfig[key] = { ...(nextConfig[key] || {}), url: normalized };
+        setTestStatus((s) => ({ ...s, [key]: "Valid public link" }));
+        summary.push({
+          key,
+          label: platform.label,
+          url: normalized,
+          maxItems: entry.maxItems,
+          timeLabel: formatTimeFilterSummary(entry.timeFilter),
+        });
+      } else {
+        const lines = (entry.url || "").split('\n').map((line) => line.trim()).filter(Boolean);
+        if (!lines.length) {
+          throw new Error('Custom Links: add at least one link');
+        }
+        summary.push({
+          key,
+          label: platform.label,
+          url: `${lines.length} custom link${lines.length === 1 ? "" : "s"}`,
+          maxItems: entry.maxItems,
+          timeLabel: "Manual links",
+        });
+      }
+    }
+
+    setConfig(nextConfig);
+    return { summary, signature: JSON.stringify(platform_configs) };
+  }, [buildPlatformConfigs, config, formatTimeFilterSummary, platforms]);
+
 
   useEffect(() => {
     getPlatforms()
@@ -85,6 +172,7 @@ export function CreatorSetup({
         setCreatorName(data.name || "");
         setCreatorHandle(data.handle || "");
         setCreatorAvatarUrl(data.profile_picture_url || "");
+        setSavedConfigSignature(JSON.stringify(pc || {}));
       })
       .catch(() => { });
   }, [savedCreatorId]);
@@ -125,12 +213,25 @@ export function CreatorSetup({
       setTestStatus((s) => ({ ...s, [key]: "Enter a URL first" }));
       return;
     }
-    setTestStatus((s) => ({ ...s, [key]: "Checking…" }));
+    setTestStatus((s) => ({ ...s, [key]: "Checking public link..." }));
     try {
       const res = await validatePlatformUrl(key, url);
+      if (res.valid) {
+        const normalized = res.normalized || url;
+        if (normalized !== url) {
+          updatePlatformConfig(key, { url: normalized });
+        }
+        setTestStatus((s) => ({
+          ...s,
+          [key]: res.checked_via === "http_fetch"
+            ? "Valid public link"
+            : "Valid format",
+        }));
+        return;
+      }
       setTestStatus((s) => ({
         ...s,
-        [key]: res.valid ? "Valid" : (res.error || "Invalid"),
+        [key]: res.error || "Invalid link",
       }));
     } catch (e) {
       setTestStatus((s) => ({ ...s, [key]: e.message || "Error" }));
@@ -167,40 +268,15 @@ export function CreatorSetup({
     setError(null);
     setSaveLoading(true);
     try {
-      const platform_configs = {};
-      for (const k of selected) {
-        const c = config[k];
-        const url = (c?.url || "").trim();
-        if (!url) continue;
-        const plat = platforms.find((p) => p.key === k);
-        const maxItems = c?.maxItems ?? plat?.default_max_items ?? 10;
-        const mode = c?.timeFilter?.mode || "all";
-        let timeFilter = { mode };
-        if (mode === "since") {
-          timeFilter.since = (c?.timeFilter?.since || "").trim() || null;
-          timeFilter.days = undefined;
-        } else if (mode === "last_days") {
-          timeFilter.days = c?.timeFilter?.days ?? 30;
-          timeFilter.since = undefined;
-        } else {
-          timeFilter.since = undefined;
-          timeFilter.days = undefined;
-        }
-        platform_configs[k] = {
-          enabled: true,
-          url,
-          timeFilter,
-          maxItems: Math.min(Math.max(1, Number(maxItems) || 10), 50),
-        };
-      }
+      const platform_configs = buildPlatformConfigs();
       if (savedCreatorId) {
-        await updateCreator(savedCreatorId, {
+        const res = await updateCreator(savedCreatorId, {
           name: creatorName.trim() || undefined,
           handle: creatorHandle.trim() || undefined,
           profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
-        onSaveConfig({ creatorId: savedCreatorId, name: creatorName, handle: creatorHandle, profile_picture_url: creatorAvatarUrl });
+        onSaveConfig({ creatorId: savedCreatorId, name: res.name, handle: res.handle, profile_picture_url: res.profile_picture_url, status: res.status, visual_config: res.visual_config });
       } else {
         const res = await createCreatorWithConfig({
           name: creatorName.trim() || undefined,
@@ -208,8 +284,9 @@ export function CreatorSetup({
           profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
-        onSaveConfig({ creatorId: res.id, name: res.name, handle: res.handle, profile_picture_url: res.profile_picture_url });
+        onSaveConfig({ creatorId: res.id, name: res.name, handle: res.handle, profile_picture_url: res.profile_picture_url, status: res.status, visual_config: res.visual_config });
       }
+      setSavedConfigSignature(JSON.stringify(platform_configs));
       onSaveSuccess?.();
     } catch (err) {
       setError(err.message || "Save failed");
@@ -223,7 +300,28 @@ export function CreatorSetup({
     const id = savedCreatorId;
     if (!id || scrapeLoading || loading) return;
     setError(null);
+
+    const currentSignature = buildConfigSignature();
+    if (savedConfigSignature && currentSignature !== savedConfigSignature) {
+      setError("Save config changes before searching so the scraper uses the latest links.");
+      return;
+    }
+
+    try {
+      const { summary } = await validateSelectedLinksForSearch();
+      setSearchSummary(summary);
+      setShowSearchConfirm(true);
+    } catch (err) {
+      setError(err.message || "Search failed");
+    }
+  };
+
+  const handleConfirmScrape = async () => {
+    const id = savedCreatorId;
+    if (!id || scrapeLoading || loading) return;
+    setError(null);
     setScrapeLoading(true);
+    setShowSearchConfirm(false);
     try {
       const result = await scrape({ creator_id: id });
       if (onSearchStart) {
@@ -401,7 +499,7 @@ export function CreatorSetup({
                 )}
               </div>
               {p.key !== "custom" && testStatus[p.key] && (
-                <span className={`test-status ${testStatus[p.key] === "Valid" ? "ok" : "err"}`}>
+                <span className={`test-status ${String(testStatus[p.key]).toLowerCase().startsWith("valid") ? "ok" : "err"}`}>
                   {testStatus[p.key]}
                 </span>
               )}
@@ -501,6 +599,38 @@ export function CreatorSetup({
           </button>
         </div>
       </form>
+
+      {showSearchConfirm && (
+        <div className="creator-setup-modal-overlay" onClick={() => setShowSearchConfirm(false)}>
+          <div className="creator-setup-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="creator-setup-modal-header">
+              <h3>Confirm search</h3>
+              <p>Review the exact sources that will be scraped before continuing.</p>
+            </div>
+            <div className="creator-setup-modal-body">
+              {searchSummary.map((item) => (
+                <div key={item.key} className="search-summary-card">
+                  <div className="search-summary-head">
+                    <span className={`badge badge-${item.key === "youtube_shorts" ? "youtube" : item.key}`}>{item.label}</span>
+                    <span className="search-summary-items">Up to {item.maxItems} items</span>
+                  </div>
+                  <div className="search-summary-url">{item.url}</div>
+                  <div className="search-summary-time">{item.timeLabel}</div>
+                </div>
+              ))}
+            </div>
+            <div className="creator-setup-modal-footer">
+              <button type="button" className="secondary-button" onClick={() => setShowSearchConfirm(false)}>
+                Cancel
+              </button>
+              <button type="button" className="primary-button" onClick={handleConfirmScrape}>
+                Confirm & Search
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

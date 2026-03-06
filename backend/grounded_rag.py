@@ -2700,6 +2700,7 @@ async def grounded_rag_stream(
     # 3. Handle Context Gathering (Skip embeddings for greetings)
     support_set = []
     mems = []
+    no_online_fallback = None
     
     if route == "ROUTE_2_TASK":
         # Full RAG Route: Needs Embeddings
@@ -2747,7 +2748,6 @@ async def grounded_rag_stream(
         _t_search_start = _time.time()
         
         search_mode = creator_row.get("search_mode") or "hybrid"
-        no_online_fallback = None
         
         # Check if bot recently discussed video/link
         last_bot_msg = ""

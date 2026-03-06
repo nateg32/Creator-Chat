@@ -6,33 +6,21 @@ const DECISION_PENDING = "pending";
 const DECISION_APPROVE = "approve";
 const DECISION_DENY = "deny";
 
-export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
-  const [decisions, setDecisions] = useState(() => {
+export function ApprovalGate({ items, onSave, onBack, loading, progress, forceShowSave = false }) {
+  const initialDecisions = useMemo(() => {
     const initial = {};
     items.forEach((item) => {
-      // Support both item_id (new) and queue_id (legacy)
       const itemKey = item.item_id || item.queue_id;
-      // If status is ingested/approved/completed, default to APPROVE
       initial[itemKey] = (item.status === 'ingested' || item.status === 'approved' || item.status === 'completed' || item.item_status === 'ingested') ? DECISION_APPROVE : DECISION_PENDING;
     });
     return initial;
-  });
-
-  // Sync decisions when items prop updates (e.g. async load)
-  useEffect(() => {
-    setDecisions(prev => {
-      const next = { ...prev };
-      let changed = false;
-      items.forEach(item => {
-        const key = item.item_id || item.queue_id;
-        if (next[key] === undefined) {
-          next[key] = (item.status === 'ingested' || item.status === 'approved' || item.status === 'completed' || item.item_status === 'ingested') ? DECISION_APPROVE : DECISION_PENDING;
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
   }, [items]);
+
+  const [decisions, setDecisions] = useState(initialDecisions);
+
+  useEffect(() => {
+    setDecisions(initialDecisions);
+  }, [initialDecisions]);
 
   const [expanded, setExpanded] = useState({});
   const [filter, setFilter] = useState("all");
@@ -86,12 +74,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
   }
 
   function resetDecisions() {
-    const newDecisions = {};
-    items.forEach((item) => {
-      const itemKey = item.item_id || item.queue_id;
-      newDecisions[itemKey] = DECISION_PENDING;
-    });
-    setDecisions(newDecisions);
+    setDecisions(initialDecisions);
   }
 
   async function handleSave() {
@@ -111,8 +94,14 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
       return;
     }
 
+    if (!isDirty) return;
     await onSave(decisionsArray);
   }
+
+  const isDirty = items.some((item) => {
+    const itemKey = item.item_id || item.queue_id;
+    return (decisions[itemKey] || DECISION_PENDING) !== (initialDecisions[itemKey] || DECISION_PENDING);
+  });
 
   const approvedCount = items.filter((item) => {
     const itemKey = item.item_id || item.queue_id;
@@ -365,13 +354,15 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress }) {
         <button onClick={onBack} className="secondary-button" disabled={loading}>
           Back
         </button>
-        <button
-          onClick={handleSave}
-          className="primary-button"
-          disabled={loading || approvedCount === 0}
-        >
-          {loading ? (progress ? progress.message : "Saving...") : `Save to knowledge base (${approvedCount} items)`}
-        </button>
+        {isDirty || forceShowSave ? (
+          <button
+            onClick={handleSave}
+            className="primary-button"
+            disabled={loading || approvedCount === 0}
+          >
+            {loading ? (progress ? progress.message : "Saving...") : `Save to knowledge base (${approvedCount} items)`}
+          </button>
+        ) : null}
       </div>
     </div>
   );

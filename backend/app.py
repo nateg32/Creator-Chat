@@ -6,10 +6,12 @@ import os
 import json
 import bcrypt
 import uuid
+import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import asyncio
 from fastapi import BackgroundTasks
+from urllib.parse import urlparse
 from backend.models import (
     AskRequest, AskResponse,
     IngestRequest, IngestResponse,
@@ -304,6 +306,127 @@ def _creator_display_column() -> str:
     return "display_name"
 
 
+def _jsonish_to_plain(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and stripped[:1] in "{[":
+            try:
+                return json.loads(stripped)
+            except Exception:
+                return value
+        return stripped
+    if isinstance(value, dict):
+        return {k: _jsonish_to_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonish_to_plain(v) for v in value]
+    if hasattr(value, "items"):
+        return {k: _jsonish_to_plain(v) for k, v in value.items()}
+    return value
+
+
+def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.strip()
+
+
+def _values_differ(current: Any, incoming: Any) -> bool:
+    return _jsonish_to_plain(current) != _jsonish_to_plain(incoming)
+
+
+_VALIDATION_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; CreatorBotValidator/1.0; +https://creator-bot.local)",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _host_matches(host: str, candidates: List[str]) -> bool:
+    host = (host or "").lower()
+    return any(host == candidate or host.endswith(f".{candidate}") for candidate in candidates)
+
+
+def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, Any]:
+    if platform_key == "custom":
+        return {"exists": True, "checked_via": "format_only"}
+
+    try:
+        response = requests.get(url, headers=_VALIDATION_HEADERS, timeout=12, allow_redirects=True)
+    except requests.RequestException as exc:
+        return {
+            "exists": False,
+            "error": f"Could not verify this link right now: {exc}",
+            "checked_via": "http_fetch",
+        }
+
+    final_url = response.url or url
+    final_host = (urlparse(final_url).netloc or "").lower()
+    body = (response.text or "").lower()
+
+    invalid_markers = {
+        "youtube": ["this page isn't available", "video unavailable", "channel not found", "this channel does not exist"],
+        "youtube_shorts": ["this page isn't available", "video unavailable", "channel not found", "this channel does not exist"],
+        "instagram": ["sorry, this page isn't available", "page not found", "link you followed may be broken"],
+        "tiktok": ["couldn't find this account", "couldn't find this video", "page not available"],
+        "facebook": ["this content isn't available right now", "may have been removed", "page isn't available"],
+        "twitter": ["this page doesn?t exist", "this page doesn't exist", "something went wrong. try reloading"],
+        "linkedin": ["page not found", "profile unavailable"],
+        "reddit": ["sorry, nobody on reddit goes by that name", "page not found"],
+    }
+    valid_hosts = {
+        "youtube": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+        "youtube_shorts": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+        "instagram": ["instagram.com", "www.instagram.com"],
+        "tiktok": ["tiktok.com", "www.tiktok.com"],
+        "facebook": ["facebook.com", "www.facebook.com", "m.facebook.com", "fb.com"],
+        "twitter": ["twitter.com", "www.twitter.com", "x.com", "www.x.com"],
+        "linkedin": ["linkedin.com", "www.linkedin.com"],
+        "reddit": ["reddit.com", "www.reddit.com"],
+    }
+
+    if response.status_code >= 400:
+        return {
+            "exists": False,
+            "error": f"Link returned HTTP {response.status_code}",
+            "checked_via": "http_fetch",
+            "resolved_url": final_url,
+        }
+
+    if platform_key in valid_hosts and not _host_matches(final_host, valid_hosts[platform_key]):
+        return {
+            "exists": False,
+            "error": "Link redirected to a different site and could not be verified as official.",
+            "checked_via": "redirect_check",
+            "resolved_url": final_url,
+        }
+
+    for marker in invalid_markers.get(platform_key, []):
+        if marker in body:
+            return {
+                "exists": False,
+                "error": "This link looks unavailable or deleted.",
+                "checked_via": "page_content",
+                "resolved_url": final_url,
+            }
+
+    if platform_key == "youtube":
+        path = (urlparse(final_url).path or "").strip("/")
+        if path.startswith("@") and "channel" not in body and "videos" not in body and "subscribers" not in body:
+            return {
+                "exists": False,
+                "error": "Could not verify a public YouTube channel at this URL.",
+                "checked_via": "page_content",
+                "resolved_url": final_url,
+            }
+
+    return {
+        "exists": True,
+        "checked_via": "http_fetch",
+        "resolved_url": final_url,
+    }
+
+
 def _creator_has_column(column_name: str) -> bool:
     try:
         row = db.execute_one(
@@ -358,13 +481,13 @@ def get_or_create_creator_for_handle(handle: str, platform: str = "instagram") -
             )
         else:
             existing = db.execute_one(
-                "SELECT id FROM creators WHERE handle = %s LIMIT 1",
+                "SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1",
                 (handle,),
             )
     except Exception:
         # If schema differs unexpectedly, fall back to minimal select
         existing = db.execute_one(
-            "SELECT id FROM creators WHERE handle = %s LIMIT 1",
+            "SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1",
             (handle,),
         )
     if existing:
@@ -573,8 +696,21 @@ def validate_platform_url(key: str, url: str = ""):
     ok, err = validate_url(norm, key)
     if not ok:
         return {"valid": False, "error": err or "Invalid"}
+    availability = _validate_platform_availability(key, norm)
+    if not availability.get("exists"):
+        return {
+            "valid": False,
+            "normalized": norm,
+            "error": availability.get("error") or "Could not verify this link",
+            "checked_via": availability.get("checked_via"),
+            "resolved_url": availability.get("resolved_url"),
+        }
     h = extract_handle(norm, key)
-    out = {"valid": True, "normalized": norm}
+    out = {
+        "valid": True,
+        "normalized": availability.get("resolved_url") or norm,
+        "checked_via": availability.get("checked_via"),
+    }
     if h:
         out["handle"] = h
     return out
@@ -842,14 +978,16 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
             return params
 
         # If creator already exists for this handle, update config instead of failing on unique constraint.
-        existing = db.execute_one("SELECT id FROM creators WHERE handle = %s LIMIT 1", (handle,))
+        existing = db.execute_one("SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1", (handle,))
         if existing and existing.get("id"):
             creator_id = existing["id"]
             updates = _creator_name_updates()
             params = _creator_name_params()
             if has_pc:
-                updates.append("platform_configs = %s")
-                params.append(json.dumps(configs))
+                existing_configs = _jsonish_to_plain(existing.get("platform_configs") or {})
+                if _values_differ(existing_configs, configs):
+                    updates.append("platform_configs = %s")
+                    params.append(json.dumps(configs))
             params.append(creator_id)
             db.execute_update(f"UPDATE creators SET {', '.join(updates)} WHERE id = %s", tuple(params))
         else:
@@ -897,7 +1035,7 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
                 # Handle races / uniqueness: if handle already exists, update it instead.
                 msg = str(e)
                 if "duplicate key value" in msg and "handle" in msg:
-                    existing = db.execute_one("SELECT id FROM creators WHERE handle = %s LIMIT 1", (handle,))
+                    existing = db.execute_one("SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1", (handle,))
                     if existing and existing.get("id"):
                         creator_id = existing["id"]
                         updates = _creator_name_updates()
@@ -966,7 +1104,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
     """Update creator name, handle, and/or platform_configs."""
     try:
         dcol = _creator_display_column()
-        existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, style_fingerprint, visual_config, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s", (creator_id,))
+        existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, style_fingerprint, visual_config, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode FROM creators WHERE id = %s", (creator_id,))
         if not existing:
             raise HTTPException(status_code=404, detail="Creator not found.")
 
@@ -981,14 +1119,19 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             norm_res = normalize_creator_name(name_raw)
             if not norm_res.is_valid:
                 raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
-            updates.append(f"{dcol} = %s")
-            params.append(norm_res.normalized)
+            if _values_differ(existing.get("display_name"), norm_res.normalized):
+                updates.append(f"{dcol} = %s")
+                params.append(norm_res.normalized)
         if request.handle is not None:
-            updates.append("handle = %s")
-            params.append(request.handle.strip())
+            normalized_handle = _normalize_optional_string(request.handle)
+            if _values_differ(existing.get("handle"), normalized_handle):
+                updates.append("handle = %s")
+                params.append(normalized_handle)
         if request.profile_picture_url is not None:
-            updates.append("profile_picture_url = %s")
-            params.append(request.profile_picture_url)
+            normalized_profile_picture_url = _normalize_optional_string(request.profile_picture_url)
+            if _values_differ(existing.get("profile_picture_url"), normalized_profile_picture_url):
+                updates.append("profile_picture_url = %s")
+                params.append(normalized_profile_picture_url)
         if request.platform_configs is not None:
             configs = _validate_and_normalize_platform_configs(request.platform_configs)
             # Identity Auto-Fill Hook
@@ -1004,30 +1147,43 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             except Exception:
                 r = None
             if r:
-                updates.append("platform_configs = %s")
-                params.append(json.dumps(configs))
+                existing_configs = _jsonish_to_plain(existing.get("platform_configs") or {})
+                if _values_differ(existing_configs, configs):
+                    updates.append("platform_configs = %s")
+                    params.append(json.dumps(configs))
         if request.visual_config is not None:
-             updates.append("visual_config = %s")
-             params.append(json.dumps(request.visual_config))
+            existing_visual_config = _jsonish_to_plain(existing.get("visual_config") or {})
+            if _values_differ(existing_visual_config, request.visual_config or {}):
+                updates.append("visual_config = %s")
+                params.append(json.dumps(request.visual_config))
 
         if request.youtube_channel_id is not None:
-            updates.append("youtube_channel_id = %s")
-            params.append(request.youtube_channel_id)
+            normalized_youtube_channel_id = _normalize_optional_string(request.youtube_channel_id)
+            if _values_differ(existing.get("youtube_channel_id"), normalized_youtube_channel_id):
+                updates.append("youtube_channel_id = %s")
+                params.append(normalized_youtube_channel_id)
         if request.youtube_handle is not None:
-            updates.append("youtube_handle = %s")
-            params.append(request.youtube_handle)
+            normalized_youtube_handle = _normalize_optional_string(request.youtube_handle)
+            if _values_differ(existing.get("youtube_handle"), normalized_youtube_handle):
+                updates.append("youtube_handle = %s")
+                params.append(normalized_youtube_handle)
         if request.official_domains is not None:
-            updates.append("official_domains = %s")
-            params.append(request.official_domains)
+            if _values_differ(existing.get("official_domains") or [], request.official_domains or []):
+                updates.append("official_domains = %s")
+                params.append(request.official_domains)
         if request.course_domains is not None:
-            updates.append("course_domains = %s")
-            params.append(request.course_domains)
+            if _values_differ(existing.get("course_domains") or [], request.course_domains or []):
+                updates.append("course_domains = %s")
+                params.append(request.course_domains)
         if request.course_base_urls is not None:
-            updates.append("course_base_urls = %s")
-            params.append(request.course_base_urls)
+            if _values_differ(existing.get("course_base_urls") or [], request.course_base_urls or []):
+                updates.append("course_base_urls = %s")
+                params.append(request.course_base_urls)
         if request.search_mode is not None:
-            updates.append("search_mode = %s")
-            params.append(request.search_mode)
+            normalized_search_mode = _normalize_optional_string(request.search_mode)
+            if _values_differ(existing.get("search_mode") or "hybrid", normalized_search_mode or "hybrid"):
+                updates.append("search_mode = %s")
+                params.append(normalized_search_mode)
 
         if not updates:
             configs_out = existing.get("platform_configs") or {}
@@ -1035,20 +1191,32 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
                 configs_out = dict(configs_out) if configs_out else {}
             else:
                 configs_out = json.loads(configs_out) if isinstance(configs_out, str) else {}
+            visual_config = existing.get("visual_config") or {}
+            if hasattr(visual_config, "copy"):
+                visual_config = dict(visual_config) if visual_config else {}
+            else:
+                visual_config = json.loads(visual_config) if isinstance(visual_config, str) else {}
+            style_fingerprint = existing.get("style_fingerprint") or {}
+            if hasattr(style_fingerprint, "copy"):
+                style_fingerprint = dict(style_fingerprint) if style_fingerprint else {}
+            else:
+                style_fingerprint = json.loads(style_fingerprint) if isinstance(style_fingerprint, str) else {}
+            status_obj = get_creator_status(creator_id)
             return CreatorWithConfigResponse(
                 id=existing["id"],
                 name=existing.get("display_name") or existing.get("handle") or "",
                 handle=existing.get("handle"),
                 profile_picture_url=existing.get("profile_picture_url"),
                 platform_configs=configs_out,
-                visual_config=existing.get("visual_config") or {},
-                style_fingerprint=existing.get("style_fingerprint") or {},
+                visual_config=visual_config,
+                style_fingerprint=style_fingerprint,
                 youtube_channel_id=existing.get("youtube_channel_id"),
                 youtube_handle=existing.get("youtube_handle"),
                 official_domains=existing.get("official_domains") or [],
                 course_domains=existing.get("course_domains") or [],
                 course_base_urls=existing.get("course_base_urls") or [],
                 search_mode=existing.get("search_mode") or "hybrid",
+                status=status_obj,
                 created_at=None,
             )
         updates.append("config_version = config_version + 1")
