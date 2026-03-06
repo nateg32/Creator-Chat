@@ -4,7 +4,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from urllib.parse import parse_qs, urlparse
 import requests
 from backend.db import db
@@ -67,108 +67,259 @@ class ResearchProvider(ABC):
             logger.warning(f"ResearchProvider: Failed to parse JSON: {e}")
             return None
 
-    def _enforce_cog(self, candidates: List[Dict[str, Any]], creator_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
-        configs = creator_profile.get('platform_configs') or {}
-        creator_name = (creator_profile.get('name') or '').strip().lower()
-        creator_handle = (creator_profile.get('handle') or '').strip().lstrip('@').lower()
-        if not creator_name and creator_handle:
-            creator_name = creator_handle.replace('_', ' ')
+    def _normalize_netloc(self, netloc: str) -> str:
+        host = (netloc or "").lower().strip()
+        if host.startswith("www."):
+            host = host[4:]
+        if host.startswith("m."):
+            host = host[2:]
+        return host
 
-        official_domains = [d.lower() for d in (creator_profile.get('official_domains') or []) if d]
-        course_domains = [d.lower() for d in (creator_profile.get('course_domains') or []) if d]
-        course_base_urls = [u.lower() for u in (creator_profile.get('course_base_urls') or []) if u]
+    def _normalize_handle(self, value: Any) -> str:
+        value = str(value or "").strip().lower().lstrip("@")
+        return re.sub(r"[^a-z0-9._-]+", "", value)
 
-        verified_handles = set()
-        verified_urls = set()
-        verified_domains = set(official_domains + course_domains)
+    def _infer_platform_from_url(self, url: str) -> str:
+        host = self._normalize_netloc(urlparse(url or "").netloc)
+        if "youtube.com" in host or "youtu.be" in host:
+            return "youtube"
+        if "instagram.com" in host:
+            return "instagram"
+        if "tiktok.com" in host:
+            return "tiktok"
+        if "facebook.com" in host or "fb.watch" in host:
+            return "facebook"
+        if "x.com" in host or "twitter.com" in host:
+            return "twitter"
+        if "linkedin.com" in host:
+            return "linkedin"
+        return "web"
 
-        yt_handle = (creator_profile.get('youtube_handle') or '').lower().strip('@')
-        yt_id = (creator_profile.get('youtube_channel_id') or '').lower().strip()
-        if yt_handle:
-            verified_handles.add(yt_handle)
-        if yt_id:
-            verified_handles.add(yt_id)
+    def _is_direct_video_url(self, url: str) -> bool:
+        url_lower = (url or "").lower()
+        return any(pattern in url_lower for pattern in [
+            "youtube.com/watch?v=", "youtube.com/shorts/", "youtu.be/",
+            "instagram.com/reel/", "instagram.com/reels/", "instagram.com/tv/", "instagram.com/p/",
+            "tiktok.com/",
+            "facebook.com/watch", "facebook.com/reel", "facebook.com/share/v/", "fb.watch/",
+            "x.com/", "twitter.com/",
+        ])
+
+    def _is_placeholder_url(self, url: str) -> bool:
+        if not url:
+            return True
+        url_lower = url.lower()
+        placeholder_tokens = {
+            "video_id", "reel_id", "post_id", "short_id", "clip_id", "tiktok_id",
+            "fb_video_id", "content_id", "youtube_id", "placeholder", "example",
+        }
+        if any(token in url_lower for token in placeholder_tokens):
+            return True
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        if "v" in query:
+            vid = (query.get("v") or [""])[0].strip()
+            if not vid or vid.lower() in placeholder_tokens or vid.upper() == "VIDEO_ID":
+                return True
+        path_tokens = [t for t in re.split(r"[/?&=._-]+", parsed.path.lower()) if t]
+        return any(token in placeholder_tokens for token in path_tokens)
+
+    def _extract_owner_signals_from_url(self, url: str) -> Dict[str, Any]:
+        parsed = urlparse(url or "")
+        host = self._normalize_netloc(parsed.netloc)
+        path_segments = [seg for seg in parsed.path.split("/") if seg]
+        platform = self._infer_platform_from_url(url)
+        handles: Set[str] = set()
+        ids: Set[str] = set()
+
+        if platform == "youtube" and path_segments:
+            first = path_segments[0]
+            if first.startswith("@"):
+                handles.add(self._normalize_handle(first))
+            elif first in {"channel", "user", "c"} and len(path_segments) > 1:
+                candidate = self._normalize_handle(path_segments[1])
+                if first == "channel":
+                    ids.add(candidate)
+                elif candidate:
+                    handles.add(candidate)
+        elif platform == "instagram" and path_segments:
+            first = self._normalize_handle(path_segments[0])
+            if first and first not in {"reel", "reels", "p", "tv", "stories", "explore"}:
+                handles.add(first)
+        elif platform == "tiktok":
+            for seg in path_segments:
+                if seg.startswith("@"):
+                    handles.add(self._normalize_handle(seg))
+                    break
+        elif platform == "facebook" and host != "fb.watch" and path_segments:
+            first = self._normalize_handle(path_segments[0])
+            if first and first not in {"watch", "reel", "share", "video", "videos", "groups", "events"}:
+                handles.add(first)
+        elif platform == "twitter" and path_segments:
+            first = self._normalize_handle(path_segments[0])
+            if first and first not in {"i", "search", "home", "explore"}:
+                handles.add(first)
+        elif platform == "linkedin" and len(path_segments) >= 2:
+            candidate = self._normalize_handle(path_segments[1])
+            if candidate:
+                handles.add(candidate)
+
+        return {
+            "platform": platform,
+            "host": host,
+            "handles": handles,
+            "ids": ids,
+        }
+
+    def _extract_owner_signals_from_candidate(self, candidate: Dict[str, Any], platform: str) -> Dict[str, Set[str]]:
+        meta = candidate.get("metadata", {}) or {}
+        source = str(candidate.get("source") or candidate.get("source_opt") or "")
+        fields = [
+            meta.get("channel_id"), meta.get("channel_name"), meta.get("author"), meta.get("owner"),
+            meta.get("username"), meta.get("handle"), meta.get("uploader"), meta.get("page_name"),
+            source,
+        ]
+        handles: Set[str] = set()
+        ids: Set[str] = set()
+        text = " ".join(str(f or "") for f in fields).lower()
+
+        for match in re.findall(r"@([a-z0-9._-]{3,})", text):
+            handles.add(self._normalize_handle(match))
+
+        if platform == "youtube":
+            for match in re.findall(r"\b(uc[a-z0-9_-]{10,})\b", text):
+                ids.add(match.lower())
+        else:
+            for token in re.findall(r"\b[a-z0-9._-]{3,}\b", text):
+                normalized = self._normalize_handle(token)
+                if normalized and token not in {"youtube", "instagram", "facebook", "tiktok", "twitter", "linkedin"}:
+                    handles.add(normalized)
+
+        return {"handles": handles, "ids": ids}
+
+    def _collect_verified_creator_identities(self, creator_profile: Dict[str, Any]) -> Dict[str, Any]:
+        configs = creator_profile.get("platform_configs") or {}
+        creator_handle = self._normalize_handle(creator_profile.get("handle"))
+        verified = {
+            "domains": set(),
+            "urls": set(),
+            "course_urls": set(),
+            "platform_handles": {},
+            "platform_ids": {},
+        }
+
+        for domain in (creator_profile.get("official_domains") or []):
+            norm = self._normalize_netloc(domain)
+            if norm:
+                verified["domains"].add(norm)
+        for domain in (creator_profile.get("course_domains") or []):
+            norm = self._normalize_netloc(domain)
+            if norm:
+                verified["domains"].add(norm)
+        for raw_url in (creator_profile.get("course_base_urls") or []):
+            cleaned = str(raw_url or "").strip().rstrip("/").lower()
+            if cleaned:
+                verified["course_urls"].add(cleaned)
+                verified["urls"].add(cleaned)
+                verified["domains"].add(self._normalize_netloc(urlparse(cleaned).netloc))
+
+        def add_platform_signal(platform: str, handle: Any = "", ident: Any = "", verified_url: Any = "", confidence: float = 1.0):
+            if confidence < 0.8:
+                return
+            platform = (platform or "").lower().strip() or "web"
+            if handle:
+                verified["platform_handles"].setdefault(platform, set()).add(self._normalize_handle(handle))
+            if ident:
+                verified["platform_ids"].setdefault(platform, set()).add(self._normalize_handle(ident))
+            if verified_url:
+                cleaned = str(verified_url).strip().rstrip("/").lower()
+                if cleaned:
+                    verified["urls"].add(cleaned)
+                    verified["domains"].add(self._normalize_netloc(urlparse(cleaned).netloc))
+
+        if creator_handle:
+            add_platform_signal("web", creator_handle)
+        add_platform_signal("youtube", creator_profile.get("youtube_handle"), creator_profile.get("youtube_channel_id"))
 
         for platform, cfg in configs.items():
             if not isinstance(cfg, dict):
                 continue
-            handle = (cfg.get('handle') or cfg.get('username') or '').lower().strip('@')
-            verified_url = (cfg.get('verified_url') or cfg.get('url') or '').lower().strip()
-            channel_id = (cfg.get('channel_id') or cfg.get('id') or '').lower().strip()
-            social_confidence = float(cfg.get('social_confidence') or 0.0)
-            if handle and social_confidence >= 0.8:
-                verified_handles.add(handle)
-            if channel_id and social_confidence >= 0.8:
-                verified_handles.add(channel_id)
-            if verified_url and social_confidence >= 0.8:
-                verified_urls.add(verified_url.rstrip('/'))
-                try:
-                    verified_domains.add(urlparse(verified_url).netloc.lower())
-                except Exception:
-                    pass
+            add_platform_signal(
+                platform,
+                cfg.get("handle") or cfg.get("username"),
+                cfg.get("channel_id") or cfg.get("id"),
+                cfg.get("verified_url") or cfg.get("url"),
+                float(cfg.get("social_confidence") or 0.0),
+            )
+
+        return verified
+
+
+    def _enforce_cog(self, candidates: List[Dict[str, Any]], creator_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
+        creator_name = (creator_profile.get('name') or '').strip().lower()
+        creator_handle = self._normalize_handle(creator_profile.get('handle'))
+        if not creator_name and creator_handle:
+            creator_name = creator_handle.replace('_', ' ')
+
+        verified_identities = self._collect_verified_creator_identities(creator_profile)
+        creator_tokens = [t for t in re.split(r'\W+', creator_name) if len(t) > 2]
+        affiliated_markers = {'interview', 'podcast', 'guest', 'featuring', 'hosted by', 'conversation', 'sermon', 'message', 'church', 'conference', 'ministries', 'ministry'}
 
         verified = []
-        collab_markers = ["interview", "podcast", "guest", "featuring", "hosted by", "with ", "conversation", "sermon", "message", "church", "conference", "ministries", "ministry"]
-        creator_tokens = [t for t in re.split(r'\W+', creator_name) if len(t) > 2]
-
-        for c in candidates:
-            url = (c.get('url') or '').lower().strip()
+        for candidate in candidates:
+            url = str(candidate.get('url') or '').strip()
             if not url:
                 continue
+            lower_url = url.lower()
+            title = str(candidate.get('title') or '').lower()
+            snippet = str(candidate.get('snippet') or '').lower()
+            source = str(candidate.get('source') or candidate.get('source_opt') or '').lower()
+            haystack = ' '.join([title, snippet, source])
 
-            title = (c.get('title') or '').lower()
-            snippet = (c.get('snippet') or '').lower()
-            source = (c.get('source') or c.get('source_opt') or '').lower()
-            platform = (c.get('platform') or self._infer_platform_from_url(url)).lower()
-            meta = c.get('metadata', {}) or {}
-            channel_meta = ' '.join([
-                str(meta.get('channel_id') or ''),
-                str(meta.get('channel_name') or ''),
-                str(meta.get('author') or ''),
-                str(meta.get('owner') or ''),
-            ]).lower()
-            haystack = ' '.join([title, snippet, source, channel_meta])
+            url_signals = self._extract_owner_signals_from_url(lower_url)
+            platform = (candidate.get('platform') or url_signals['platform'] or 'web').lower()
+            meta_signals = self._extract_owner_signals_from_candidate(candidate, platform)
+            candidate_handles = set(url_signals['handles']) | set(meta_signals['handles'])
+            candidate_ids = set(url_signals['ids']) | set(meta_signals['ids'])
+            host = url_signals['host']
+
+            direct_self = False
+            verified_platform_handles = set(verified_identities['platform_handles'].get(platform, set()))
+            verified_platform_ids = set(verified_identities['platform_ids'].get(platform, set()))
+
+            if any(lower_url.startswith(prefix) for prefix in verified_identities['urls'] if prefix):
+                direct_self = True
+            elif any(lower_url.startswith(prefix) for prefix in verified_identities['course_urls'] if prefix):
+                direct_self = True
+            elif host in verified_identities['domains'] and platform == 'web':
+                direct_self = True
+            elif verified_platform_handles and candidate_handles.intersection(verified_platform_handles):
+                direct_self = True
+            elif verified_platform_ids and candidate_ids.intersection(verified_platform_ids):
+                direct_self = True
 
             relation = 'OTHER'
             score = 0.0
-
-            domain = ''
-            try:
-                domain = urlparse(url).netloc.lower()
-            except Exception:
-                pass
-
-            direct_self = False
-            if any(url.startswith(v) for v in verified_urls if v):
-                direct_self = True
-            elif any(d and d in domain for d in verified_domains):
-                direct_self = True
-            elif any(u and url.startswith(u) for u in course_base_urls):
-                direct_self = True
-            elif platform == 'youtube':
-                direct_self = any(h and (f'@{h}' in url or f'/{h}' in url or h in channel_meta) for h in verified_handles)
-            elif platform in {'instagram', 'tiktok', 'facebook', 'twitter'}:
-                direct_self = any(h and (f'/{h}' in url or f'@{h}' in url or h in channel_meta or h in source) for h in verified_handles)
-
             if direct_self:
                 relation = 'SELF'
                 score = 1.0
             else:
                 has_creator_name = bool(creator_name and creator_name in haystack)
                 token_hits = sum(1 for token in creator_tokens if token in haystack)
-                has_affiliate_marker = any(marker in haystack for marker in collab_markers)
-                domain_affiliated = any(term in domain for term in ['podcast', 'church', 'ministr', 'conference'])
-                if has_creator_name and has_affiliate_marker and (token_hits >= max(1, min(2, len(creator_tokens))) or domain_affiliated):
+                has_affiliate_marker = any(marker in haystack for marker in affiliated_markers)
+                domain_affiliated = any(term in host for term in ['podcast', 'church', 'ministr', 'conference'])
+                creator_threshold = max(1, min(2, len(creator_tokens)))
+                if has_creator_name and has_affiliate_marker and (token_hits >= creator_threshold or domain_affiliated):
                     relation = 'AFFILIATED'
-                    score = 0.82 if domain_affiliated else 0.76
+                    score = 0.84 if domain_affiliated else 0.78
 
-            if relation in ('SELF', 'AFFILIATED'):
-                c['platform'] = platform
-                c['relation'] = relation
-                c['ownership_score'] = score
-                c['confidence'] = min(1.0, float(c.get('confidence', 0.5) or 0.5) * score)
-                logger.info(f"ResearchProvider: Accepted candidate '{c.get('title')}' as {relation} (score={score})")
-                verified.append(c)
+            if relation in {'SELF', 'AFFILIATED'}:
+                candidate['platform'] = platform
+                candidate['relation'] = relation
+                candidate['ownership_score'] = score
+                candidate['confidence'] = min(1.0, float(candidate.get('confidence', 0.5) or 0.5) * score)
+                logger.info(f"ResearchProvider: Accepted candidate '{candidate.get('title')}' as {relation} (score={score})")
+                verified.append(candidate)
 
         verified.sort(key=lambda x: (x['relation'] == 'SELF', x['confidence']), reverse=True)
         return verified
@@ -692,53 +843,6 @@ class OpenAIResearchProvider(ResearchProvider):
         return name
 
 
-    def _infer_platform_from_url(self, url: str) -> str:
-        url_lower = (url or "").lower()
-        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
-            return 'youtube'
-        if 'instagram.com' in url_lower:
-            return 'instagram'
-        if 'tiktok.com' in url_lower:
-            return 'tiktok'
-        if 'facebook.com' in url_lower or 'fb.watch' in url_lower:
-            return 'facebook'
-        if 'x.com' in url_lower or 'twitter.com' in url_lower:
-            return 'twitter'
-        if 'linkedin.com' in url_lower:
-            return 'linkedin'
-        return 'web'
-
-    def _is_direct_video_url(self, url: str) -> bool:
-        url_lower = (url or "").lower()
-        return any(pattern in url_lower for pattern in [
-            'youtube.com/watch?v=', 'youtube.com/shorts/', 'youtu.be/',
-            'instagram.com/reel/', 'instagram.com/reels/', 'instagram.com/tv/', 'instagram.com/p/',
-            'tiktok.com/',
-            'facebook.com/watch', 'facebook.com/reel', 'fb.watch/',
-            'x.com/', 'twitter.com/',
-        ])
-
-    def _is_placeholder_url(self, url: str) -> bool:
-        if not url:
-            return True
-        url_lower = url.lower()
-        placeholder_tokens = {
-            'video_id', 'reel_id', 'post_id', 'short_id', 'clip_id', 'tiktok_id',
-            'fb_video_id', 'content_id', 'youtube_id', 'placeholder', 'example'
-        }
-        if any(token in url_lower for token in placeholder_tokens):
-            return True
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        if 'v' in query:
-            vid = (query.get('v') or [''])[0].strip()
-            if not vid or vid.lower() in placeholder_tokens or vid.upper() == 'VIDEO_ID':
-                return True
-        path_tokens = [t for t in re.split(r'[/?&=._-]+', parsed.path.lower()) if t]
-        if any(token in placeholder_tokens for token in path_tokens):
-            return True
-        return False
-
     def _title_only_result(self, title: str, snippet: str = "", confidence: float = 0.45) -> Optional[Dict[str, Any]]:
         title = (title or "").strip()
         if not title or title.lower() in {'youtube video', 'untitled', 'video'}:
@@ -764,102 +868,7 @@ class OpenAIResearchProvider(ResearchProvider):
             prompt = (
                 f'Find the direct public URL for this exact creator-owned video by {creator_name}.\n\n'
                 f'Exact title: "{title}"\n\n'
-                'Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch.\n'
-                'Return only direct post/video URLs from those platforms.\n'
-                'If you cannot verify a direct URL from actual search results, return an empty array [].'
-                f'{exclude_instruction}'
-            )
-            try:
-                attempts = self._search_responses_api(prompt, creator_name)
-                if not attempts:
-                    attempts = self._search_chat_completions(prompt, creator_name)
-                for result in attempts:
-                    url = result.get('url') or ''
-                    if not url or self._is_placeholder_url(url) or not self._is_direct_video_url(url):
-                        continue
-                    result.setdefault('title', title)
-                    result.setdefault('resource_type', 'video')
-                    result.setdefault('relation', 'SELF')
-                    result.setdefault('confidence', 0.72)
-                    result['platform'] = self._infer_platform_from_url(url)
-                    recovered.append(result)
-                    break
-            except Exception as e:
-                logger.warning(f'[SEARCH-RECOVERY] Failed title recovery for {title!r}: {e}')
-        return recovered
-    def _infer_platform_from_url(self, url: str) -> str:
-        url_lower = (url or "").lower()
-        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
-            return 'youtube'
-        if 'instagram.com' in url_lower:
-            return 'instagram'
-        if 'tiktok.com' in url_lower:
-            return 'tiktok'
-        if 'facebook.com' in url_lower or 'fb.watch' in url_lower:
-            return 'facebook'
-        if 'x.com' in url_lower or 'twitter.com' in url_lower:
-            return 'twitter'
-        if 'linkedin.com' in url_lower:
-            return 'linkedin'
-        return 'web'
-
-    def _is_direct_video_url(self, url: str) -> bool:
-        url_lower = (url or "").lower()
-        return any(pattern in url_lower for pattern in [
-            'youtube.com/watch?v=', 'youtube.com/shorts/', 'youtu.be/',
-            'instagram.com/reel/', 'instagram.com/reels/', 'instagram.com/tv/', 'instagram.com/p/',
-            'tiktok.com/',
-            'facebook.com/watch', 'facebook.com/reel', 'fb.watch/',
-            'x.com/', 'twitter.com/',
-        ])
-
-    def _is_placeholder_url(self, url: str) -> bool:
-        if not url:
-            return True
-        url_lower = url.lower()
-        placeholder_tokens = {
-            'video_id', 'reel_id', 'post_id', 'short_id', 'clip_id', 'tiktok_id',
-            'fb_video_id', 'content_id', 'youtube_id', 'placeholder', 'example'
-        }
-        if any(token in url_lower for token in placeholder_tokens):
-            return True
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        if 'v' in query:
-            vid = (query.get('v') or [''])[0].strip()
-            if not vid or vid.lower() in placeholder_tokens or vid.upper() == 'VIDEO_ID':
-                return True
-        path_tokens = [t for t in re.split(r'[/?&=._-]+', parsed.path.lower()) if t]
-        if any(token in placeholder_tokens for token in path_tokens):
-            return True
-        return False
-
-    def _title_only_result(self, title: str, snippet: str = "", confidence: float = 0.45) -> Optional[Dict[str, Any]]:
-        title = (title or "").strip()
-        if not title or title.lower() in {'youtube video', 'untitled', 'video'}:
-            return None
-        return {
-            "title": title,
-            "url": "",
-            "snippet": (snippet or "")[:300],
-            "resource_type": "video",
-            "relation": "SELF",
-            "confidence": confidence,
-            "_title_only": True,
-        }
-
-    def _recover_video_urls_by_title(self, creator_name: str, title_only_candidates: List[Dict[str, Any]], exclude_instruction: str = "") -> List[Dict[str, Any]]:
-        recovered: List[Dict[str, Any]] = []
-        seen_titles = set()
-        for candidate in title_only_candidates[:4]:
-            title = (candidate.get('title') or '').strip()
-            if not title or title.lower() in seen_titles:
-                continue
-            seen_titles.add(title.lower())
-            prompt = (
-                f'Find the direct public URL for this exact creator-owned video by {creator_name}.\n\n'
-                f'Exact title: "{title}"\n\n'
-                'Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch.\n'
+                'Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch, Twitter/X.\n'
                 'Return only direct post/video URLs from those platforms.\n'
                 'If you cannot verify a direct URL from actual search results, return an empty array [].'
                 f'{exclude_instruction}'
@@ -1316,7 +1325,7 @@ class OpenAIResearchProvider(ResearchProvider):
                 quoted_terms = ' OR '.join(f'"{kw}"' for kw in topic_kws[:3])
                 retry_prompt = (
                     f'Find creator-owned videos by {creator_name} about: {quoted_terms}\n\n'
-                    'Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch.\n'
+                    'Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch, Twitter/X.\n'
                     f'List each video with its title and direct video URL.\n'
                     f'Only include videos whose title contains at least one of: {", ".join(topic_kws)}\n'
                     'Do NOT make up or guess URLs. Do NOT use placeholders like VIDEO_ID or REEL_ID.'
@@ -1750,3 +1759,4 @@ def get_research_provider() -> ResearchProvider:
     if settings.SEARCH_API_KEY:
         return SerpApiResearchProvider()
     return GeminiResearchProvider()
+

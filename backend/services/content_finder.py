@@ -1,7 +1,7 @@
 import logging
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
@@ -644,110 +644,26 @@ class ContentFinder:
 
     def _verify_ownership(self, candidate: Dict, creator_profile: Dict) -> Dict:
         """
-        Fail-closed ownership verification for recommendations.
-        Returns {"relation": "SELF"|"AFFILIATED"|"OTHER"|"UNKNOWN", "confidence": float}
+        Route ownership validation through the research provider so chat search,
+        recommendation cards, and live web fallback all use the same fail-closed logic.
         """
-        url = (candidate.get("url") or "").lower().strip()
-        title = (candidate.get("title") or "").lower()
-        snippet = (candidate.get("snippet") or "").lower()
-
         if candidate.get("source_opt") == "Ingested Content":
             return {"relation": "SELF", "confidence": 1.0}
 
-        configs = creator_profile.get("platform_configs") or {}
-        official_domains = [d.lower() for d in (creator_profile.get("official_domains") or []) if d]
-        course_domains = [d.lower() for d in (creator_profile.get("course_domains") or []) if d]
-        creator_name = (creator_profile.get("name") or "").lower().strip()
-        creator_handle = (creator_profile.get("handle") or "").lower().strip().lstrip("@")
-        if not creator_name and creator_handle:
-            creator_name = creator_handle.replace("_", " ")
-
-        verified_domains = set(official_domains + course_domains)
-        verified_handles = set()
-        verified_urls = set()
-
-        yt_channel = (creator_profile.get("youtube_channel_id") or "").lower().strip()
-        yt_handle = (creator_profile.get("youtube_handle") or "").lower().strip("@")
-        if yt_channel:
-            verified_handles.add(yt_channel)
-        if yt_handle:
-            verified_handles.add(yt_handle)
-
-        for platform, cfg in configs.items():
-            if not isinstance(cfg, dict):
-                continue
-            confidence = float(cfg.get("social_confidence") or 0.0)
-            if confidence < 0.8:
-                continue
-            handle = (cfg.get("handle") or cfg.get("username") or "").lower().strip("@")
-            channel_id = (cfg.get("channel_id") or cfg.get("id") or "").lower().strip()
-            verified_url = (cfg.get("verified_url") or cfg.get("url") or "").lower().strip()
-            if handle:
-                verified_handles.add(handle)
-            if channel_id:
-                verified_handles.add(channel_id)
-            if verified_url:
-                verified_urls.add(verified_url.rstrip('/'))
-                try:
-                    from urllib.parse import urlparse
-                    verified_domains.add(urlparse(verified_url).netloc.lower())
-                except Exception:
-                    pass
-
-        if not verified_handles and not verified_urls and not verified_domains:
+        if not self.research_provider or not hasattr(self.research_provider, "_enforce_cog"):
             return {"relation": "UNKNOWN", "confidence": 0.0}
 
-        source = (candidate.get("source_opt") or candidate.get("source") or "").lower()
-        meta = candidate.get("metadata", {}) or {}
-        channel_meta = " ".join([
-            str(meta.get("channel_id") or ""),
-            str(meta.get("channel_name") or ""),
-            str(meta.get("author") or ""),
-            str(meta.get("owner") or ""),
-        ]).lower()
-        haystack = " ".join([title, snippet, source, channel_meta])
+        normalized_candidate = dict(candidate)
+        normalized_candidate.setdefault("metadata", candidate.get("metadata") or {})
+        verified = self.research_provider._enforce_cog([normalized_candidate], creator_profile)
+        if not verified:
+            return {"relation": "OTHER", "confidence": 0.1}
 
-        platform = "web"
-        if any(x in url for x in ["youtube.com", "youtu.be"]):
-            platform = "youtube"
-        elif "instagram.com" in url:
-            platform = "instagram"
-        elif "tiktok.com" in url:
-            platform = "tiktok"
-        elif "facebook.com" in url or "fb.watch" in url:
-            platform = "facebook"
-        elif "x.com" in url or "twitter.com" in url:
-            platform = "twitter"
-
-        try:
-            from urllib.parse import urlparse
-            domain = urlparse(url).netloc.lower()
-        except Exception:
-            domain = ""
-
-        direct_self = False
-        if any(url.startswith(v) for v in verified_urls if v):
-            direct_self = True
-        elif any(d and d in domain for d in verified_domains):
-            direct_self = True
-        elif platform == "youtube":
-            direct_self = any(h and (f"@{h}" in url or f"/{h}" in url or h in channel_meta) for h in verified_handles)
-        elif platform in {"instagram", "tiktok", "facebook", "twitter"}:
-            direct_self = any(h and (f"/{h}" in url or f"@{h}" in url or h in channel_meta or h in source) for h in verified_handles)
-
-        if direct_self:
-            return {"relation": "SELF", "confidence": 1.0}
-
-        creator_tokens = [t for t in re.split(r"\W+", creator_name) if len(t) > 2]
-        token_hits = sum(1 for token in creator_tokens if token in haystack)
-        has_name = bool(creator_name and creator_name in haystack)
-        has_affiliate_marker = any(m in haystack for m in ["interview", "podcast", "guest", "featuring", "hosted by", "conversation", "sermon", "message", "church", "conference", "ministries", "ministry"])
-        domain_affiliated = any(term in domain for term in ["podcast", "church", "ministr", "conference"])
-        if has_name and has_affiliate_marker and (token_hits >= max(1, min(2, len(creator_tokens))) or domain_affiliated):
-            return {"relation": "AFFILIATED", "confidence": 0.8 if domain_affiliated else 0.75}
-
-        return {"relation": "OTHER", "confidence": 0.1}
-
+        best = verified[0]
+        return {
+            "relation": best.get("relation", "OTHER"),
+            "confidence": float(best.get("confidence", 0.1) or 0.1),
+        }
     # --- Reference ---    def _normalize_keywords(self, text: str) -> List[str]:
         # Broader stopword list for strict matching
         stopwords = {
@@ -790,3 +706,4 @@ class ContentFinder:
                 return f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
                 
         return ""
+
