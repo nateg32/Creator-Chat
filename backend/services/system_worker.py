@@ -318,6 +318,8 @@ def handle_ingest(job_id: str, payload: dict):
     items = db.execute_query(fetch_query, (approved_item_ids, search_id))
 
     total_items = len(items)
+    ingested_ok = 0
+    failed_count = 0
     for idx, item in enumerate(items):
         item_id = item["id"]
         current_percent = 10 + int((idx / total_items) * 80)
@@ -326,6 +328,7 @@ def handle_ingest(job_id: str, payload: dict):
         try:
             text_content = item.get("transcript") or item.get("caption") or ""
             if not text_content:
+                failed_count += 1
                 continue
 
             source_url = item["source_url"]
@@ -365,8 +368,14 @@ def handle_ingest(job_id: str, payload: dict):
 
             embed_chunks(chunk_ids)
             db.execute_update("UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = %s", (str(item_id),))
+            ingested_ok += 1
         except Exception as e:
+            failed_count += 1
             logger.error(f"Error ingesting item {item_id}: {e}")
+
+    if total_items > 0 and ingested_ok == 0:
+        mark_job_failed(job_id, f"No items ingested successfully. failed={failed_count}/{total_items}")
+        return
 
     update_job_progress(job_id, 95, "processing", "Updating creator state...")
     db.execute_update("UPDATE creators SET last_approved_version = config_version WHERE id = %s", (creator_id,))
@@ -384,7 +393,7 @@ def handle_ingest(job_id: str, payload: dict):
     except Exception as e:
         logger.warning(f"Could not enqueue fingerprint job after ingest: {e}")
 
-    mark_job_completed(job_id, f"Ingested {total_items} items")
+    mark_job_completed(job_id, f"Ingested {ingested_ok} items ({failed_count} failed)")
 
 
 def handle_fingerprint(job_id: str, payload: dict):
@@ -395,6 +404,14 @@ def handle_fingerprint(job_id: str, payload: dict):
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(fingerprint_service.generate_fingerprint_async(creator_id))
+        status_row = db.execute_one(
+            "SELECT fingerprint_status FROM creators WHERE id = %s",
+            (creator_id,),
+        )
+        status = (status_row or {}).get("fingerprint_status")
+        if status == "error":
+            mark_job_failed(job_id, "Fingerprint generation ended in error state")
+            return
         mark_job_completed(job_id, "Fingerprint built.")
     finally:
         loop.close()

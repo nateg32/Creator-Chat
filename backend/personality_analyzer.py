@@ -105,7 +105,7 @@ class PersonalityAnalyzer:
             display_name = name_row.get("name") or name_row.get("handle") or "The Creator"
 
             response = client.chat.completions.create(
-                model=settings.CHAT_MODEL,
+                model=settings.MODEL_CLASSIFICATION,
                 messages=[
                     {"role": "system", "content": system_prompt.replace("{Name}", display_name)},
                     {"role": "user", "content": f"Content Samples:\n{corpus}"}
@@ -126,7 +126,15 @@ class PersonalityAnalyzer:
             
         except Exception as e:
             print(f"Failed to analyze personality: {e}")
-            return None
+            # Return a safe empty fingerprint so downstream code doesn't crash.
+            return {
+                "traits": [],
+                "tone_intensity": "low",
+                "impact": "neutral",
+                "mechanical": "none",
+                "lexicon": [],
+                "content_truth": {},
+            }
 
 if __name__ == "__main__":
     import sys

@@ -65,6 +65,15 @@ class FingerprintService:
             # PHASE 2: Content-Truth Mining (Voice & Worldview)
             logger.info(f"FingerprintService Phase 2: Analyzing content truth...")
             voice_fingerprint = self.analyzer.analyze_creator(creator_id)
+            if not isinstance(voice_fingerprint, dict):
+                voice_fingerprint = {
+                    "traits": [],
+                    "tone_intensity": "low",
+                    "impact": "neutral",
+                    "mechanical": "none",
+                    "lexicon": [],
+                    "content_truth": {},
+                }
 
             # PHASE 3: Targeted Google Expansion (Fill Gaps)
             # Use Link-First clues to generate missing detail queries
