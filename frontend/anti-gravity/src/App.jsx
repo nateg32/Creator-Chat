@@ -700,7 +700,7 @@ function AppInner() {
       const res = await approveIngestCommit({
         search_id: state.scrapeId,
         decisions,
-        creator_id: state.creatorId || 1,
+        creator_id: state.creatorId,
       });
 
       if (!res.job_id) {
@@ -797,7 +797,8 @@ function AppInner() {
   async function handlePersonaSave(personaText) {
     dispatch({ type: "SET_LOADING", loading: true });
     try {
-      const creatorId = state.creatorId || 1;
+      const creatorId = state.creatorId;
+      if (!creatorId) throw new Error("No creator selected");
       await savePersona(creatorId, personaText);
       dispatch({ type: "SET_PERSONA", persona: personaText });
       showToast("Persona saved successfully!");
@@ -935,7 +936,7 @@ function AppInner() {
       case 4:
         return (
           <PersonaSetup
-            creatorId={state.creatorId || 1}
+            creatorId={state.creatorId}
             onSave={handlePersonaSave}
             onContinue={handlePersonaContinue}
             loading={state.loading}
