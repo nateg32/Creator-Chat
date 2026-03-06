@@ -263,20 +263,31 @@ PLATFORM_MAPPERS: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
+def _effective_time_filter(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    tf = cfg.get("timeFilter") or {"mode": "all"}
+    if (tf.get("mode") or "all") != "all":
+        return tf
+    checkpoint = cfg.get("last_checkpoint_published_at")
+    if checkpoint:
+        return {"mode": "since", "since": checkpoint}
+    return tf
+
+
 def run_search_router(
     creator_id: int,
     creator_handle: str,
     platform_configs: Dict[str, Any],
     progress_callback: Optional[Callable[[str, str, int, int], None]] = None,
+    enrich_transcripts: bool = False,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
-    For each enabled platform, run the mapped search in PARALLEL. 
+    For each enabled platform, run the mapped search in PARALLEL.
     Returns (all_items, platform_statuses).
     """
     all_items: List[Dict[str, Any]] = []
     platform_statuses: Dict[str, Dict[str, Any]] = {}
     now_iso = datetime.now(timezone.utc).isoformat()
-    
+
     # Count enabled platforms
     enabled_configs = [
         (k, cfg) for k, cfg in (platform_configs or {}).items()
@@ -356,7 +367,7 @@ def run_search_router(
         ctx = {
             "url": norm_url,
             "handle": handle,
-            "time_filter": cfg.get("timeFilter") or {"mode": "all"},
+            "time_filter": _effective_time_filter(cfg),
             "max_items": int(cfg.get("maxItems") or 99999),
             "creator_handle": creator_handle,
         }
@@ -417,9 +428,8 @@ def run_search_router(
     print(f"[SEARCH] Parallel Run Summary: {successful} succeeded, {failed} failed, {skipped} skipped")
     print(f"[SEARCH] Total items found: {len(all_items)} (sum: {total_found})")
     
-    # === BATCH TRANSCRIPT EXTRACTION (single invideoiq call for ALL platforms) ===
-    if all_items:
+    if enrich_transcripts and all_items:
         print(f"[SEARCH] Starting batch transcript extraction for {len(all_items)} items...")
         batch_extract_all_transcripts(all_items)
-    
+
     return all_items, platform_statuses

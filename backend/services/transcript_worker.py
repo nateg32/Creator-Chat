@@ -7,6 +7,7 @@ from backend.lib.transcription import transcribe_video
 import tempfile
 import subprocess
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def _ensure_search_progress_table():
@@ -180,50 +181,111 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
         )
 
 def run_transcripts_for_search(search_run_id: str):
-    """Orchestrates transcripts for an entire search run."""
+    """Orchestrates transcripts for an entire search run using batch-first, concurrent fallback processing."""
     print(f"[TRANSCRIPT] Starting async pipeline for search {search_run_id}")
     try:
         query = """
-            SELECT id, source_url, platform, caption
+            SELECT id, source_url, platform, caption, transcript, transcript_status, metadata
             FROM scrape_items
-            WHERE scrape_run_id = %s 
-              AND is_primary = true 
+            WHERE scrape_run_id = %s
+              AND COALESCE(is_primary, true) = true
               AND transcript_status IN ('not_started', 'queued', 'pending', 'missing')
         """
         items = db.execute_query(query, (search_run_id,))
-        
+
         if not items:
             print("[TRANSCRIPT] No items need processing")
             prog = _get_search_progress(search_run_id)
             if prog:
-                prog["phase"] = "done"
+                prog["transcript_job_status"] = "completed"
+                prog["transcript_phase"] = "done"
                 _set_search_progress(search_run_id, prog)
             return
-            
-        # Update progress to transcripts phase
+
+        total = len(items)
         prog = _get_search_progress(search_run_id)
         if prog:
-            prog["phase"] = "transcripts"
+            prog["transcript_job_status"] = "running"
+            prog["transcript_phase"] = "transcripts"
+            prog["transcripts_total"] = total
+            prog["transcripts_done"] = 0
+            prog["message"] = "Transcript enrichment running in background..."
             _set_search_progress(search_run_id, prog)
-            
-        total = len(items)
-        for i, item in enumerate(items):
+
+        for item in items:
             db.execute_update("UPDATE scrape_items SET transcript_status = 'processing' WHERE id = %s", (item["id"],))
-            process_transcript_job(item["id"], item["source_url"], item.get("platform") or "unknown", item.get("caption") or "")
-            
-            # Increment progress
+
+        from backend.apify_service import batch_extract_all_transcripts
+        batch_candidates = []
+        for item in items:
+            batch_candidates.append({
+                "source_url": item.get("source_url"),
+                "platform": item.get("platform") or "unknown",
+                "caption": item.get("caption") or "",
+                "transcript": item.get("transcript") or "",
+                "transcript_status": item.get("transcript_status") or "missing",
+                "metadata": item.get("metadata") or {},
+                "_id": item.get("id"),
+            })
+
+        batch_extract_all_transcripts(batch_candidates)
+
+        completed = 0
+        pending_fallback = []
+        for candidate in batch_candidates:
+            transcript_text = (candidate.get("transcript") or "").strip()
+            if transcript_text:
+                db.execute_update(
+                    "UPDATE scrape_items SET transcript = %s, transcript_status = 'present' WHERE id = %s",
+                    (transcript_text, candidate["_id"]),
+                )
+                completed += 1
+            else:
+                db.execute_update(
+                    "UPDATE scrape_items SET transcript_status = 'queued' WHERE id = %s",
+                    (candidate["_id"],),
+                )
+                pending_fallback.append(candidate)
+
             prog = _get_search_progress(search_run_id)
             if prog:
-                prog["transcripts_done"] = i + 1
-                prog["percent"] = 90.0 + ((i + 1) / total) * 10.0
+                prog["transcripts_done"] = completed
+                prog["transcript_job_status"] = "running"
                 _set_search_progress(search_run_id, prog)
-                
-        # Done
+
+        max_workers = max(1, int(os.getenv("TRANSCRIPT_CONCURRENCY", "4")))
+        if pending_fallback:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(pending_fallback))) as executor:
+                futures = {
+                    executor.submit(
+                        process_transcript_job,
+                        item["_id"],
+                        item.get("source_url") or "",
+                        item.get("platform") or "unknown",
+                        item.get("caption") or "",
+                    ): item for item in pending_fallback
+                }
+                for future in as_completed(futures):
+                    future.result()
+                    completed += 1
+                    prog = _get_search_progress(search_run_id)
+                    if prog:
+                        prog["transcripts_done"] = completed
+                        prog["transcript_job_status"] = "running"
+                        _set_search_progress(search_run_id, prog)
+
         prog = _get_search_progress(search_run_id)
         if prog:
-            prog["phase"] = "done"
-            prog["percent"] = 100.0
+            prog["transcript_job_status"] = "completed"
+            prog["transcript_phase"] = "done"
+            prog["transcripts_done"] = total
+            prog["message"] = "Transcript enrichment finished."
             _set_search_progress(search_run_id, prog)
-            
+
     except Exception as e:
         print(f"[TRANSCRIPT] Pipeline error: {e}")
+        prog = _get_search_progress(search_run_id)
+        if prog:
+            prog["transcript_job_status"] = "error"
+            prog["transcript_error"] = str(e)
+            _set_search_progress(search_run_id, prog)

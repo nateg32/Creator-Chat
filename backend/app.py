@@ -1703,228 +1703,17 @@ async def ingest(request: IngestRequest):
 # Scraping Endpoints
 # ============================================================================
 
-def _normalize_timestamp(ts: Any) -> Optional[datetime]:
-    """
-    Normalize timestamp to Python datetime for PostgreSQL TIMESTAMPTZ.
-    Handles: Unix timestamps (int/float), ISO strings, datetime objects, None.
-    """
-    if ts is None:
-        return None
-    if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            return ts.replace(tzinfo=timezone.utc)
-        return ts
-    if isinstance(ts, (int, float)):
-        try:
-            # Handle Unix timestamps (seconds since epoch)
-            # If timestamp is > year 2100, assume milliseconds
-            if ts > 4102444800:  # Jan 1, 2100 in seconds
-                ts = ts / 1000.0
-            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
-            return dt
-        except (ValueError, OSError) as e:
-            print(f"Warning: Failed to parse timestamp {ts}: {e}")
-            return None
-    if isinstance(ts, str):
-        try:
-            # Try ISO format first
-            if ts.endswith("Z"):
-                ts = ts.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except ValueError:
-            try:
-                # Try parsing as Unix timestamp string
-                ts_float = float(ts)
-                if ts_float > 4102444800:
-                    ts_float = ts_float / 1000.0
-                return datetime.fromtimestamp(ts_float, tz=timezone.utc)
-            except (ValueError, OSError):
-                print(f"Warning: Failed to parse timestamp string {ts}")
-                return None
-    return None
-
-
-_allowed_transcript_statuses = None
-
-def normalize_transcript_status(input_status: str) -> str:
-    global _allowed_transcript_statuses
-    if _allowed_transcript_statuses is None:
-        try:
-            from backend.db import db
-            res = db.execute_query("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'scrape_items_transcript_status_check'")
-            if res and res[0].get('def'):
-                def_str = res[0]['def']
-                import re
-                matches = re.findall(r"'([^']+)'::text", def_str)
-                if matches:
-                    _allowed_transcript_statuses = set(matches)
-        except Exception as e:
-            print(f"Warning: failed to load transcript_status constraint: {e}", flush=True)
-            
-    if not _allowed_transcript_statuses:
-        _allowed_transcript_statuses = {"present", "missing", "error", "not_started", "queued", "processing"}
-        
-    s = str(input_status).lower()
-    if s in _allowed_transcript_statuses:
-        return s
-        
-    print(f"Warning: Normalizing invalid transcript_status '{s}'", flush=True)
-    
-    if "not_started" in _allowed_transcript_statuses:
-        return "not_started"
-    elif "queued" in _allowed_transcript_statuses:
-        return "queued"
-    elif "missing" in _allowed_transcript_statuses:
-        return "missing"
-    elif "pending" in _allowed_transcript_statuses:
-        return "pending"
-    else:
-        return sorted(list(_allowed_transcript_statuses))[0]
-
-from backend.services.duplicate_detection import generate_canonical_key, compute_normalized_text, simhash64, find_duplicate
-
 def _execute_search_run(creator_id: int, creator_handle: str, normalized_items: List[Dict[str, Any]], source_url: str, platform: str, mode: str, search_run_id: Optional[str] = None):
     """Create scrape_run + scrape_items, return (search_run_id, response_items, failed_items)."""
-    if not search_run_id:
-        search_run_id = str(uuid.uuid4())
-    scrape_run_query = """
-        INSERT INTO scrape_runs (id, source_url, platform, mode, creator_handle, items_found)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id
-    """
-    db.execute_insert(
-        scrape_run_query,
-        (search_run_id, source_url, platform, mode, creator_handle, len(normalized_items))
+    search_run_id, response_items, failed_items, _ = persist_search_items(
+        creator_id=creator_id,
+        creator_handle=creator_handle,
+        normalized_items=normalized_items,
+        source_url=source_url,
+        platform=platform,
+        mode=mode,
+        search_run_id=search_run_id,
     )
-    response_items = []
-    failed_items = []
-    for item in normalized_items:
-        base_meta = item.get("metadata") or {}
-        if not isinstance(base_meta, dict):
-            base_meta = {}
-            
-        # Ensure we have a valid platform and creator_handle
-        item_platform = item.get("platform") or base_meta.get("platform")
-        
-        # If still missing or generic "multi", try to derive from individual URL
-        if not item_platform or item_platform in ("multi", "unknown"):
-            surl = (item.get("source_url") or "").lower()
-            if "youtube.com" in surl or "youtu.be" in surl:
-                item_platform = "youtube"
-            elif "instagram.com" in surl:
-                item_platform = "instagram"
-            elif "twitter.com" in surl or "x.com" in surl:
-                item_platform = "twitter"
-            elif "tiktok.com" in surl:
-                item_platform = "tiktok"
-            elif "facebook.com" in surl or "fb.com" in surl:
-                item_platform = "facebook"
-            elif "linkedin.com" in surl:
-                item_platform = "linkedin"
-            elif "reddit.com" in surl:
-                item_platform = "reddit"
-            else:
-                item_platform = platform or "unknown"
-
-        item_creator_handle = item.get("creator_handle") or base_meta.get("creator_handle") or creator_handle or "unknown"
-        
-        # Clean up creator_handle if it's explicitly "unknown" string but we have a better fallback
-        if str(item_creator_handle).lower() == "unknown" and creator_handle:
-            item_creator_handle = creator_handle
-
-        meta = {
-            **base_meta,
-            "platform": item_platform,
-            "matched_time_filter": item.get("matched_time_filter", True)
-        }
-        metadata_json = json.dumps(meta, default=str)
-        published_at_raw = item.get("published_at")
-        published_at = _normalize_timestamp(published_at_raw)
-        
-        # Duplicate detection
-        canon_key = generate_canonical_key(item["source_url"], item_platform)
-        norm_text = compute_normalized_text(
-            item.get("title", ""),
-            item.get("description", ""),
-            item.get("caption", "")
-        )
-        fingerprint = simhash64(norm_text)
-        is_primary, dup_item_id, dup_method, dup_confidence = find_duplicate(
-            canon_key, fingerprint, item_creator_handle
-        )
-        
-        insert_query = """
-            INSERT INTO scrape_items (
-                id, scrape_run_id, creator_handle, content_type, source_url,
-                caption, transcript, transcript_status, published_at, metadata, review_status,
-                canonical_key, content_fingerprint, is_primary, duplicate_of_item_id, duplicate_method, duplicate_confidence
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source_url) DO UPDATE SET
-                scrape_run_id = EXCLUDED.scrape_run_id,
-                creator_handle = EXCLUDED.creator_handle,
-                content_type = EXCLUDED.content_type,
-                caption = EXCLUDED.caption,
-                transcript = EXCLUDED.transcript,
-                transcript_status = EXCLUDED.transcript_status,
-                published_at = EXCLUDED.published_at,
-                metadata = EXCLUDED.metadata,
-                review_status = 'pending_review',
-                canonical_key = EXCLUDED.canonical_key,
-                content_fingerprint = EXCLUDED.content_fingerprint,
-                is_primary = EXCLUDED.is_primary,
-                duplicate_of_item_id = EXCLUDED.duplicate_of_item_id,
-                duplicate_method = EXCLUDED.duplicate_method,
-                duplicate_confidence = EXCLUDED.duplicate_confidence
-            RETURNING id
-        """
-        
-        norm_status = normalize_transcript_status(item.get("transcript_status", "missing"))
-        
-        try:
-            db_item_id = db.execute_insert(
-                insert_query,
-                (
-                    str(uuid.uuid4()), search_run_id, item_creator_handle, item["content_type"],
-                    item["source_url"], item.get("caption"), item.get("transcript"),
-                    norm_status, published_at, metadata_json, "pending_review",
-                    canon_key, fingerprint, is_primary, dup_item_id, dup_method, dup_confidence
-                )
-            )
-        except Exception as e:
-            print(f"Failed to insert scrape item {item.get('source_url')}: {e}", flush=True)
-            failed_items.append({
-                "url": item.get("source_url"),
-                "reason_sanitized": "Database insertion failed for this item."
-            })
-            continue
-
-        preview_text = item.get("transcript") or item.get("caption", "") or ""
-        preview = preview_text[:200] + "..." if len(preview_text) > 200 else preview_text
-        # Serialize published_at for JSON response
-        published_at_str = None
-        if published_at:
-            if isinstance(published_at, datetime):
-                published_at_str = published_at.isoformat()
-            else:
-                published_at_str = str(published_at)
-                
-        response_items.append({
-            "item_id": str(db_item_id),
-            "source_url": item["source_url"],
-            "caption": item.get("caption"),
-            "creator_handle": item_creator_handle,
-            "transcript_status": norm_status,
-            "published_at": published_at_str,
-            "platform": item_platform,
-            "metadata": meta,
-            "preview": preview,
-            "is_primary": is_primary,
-            "duplicate_of_item_id": dup_item_id
-        })
     return search_run_id, response_items, failed_items
 
 
@@ -2019,20 +1808,28 @@ def _run_search_background(
         
         # Run search router with progress callback
         normalized_items, platform_statuses = run_search_router(
-            creator_id, creator_handle, pc, progress_callback=progress_callback
+            creator_id, creator_handle, pc, progress_callback=progress_callback, enrich_transcripts=False
         )
-        
-        # Merge statuses into platform_configs and persist
-        pc_updated = {}
-        for k, cfg in (pc or {}).items():
-            c = dict(cfg) if isinstance(cfg, dict) else {}
-            st = platform_statuses.get(k)
-            if st:
-                c["last_search_status"] = st.get("last_search_status")
-                c["last_search_at"] = st.get("last_search_at")
-                c["last_error"] = st.get("last_error")
-            pc_updated[k] = c
-        
+
+        _set_search_progress(search_run_id, {
+            **(_get_search_progress(search_run_id) or {}),
+            "stage": "finalizing",
+            "phase": "search",
+            "percent": 88.0,
+            "message": "Saving results..."
+        })
+
+        _, response_items, failed_items, checkpoints = persist_search_items(
+            creator_id=creator_id,
+            creator_handle=creator_handle,
+            normalized_items=normalized_items,
+            source_url=source_url or f"creator:{creator_id}",
+            platform=platform_tag,
+            mode="profile",
+            search_run_id=search_run_id,
+        )
+
+        pc_updated = merge_platform_statuses_with_checkpoints(pc, platform_statuses, checkpoints)
         try:
             r = db.execute_one(
                 "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
@@ -2045,59 +1842,44 @@ def _run_search_background(
                 "UPDATE creators SET platform_configs = %s WHERE id = %s",
                 (json.dumps(pc_updated), creator_id),
             )
-            
-        # 3. Finalizing Stage (90-95%)
-        # Skip Transcripts stage (80-90%) as we don't have explicit enrichment step here currently
+
+        platform_summary = {}
+        for key, status in platform_statuses.items():
+            plat = get_platform(key)
+            label = plat.get("label", key) if plat else key
+            platform_summary[key] = {
+                "label": label,
+                "status": status.get("last_scrape_status") or status.get("last_search_status", "unknown"),
+                "items_found": status.get("items_found", 0),
+                "error": status.get("last_error"),
+            }
+
         _set_search_progress(search_run_id, {
             **(_get_search_progress(search_run_id) or {}),
-            "stage": "finalizing",
-            "phase": "search",
-            "percent": 90.0,
-            "message": "Finalizing..."
+            "status": "completed",
+            "stage": "done",
+            "phase": "done",
+            "percent": 100.0,
+            "items_found": len(response_items),
+            "failed_count": len(failed_items),
+            "platform_statuses": platform_statuses,
+            "platform_summary": platform_summary,
+            "completed": enabled_count,
+            "transcript_job_status": "queued",
+            "message": "Search complete. Transcript enrichment continues in background.",
         })
-        
-        # Save items to database
-        _, response_items, failed_items = _execute_search_run(
-            creator_id, creator_handle, normalized_items,
-            source_url or f"creator:{creator_id}", platform_tag, "profile",
-            search_run_id=search_run_id
-        )
-        
-        # Update final progress with detailed platform info
-        prog = _get_search_progress(search_run_id)
-        if prog is not None:
-            # Calculate per-platform summary
-            platform_summary = {}
-            for key, status in platform_statuses.items():
-                plat = get_platform(key)
-                label = plat.get("label", key) if plat else key
-                platform_summary[key] = {
-                    "label": label,
-                    "status": status.get("last_scrape_status") or status.get("last_search_status", "unknown"),
-                    "items_found": status.get("items_found", 0),
-                    "error": status.get("last_error"),
-                }
-            
-            prog.update({
-                "status": "running",
-                "stage": "finalizing",
-                "phase": "transcripts",
-                "percent": 70.0,
-                "items_found": len(response_items),
-                "failed_count": len(failed_items),
-                "platform_statuses": platform_statuses,
-                "platform_summary": platform_summary,
-                "completed": enabled_count,
-                "message": "Search complete, processing transcripts..."
-            })
-            _set_search_progress(search_run_id, prog)
-            print(f"[SEARCH] Final summary for search {search_run_id}:")
-            for key, summary in platform_summary.items():
-                print(f"  {summary['label']}: {summary['status']} ({summary['items_found']} items)" + (f" - {summary['error']}" if summary['error'] else ""))
-                
-        # Sequence transcripts pipeline
-        from backend.services.transcript_worker import run_transcripts_for_search
-        run_transcripts_for_search(search_run_id)
+
+        try:
+            db.execute_insert(
+                """
+                INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+                VALUES (%s, 'TRANSCRIPT', %s::jsonb, 'queued', 0, 'Transcript job enqueued after search')
+                RETURNING id
+                """,
+                (creator_id, json.dumps({"search_id": search_run_id}))
+            )
+        except Exception as transcript_job_err:
+            print(f"[SEARCH] Could not enqueue transcript job: {transcript_job_err}", flush=True)
     except BaseException as e:
         msg = str(e) or repr(e) or "Critical unknown error"
         print(f"[SEARCH] Background task CRASH: {msg}", flush=True)

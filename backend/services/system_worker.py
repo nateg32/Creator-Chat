@@ -21,6 +21,7 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from backend.db import db
+from backend.services.search_persistence import persist_search_items, merge_platform_statuses_with_checkpoints
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("system_worker")
@@ -150,7 +151,8 @@ def handle_scrape(job_id: str, payload: dict):
     # Run scraper
     normalized_items, platform_statuses = run_search_router(
         creator_id, creator_handle, platform_configs,
-        progress_callback=progress_callback
+        progress_callback=progress_callback,
+        enrich_transcripts=False,
     )
 
     update_job_progress(job_id, 82, "processing", "Saving results...")
@@ -163,40 +165,21 @@ def handle_scrape(job_id: str, payload: dict):
             "message": "Saving results...",
         })
 
-    # Persist items to DB
-    saved = 0
-    failed = 0
-    for item in normalized_items:
-        try:
-            _save_scrape_item(item, creator_id, search_run_id)
-            saved += 1
-        except Exception as e:
-            item_url = item.get("source_url") or item.get("url")
-            logger.error(f"Failed to save item ({item_url}): {e}")
-            failed += 1
-
-    # Update scrape_runs table
-    if search_run_id:
-        try:
-            db.execute_update(
-                "UPDATE scrape_runs SET status = 'completed', items_found = %s, updated_at = NOW() WHERE id = %s",
-                (saved, search_run_id)
-            )
-        except Exception:
-            pass
+    _, response_items, failed_items, checkpoints = persist_search_items(
+        creator_id=creator_id,
+        creator_handle=creator_handle,
+        normalized_items=normalized_items,
+        source_url=source_url or f"creator:{creator_id}",
+        platform=platform_tag,
+        mode="profile",
+        search_run_id=search_run_id,
+    )
+    saved = len(response_items)
+    failed = len(failed_items)
 
     update_job_progress(job_id, 92, "processing", "Updating platform config...")
 
-    # Persist updated platform statuses back onto creator
-    pc_updated = {}
-    for k, cfg in (platform_configs or {}).items():
-        c = dict(cfg) if isinstance(cfg, dict) else {}
-        st = platform_statuses.get(k)
-        if st:
-            c["last_search_status"] = st.get("last_scrape_status")
-            c["last_search_at"] = st.get("last_search_at")
-            c["last_error"] = st.get("last_error")
-        pc_updated[k] = c
+    pc_updated = merge_platform_statuses_with_checkpoints(platform_configs, platform_statuses, checkpoints)
     try:
         db.execute_update(
             "UPDATE creators SET platform_configs = %s WHERE id = %s",
@@ -205,25 +188,7 @@ def handle_scrape(job_id: str, payload: dict):
     except Exception as e:
         logger.warning(f"Could not update platform_configs: {e}")
 
-    # Run transcript enrichment as part of search completion.
     if search_run_id:
-        try:
-            update_job_progress(job_id, 94, "processing", "Processing transcripts...")
-            _set_search_progress(search_run_id, {
-                "status": "running",
-                "stage": "transcripts",
-                "phase": "transcripts",
-                "percent": 94.0,
-                "items_found": saved,
-                "failed_count": failed,
-                "platform_statuses": platform_statuses,
-                "message": "Processing transcripts...",
-            })
-            from backend.services.transcript_worker import run_transcripts_for_search
-            run_transcripts_for_search(search_run_id)
-        except Exception as e:
-            logger.warning(f"Transcript step failed for search {search_run_id}: {e}")
-
         _set_search_progress(search_run_id, {
             "status": "completed",
             "stage": "done",
@@ -232,8 +197,20 @@ def handle_scrape(job_id: str, payload: dict):
             "items_found": saved,
             "failed_count": failed,
             "platform_statuses": platform_statuses,
-            "message": "Search complete",
+            "transcript_job_status": "queued",
+            "message": "Search complete. Transcript enrichment continues in background.",
         })
+        try:
+            db.execute_insert(
+                """
+                INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+                VALUES (%s, 'TRANSCRIPT', %s::jsonb, 'queued', 0, 'Transcript job enqueued after search')
+                RETURNING id
+                """,
+                (creator_id, json.dumps({"search_id": search_run_id}))
+            )
+        except Exception as e:
+            logger.warning(f"Could not enqueue transcript job for search {search_run_id}: {e}")
 
     mark_job_completed(job_id, f"Searched {saved} items ({failed} failed)")
 
@@ -320,6 +297,8 @@ def handle_ingest(job_id: str, payload: dict):
     total_items = len(items)
     ingested_ok = 0
     failed_count = 0
+    all_chunk_ids = []
+    approved_item_ids_to_mark = []
     for idx, item in enumerate(items):
         item_id = item["id"]
         current_percent = 10 + int((idx / total_items) * 80)
@@ -366,12 +345,24 @@ def handle_ingest(job_id: str, payload: dict):
                 if c_id:
                     chunk_ids.append(c_id)
 
-            embed_chunks(chunk_ids)
-            db.execute_update("UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = %s", (str(item_id),))
+            all_chunk_ids.extend(chunk_ids)
+            approved_item_ids_to_mark.append(str(item_id))
             ingested_ok += 1
         except Exception as e:
             failed_count += 1
             logger.error(f"Error ingesting item {item_id}: {e}")
+
+    if all_chunk_ids:
+        update_job_progress(job_id, 90, "processing", f"Embedding {len(all_chunk_ids)} chunks...")
+        batch_size = max(1, int(os.getenv("EMBED_BATCH_SIZE", "128")))
+        for start in range(0, len(all_chunk_ids), batch_size):
+            embed_chunks(all_chunk_ids[start:start + batch_size])
+
+    if approved_item_ids_to_mark:
+        db.execute_update(
+            "UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = ANY(%s::uuid[])",
+            (approved_item_ids_to_mark,),
+        )
 
     if total_items > 0 and ingested_ok == 0:
         mark_job_failed(job_id, f"No items ingested successfully. failed={failed_count}/{total_items}")
