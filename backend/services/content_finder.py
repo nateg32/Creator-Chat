@@ -304,12 +304,16 @@ class ContentFinder:
             res["topic_score"] = topic_score
 
             if resource_type == "video":
-                if platform and platform != "youtube":
+                if platform and platform not in {"youtube", "instagram", "tiktok", "facebook", "twitter"}:
                     continue
                 if relation not in {"SELF", "AFFILIATED"}:
                     continue
-                if confidence < 0.72 or topic_score < 0.35:
-                    continue
+                if relation == "SELF":
+                    if confidence < 0.72 or topic_score < 0.35:
+                        continue
+                else:
+                    if confidence < 0.80 or topic_score < 0.45:
+                        continue
             else:
                 if confidence < 0.60 and topic_score < 0.45:
                     continue
@@ -332,6 +336,9 @@ class ContentFinder:
         cards = []
         for res in filtered_results[:3]:
             subtitle = res.get("resource_type", "video").title()
+            platform = (res.get("platform") or "").title()
+            if platform and res.get("resource_type") == "video":
+                subtitle = f"{platform} Video"
             if res.get("relation") == "AFFILIATED":
                 subtitle = f"Guest Appearance • {subtitle}"
             elif res.get("is_playlist"):
@@ -637,78 +644,107 @@ class ContentFinder:
 
     def _verify_ownership(self, candidate: Dict, creator_profile: Dict) -> Dict:
         """
-        COG Verification.
-        Returns { "relation": "SELF"|"AFFILIATED"|"OTHER"|"UNKNOWN", "confidence": float }
+        Fail-closed ownership verification for recommendations.
+        Returns {"relation": "SELF"|"AFFILIATED"|"OTHER"|"UNKNOWN", "confidence": float}
         """
-        url = (candidate.get("url") or "").lower()
+        url = (candidate.get("url") or "").lower().strip()
         title = (candidate.get("title") or "").lower()
         snippet = (candidate.get("snippet") or "").lower()
-        
-        # Ingested is always SELF
+
         if candidate.get("source_opt") == "Ingested Content":
             return {"relation": "SELF", "confidence": 1.0}
 
-        # Identity fields
-        yt_channel = creator_profile.get("youtube_channel_id")
-        yt_handle = creator_profile.get("youtube_handle")
-
-        # Fallback to platform_configs
         configs = creator_profile.get("platform_configs") or {}
-        yt_config = configs.get("youtube", {})
-        if not yt_handle:
-            yt_handle = yt_config.get("handle") or yt_config.get("username")
-        if not yt_channel:
-            yt_channel = yt_config.get("channel_id") or yt_config.get("id")
+        official_domains = [d.lower() for d in (creator_profile.get("official_domains") or []) if d]
+        course_domains = [d.lower() for d in (creator_profile.get("course_domains") or []) if d]
+        creator_name = (creator_profile.get("name") or "").lower().strip()
+        creator_handle = (creator_profile.get("handle") or "").lower().strip().lstrip("@")
+        if not creator_name and creator_handle:
+            creator_name = creator_handle.replace("_", " ")
 
-        official_domains = creator_profile.get("official_domains") or []
-        course_domains = creator_profile.get("course_domains") or []
-        creator_name = creator_profile.get("name", "").lower()
-        
-        # Fail-safe: if no identity fields, everything is UNKNOWN
-        if not yt_channel and not yt_handle and not official_domains and not course_domains:
+        verified_domains = set(official_domains + course_domains)
+        verified_handles = set()
+        verified_urls = set()
+
+        yt_channel = (creator_profile.get("youtube_channel_id") or "").lower().strip()
+        yt_handle = (creator_profile.get("youtube_handle") or "").lower().strip("@")
+        if yt_channel:
+            verified_handles.add(yt_channel)
+        if yt_handle:
+            verified_handles.add(yt_handle)
+
+        for platform, cfg in configs.items():
+            if not isinstance(cfg, dict):
+                continue
+            confidence = float(cfg.get("social_confidence") or 0.0)
+            if confidence < 0.8:
+                continue
+            handle = (cfg.get("handle") or cfg.get("username") or "").lower().strip("@")
+            channel_id = (cfg.get("channel_id") or cfg.get("id") or "").lower().strip()
+            verified_url = (cfg.get("verified_url") or cfg.get("url") or "").lower().strip()
+            if handle:
+                verified_handles.add(handle)
+            if channel_id:
+                verified_handles.add(channel_id)
+            if verified_url:
+                verified_urls.add(verified_url.rstrip('/'))
+                try:
+                    from urllib.parse import urlparse
+                    verified_domains.add(urlparse(verified_url).netloc.lower())
+                except Exception:
+                    pass
+
+        if not verified_handles and not verified_urls and not verified_domains:
             return {"relation": "UNKNOWN", "confidence": 0.0}
 
-        # 1. YouTube Verification
-        if "youtube.com" in url or "youtu.be" in url:
-            # Check metadata for channel ID first (reliable)
-            meta = candidate.get("metadata", {})
-            channel_id_meta = meta.get("channel_id") or meta.get("id") if "UC" in str(meta.get("id", "")) else None
-            
-            if yt_channel and (yt_channel.lower() in url or (channel_id_meta and yt_channel.lower() == channel_id_meta.lower())):
-                return {"relation": "SELF", "confidence": 1.0}
-            if yt_handle and (f"@{yt_handle.lower()}" in url or f"/{yt_handle.lower()}" in url):
-                return {"relation": "SELF", "confidence": 0.95}
-            if creator_name and (creator_name in title or creator_name in candidate.get("source_opt", "").lower()):
-                # Still likely self if name matches title or channel name
-                return {"relation": "SELF", "confidence": 0.85}
-            
-            # Affiliated check
-            pockets = ["interview", "podcast", "guest", "featuring", "presents"]
-            if creator_name in title and any(p in title or p in snippet for p in pockets):
-                return {"relation": "AFFILIATED", "confidence": 0.8}
-            
-            return {"relation": "OTHER", "confidence": 0.2}
+        source = (candidate.get("source_opt") or candidate.get("source") or "").lower()
+        meta = candidate.get("metadata", {}) or {}
+        channel_meta = " ".join([
+            str(meta.get("channel_id") or ""),
+            str(meta.get("channel_name") or ""),
+            str(meta.get("author") or ""),
+            str(meta.get("owner") or ""),
+        ]).lower()
+        haystack = " ".join([title, snippet, source, channel_meta])
 
-        # 2. Domain/Website Verification
-        from urllib.parse import urlparse
+        platform = "web"
+        if any(x in url for x in ["youtube.com", "youtu.be"]):
+            platform = "youtube"
+        elif "instagram.com" in url:
+            platform = "instagram"
+        elif "tiktok.com" in url:
+            platform = "tiktok"
+        elif "facebook.com" in url or "fb.watch" in url:
+            platform = "facebook"
+        elif "x.com" in url or "twitter.com" in url:
+            platform = "twitter"
+
         try:
+            from urllib.parse import urlparse
             domain = urlparse(url).netloc.lower()
-        except:
+        except Exception:
             domain = ""
 
-        for d in official_domains:
-            if d.lower() in domain:
-                return {"relation": "SELF", "confidence": 1.0}
-                
-        for d in course_domains:
-            if d.lower() in domain:
-                return {"relation": "SELF", "confidence": 1.0}
+        direct_self = False
+        if any(url.startswith(v) for v in verified_urls if v):
+            direct_self = True
+        elif any(d and d in domain for d in verified_domains):
+            direct_self = True
+        elif platform == "youtube":
+            direct_self = any(h and (f"@{h}" in url or f"/{h}" in url or h in channel_meta) for h in verified_handles)
+        elif platform in {"instagram", "tiktok", "facebook", "twitter"}:
+            direct_self = any(h and (f"/{h}" in url or f"@{h}" in url or h in channel_meta or h in source) for h in verified_handles)
 
-        # 3. Identity name match in reputable source
-        if creator_name in title:
-             pockets = ["interview", "podcast", "guest", "featured"]
-             if any(p in title or p in snippet for p in pockets):
-                 return {"relation": "AFFILIATED", "confidence": 0.7}
+        if direct_self:
+            return {"relation": "SELF", "confidence": 1.0}
+
+        creator_tokens = [t for t in re.split(r"\W+", creator_name) if len(t) > 2]
+        token_hits = sum(1 for token in creator_tokens if token in haystack)
+        has_name = bool(creator_name and creator_name in haystack)
+        has_affiliate_marker = any(m in haystack for m in ["interview", "podcast", "guest", "featuring", "hosted by", "conversation", "sermon", "message", "church", "conference", "ministries", "ministry"])
+        domain_affiliated = any(term in domain for term in ["podcast", "church", "ministr", "conference"])
+        if has_name and has_affiliate_marker and (token_hits >= max(1, min(2, len(creator_tokens))) or domain_affiliated):
+            return {"relation": "AFFILIATED", "confidence": 0.8 if domain_affiliated else 0.75}
 
         return {"relation": "OTHER", "confidence": 0.1}
 

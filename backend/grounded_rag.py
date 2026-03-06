@@ -395,12 +395,16 @@ def _filter_live_web_results(results: List[Dict[str, Any]], question: str, requi
         result["topic_score"] = topic_score
 
         if require_video:
-            if platform and platform != "youtube":
+            if platform and platform not in {"youtube", "instagram", "tiktok", "facebook", "twitter"}:
                 continue
             if relation not in {"SELF", "AFFILIATED"}:
                 continue
-            if confidence < 0.72 or topic_score < 0.35:
-                continue
+            if relation == "SELF":
+                if confidence < 0.72 or topic_score < 0.35:
+                    continue
+            else:
+                if confidence < 0.80 or topic_score < 0.45:
+                    continue
         else:
             if confidence < 0.58 and topic_score < 0.45:
                 continue
