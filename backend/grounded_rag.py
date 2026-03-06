@@ -40,6 +40,33 @@ from backend.services.assumption_blocker import assumption_blocker
 logger = logging.getLogger(__name__)
 
 
+_CREATOR_COLUMN_CACHE: dict[str, bool] = {}
+
+
+def _creator_column_exists(column_name: str) -> bool:
+    cached = _CREATOR_COLUMN_CACHE.get(column_name)
+    if cached is not None:
+        return cached
+    row = db.execute_one(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+        ("creators", column_name),
+    )
+    exists = bool(row)
+    _CREATOR_COLUMN_CACHE[column_name] = exists
+    return exists
+
+
+def _creator_select_expr(column_name: str) -> str:
+    return column_name if _creator_column_exists(column_name) else f"NULL AS {column_name}"
+
+
+def _get_creator_profile_row(creator_id: int, extra_columns: list[str]) -> Optional[Dict[str, Any]]:
+    base_columns = ["id", "name", "handle"]
+    select_parts = base_columns + [_creator_select_expr(col) for col in extra_columns]
+    query = f"SELECT {', '.join(select_parts)} FROM creators WHERE id = %s"
+    return db.execute_one(query, (creator_id,))
+
+
 def _platform_from_url(url: str) -> str:
     """Derive platform key from URL. Ensures platform always matches canonical_url domain."""
     if not url or not isinstance(url, str):
@@ -2143,14 +2170,20 @@ Message: {answer_text[:500]}"""
     from backend.db import db
     from backend.services.conversation_state_manager import ConversationStateManager
     
-    creator_row = db.execute_one("""
-        SELECT id, name, handle, style_fingerprint, voice_profile, 
-               identity_fingerprint, research_summary, soul_md,
-               decision_policy, stronghold_json, rhythm_profile_json,
-               creator_category, persona_style_json, controller_overrides_json,
-               search_mode
-        FROM creators WHERE id = %s
-    """, (creator_id,))
+    creator_row = _get_creator_profile_row(creator_id, [
+        "style_fingerprint",
+        "voice_profile",
+        "identity_fingerprint",
+        "research_summary",
+        "soul_md",
+        "decision_policy",
+        "stronghold_json",
+        "rhythm_profile_json",
+        "creator_category",
+        "persona_style_json",
+        "controller_overrides_json",
+        "search_mode",
+    ])
     if not creator_row:
         raise Exception(f"Creator {creator_id} not found.")
 
@@ -2574,12 +2607,19 @@ async def grounded_rag_stream(
         yield json.dumps({"content": f"I don't currently have a verified {social_key.title()} link saved for {creator_name}."})
         return    
     # 2. Launch Basic Metadata Tasks (Fast/Async)
-    creator_task = asyncio.to_thread(db.execute_one, """
-        SELECT id, name, handle, creator_category, rhythm_profile_json,
-               identity_fingerprint, research_summary, soul_md, style_fingerprint,
-               search_mode
-        FROM creators WHERE id = %s
-    """, (creator_id,))
+    creator_task = asyncio.to_thread(
+        _get_creator_profile_row,
+        creator_id,
+        [
+            "creator_category",
+            "rhythm_profile_json",
+            "identity_fingerprint",
+            "research_summary",
+            "soul_md",
+            "style_fingerprint",
+            "search_mode",
+        ],
+    )
     
     # 3. Handle Context Gathering (Skip embeddings for greetings)
     support_set = []
