@@ -300,10 +300,13 @@ def handle_ingest(job_id: str, payload: dict):
     creator_id = payload.get("creator_id")
     search_id = payload.get("search_id")
 
-    approved_item_ids = [str(d["item_id"]) for d in decisions if d.get("decision") == "approve"]
+    # Backward/forward compatibility: newer queue payloads send approved_item_ids directly.
+    approved_item_ids = [str(x) for x in (payload.get("approved_item_ids") or []) if x]
+    if not approved_item_ids:
+        approved_item_ids = [str(d["item_id"]) for d in decisions if d.get("decision") == "approve"]
 
     if not approved_item_ids:
-        mark_job_completed(job_id, "No items to ingest.")
+        mark_job_completed(job_id, "No approved items to ingest.")
         return
 
     fetch_query = """
@@ -367,6 +370,20 @@ def handle_ingest(job_id: str, payload: dict):
 
     update_job_progress(job_id, 95, "processing", "Updating creator state...")
     db.execute_update("UPDATE creators SET last_approved_version = config_version WHERE id = %s", (creator_id,))
+
+    # Queue fingerprint rebuild so Persona step has analyzed content after ingest.
+    try:
+        db.execute_insert(
+            """
+            INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+            VALUES (%s, 'FINGERPRINT', %s::jsonb, 'queued', 0, 'Fingerprint job enqueued after ingest')
+            RETURNING id
+            """,
+            (creator_id, json.dumps({"creator_id": creator_id}))
+        )
+    except Exception as e:
+        logger.warning(f"Could not enqueue fingerprint job after ingest: {e}")
+
     mark_job_completed(job_id, f"Ingested {total_items} items")
 
 
