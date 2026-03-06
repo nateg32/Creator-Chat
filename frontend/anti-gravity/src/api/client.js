@@ -93,16 +93,21 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
             if (onComplete) onComplete(fullAnswer);
             return { answer: fullAnswer };
           }
+          let data;
           try {
-            const data = JSON.parse(dataStr);
-            if (data.content) {
-              fullAnswer += data.content;
-              if (onToken) onToken(data.content);
-            } else if (data.error) {
-              throw new Error(data.error);
-            }
+            data = JSON.parse(dataStr);
           } catch (e) {
             console.error("Error parsing stream chunk:", e);
+            continue;
+          }
+
+          if (data.error) {
+            throw new Error(data.error);
+          }
+
+          if (data.content) {
+            fullAnswer += data.content;
+            if (onToken) onToken(data.content);
           }
         }
       }
