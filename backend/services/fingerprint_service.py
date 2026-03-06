@@ -60,7 +60,13 @@ class FingerprintService:
 
             # PHASE 1: Link-First Research (Identity & Surface)
             logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
-            link_identity = self.researcher.research_links(links, name)
+            if hasattr(self.researcher, "research_links"):
+                link_identity = self.researcher.research_links(links, name)
+                if not isinstance(link_identity, dict):
+                    link_identity = {}
+            else:
+                logger.warning("FingerprintService: active research provider has no research_links(); skipping link scan.")
+                link_identity = {}
 
             # PHASE 2: Content-Truth Mining (Voice & Worldview)
             logger.info(f"FingerprintService Phase 2: Analyzing content truth...")
@@ -86,7 +92,13 @@ class FingerprintService:
                 "claims": link_identity.get("creator_claims", [])
             }
             logger.info(f"FingerprintService: Launching Deep Dossier for {name}...")
-            investigative_dossier = self.researcher.research_dossier(name, clues)
+            if hasattr(self.researcher, "research_dossier"):
+                investigative_dossier = self.researcher.research_dossier(name, clues)
+                if not isinstance(investigative_dossier, dict):
+                    investigative_dossier = {}
+            else:
+                logger.warning("FingerprintService: active research provider has no research_dossier(); skipping dossier phase.")
+                investigative_dossier = {}
 
             # 4. Phase 4: Synthesis (Research Summary)
             logger.info(f"FingerprintService Phase 4: Synthesizing research summary...")
