@@ -69,18 +69,36 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
 
   const getStatements = () => {
     if (!fingerprint) return [];
-    const traits = fingerprint.style?.traits || [];
-    const bio = fingerprint.identity?.bio;
-    const mission = fingerprint.identity?.mission;
 
-    let statements = [...traits];
-    if (bio && bio !== "Profile in progress.") {
-      // Limit bio length for the card
-      const cleanBio = bio.length > 120 ? bio.slice(0, 120) + "..." : bio;
-      statements.unshift(cleanBio);
-    }
+    const style = fingerprint.style || {};
+    const identity = fingerprint.identity || {};
+    const statements = [];
+    const pushUnique = (value) => {
+      if (!value || typeof value !== "string") return;
+      const clean = value.trim();
+      if (!clean) return;
+      if (!statements.some((s) => s.toLowerCase() === clean.toLowerCase())) {
+        statements.push(clean);
+      }
+    };
 
-    return statements.slice(0, 5); // Max 5 for visual clarity
+    const bio = identity.bio;
+    const mission = identity.mission;
+    if (bio && bio !== "Profile in progress.") pushUnique(bio);
+    if (mission) pushUnique(mission);
+
+    (style.summary || []).forEach(pushUnique);
+    (style.traits || []).forEach(pushUnique);
+    (style.recurring_themes || []).slice(0, 3).forEach((theme) => pushUnique(`Recurring theme: ${theme}`));
+    (style.teaching_style || []).slice(0, 2).forEach((item) => pushUnique(`Teaching style: ${item}`));
+    (style.signature_phrases || []).slice(0, 2).forEach((item) => pushUnique(`Signature phrase: ${item}`));
+    (identity.verified_facts || []).slice(0, 3).forEach((fact) => pushUnique(`Verified fact: ${fact}`));
+    (identity.businesses || []).slice(0, 2).forEach((item) => pushUnique(`Business history: ${item}`));
+    (identity.products || []).slice(0, 2).forEach((item) => pushUnique(`Product or offering: ${item}`));
+    (style.content_truth?.quantified_claims || []).slice(0, 2).forEach((item) => pushUnique(`Quantified claim: ${item}`));
+    (style.evidence_snippets || []).slice(0, 2).forEach((item) => pushUnique(`Observed pattern: ${item}`));
+
+    return statements.slice(0, 8);
   };
 
   const stats = getStatements();
@@ -130,7 +148,7 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
         <div className="persona-cta-container">
           <button
             onClick={async (e) => {
-              if (creatorStatus?.ready_to_chat) {
+              if (status !== "processing" && creatorStatus?.ready_to_chat) {
                 try {
                   await onContinue(e);
                 } catch (err) {
@@ -141,10 +159,10 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
               }
             }}
             className="finish-btn"
-            disabled={loading || (status === "processing" && stats.length === 0) || !creatorStatus?.ready_to_chat}
-            aria-disabled={!creatorStatus?.ready_to_chat ? "true" : undefined}
+            disabled={loading || status === "processing" || !creatorStatus?.ready_to_chat}
+            aria-disabled={status === "processing" || !creatorStatus?.ready_to_chat ? "true" : undefined}
           >
-            {status === "processing" && stats.length === 0 ? "Building Profile..." : "Finish & Chat"}
+            {status === "processing" ? "Building Profile..." : "Finish & Chat"}
           </button>
 
           {!creatorStatus?.ready_to_chat && creatorStatus?.block_reason && (
