@@ -676,9 +676,15 @@ def get_creator_status(creator_id: int) -> dict:
     # Needs reapproval if config incremented past last approved
     needs_reapproval = last_approved < config_version
     
-    # Get approved item count
+    # Get approved item count (join via scrape_runs so it works even if scrape_items.creator_handle differs).
     approved_count = db.execute_one(
-        "SELECT COUNT(*) as count FROM scrape_items WHERE creator_handle = (SELECT handle FROM creators WHERE id = %s) AND review_status = 'approved'",
+        """
+        SELECT COUNT(*) AS count
+        FROM scrape_items si
+        JOIN scrape_runs sr ON si.scrape_run_id = sr.id
+        WHERE si.review_status = 'approved'
+          AND sr.creator_handle = (SELECT handle FROM creators WHERE id = %s)
+        """,
         (creator_id,)
     )
     approved_item_count = approved_count["count"] if approved_count else 0

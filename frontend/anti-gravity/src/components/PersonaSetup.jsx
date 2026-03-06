@@ -44,17 +44,23 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
   }, [creatorId]);
 
   const fetchStatus = async () => {
+    if (!creatorId) return;
     try {
-      const data = await getFingerprintStatus(creatorId);
-      setStatus(data.status);
-      if (data.has_fingerprint) {
+      const [fp, cfg] = await Promise.all([
+        getFingerprintStatus(creatorId),
+        getCreatorConfig(creatorId).catch(() => null),
+      ]);
+
+      setStatus(fp.status);
+      if (fp.has_fingerprint) {
         setFingerprint({
-          style: data.style,
-          identity: data.identity
+          style: fp.style,
+          identity: fp.identity
         });
-        if (data.status === "idle") {
-          // We have it and it's done, maybe slow down or stop polling
-        }
+      }
+
+      if (cfg?.status) {
+        setCreatorStatus(cfg.status);
       }
     } catch (err) {
       console.error("Failed to load fingerprint:", err);

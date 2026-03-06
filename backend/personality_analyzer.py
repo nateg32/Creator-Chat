@@ -30,6 +30,10 @@ class PersonalityAnalyzer:
         system_prompt = """
         You are a master linguistic and psychological profiler. Analyze the following content and extract a 'Style Fingerprint' that reverse-engineers the creator's brain.
         
+        IMPORTANT NAME RULE:
+        - Use the creator name exactly as provided: "{Name}".
+        - Never misspell, shorten, or mutate the creator name in traits or statements.
+
         EXTRACT STATEMENTS FOR:
         1. LINGUISTIC DNA: (N-grams, sentence length, rhetorical questions, swearing level, emoji usage, analogies/metaphors, statistics vs stories).
         2. BEHAVIORAL PATTERNS: (Response to pressure/disagreement, escalation style, emotional baseline, confidence level, absolutes vs hedging).

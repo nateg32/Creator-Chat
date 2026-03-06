@@ -18,8 +18,10 @@ class FingerprintService:
     """
 
     def __init__(self):
-        from backend.services.research_provider import get_research_provider
-        self.researcher = get_research_provider()
+        from backend.services.research_provider import get_research_provider, GeminiResearchProvider
+        # Fingerprint research phases (links + dossier) are implemented on Gemini provider.
+        # Prefer Gemini when GOOGLE_API_KEY is present; otherwise fall back to default provider factory.
+        self.researcher = GeminiResearchProvider() if settings.GOOGLE_API_KEY else get_research_provider()
         self.analyzer = PersonalityAnalyzer()
 
     async def generate_fingerprint_async(self, creator_id: int, refresh: bool = False):
