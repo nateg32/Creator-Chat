@@ -76,6 +76,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   const decoder = new TextDecoder();
   let buffer = "";
   let fullAnswer = "";
+  let finalCards = null;
 
   try {
     while (true) {
@@ -90,8 +91,8 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
         if (part.startsWith("data: ")) {
           const dataStr = part.slice(6);
           if (dataStr === "[DONE]") {
-            if (onComplete) onComplete(fullAnswer);
-            return { answer: fullAnswer };
+            if (onComplete) onComplete(fullAnswer, { cards: finalCards || [] });
+            return { answer: fullAnswer, cards: finalCards || [] };
           }
           let data;
           try {
@@ -103,6 +104,10 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
 
           if (data.error) {
             throw new Error(data.error);
+          }
+
+          if (Array.isArray(data.cards)) {
+            finalCards = data.cards;
           }
 
           if (data.content) {

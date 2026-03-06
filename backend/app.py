@@ -1416,13 +1416,16 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
+                cards = _extract_stream_cards(full_answer)
                 if request.thread_id:
-                    finalize_stream_interaction(request.thread_id, request.question, full_answer)
+                    finalize_stream_interaction(request.thread_id, request.question, full_answer, cards=cards)
                     # Check for title update
                     thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
                     if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
                         background_tasks.add_task(_update_thread_title_background, request.thread_id)
                 
+                if cards:
+                    yield f"data: {json.dumps({'cards': cards})}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as stream_err:
                 import traceback
@@ -1439,7 +1442,84 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
         logger.debug(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-def finalize_stream_interaction(thread_id: str, question: str, answer: str):
+def _extract_stream_cards(answer: str):
+    """Best-effort card extraction for streamed answers."""
+    import re
+
+    cards = []
+    seen = set()
+    lines = [line.strip() for line in (answer or "").splitlines()]
+
+    markdown_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+    url_pattern = re.compile(r"https?://[^\s)]+")
+
+    for title, url in markdown_pattern.findall(answer or ""):
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        thumbnail = ""
+        if "youtube.com" in url or "youtu.be" in url:
+            video_id = ""
+            if "v=" in url:
+                video_id = url.split("v=")[-1].split("&")[0]
+            elif "youtu.be/" in url:
+                video_id = url.split("youtu.be/")[-1].split("?")[0]
+            if video_id:
+                thumbnail = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+        cards.append({
+            "type": "preview_card",
+            "title": title.strip() or "External Resource",
+            "url": url,
+            "thumbnail_url": thumbnail,
+        })
+
+    for idx, line in enumerate(lines):
+        if not url_pattern.search(line):
+            continue
+        for match in url_pattern.finditer(line):
+            url = match.group(0).rstrip(".,);")
+            key = url.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            title = ""
+            for back in range(idx - 1, max(-1, idx - 4), -1):
+                candidate = lines[back].strip(" -*0123456789.)")
+                if not candidate:
+                    continue
+                if candidate.startswith("http"):
+                    continue
+                if len(candidate) > 140:
+                    continue
+                title = candidate
+                break
+
+            if not title:
+                title = "YouTube Video" if ("youtube.com" in url or "youtu.be" in url) else "External Resource"
+
+            thumbnail = ""
+            if "youtube.com" in url or "youtu.be" in url:
+                video_id = ""
+                if "v=" in url:
+                    video_id = url.split("v=")[-1].split("&")[0]
+                elif "youtu.be/" in url:
+                    video_id = url.split("youtu.be/")[-1].split("?")[0]
+                if video_id:
+                    thumbnail = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+
+            cards.append({
+                "type": "preview_card",
+                "title": title,
+                "url": url,
+                "thumbnail_url": thumbnail,
+            })
+
+    return cards[:6]
+
+
+def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None):
     """Save the final interaction to DB after stream completion."""
     try:
         # Save User Message
@@ -1448,11 +1528,15 @@ def finalize_stream_interaction(thread_id: str, question: str, answer: str):
             VALUES (%s, 'user', %s)
         """, (thread_id, question))
 
+        assistant_metadata = {}
+        if cards:
+            assistant_metadata["cards"] = cards
+
         # Save Assistant Message
         db.execute_update("""
-            INSERT INTO chat_messages (thread_id, role, content)
-            VALUES (%s, 'assistant', %s)
-        """, (thread_id, answer))
+            INSERT INTO chat_messages (thread_id, role, content, metadata)
+            VALUES (%s, 'assistant', %s, %s::jsonb)
+        """, (thread_id, answer, json.dumps(assistant_metadata)))
 
         # Update thread preview
         preview = answer[:60] + "..." if len(answer) > 60 else answer

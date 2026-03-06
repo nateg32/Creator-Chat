@@ -1,4 +1,5 @@
 import logging
+import json
 import re
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote
@@ -278,17 +279,58 @@ class ContentFinder:
             "is_fallback": True,
         }
 
+    def _normalize_keywords(self, text: str) -> List[str]:
+        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        stop = {"the", "and", "for", "with", "that", "this", "from", "what", "which", "where", "when", "your", "about", "into", "then", "them", "they", "have", "been", "would", "could", "should", "video", "videos"}
+        return [w for w in words if len(w) > 2 and w not in stop]
+
+    def _result_topic_score(self, result: Dict[str, Any], query: str) -> float:
+        q_terms = set(self._normalize_keywords(query))
+        if not q_terms:
+            return 0.5
+        hay = " ".join([str(result.get("title") or ""), str(result.get("snippet") or "")]).lower()
+        hits = sum(1 for term in q_terms if term in hay)
+        return min(1.0, hits / max(1, min(len(q_terms), 4)))
+
+    def _filter_research_results(self, results: List[Dict[str, Any]], query: str, resource_type: str) -> List[Dict[str, Any]]:
+        filtered = []
+        for res in results or []:
+            if not isinstance(res, dict) or not res.get("url"):
+                continue
+            confidence = float(res.get("confidence", 0.0) or 0.0)
+            relation = (res.get("relation") or "").upper()
+            platform = (res.get("platform") or "").lower()
+            topic_score = self._result_topic_score(res, query)
+            res["topic_score"] = topic_score
+
+            if resource_type == "video":
+                if platform and platform != "youtube":
+                    continue
+                if relation not in {"SELF", "AFFILIATED"}:
+                    continue
+                if confidence < 0.72 or topic_score < 0.35:
+                    continue
+            else:
+                if confidence < 0.60 and topic_score < 0.45:
+                    continue
+
+            filtered.append(res)
+
+        filtered.sort(key=lambda r: (float(r.get("confidence", 0.0) or 0.0), float(r.get("topic_score", 0.0) or 0.0)), reverse=True)
+        return filtered
+
     def _trigger_research(self, query: str, creator_profile: Dict, resource_type: str, history_messages: Optional[List[Dict]] = None, intent_metadata: Optional[Dict] = None) -> Dict:
         results = self.research_provider.search(
             query, creator_profile, resource_type,
             conversation_history=history_messages,
             intent_metadata=intent_metadata
         )
-        if not results:
+        filtered_results = self._filter_research_results(results, query, resource_type)
+        if not filtered_results:
             return self._format_defer("LOW", 0.0, creator_profile=creator_profile, query=query)
 
         cards = []
-        for res in results[:3]:
+        for res in filtered_results[:3]:
             subtitle = res.get("resource_type", "video").title()
             if res.get("relation") == "AFFILIATED":
                 subtitle = f"Guest Appearance • {subtitle}"
@@ -311,7 +353,7 @@ class ContentFinder:
         return {
             "status": "FOUND",
             "cards": cards,
-            "confidence_score": results[0].get("confidence", 0.8)
+            "confidence_score": filtered_results[0].get("confidence", 0.8)
         }
 
     def _get_relevant_chunks(self, creator_id: int, query: str, limit: int = 60) -> List[Dict]:

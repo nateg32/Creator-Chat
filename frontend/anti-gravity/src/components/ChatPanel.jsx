@@ -297,7 +297,16 @@ export function ChatPanel({
             )
           );
         },
-        onComplete: (fullAnswer) => {
+        onComplete: (fullAnswer, meta = {}) => {
+          if (meta.cards?.length) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId
+                  ? { ...msg, cards: meta.cards }
+                  : msg
+              )
+            );
+          }
           if (onInteraction) onInteraction();
         },
         onError: (e) => {
@@ -529,14 +538,47 @@ export function ChatPanel({
                             textParts.push(text.substring(lastIndex));
                           }
 
+                          const explicitCards = Array.isArray(m.cards) && m.cards.length > 0
+                            ? m.cards.map((card, idx) => {
+                                let domain = "web";
+                                let isVideo = false;
+                                let videoId = null;
+                                let platform = "web";
+                                try {
+                                  const urlObj = new URL(card.url);
+                                  domain = urlObj.hostname.replace('www.', '');
+                                  if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+                                    isVideo = true;
+                                    platform = 'youtube';
+                                    if (domain.includes('youtube.com')) {
+                                      videoId = urlObj.searchParams.get('v') || urlObj.pathname.split('/shorts/')[1];
+                                    } else {
+                                      videoId = urlObj.pathname.slice(1);
+                                    }
+                                  }
+                                } catch (e) {}
+                                return {
+                                  id: card.id || `meta-${idx}`,
+                                  url: card.url,
+                                  domain,
+                                  isVideo,
+                                  videoId,
+                                  platform,
+                                  title: card.title || 'External Resource',
+                                };
+                              })
+                            : [];
+
+                          const renderedCards = explicitCards.length > 0 ? explicitCards : linkCards;
+
                           return (
                             <div className="msg-content-wrapper">
                               <div className="msg-text-blocks">
                                 {textParts.length > 0 ? textParts : text}
                               </div>
-                              {linkCards.length > 0 && (
+                              {renderedCards.length > 0 && (
                                 <div className="msg-preview-cards">
-                                  {linkCards.map((card, idx) => (
+                                  {renderedCards.map((card, idx) => (
                                     <a key={`${card.id}-${idx}`} href={card.url} target="_blank" rel="noopener noreferrer" className="chat-link-card">
                                       {card.platform === 'youtube' && card.videoId && (
                                         <div className="chat-link-card-thumbnail">

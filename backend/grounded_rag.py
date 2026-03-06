@@ -368,6 +368,72 @@ def retrieve_candidates(
     return candidates
 
 
+def _normalize_search_terms(text: str) -> List[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    stop = {"the", "and", "for", "with", "that", "this", "from", "what", "which", "where", "when", "your", "about", "into", "then", "them", "they", "have", "been", "would", "could", "should", "video", "videos", "link", "links", "watch", "show", "send", "online"}
+    return [w for w in words if len(w) > 2 and w not in stop]
+
+
+def _topic_match_score(result: Dict[str, Any], question: str) -> float:
+    q_terms = set(_normalize_search_terms(question))
+    if not q_terms:
+        return 0.5
+    hay = " ".join([str(result.get("title") or ""), str(result.get("snippet") or "")]).lower()
+    hits = sum(1 for term in q_terms if term in hay)
+    return min(1.0, hits / max(1, min(len(q_terms), 4)))
+
+
+def _filter_live_web_results(results: List[Dict[str, Any]], question: str, require_video: bool = False) -> List[Dict[str, Any]]:
+    filtered = []
+    for result in results or []:
+        if not isinstance(result, dict) or not result.get("url"):
+            continue
+        confidence = float(result.get("confidence", 0.0) or 0.0)
+        relation = (result.get("relation") or "").upper()
+        platform = (result.get("platform") or "").lower()
+        topic_score = _topic_match_score(result, question)
+        result["topic_score"] = topic_score
+
+        if require_video:
+            if platform and platform != "youtube":
+                continue
+            if relation not in {"SELF", "AFFILIATED"}:
+                continue
+            if confidence < 0.72 or topic_score < 0.35:
+                continue
+        else:
+            if confidence < 0.58 and topic_score < 0.45:
+                continue
+
+        filtered.append(result)
+
+    filtered.sort(key=lambda r: (float(r.get("confidence", 0.0) or 0.0), float(r.get("topic_score", 0.0) or 0.0)), reverse=True)
+    return filtered
+
+
+def _recent_discussion_topic(question: str, history: Optional[List[Dict[str, str]]] = None) -> str:
+    candidate_text = question or ""
+    if history:
+        recent_user = [m.get("content") or m.get("text") or "" for m in history[-4:] if (m.get("role") or "") == "user"]
+        if recent_user:
+            candidate_text = recent_user[-1]
+    terms = _normalize_search_terms(candidate_text)
+    if not terms:
+        return "this"
+    return " ".join(terms[:4])
+
+
+def _build_not_online_fallback(question: str, creator_name: str, history: Optional[List[Dict[str, str]]] = None, kind: str = "source") -> str:
+    topic = _recent_discussion_topic(question, history)
+    if kind == "video":
+        lead = f"I can't honestly point you to a reliable online video for that right now. I'm not seeing a clean match I can verify."
+        pivot = f"But we can stay on {topic} and I'll break it down directly, or I can point you to the closest related teaching instead."
+    else:
+        lead = f"I can't verify a solid online source for that right now. It doesn't look like there's a clean public result I should pretend is real."
+        pivot = f"So let's stay with {topic} and I'll answer from what we were already discussing, or I can help you narrow the exact thing to look for."
+    return f"{lead} {pivot}"
+
+
 def needs_links(user_msg: str) -> bool:
     """
     True if the user is asking for links/sources/proof, or asking for a video recommendation.
@@ -2328,6 +2394,7 @@ Message: {answer_text[:500]}"""
             
         search_mode = creator_row.get("search_mode") or "hybrid"
             
+        no_online_fallback = None
         if needs_fallback and search_mode == "hybrid":
             logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
             from backend.services.research_provider import get_research_provider
@@ -2363,6 +2430,7 @@ Message: {answer_text[:500]}"""
                     except concurrent.futures.TimeoutError:
                         logger.warning("Parallel sufficiency check timed out, proceeding with existing RAG results.")
             
+            web_results = _filter_live_web_results(web_results, question, require_video=is_video_request if 'is_video_request' in locals() else wants_link)
             # Inject Live Search results as faux-chunks
             if web_results:
                 logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
@@ -2393,6 +2461,8 @@ Message: {answer_text[:500]}"""
                     }
                     logger.info(f"[SEARCH]   [{i}] {title[:60]} -> {url[:80]}")
                     support_set.insert(i, faux_chunk)
+            elif wants_link:
+                no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if (is_video_request if 'is_video_request' in locals() else False) else "source")
 
     # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
 
@@ -2423,6 +2493,8 @@ Message: {answer_text[:500]}"""
         history=conversation_history or [],
         user_preferences=user_preferences
     )
+    if 'no_online_fallback' in locals() and no_online_fallback:
+        answer = f"{no_online_fallback}\n\n{answer}" if answer else no_online_fallback
     
     # Log the turn
     interaction_engine.log_turn(
@@ -2671,6 +2743,7 @@ async def grounded_rag_stream(
         _t_search_start = _time.time()
         
         search_mode = creator_row.get("search_mode") or "hybrid"
+        no_online_fallback = None
         
         # Check if bot recently discussed video/link
         last_bot_msg = ""
@@ -2746,6 +2819,7 @@ async def grounded_rag_stream(
         _t_search_end = _time.time()
         logger.info(f"[LATENCY] Search fallback phase: {_t_search_end - _t_search_start:.2f}s (fallback={needs_fallback}, results={len(web_results)})")
         
+        web_results = _filter_live_web_results(web_results, question, require_video=is_video_request)
         if needs_fallback and web_results:
             # Inject Live Search results as faux-chunks
             logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
@@ -2777,6 +2851,8 @@ async def grounded_rag_stream(
                 }
                 logger.info(f"[SEARCH]   [{i}] {title[:60]} -> {url[:80]}")
                 support_set.insert(i, faux_chunk)
+        elif needs_fallback and wants_link:
+            no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if is_video_request else "source")
 
     else:
         # Greeting/Small-talk Route: No Embeddings needed for TTFT
@@ -2797,6 +2873,9 @@ async def grounded_rag_stream(
             )
 
     # 4. Async Synthesis Stream (Instant Start)
+    if no_online_fallback:
+        yield no_online_fallback + "\n\n"
+
     stream = await interaction_engine.render_combined_pass_stream_async(
         creator_profile=creator_row,
         rag_chunks=support_set,
