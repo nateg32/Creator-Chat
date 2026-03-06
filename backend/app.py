@@ -1182,6 +1182,8 @@ async def get_creator_config(creator_id: int):
     else:
         sf = json.loads(sf) if isinstance(sf, str) else {}
 
+    status_obj = get_creator_status(creator_id)
+
     return CreatorWithConfigResponse(
         id=row["id"],
         name=row.get("display_name") or row.get("handle") or "",
@@ -1196,6 +1198,7 @@ async def get_creator_config(creator_id: int):
         course_domains=row.get("course_domains") or [],
         course_base_urls=row.get("course_base_urls") or [],
         search_mode=row.get("search_mode") or "hybrid",
+        status=status_obj,
         created_at=row["created_at"].isoformat() if row.get("created_at") and hasattr(row["created_at"], "isoformat") else None,
     )
 
