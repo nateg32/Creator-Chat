@@ -41,6 +41,11 @@ export function CreatorSetup({
   const [saveLoading, setSaveLoading] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [testStatus, setTestStatus] = useState({});
+
+  const isLinkValidated = useCallback((key) => {
+    const status = String(testStatus[key] || "").toLowerCase();
+    return status.startsWith("valid public link");
+  }, [testStatus]);
   const [showSearchConfirm, setShowSearchConfirm] = useState(false);
   const [searchSummary, setSearchSummary] = useState([]);
   const [savedConfigSignature, setSavedConfigSignature] = useState("");
@@ -153,10 +158,11 @@ export function CreatorSetup({
   useEffect(() => {
     if (!savedCreatorId) return;
     getCreatorConfig(savedCreatorId)
-      .then((data) => {
+      .then(async (data) => {
         const pc = data.platform_configs || {};
         const next = new Set();
         const cf = {};
+        const nextStatuses = {};
         for (const [k, v] of Object.entries(pc)) {
           if (v && v.enabled && v.url) {
             next.add(k);
@@ -165,6 +171,9 @@ export function CreatorSetup({
               timeFilter: v.timeFilter || { mode: "all" },
               maxItems: v.maxItems,
             };
+            if (k === "custom") {
+              nextStatuses[k] = "Valid format";
+            }
           }
         }
         setSelected(next);
@@ -173,6 +182,22 @@ export function CreatorSetup({
         setCreatorHandle(data.handle || "");
         setCreatorAvatarUrl(data.profile_picture_url || "");
         setSavedConfigSignature(JSON.stringify(pc || {}));
+        setTestStatus(nextStatuses);
+
+        for (const [k, v] of Object.entries(cf)) {
+          if (k === "custom") continue;
+          try {
+            const res = await validatePlatformUrl(k, v.url);
+            nextStatuses[k] = res.valid ? "Valid public link" : (res.error || "Link invalid");
+            if (res.valid && res.normalized && res.normalized !== v.url) {
+              cf[k] = { ...cf[k], url: res.normalized };
+            }
+          } catch (err) {
+            nextStatuses[k] = err.message || "Link invalid";
+          }
+        }
+        setConfig({ ...cf });
+        setTestStatus({ ...nextStatuses });
       })
       .catch(() => { });
   }, [savedCreatorId]);
@@ -193,7 +218,9 @@ export function CreatorSetup({
       [key]: { ...(prev[key] || {}), ...patch },
     }));
     setError(null);
-    setTestStatus((s) => ({ ...s, [key]: null }));
+    if (Object.prototype.hasOwnProperty.call(patch, "url")) {
+      setTestStatus((s) => ({ ...s, [key]: null }));
+    }
   };
 
   const valid = useCallback(() => {
@@ -223,18 +250,16 @@ export function CreatorSetup({
         }
         setTestStatus((s) => ({
           ...s,
-          [key]: res.checked_via === "http_fetch"
-            ? "Valid public link"
-            : "Valid format",
+          [key]: "Valid public link",
         }));
         return;
       }
       setTestStatus((s) => ({
         ...s,
-        [key]: res.error || "Invalid link",
+        [key]: res.error || "Link invalid",
       }));
     } catch (e) {
-      setTestStatus((s) => ({ ...s, [key]: e.message || "Error" }));
+      setTestStatus((s) => ({ ...s, [key]: e.message || "Link invalid" }));
     }
   };
 
@@ -335,7 +360,23 @@ export function CreatorSetup({
 
   const offset = 0; // cleanup unused vars dummy
 
-  const canScrape = Boolean(savedCreatorId) && !scrapeLoading && !loading;
+  const allSelectedLinksReady = useCallback(() => {
+    if (selected.size === 0) return false;
+    for (const key of selected) {
+      const value = (config[key]?.url || "").trim();
+      if (!value) return false;
+      if (key === "custom") {
+        const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
+        if (!lines.length) return false;
+        continue;
+      }
+      if (!isLinkValidated(key)) return false;
+    }
+    return true;
+  }, [config, isLinkValidated, selected]);
+
+  const canSaveConfig = valid() && allSelectedLinksReady() && !saveLoading && !scrapeLoading;
+  const canScrape = Boolean(savedCreatorId) && allSelectedLinksReady() && !scrapeLoading && !loading;
 
   return (
     <div className="creator-setup-card">
@@ -584,7 +625,7 @@ export function CreatorSetup({
             type="button"
             className="primary-button"
             onClick={handleSave}
-            disabled={!valid() || saveLoading || scrapeLoading}
+            disabled={!canSaveConfig}
           >
             {saveLoading ? "Saving…" : savedCreatorId ? "Update config" : "Save & Continue"}
           </button>

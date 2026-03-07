@@ -347,6 +347,55 @@ def _host_matches(host: str, candidates: List[str]) -> bool:
     return any(host == candidate or host.endswith(f".{candidate}") for candidate in candidates)
 
 
+def _resolved_path_matches_platform(platform_key: str, resolved_url: str) -> bool:
+    parsed = urlparse(resolved_url or "")
+    path = (parsed.path or "").strip("/")
+    query = (parsed.query or "").lower()
+
+    if platform_key in {"youtube", "youtube_shorts"}:
+        segments = [seg for seg in path.split("/") if seg]
+        if not segments:
+            return False
+        first = segments[0]
+        if first.startswith("@"):
+            return len(segments) == 1 or (len(segments) == 2 and segments[1] in {"videos", "shorts", "featured", "streams", "playlists"})
+        return first in {"channel", "user", "c"} and len(segments) == 2
+
+    if platform_key == "instagram":
+        if not path:
+            return False
+        first = path.split("/")[0].lower()
+        return first not in {"reel", "reels", "p", "tv", "stories", "explore", "accounts"}
+
+    if platform_key == "tiktok":
+        segments = [seg for seg in path.split("/") if seg]
+        return len(segments) == 1 and segments[0].startswith("@")
+
+    if platform_key == "twitter":
+        segments = [seg for seg in path.split("/") if seg]
+        return len(segments) == 1 and segments[0].lower() not in {"home", "explore", "search", "i", "settings"}
+
+    if platform_key == "linkedin":
+        segments = [seg for seg in path.split("/") if seg]
+        return len(segments) == 2 and segments[0].lower() in {"in", "company"}
+
+    if platform_key == "reddit":
+        segments = [seg for seg in path.split("/") if seg]
+        return len(segments) == 2 and segments[0].lower() in {"user", "u"}
+
+    if platform_key == "facebook":
+        if parsed.path.lower().startswith("/profile.php"):
+            return "id=" in query
+        segments = [seg for seg in path.split("/") if seg]
+        if not segments:
+            return False
+        if segments[0].lower() in {"watch", "reel", "share", "events", "groups", "marketplace", "gaming"}:
+            return False
+        return len(segments) == 1 or (len(segments) == 2 and segments[0].lower() == "people")
+
+    return True
+
+
 def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, Any]:
     if platform_key == "custom":
         return {"exists": True, "checked_via": "format_only"}
@@ -356,7 +405,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     except requests.RequestException as exc:
         return {
             "exists": False,
-            "error": f"Could not verify this link right now: {exc}",
+            "error": "Link invalid",
             "checked_via": "http_fetch",
         }
 
@@ -388,7 +437,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     if response.status_code >= 400:
         return {
             "exists": False,
-            "error": f"Link returned HTTP {response.status_code}",
+            "error": "Link invalid",
             "checked_via": "http_fetch",
             "resolved_url": final_url,
         }
@@ -396,8 +445,16 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     if platform_key in valid_hosts and not _host_matches(final_host, valid_hosts[platform_key]):
         return {
             "exists": False,
-            "error": "Link redirected to a different site and could not be verified as official.",
+            "error": "Link invalid",
             "checked_via": "redirect_check",
+            "resolved_url": final_url,
+        }
+
+    if not _resolved_path_matches_platform(platform_key, final_url):
+        return {
+            "exists": False,
+            "error": "Link invalid",
+            "checked_via": "path_check",
             "resolved_url": final_url,
         }
 
@@ -405,7 +462,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         if marker in body:
             return {
                 "exists": False,
-                "error": "This link looks unavailable or deleted.",
+                "error": "Link invalid",
                 "checked_via": "page_content",
                 "resolved_url": final_url,
             }
@@ -415,7 +472,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         if path.startswith("@") and "channel" not in body and "videos" not in body and "subscribers" not in body:
             return {
                 "exists": False,
-                "error": "Could not verify a public YouTube channel at this URL.",
+                "error": "Link invalid",
                 "checked_via": "page_content",
                 "resolved_url": final_url,
             }

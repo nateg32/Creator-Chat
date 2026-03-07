@@ -158,6 +158,64 @@ def normalize_url(url: str, platform_key: str) -> str:
     return _strip_tracking(u)
 
 
+def _path_matches_platform(parsed, platform_key: str) -> bool:
+    host = (parsed.netloc or '').lower()
+    path = (parsed.path or '').strip('/')
+
+    if platform_key == 'youtube' or platform_key == 'youtube_shorts':
+        if not path:
+            return False
+        segments = [seg for seg in path.split('/') if seg]
+        if not segments:
+            return False
+        first = segments[0]
+        if first.startswith('@'):
+            if len(segments) == 1:
+                return True
+            if len(segments) == 2 and segments[1] in {'videos', 'shorts', 'featured', 'streams', 'playlists'}:
+                return True
+            return False
+        if first in {'channel', 'user', 'c'} and len(segments) == 2:
+            return True
+        return False
+
+    if platform_key == 'instagram':
+        if not path:
+            return False
+        first = path.split('/')[0].lower()
+        return first not in {'reel', 'reels', 'p', 'tv', 'stories', 'explore', 'accounts'}
+
+    if platform_key == 'twitter':
+        if not path:
+            return False
+        segments = [seg for seg in path.split('/') if seg]
+        return len(segments) == 1 and segments[0].lower() not in {'home', 'explore', 'search', 'i', 'settings'}
+
+    if platform_key == 'linkedin':
+        segments = [seg for seg in path.split('/') if seg]
+        return len(segments) == 2 and segments[0].lower() in {'in', 'company'}
+
+    if platform_key == 'reddit':
+        segments = [seg for seg in path.split('/') if seg]
+        return len(segments) == 2 and segments[0].lower() in {'user', 'u'}
+
+    if platform_key == 'facebook':
+        if 'profile.php' in path.lower():
+            return 'id=' in (parsed.query or '').lower()
+        segments = [seg for seg in path.split('/') if seg]
+        if not segments:
+            return False
+        if segments[0].lower() in {'watch', 'reel', 'share', 'events', 'groups', 'marketplace', 'gaming'}:
+            return False
+        return len(segments) == 1 or (len(segments) == 2 and segments[0].lower() == 'people')
+
+    if platform_key == 'tiktok':
+        segments = [seg for seg in path.split('/') if seg]
+        return len(segments) == 1 and segments[0].startswith('@')
+
+    return True
+
+
 def extract_handle(url: str, platform_key: str) -> Optional[str]:
     """Extract platform handle from URL. Used during validation and stored in config."""
     if not url or not isinstance(url, str):
@@ -215,6 +273,8 @@ def validate_url(url: str, platform_key: str) -> Tuple[bool, Optional[str]]:
         parsed = urlparse(u if u.startswith("http") else "https://" + u)
         if not parsed.netloc:
             return False, "Invalid URL"
+        if not _path_matches_platform(parsed, platform_key):
+            return False, f"Enter a valid {p['label']} profile/page URL"
     except Exception:
         return False, "Invalid URL"
     return True, None
