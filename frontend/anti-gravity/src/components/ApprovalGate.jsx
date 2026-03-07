@@ -94,7 +94,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
       return;
     }
 
-    if (!isDirty) return;
+    if (!isDirty && !forceShowSave) return;
     await onSave(decisionsArray);
   }
 
@@ -360,7 +360,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
             className="primary-button"
             disabled={loading || approvedCount === 0}
           >
-            {loading ? (progress ? progress.message : "Saving...") : `Save to knowledge base (${approvedCount} items)`}
+            {loading ? (progress ? progress.message : "Saving...") : (!isDirty && forceShowSave ? `Confirm approved content (${approvedCount} items)` : `Save to knowledge base (${approvedCount} items)`)}
           </button>
         ) : null}
       </div>

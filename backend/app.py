@@ -2612,6 +2612,10 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
         if not approved_item_ids:
             # If nothing to ingest but things were deleted, we might want to regenerate fingerprint
             if doc_ids_to_delete:
+                db.execute_update(
+                    "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
+                    (creator_id,)
+                )
                 job_id = db.execute_insert(
                     """
                     INSERT INTO system_jobs (creator_id, job_type, payload, message)
@@ -2622,6 +2626,24 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
                 )
                 return {"job_id": job_id, "approved": 0}
             return {"job_id": None, "approved": 0}
+
+        already_approved = db.execute_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM scrape_items
+            WHERE id = ANY(%s::uuid[])
+              AND scrape_run_id = %s
+              AND review_status = 'approved'
+            """,
+            (approved_item_ids, sid)
+        )
+        already_approved_count = int((already_approved or {}).get("count", 0) or 0)
+        if already_approved_count == len(approved_item_ids) and not denied_item_ids and not doc_ids_to_delete:
+            db.execute_update(
+                "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
+                (creator_id,)
+            )
+            return {"job_id": None, "approved": len(approved_item_ids)}
         
         # Enqueue INGEST job
         job_payload = {
