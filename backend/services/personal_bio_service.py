@@ -33,7 +33,9 @@ class PersonalBioService:
         question: str, 
         voice_profile: Dict[str, Any],
         creator_name: str,
-        decision_policy: Dict[str, Any]
+        decision_policy: Dict[str, Any],
+        creator_profile: Optional[Dict[str, Any]] = None,
+        allow_web: bool = True,
     ) -> Dict[str, Any]:
         """
         Main entry point. Returns { "answer": str, "confidence": "HIGH"|"MEDIUM"|"LOW", "sources": [], "move": str }
@@ -44,12 +46,12 @@ class PersonalBioService:
         q_type, topic, sufficiency = decision_service.classify_question(question, "personal_bio_question")
         
         # 2. Evidence Gathering
-        internal_facts = self._search_internal_knowledge(creator_id, question)
+        internal_facts = self._search_internal_knowledge(creator_id, question, creator_profile=creator_profile)
         
         web_facts = []
-        if self._needs_more_evidence(internal_facts):
+        if allow_web and self._needs_more_evidence(internal_facts):
             logger.info("PersonalBioService: Internal evidence weak, checking web...")
-            web_facts = self.researcher.search_general(f"{creator_name} {question}", creator_id)
+            web_facts = self._search_web_evidence(creator_id, creator_name, question, creator_profile=creator_profile)
             
         all_evidence = internal_facts + web_facts
         
@@ -77,8 +79,7 @@ class PersonalBioService:
         
         return synthesis
 
-    def _search_internal_knowledge(self, creator_id: int, question: str) -> List[Dict[str, Any]]:
-        # (Implementation remains same, just ensuring sim is included)
+    def _search_internal_knowledge(self, creator_id: int, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         emb = rag.create_embedding(question)
         rows = db.execute_query("""
             SELECT content, metadata, 1 - (embedding <=> %s::vector) as sim
@@ -96,7 +97,79 @@ class PersonalBioService:
                 "source": "internal",
                 "sim": float(r["sim"])
             })
+
+        profile = creator_profile or {}
+        identity = profile.get("identity_fingerprint") or {}
+        research = profile.get("research_summary") or {}
+        if isinstance(identity, str):
+            try:
+                identity = json.loads(identity)
+            except Exception:
+                identity = {}
+        if isinstance(research, str):
+            try:
+                research = json.loads(research)
+            except Exception:
+                research = {}
+
+        def _push_fact(label: str, value: Any):
+            if not value:
+                return
+            if isinstance(value, list):
+                if not value:
+                    return
+                value_text = "; ".join(str(v) for v in value[:5] if v)
+            elif isinstance(value, dict):
+                value_text = json.dumps(value)
+            else:
+                value_text = str(value)
+            value_text = value_text.strip()
+            if not value_text:
+                return
+            facts.append({
+                "text": f"{label}: {value_text}",
+                "source": "profile",
+                "sim": 0.9,
+            })
+
+        _push_fact("Bio", identity.get("bio"))
+        _push_fact("Mission", identity.get("mission"))
+        _push_fact("Worldview", identity.get("worldview"))
+        _push_fact("Verified facts", identity.get("verified_facts"))
+        _push_fact("Public consensus", research.get("public_consensus"))
+        _push_fact("Creator claims", research.get("creator_claims"))
+        _push_fact("Themes", research.get("themes"))
         return facts
+
+    def _search_web_evidence(self, creator_id: int, creator_name: str, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        query = f"{creator_name} {question}".strip()
+        try:
+            if hasattr(self.researcher, "search_general"):
+                results = self.researcher.search_general(query, creator_id, creator_profile=creator_profile)
+            else:
+                profile = dict(creator_profile or {})
+                profile.setdefault("id", creator_id)
+                profile.setdefault("name", creator_name)
+                results = self.researcher.search(query, profile, resource_type="any", conversation_history=None)
+        except Exception as e:
+            logger.error(f"PersonalBioService: Web evidence search failed: {e}")
+            return []
+
+        normalized = []
+        for result in results or []:
+            title = (result.get("title") or "").strip()
+            snippet = (result.get("snippet") or result.get("text") or "").strip()
+            url = (result.get("url") or "").strip()
+            if not any([title, snippet, url]):
+                continue
+            normalized.append({
+                "text": " | ".join(part for part in [title, snippet] if part)[:500],
+                "source": "web",
+                "url": url,
+                "title": title,
+                "sim": 0.82,
+            })
+        return normalized
 
     def _needs_more_evidence(self, facts: List[Dict[str, Any]]) -> bool:
         if not facts: return True

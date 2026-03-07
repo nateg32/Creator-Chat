@@ -595,7 +595,9 @@ _INTENT_PATTERNS = [
         "how old are you", "your age", "when were you born", "where do you live", "where are you from", "where did you grow up",
         "are you married", "do you have a wife", "do you have a husband", "do you have kids", "your family",
         "your background", "your education", "where did you go to school", "your degree", "your story",
-        "who are you really", "tell me about yourself", "personal question"
+        "who are you really", "tell me about yourself", "personal question", "are you religious", "why are you not religious",
+        "are you atheist", "are you agnostic", "are you a nihilist", "are you nihilist", "what do you believe",
+        "what are your beliefs", "your worldview", "are you pagan", "what religion are you"
     ], "personal_bio_question"),
     ([
         "what's your name", "what is your name", "who are you", "what do you do", "your name",
@@ -2339,6 +2341,44 @@ Message: {answer_text[:500]}"""
             }
         }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
 
+    # --- Step 5: Personal / Biographical Routing ---
+    rule_intent = classify_intent(question)
+    if user_state.get("flags", {}).get("personal_question_flag") or rule_intent == "personal_bio_question":
+        logger.info("Pipeline Step 5: Routing personal factual question through PersonalBioService...")
+        personal_result = personal_bio_service.handle_personal_question(
+            user_id=user_id,
+            creator_id=creator_id,
+            question=question,
+            voice_profile=creator_row.get("voice_profile") or {},
+            creator_name=creator_row.get("name") or creator_row.get("handle") or "the creator",
+            decision_policy=creator_row.get("decision_policy") or {},
+            creator_profile=creator_row,
+            allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+        )
+        personal_sources = []
+        for idx, source in enumerate(personal_result.get("sources") or [], start=1):
+            title = source.get("title") or source.get("text") or f"Source {idx}"
+            url = source.get("url")
+            if url or title:
+                personal_sources.append({
+                    "source_id": f"personal_{idx}",
+                    "title": title[:140],
+                    "url": url,
+                    "snippet": source.get("text", "")[:240],
+                    "platform": source.get("source", "profile"),
+                })
+        return apply_final_polish({
+            "answer": personal_result.get("answer", "I haven't really talked about that publicly."),
+            "retrieved": [],
+            "sources": personal_sources,
+            "cards": [],
+            "meta": {
+                "move": personal_result.get("move"),
+                "confidence": personal_result.get("confidence"),
+                "question_type": "personal_bio_question",
+            },
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
+
     # --- Step 5: Personal / Factual Check (Web Verify) ---
     verified_fact_data = None
     if user_state.get("flags", {}).get("personal_question_flag"):
@@ -2693,6 +2733,8 @@ async def grounded_rag_stream(
             "research_summary",
             "soul_md",
             "style_fingerprint",
+            "voice_profile",
+            "decision_policy",
             "search_mode",
         ],
     )
@@ -2701,6 +2743,26 @@ async def grounded_rag_stream(
     support_set = []
     mems = []
     no_online_fallback = None
+    rule_intent = classify_intent(question)
+
+    if rule_intent == "personal_bio_question":
+        creator_row = await creator_task
+        if not creator_row:
+            yield "I couldn't find information about that creator."
+            return
+        personal_result = await asyncio.to_thread(
+            personal_bio_service.handle_personal_question,
+            user_id,
+            creator_id,
+            question,
+            creator_row.get("voice_profile") or {},
+            creator_row.get("name") or creator_row.get("handle") or "the creator",
+            creator_row.get("decision_policy") or {},
+            creator_row,
+            ((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+        )
+        yield personal_result.get("answer", "I haven't really talked about that publicly.")
+        return
     
     if route == "ROUTE_2_TASK":
         # Full RAG Route: Needs Embeddings

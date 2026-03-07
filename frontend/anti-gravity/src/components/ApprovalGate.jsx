@@ -223,13 +223,25 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
 
                 // Extract metadata for better display
                 const metadata = item.metadata || {};
-                const platform = item.platform || metadata.platform || "unknown";
+                const platform = item.platform || metadata.platform || metadata.source || "unknown";
                 const displayTitle = item.title || metadata.title || item.caption?.substring(0, 50) || "Untitled Content";
 
-                let creatorHandle = item.creator_handle || metadata.channelName || metadata.authorMeta?.name || platform;
-                if (creatorHandle.toLowerCase() === "unknown") creatorHandle = platform;
-                // Prepend @ if not present
-                const displayHandle = creatorHandle.startsWith("@") ? creatorHandle : `@${creatorHandle}`;
+                const handleCandidates = [
+                  item.creator_handle,
+                  metadata.creator_handle,
+                  metadata.channelName,
+                  metadata.authorMeta?.name,
+                  metadata.author,
+                ].filter(Boolean);
+                let creatorHandle = handleCandidates[0] || "";
+                if (!creatorHandle && displayTitle.toLowerCase().includes("|")) {
+                  creatorHandle = displayTitle.split("|").pop().trim();
+                }
+                const safePlatform = String(platform || "unknown");
+                const normalizedHandle = String(creatorHandle || "").trim();
+                const displayHandle = normalizedHandle
+                  ? (normalizedHandle.startsWith("@") ? normalizedHandle : `@${normalizedHandle}`)
+                  : `@${safePlatform}`;
 
                 return (
                   <div

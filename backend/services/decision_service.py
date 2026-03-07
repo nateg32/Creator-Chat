@@ -97,7 +97,7 @@ class DecisionService:
             topic = "location"
         elif any(word in q for word in ["money", "net worth", "make", "income", "salary", "rich", "worth", "revenue", "cents", "dollars", "earn"]):
             topic = "income_networth"
-        elif any(word in q for word in ["politics", "religion", "god", "vote", "party", "republican", "democrat", "christian", "muslim", "jewish", "atheist"]):
+        elif any(word in q for word in ["politics", "religion", "religious", "god", "vote", "party", "republican", "democrat", "christian", "muslim", "jewish", "atheist", "agnostic", "nihilist", "pagan", "worldview", "belief", "beliefs"]):
             topic = "politics_religion"
             
         # 2. Type Identification

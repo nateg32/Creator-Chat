@@ -961,7 +961,7 @@ async def create_creator(request: CreateCreatorRequest):
 
 def get_creator_status(creator_id: int) -> dict:
     row = db.execute_one(
-        "SELECT config_version, last_approved_version, fingerprint_status FROM creators WHERE id = %s",
+        "SELECT config_version, last_approved_version, fingerprint_status, fingerprint_updated_at FROM creators WHERE id = %s",
         (creator_id,)
     )
     if not row:
@@ -970,6 +970,7 @@ def get_creator_status(creator_id: int) -> dict:
     config_version = row.get("config_version", 1)
     last_approved = row.get("last_approved_version", 0)
     fingerprint_status = row.get("fingerprint_status", "empty")
+    fingerprint_updated_at = row.get("fingerprint_updated_at")
     
     # Needs reapproval if config incremented past last approved
     needs_reapproval = last_approved < config_version
@@ -994,21 +995,28 @@ def get_creator_status(creator_id: int) -> dict:
     )
     ingested_doc_count = doc_count["count"] if doc_count else 0
     
+    fingerprint_built = fingerprint_status == "ready" or (
+        fingerprint_status == "idle" and fingerprint_updated_at is not None
+    )
     ready_to_chat = (
-        not needs_reapproval 
-        and approved_item_count >= 1 
-        and (ingested_doc_count >= 1 or fingerprint_status == "ready")
+        not needs_reapproval
+        and ingested_doc_count >= 1
+        and fingerprint_built
+        and fingerprint_status != "processing"
+        and fingerprint_status != "error"
     )
     
     block_reason = ""
     if needs_reapproval:
         block_reason = "Changes detected. Approve content to continue."
-    elif approved_item_count == 0:
-        block_reason = "Approve content to build the fingerprint."
-    elif ingested_doc_count == 0 and fingerprint_status != "ready":
+    elif ingested_doc_count == 0:
         block_reason = "Waiting for content to be ingested."
+    elif fingerprint_status == "processing":
+        block_reason = "Fingerprint analysis is still running."
     elif fingerprint_status == "error":
         block_reason = "Fingerprint failed to build. Try approving again."
+    elif not fingerprint_built:
+        block_reason = "Approve content to build the fingerprint."
         
     return {
         "fingerprint_status": fingerprint_status,
@@ -3201,17 +3209,22 @@ async def get_queue_items(creator_id: int):
         for row in results_legacy:
             preview = row["raw_text"][:200] + "..." if len(row["raw_text"] or "") > 200 else (row["raw_text"] or "")
             chunks_count = row.get("chunks_inserted", 0) or 0
+            legacy_url = row.get("url")
+            legacy_platform = _platform_from_url(legacy_url or "")
             items.append({
                 "item_id": str(row["id"]),
                 "queue_id": str(row["id"]),
                 "title": row.get("title"),
                 "caption": row.get("title"),
-                "url": row.get("url"),
-                "source_url": row.get("url"),
+                "url": legacy_url,
+                "source_url": legacy_url,
                 "preview": preview,
                 "status": row.get("status", "pending"),
                 "transcript_status": "present" if row.get("status") == "ingested" else "missing",
-                "chunks_inserted": chunks_count if row.get("status") == "ingested" else 0
+                "chunks_inserted": chunks_count if row.get("status") == "ingested" else 0,
+                "platform": legacy_platform,
+                "creator_handle": "",
+                "metadata": {"platform": legacy_platform},
             })
 
         # 2. V2 Flow Documents (The actual knowledge base)
@@ -3219,7 +3232,7 @@ async def get_queue_items(creator_id: int):
         # Note: source_id usually starts with 'queue_' for legacy items, but we want all content.
         # We order by ID if created_at is missing.
         query_docs = """
-            SELECT id, title, content, url, source, source_id
+            SELECT id, title, content, url, source, source_id, metadata
             FROM documents
             WHERE creator_id = %s AND source != 'persona'
             ORDER BY id DESC
@@ -3231,7 +3244,7 @@ async def get_queue_items(creator_id: int):
             # Fallback if url column doesn't exist (older schema)
             print(f"[WARN] get_queue_items V2 query failed, trying fallback: {e}")
             query_docs = """
-                SELECT id, title, content, source, source_id
+                SELECT id, title, content, source, source_id, metadata
                 FROM documents
                 WHERE creator_id = %s AND source != 'persona'
                 ORDER BY id DESC
@@ -3240,17 +3253,22 @@ async def get_queue_items(creator_id: int):
             results_docs = db.execute_query(query_docs, (creator_id,))
         
         for row in results_docs:
-            # Check if this document is already covered by legacy queue logic 
-            # (simple dedupe by checking if we have a queue item with same title/content? Hard to map perfectly)
-            # For now, we list everything. 
-            # If it's a legacy item, it might appear twice (once as Queue Item Pending/Ingested, once as Doc).
-            # This is acceptable for "Manager Mode".
-            
             content_text = row.get("content") or ""
             preview = content_text[:200] + "..." if len(content_text) > 200 else content_text
-            
-            # Use 'url' column if present, otherwise try to extract or empty
-            doc_url = row.get("url") or ""
+
+            doc_metadata = row.get("metadata") or {}
+            if isinstance(doc_metadata, str):
+                try:
+                    doc_metadata = json.loads(doc_metadata) if doc_metadata else {}
+                except Exception:
+                    doc_metadata = {}
+            if not isinstance(doc_metadata, dict):
+                doc_metadata = {}
+
+            doc_platform = doc_metadata.get("platform") or row.get("source") or "unknown"
+            doc_creator_handle = doc_metadata.get("creator_handle") or doc_metadata.get("channelName") or ""
+            doc_url = row.get("url") or doc_metadata.get("source_url") or doc_metadata.get("canonical_url") or ""
+            transcript_status = doc_metadata.get("transcript_status") or "present"
             
             items.append({
                 "item_id": f"doc_{row['id']}",
@@ -3263,7 +3281,10 @@ async def get_queue_items(creator_id: int):
                 "status": "ingested", 
                 "chunks_inserted": 1, 
                 "item_status": "ingested",
-                "transcript_status": "present"
+                "transcript_status": transcript_status,
+                "platform": doc_platform,
+                "creator_handle": doc_creator_handle,
+                "metadata": doc_metadata,
             })
 
         return {"search_id": str(creator_id), "items": items}

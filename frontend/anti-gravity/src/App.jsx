@@ -520,16 +520,27 @@ function AppInner() {
       getQueueItems(state.creatorId)
         .then((data) => {
           if (data && data.items) {
-            const mappedItems = data.items.map(i => ({
-              item_id: i.queue_id,
-              queue_id: i.queue_id,
-              title: i.title,
-              source_url: i.url,
-              caption: i.preview,
-              status: i.item_status || i.status,
-              transcript_status: i.transcript_status,
-              metadata: { platform: "unknown" }
-            }));
+            const mappedItems = data.items.map((i) => {
+              const metadata = i.metadata || {};
+              const platform = i.platform || metadata.platform || i.source || "unknown";
+              const sourceUrl = i.source_url || i.url || metadata.source_url || metadata.canonical_url || "";
+              return {
+                ...i,
+                item_id: i.item_id || i.queue_id,
+                queue_id: i.queue_id || i.item_id,
+                title: i.title || metadata.title || "Untitled Content",
+                source_url: sourceUrl,
+                url: sourceUrl,
+                caption: i.caption || i.preview || metadata.title || "",
+                preview: i.preview || i.caption || "",
+                status: i.item_status || i.status,
+                item_status: i.item_status || i.status,
+                transcript_status: i.transcript_status || metadata.transcript_status || "missing",
+                platform,
+                creator_handle: i.creator_handle || metadata.creator_handle || metadata.channelName || metadata.authorMeta?.name || "",
+                metadata: { ...metadata, platform },
+              };
+            });
 
             // Use search_id from backend (likely creatorId) as scrapeId to pass validation
             dispatch({ type: "SET_SCRAPE_ID", scrapeId: data.search_id });
@@ -797,7 +808,7 @@ function AppInner() {
         dispatch({ type: "SET_STEP", step: 4 });
         dispatch({ type: "SET_LOADING", loading: false });
         setWorkflowRequiresApproval(false);
-        return;
+        return true;
       }
 
       const jobId = res.job_id;
@@ -848,7 +859,7 @@ function AppInner() {
               }
 
               dispatch({ type: "SET_LOADING", loading: false });
-              resolve();
+              resolve(true);
             } else if (progress.status === "failed" || progress.status === "error") {
               clearInterval(pollInterval);
               showToast(progress.error_log || "Ingestion failed", "error");
@@ -864,7 +875,7 @@ function AppInner() {
               showToast("Job is taking a long time. Check back later.", "error");
               dispatch({ type: "SET_PROGRESS", progress: null });
               dispatch({ type: "SET_LOADING", loading: false });
-              resolve(); // Don't reject, it might still finish in background
+              resolve(false); // Don't reject, it might still finish in background
             }
           } catch (pollErr) {
             console.error("Polling error:", pollErr);
@@ -884,6 +895,28 @@ function AppInner() {
     dispatch({ type: "SET_STEP", step: 2 });
   }
 
+  function buildAutoApprovalDecisions() {
+    return state.scrapedItems.map((item) => {
+      const itemKey = item.item_id || item.queue_id;
+      const currentStatus = (item.item_status || item.status || "pending").toLowerCase();
+      let decision = "pending";
+      if (["approved", "ingested", "completed", "ready"].includes(currentStatus)) {
+        decision = "approve";
+      } else if (currentStatus === "denied") {
+        decision = "deny";
+      }
+      return { item_id: itemKey, decision };
+    });
+  }
+
+  function canAutoConfirmApproval() {
+    if (!state.scrapedItems.length) return false;
+    return state.scrapedItems.every((item) => {
+      const currentStatus = (item.item_status || item.status || "pending").toLowerCase();
+      return ["approved", "ingested", "completed", "ready", "denied"].includes(currentStatus);
+    });
+  }
+
   async function handlePersonaSave(personaText) {
     dispatch({ type: "SET_LOADING", loading: true });
     try {
@@ -901,12 +934,29 @@ function AppInner() {
   }
 
   async function handlePersonaContinue({ creatorStatus } = {}) {
-    const requiresSave = Boolean(creatorStatus?.needs_reapproval);
+    let nextStatus = creatorStatus;
+    let requiresSave = Boolean(nextStatus?.needs_reapproval);
+
     if (requiresSave) {
       const shouldSaveChanges = window.confirm("Changes were detected for this creator. Save them to the knowledge base before returning to chat?");
       if (shouldSaveChanges) {
-        dispatch({ type: "SET_STEP", step: 3 });
-        return;
+        if (canAutoConfirmApproval()) {
+          const saved = await handleApproveSave(buildAutoApprovalDecisions());
+          try {
+            const refreshed = await getCreatorConfig(state.creatorId);
+            nextStatus = refreshed?.status || nextStatus;
+          } catch (error) {
+            console.error("Failed to refresh creator status after auto-confirm:", error);
+          }
+          requiresSave = Boolean(nextStatus?.needs_reapproval);
+          if (!saved && requiresSave) {
+            dispatch({ type: "SET_STEP", step: 3 });
+            return;
+          }
+        } else {
+          dispatch({ type: "SET_STEP", step: 3 });
+          return;
+        }
       }
     }
 
@@ -917,6 +967,7 @@ function AppInner() {
       createFresh: shouldCreateFreshChat || !workflowOrigin.fromChat,
     });
     setWorkflowHasDetectedChanges(false);
+    setWorkflowRequiresApproval(false);
   }
 
   function handleResetWizard() {
