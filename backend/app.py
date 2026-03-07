@@ -368,6 +368,82 @@ def _host_matches(host: str, candidates: List[str]) -> bool:
     return any(host == candidate or host.endswith(f".{candidate}") for candidate in candidates)
 
 
+def _extract_html_title(body: str) -> str:
+    if not body:
+        return ""
+    try:
+        import re
+        match = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return ""
+        return " ".join(match.group(1).split()).strip().lower()
+    except Exception:
+        return ""
+
+
+def _handle_from_profile_url(url: str, platform_key: str) -> str:
+    try:
+        handle = extract_handle(url, platform_key) or ""
+        return str(handle).strip().lower().lstrip("@")
+    except Exception:
+        return ""
+
+
+def _page_has_positive_profile_signal(platform_key: str, requested_url: str, resolved_url: str, body: str) -> bool:
+    body_lower = (body or "").lower()
+    title = _extract_html_title(body or "")
+    handle = _handle_from_profile_url(resolved_url or requested_url, platform_key)
+    slug = handle.replace("-", " ").replace("_", " ").strip()
+
+    if platform_key in {"youtube", "youtube_shorts"}:
+        return True
+
+    if platform_key == "instagram":
+        if title in {"instagram", "login ? instagram", "login ? instagram photos and videos"}:
+            return False
+        positives = [
+            f'"username":"{handle}"' if handle else "",
+            f'/{handle}/' if handle else "",
+            f'@{handle}' if handle else "",
+            "instagram photos and videos",
+        ]
+        return any(p and p in body_lower for p in positives) or (handle and handle in title)
+
+    if platform_key == "tiktok":
+        if title in {"tiktok", "make your day", "log in | tiktok"}:
+            return False
+        positives = [f'@{handle}' if handle else "", f'/{handle}' if handle else ""]
+        return any(p and p in body_lower for p in positives) or (handle and f'@{handle}' in title)
+
+    if platform_key == "twitter":
+        if title in {"x", "twitter", "x / ?search", "log in to x / x"}:
+            return False
+        positives = [f'@{handle}' if handle else "", f'/{handle}' if handle else ""]
+        return any(p and p in body_lower for p in positives) or (handle and handle in title)
+
+    if platform_key == "linkedin":
+        if title in {"linkedin", "linkedin: log in or sign up", "signin | linkedin"}:
+            return False
+        positives = [f'/in/{handle}' if handle else "", f'/company/{handle}' if handle else "", slug]
+        return any(p and p in body_lower for p in positives if p)
+
+    if platform_key == "reddit":
+        if title in {"reddit", "reddit - dive into anything", "sign up or log in"}:
+            return False
+        positives = [f'/user/{handle}' if handle else "", f'/u/{handle}' if handle else "", handle]
+        return any(p and p in body_lower for p in positives if p) or (handle and handle in title)
+
+    if platform_key == "facebook":
+        if title in {"facebook", "log into facebook", "facebook - log in or sign up"}:
+            return False
+        parsed = urlparse(resolved_url or requested_url or "")
+        path = (parsed.path or "").strip("/").lower()
+        positives = [path, slug, handle]
+        return any(p and p in body_lower for p in positives if p) or bool(path and path in title)
+
+    return True
+
+
 def _resolved_path_matches_platform(platform_key: str, resolved_url: str) -> bool:
     parsed = urlparse(resolved_url or "")
     path = (parsed.path or "").strip("/")
@@ -497,6 +573,14 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
                 "checked_via": "page_content",
                 "resolved_url": final_url,
             }
+
+    if not _page_has_positive_profile_signal(platform_key, url, final_url, response.text or ""):
+        return {
+            "exists": False,
+            "error": "Link invalid",
+            "checked_via": "profile_signal",
+            "resolved_url": final_url,
+        }
 
     return {
         "exists": True,
