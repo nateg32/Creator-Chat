@@ -1056,342 +1056,226 @@ class OpenAIResearchProvider(ResearchProvider):
     ) -> List[Dict[str, Any]]:
         """
         Score and sort results by how well their title matches the topic query.
-        
-        This fixes the core problem: "I asked about ads but got general AI business videos."
-        A video titled "I Spent $1M On Facebook Ads" gets a high score when researching "ads",
-        while "Boring AI Business Model" gets a low score.
         """
         import re
-        
-        topic_lower = topic_query.lower()
-        # Extract meaningful keywords from the topic query
-        STOP_WORDS = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-                      'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-                      'should', 'may', 'might', 'shall', 'can', 'to', 'of', 'in', 'for',
-                      'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'i', 'me',
-                      'my', 'you', 'your', 'we', 'our', 'they', 'them', 'it', 'its', 'and',
-                      'or', 'but', 'not', 'no', 'what', 'which', 'who', 'how', 'when', 'where',
-                      'that', 'this', 'these', 'those', 'video', 'videos', 'watch', 'link'}
-        
-        topic_keywords = [w for w in re.split(r'\W+', topic_lower) if w and w not in STOP_WORDS and len(w) > 1]
-        
+
+        topic_lower = (topic_query or "").lower()
+        stop_words = {
+            'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+            'should', 'may', 'might', 'shall', 'can', 'to', 'of', 'in', 'for',
+            'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'i', 'me',
+            'my', 'you', 'your', 'we', 'our', 'they', 'them', 'it', 'its', 'and',
+            'or', 'but', 'not', 'no', 'what', 'which', 'who', 'how', 'when', 'where',
+            'that', 'this', 'these', 'those', 'video', 'videos', 'watch', 'link'
+        }
+        topic_keywords = [w for w in re.split(r'\W+', topic_lower) if w and w not in stop_words and len(w) > 1]
         if not topic_keywords:
-            # Can't score without keywords, just return as-is
             return results
-        
+
         scored = []
-        for r in results:
-            # Prefer _real_title (oEmbed-validated) over generic extracted title
-            title_lower = (r.get('_real_title') or r.get('title') or '').lower()
-            snippet_lower = (r.get('snippet') or '').lower()
-            
-            # Count keyword hits in title (weighted 2x) and snippet (weighted 1x)
+        for result in results:
+            title_lower = (result.get('_real_title') or result.get('title') or '').lower()
+            snippet_lower = (result.get('snippet') or '').lower()
             title_hits = sum(1 for kw in topic_keywords if kw in title_lower)
             snippet_hits = sum(1 for kw in topic_keywords if kw in snippet_lower)
             relevance_score = (title_hits * 2) + snippet_hits
-            
-            r['_relevance_score'] = relevance_score
-            
-            domain = r.get('_domain', '')
+            result['_relevance_score'] = relevance_score
+            domain = result.get('_domain', '')
             trust = 1.0 if ('youtube.com' in domain or 'youtu.be' in domain) else 0.2
-            ownership = r.get('ownership_score', 0.0)
-            r['_evidence_score'] = (ownership * 2) + trust + min(2.0, relevance_score / 2.0)
-            
-            scored.append(r)
-        
-        # Sort by relation SELF first, _evidence_score, confidence
+            ownership = result.get('ownership_score', 0.0)
+            result['_evidence_score'] = (ownership * 2) + trust + min(2.0, relevance_score / 2.0)
+            scored.append(result)
+
         scored.sort(key=lambda x: (
             x.get('relation') == 'SELF',
             x.get('_evidence_score', 0),
             x.get('confidence', 0)
         ), reverse=True)
-        
-        # For VIDEO intent, apply strict filtering to drop generically matched videos
+        return scored
+
+    def search(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        resource_type: str = "any",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        intent_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        t0 = _time.time()
+        creator_id = creator_profile.get('id')
+        creator_name = self._resolve_creator_name(creator_profile)
+        query_lower = (query or '').lower().strip()
+        topic_query = self._extract_topic_from_context(query, creator_name, conversation_history)
+        sanitized_topic = self._sanitize_topic_for_query(topic_query or query)
+        extracted_phrase = self._extract_phrase_from_topic(query)
+        search_mode = 'PHRASE_HUNT' if extracted_phrase else 'STANDARD'
+
+        if resource_type == 'video':
+            search_intent = 'VIDEO'
+        elif any(token in query_lower for token in ['course', 'program', 'community', 'product']):
+            search_intent = 'PRODUCT'
+        elif any(token in query_lower for token in ['instagram', 'tiktok', 'facebook', 'twitter', 'x.com', 'linkedin', 'profile']):
+            search_intent = 'SOCIAL'
+        else:
+            search_intent = 'WEB'
+
+        exclude_urls = []
+        if conversation_history:
+            recent_blob = ' '.join((m.get('content') or m.get('text') or '') for m in conversation_history[-12:])
+            exclude_urls = re.findall(r"https?://[^\s\)\]\"']+", recent_blob)
+        exclude_instruction = ''
+        if exclude_urls:
+            joined = ', '.join(exclude_urls[:8])
+            exclude_instruction = f"\nDo not return these URLs again: {joined}."
+
+        cache_salt = f"{search_intent}:{search_mode}:{sanitized_topic.lower()}"
+        if creator_id:
+            cached = self._get_cache(creator_id, query, 'openai_native_search_v3', cache_salt=cache_salt)
+            if cached:
+                logger.info(f"OpenAISearch: Cache hit for '{query}'")
+                return cached
+
         if search_intent == 'VIDEO':
             search_prompt = (
-                f"What are {creator_name}'s best creator-owned videos specifically about {sanitized_topic}?\n\n"
-                'Search across YouTube, Instagram Reels, TikTok, and Facebook Reels/Watch for direct creator-owned video URLs.\n'
-                f'Search for: {creator_name} "{sanitized_topic}" (site:youtube.com OR site:instagram.com OR site:tiktok.com OR site:facebook.com)\n\n'
-                f'For each video you find, list:\n'
-                f'1. The exact video title\n'
-                f'2. The full direct video URL\n'
-                f'3. The platform (YouTube, Instagram, TikTok, Facebook)\n'
-                f'4. A one-line description of why it\'s relevant to "{sanitized_topic}"\n\n'
-                f'Only include videos that are DIRECTLY about {sanitized_topic}. '
-                f'Do not include generic/unrelated videos.\n'
-                'Do NOT make up or guess URLs. Do NOT use placeholders like VIDEO_ID, REEL_ID, or POST_ID.\n'
-                'Only use direct URLs from actual search results.'
-                f'{exclude_instruction}'
+                f"Find creator-owned or strongly affiliated videos for {creator_name} specifically about {sanitized_topic}.\n\n"
+                "Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch, Twitter/X.\n"
+                "Return only direct public post/video URLs.\n"
+                "If a result is from a church, podcast, interview, or conference, include it only if the creator is clearly the speaker or guest.\n"
+                "Do not guess URLs. Do not use placeholders like VIDEO_ID, REEL_ID, or POST_ID."
+                f"{exclude_instruction}"
             )
-            if search_mode == 'PHRASE_HUNT':
-                search_prompt += "\nReturn direct video URLs if possible."
-
-
         elif search_intent == 'PRODUCT':
             search_prompt = (
-                f'What products, courses, or programs does {creator_name} offer related to "{sanitized_topic}"?\n\n'
-                f'Search for: {creator_name} {sanitized_topic} course OR program OR community\n\n'
-                f'For each product found, list the name, the direct URL, and what it offers.\n'
-                f'Also include any YouTube videos where {creator_name} talks about this product.'
-                f'{exclude_instruction}'
+                f"Find official products, courses, or programs from {creator_name} related to {sanitized_topic}.\n"
+                "Return only official pages or direct videos where the creator discusses the product."
+                f"{exclude_instruction}"
             )
-
         elif search_intent == 'SOCIAL':
-            platform_map = {
-                'instagram': f'site:instagram.com {creator_name}',
-                'tiktok': f'site:tiktok.com {creator_name}',
-                'twitter': f'site:twitter.com OR site:x.com {creator_name}',
-                'linkedin': f'site:linkedin.com {creator_name}',
-                'facebook': f'site:facebook.com {creator_name}',
-            }
-            detected_platform = next((p for p in platform_map if p in query_lower), None)
-            platform_query = platform_map.get(detected_platform, f'{creator_name} social media profiles')
-
             search_prompt = (
-                f'Find the official social media profile for {creator_name}: {platform_query}\n\n'
-                f'List the profile URL and handle.'
+                f"Find the official social profile or page for {creator_name} related to this request: {query}.\n"
+                "Return only official public URLs if you can verify them."
+                f"{exclude_instruction}"
             )
-
         else:
             search_prompt = (
-                f'Search the web for: {creator_name} "{sanitized_topic}"\n\n'
-                f'List the most relevant results with their full URLs and a brief description.\n'
-                f'Only include real URLs from actual search results.'
-                f'{exclude_instruction}'
+                f"Find reliable public web results about {creator_name} related to {sanitized_topic}.\n"
+                "Prefer official creator-owned pages and strongly related appearances.\n"
+                "Return real URLs only."
+                f"{exclude_instruction}"
             )
 
-        # ─── EXECUTE SEARCH ──────────────────────────────────────────────────────
-        # GPT-5.2 web search only works via Responses API (not Chat Completions).
-        # gpt-4o-search-preview works via Chat Completions.
-        # Try Responses API (GPT-5.2) first for best quality, fall back to Chat Completions.
         results = []
         try:
             results = self._search_responses_api(search_prompt, creator_name)
-        except Exception as e:
-            logger.warning(f"OpenAISearch: Responses API (GPT-5.2) failed: {e}")
-        
+        except Exception as exc:
+            logger.warning(f"OpenAISearch: Responses API failed: {exc}")
         if not results:
             try:
                 results = self._search_chat_completions(search_prompt, creator_name)
-            except Exception as e2:
-                logger.warning(f"OpenAISearch: Chat Completions fallback also failed: {e2}")
+            except Exception as exc:
+                logger.warning(f"OpenAISearch: Chat Completions fallback failed: {exc}")
                 results = []
-        
-        # ─── UNWRAP URLs ─────────────────────────────────────────────────────────
+
         title_only_candidates = [r for r in results if isinstance(r, dict) and r.get('_title_only')]
         results = [r for r in results if isinstance(r, dict) and r.get('url')]
-        unwrapped_count = 0
-        if results:
-            for r in results:
-                original_url = r.get('url', '')
-                if 'glasp.co' in original_url and '/youtube/' in original_url:
-                    match = re.search(r'/youtube/([A-Za-z0-9_-]{11})(?:[/?]|$)', original_url)
-                    if match:
-                        r['url'] = f"https://www.youtube.com/watch?v={match.group(1)}"
-                        unwrapped_count += 1
-                        logger.info(f"OpenAISearch: Unwrapped {original_url} -> {r['url']}")
-        if unwrapped_count > 0:
-            logger.info(f"OpenAISearch: unwrapped={unwrapped_count}")
 
-        # ─── POST-SEARCH DEDUP ───────────────────────────────────────────────────
         if exclude_urls and results:
-            before_count = len(results)
-            results = [r for r in results if not any(ex in r.get('url', '') for ex in exclude_urls)]
-            if len(results) < before_count:
-                logger.info(f"[DEDUP] Removed {before_count - len(results)} already-shared videos")
+            results = [r for r in results if not any(ex in (r.get('url') or '') for ex in exclude_urls)]
 
-        # ── NEW: PREFILTER + COG ──
-        extracted_count = len(results)
         if results:
             results = self._prefilter_candidates(results, creator_profile)
-        prefilter_count = len(results)
-        
-        if results:
             results = self._enforce_cog(results, creator_profile)
-        cog_count = len(results)
 
-        elapsed = _time.time() - t0
-        logger.info(f"OpenAISearch: Completed in {elapsed:.1f}s — {extracted_count} raw results")
+        pre_validated = []
+        for result in results:
+            url = result.get('url') or ''
+            if not url or self._is_placeholder_url(url):
+                continue
+            if self._is_echoed_title(result.get('title', ''), query, conversation_history):
+                continue
+            is_video_url = self._is_direct_video_url(url)
+            if search_intent == 'VIDEO' and not is_video_url:
+                continue
+            result.setdefault('confidence', 0.8)
+            result.setdefault('relation', 'PUBLIC_FACTS')
+            result.setdefault('snippet', '')
+            result.setdefault('title', 'Untitled')
+            result.setdefault('resource_type', 'video' if is_video_url else 'web')
+            result.setdefault('platform', self._infer_platform_from_url(url))
+            pre_validated.append(result)
 
-        if results:
-            # ─── VALIDATION + RELEVANCE SCORING ──────────────────────────────────
-            pre_validated = []
-            for r in results:
-                if not isinstance(r, dict) or not r.get('url'):
-                    continue
-                r.setdefault('confidence', 0.8)
-                r.setdefault('relation', 'PUBLIC_FACTS')
-                r.setdefault('resource_type', 'video' if self._is_direct_video_url(r.get('url')) else 'web')
-                r.setdefault('snippet', '')
-                r.setdefault('title', 'Untitled')
+        youtube_items = [(i, r) for i, r in enumerate(pre_validated) if 'youtube.com' in (r.get('url') or '') or 'youtu.be' in (r.get('url') or '')]
+        if youtube_items:
+            validation_results = {}
+            def validate_item(args):
+                idx, result = args
+                return idx, self._validate_youtube_url(result['url'])
+            with ThreadPoolExecutor(max_workers=min(len(youtube_items), 4)) as executor:
+                futures = {executor.submit(validate_item, item): item[0] for item in youtube_items}
+                for future in as_completed(futures):
+                    try:
+                        idx, real_title = future.result(timeout=6)
+                        validation_results[idx] = real_title
+                    except Exception:
+                        validation_results[futures[future]] = None
+            validated = []
+            for idx, result in enumerate(pre_validated):
+                if idx in validation_results:
+                    real_title = validation_results[idx]
+                    if real_title is None:
+                        continue
+                    if result.get('title', '').strip().lower() in ('youtube video', 'untitled', ''):
+                        result['title'] = real_title
+                    else:
+                        result['_real_title'] = real_title
+                validated.append(result)
+        else:
+            validated = pre_validated
 
-                url = r['url']
-                title = r.get('title', '')
-
-                if self._is_placeholder_url(url):
-                    logger.warning(f"[URL-FILTER] Dropping placeholder URL: {url}")
-                    recovered_candidate = self._title_only_result(title, r.get('snippet', ''), confidence=0.5)
-                    if recovered_candidate:
-                        title_only_candidates.append(recovered_candidate)
-                    continue
-
-                if self._is_echoed_title(title, query, conversation_history):
-                    logger.warning(f"[HALLUCINATION] Dropping echoed title: '{title}' -> {url}")
-                    continue
-
-                is_video_url = self._is_direct_video_url(url)
-                if search_intent == 'VIDEO' and not is_video_url:
-                    logger.info(f"[URL-FILTER] Dropping non-video URL in VIDEO search: {url}")
-                    continue
-
-                r.setdefault('platform', self._infer_platform_from_url(url))
-                pre_validated.append(r)
-
-            # ── Parallel YouTube oEmbed validation ──
-            youtube_items = [(i, r) for i, r in enumerate(pre_validated) if 'youtube.com' in r['url'] or 'youtu.be' in r['url']]
-            
-            if youtube_items:
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                
-                def validate_item(args):
-                    idx, r = args
-                    real_title = self._validate_youtube_url(r['url'])
-                    return idx, real_title
-                
-                validation_results = {}
-                with ThreadPoolExecutor(max_workers=min(len(youtube_items), 4)) as executor:
-                    futures = {executor.submit(validate_item, item): item[0] for item in youtube_items}
-                    for future in as_completed(futures):
-                        try:
-                            idx, real_title = future.result(timeout=6)
-                            validation_results[idx] = real_title
-                        except Exception:
-                            validation_results[futures[future]] = None
-                
-                validated = []
-                for i, r in enumerate(pre_validated):
-                    if i in validation_results:
-                        real_title = validation_results[i]
-                        if real_title is None:
-                            logger.warning(f"[URL-VALIDATE] Dropping invalid YouTube URL: {r['url']}")
-                            continue
-                        if r.get('title', '').strip().lower() in ('youtube video', 'untitled', ''):
-                            r['title'] = real_title
-                        else:
-                            r['_real_title'] = real_title
-                        r['resource_type'] = 'video'
-                    validated.append(r)
-            else:
-                validated = pre_validated
-
-            # ── RELEVANCE SCORING ──
-            # Score each result by how well its title matches the sanitized topic query
-            validated = self._score_relevance(validated, sanitized_topic, search_intent)
-
-            # ── PHRASE_HUNT VERIFICATION ──
-            verified_count = 0
-            if search_mode == "PHRASE_HUNT" and extracted_phrase:
-                verified = self._verify_phrase_in_candidates(validated[:8], extracted_phrase, creator_profile)
-                if verified:
-                    verified.sort(key=lambda x: (x.get('_phrase_match_strength', 0), x.get('confidence', 0)), reverse=True)
-                    validated = verified
-                    verified_count = len(validated)
-                else:
-                    validated = [r for r in validated[:3]]
-                    for r in validated:
-                        r['_phrase_verified'] = False
-
-            results = validated
-            logger.info(f"OpenAISearch: Pipeline counts - Candidates: {extracted_count} -> Prefilter: {prefilter_count} -> COG: {cog_count} -> Final: {len(results)}")
-            logger.info(f"OpenAISearch: search_mode={search_mode} phrase_len={len(extracted_phrase) if extracted_phrase else 0}")
-            if search_mode == "PHRASE_HUNT":
-                logger.info(f"OpenAISearch: PHRASE_HUNT candidates={cog_count}, verified={verified_count}")
+        results = self._score_relevance(validated, sanitized_topic or query, search_intent)
 
         if search_intent == 'VIDEO' and title_only_candidates and len(results) < 2:
             recovered = self._recover_video_urls_by_title(creator_name, title_only_candidates, exclude_instruction=exclude_instruction)
             if recovered:
-                logger.info(f"[SEARCH-RECOVERY] Recovered {len(recovered)} direct URLs from title-only candidates")
+                recovered = self._enforce_cog(recovered, creator_profile)
                 existing_urls = {r.get('url') for r in results}
                 for recovered_result in recovered:
                     if recovered_result.get('url') not in existing_urls:
+                        recovered_result.setdefault('platform', self._infer_platform_from_url(recovered_result.get('url', '')))
+                        recovered_result.setdefault('resource_type', 'video')
                         results.append(recovered_result)
                         existing_urls.add(recovered_result.get('url'))
+                results = self._score_relevance(results, sanitized_topic or query, search_intent)
 
-        # ── RETRY: If VIDEO search returned nothing relevant, try a more targeted query ──
-        if search_intent == 'VIDEO' and not results:
-            import re as _re
-            topic_kws = [w for w in _re.split(r'\W+', topic_query.lower()) if len(w) > 2 and w not in {'the', 'and', 'for', 'how', 'what', 'you', 'video', 'videos'}]
-            if topic_kws:
-                quoted_terms = ' OR '.join(f'"{kw}"' for kw in topic_kws[:3])
-                retry_prompt = (
-                    f'Find creator-owned videos by {creator_name} about: {quoted_terms}\n\n'
-                    'Allowed platforms: YouTube, Instagram Reels, TikTok, Facebook Reels/Watch, Twitter/X.\n'
-                    f'List each video with its title and direct video URL.\n'
-                    f'Only include videos whose title contains at least one of: {", ".join(topic_kws)}\n'
-                    'Do NOT make up or guess URLs. Do NOT use placeholders like VIDEO_ID or REEL_ID.'
-                    f'{exclude_instruction}'
-                )
+        if search_intent == 'VIDEO':
+            strict_results = []
+            for result in results:
+                confidence = float(result.get('confidence') or 0.0)
+                relation = result.get('relation') or 'OTHER'
+                topic_score = float(result.get('_relevance_score') or 0.0)
+                if relation == 'SELF' and confidence >= 0.72 and topic_score >= 1:
+                    strict_results.append(result)
+                elif relation == 'AFFILIATED' and confidence >= 0.8 and topic_score >= 1:
+                    strict_results.append(result)
+            results = strict_results
 
-                logger.info(f"[SEARCH-RETRY] Retrying with targeted query: {creator_name} {quoted_terms}")
-                try:
-                    retry_results = self._search_chat_completions(retry_prompt, creator_name)
-                    if not retry_results:
-                        retry_results = self._search_responses_api(retry_prompt, creator_name)
-                    if retry_results:
-                        # Accept all results with valid video URLs — don't filter by title
-                        # because oEmbed hasn't validated titles yet (titles are still generic
-                        # like "YouTube Video"). The main validation pipeline ran above, but
-                        # retry results are new and need their own oEmbed validation.
-                        valid_retry = [
-                            r for r in retry_results
-                            if isinstance(r, dict) and r.get('url') and not self._is_placeholder_url(r.get('url'))
-                        ]
-                        
-                        # Run oEmbed validation on retry results inline
-                        if valid_retry:
-                            from concurrent.futures import ThreadPoolExecutor, as_completed
-                            yt_items = [(i, r) for i, r in enumerate(valid_retry) if 'youtube.com' in r['url'] or 'youtu.be' in r['url']]
-                            if yt_items:
-                                def _val(args):
-                                    idx, r = args
-                                    return idx, self._validate_youtube_url(r['url'])
-                                with ThreadPoolExecutor(max_workers=min(len(yt_items), 4)) as exe:
-                                    futs = {exe.submit(_val, item): item[0] for item in yt_items}
-                                    for fut in as_completed(futs):
-                                        try:
-                                            idx, real_title = fut.result(timeout=6)
-                                            if real_title is None:
-                                                valid_retry[idx] = None  # Mark for removal
-                                            else:
-                                                valid_retry[idx]['_real_title'] = real_title
-                                                valid_retry[idx]['title'] = real_title
-                                        except Exception:
-                                            valid_retry[futs[fut]] = None
-                                valid_retry = [r for r in valid_retry if r is not None]
+        for result in results:
+            if result.get('_real_title'):
+                result['title'] = result.pop('_real_title')
 
-                            for retry_item in valid_retry:
-                                retry_item.setdefault('platform', self._infer_platform_from_url(retry_item.get('url', '')))
-                                retry_item.setdefault('resource_type', 'video')
-                            
-                            # Now filter by topic keywords using real titles
-                            results = [
-                                r for r in valid_retry
-                                if any(kw in (r.get('title') or '').lower() for kw in topic_kws)
-                            ]
-                            logger.info(f"[SEARCH-RETRY] Got {len(results)} relevant results on retry (after oEmbed)")
-                except Exception as e:
-                    logger.warning(f"[SEARCH-RETRY] Retry failed: {e}")
+        if creator_id and results:
+            self._save_cache(creator_id, query, 'openai_native_search_v3', results, cache_salt=cache_salt)
 
-        # Promote _real_title to title so users see proper video names
-        for r in results:
-            if r.get('_real_title'):
-                r['title'] = r.pop('_real_title')
-        
-        if results:
-            self._save_cache(creator_id, query, "openai_native_search_v3", results)
-
+        elapsed = _time.time() - t0
+        logger.info(f"OpenAISearch: Completed in {elapsed:.1f}s - {len(results)} final results")
         return results
-
 
     def _search_responses_api(self, prompt: str, creator_name: str) -> List[Dict[str, Any]]:
         """Use OpenAI Responses API with web_search_preview tool (supports GPT-5.2)."""
