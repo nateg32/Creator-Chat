@@ -310,11 +310,15 @@ export function ChatPanel({
           if (onInteraction) onInteraction();
         },
         onError: (e) => {
-          setError(e.message);
+          const rawMessage = e?.message || "Something went wrong.";
+          const friendlyMessage = /approve content to continue/i.test(rawMessage)
+            ? "Changes were detected for this creator. Approve the updated content before chatting again. Use Edit Bot to review the changes."
+            : `Sorry, something went wrong: ${rawMessage}`;
+          setError(friendlyMessage);
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId
-                ? { ...msg, content: `Sorry, something went wrong: ${e.message}`, text: `Sorry, something went wrong: ${e.message}` }
+                ? { ...msg, content: friendlyMessage, text: friendlyMessage }
                 : msg
             )
           );

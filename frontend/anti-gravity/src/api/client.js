@@ -6,6 +6,13 @@ async function readErrorPayload(res) {
     const data = await res.json();
     if (typeof data === "string") return data;
     if (data && typeof data.detail === "string" && data.detail.trim()) return data.detail;
+    if (data && data.detail && typeof data.detail === "object") {
+      if (typeof data.detail.message === "string" && data.detail.message.trim()) return data.detail.message;
+      if (data.detail.status && typeof data.detail.status.block_reason === "string" && data.detail.status.block_reason.trim()) {
+        return data.detail.status.block_reason;
+      }
+      return JSON.stringify(data.detail);
+    }
     return JSON.stringify(data);
   } catch {
     try {
