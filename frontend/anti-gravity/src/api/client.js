@@ -5,7 +5,7 @@ async function readErrorPayload(res) {
   try {
     const data = await res.json();
     if (typeof data === "string") return data;
-    if (data && typeof data.detail === "string") return data.detail;
+    if (data && typeof data.detail === "string" && data.detail.trim()) return data.detail;
     return JSON.stringify(data);
   } catch {
     try {
@@ -68,8 +68,9 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed (${response.status})`);
+    const details = await readErrorPayload(response);
+    const msg = details ? `Request failed (${response.status}): ${details}` : `Request failed (${response.status})`;
+    throw new Error(msg);
   }
 
   const reader = response.body.getReader();

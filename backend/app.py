@@ -64,7 +64,7 @@ async def global_exception_handler(request, exc):
     import traceback
     print(f"[ERROR] Unhandled exception: {exc}", flush=True)
     traceback.print_exc()
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return JSONResponse(status_code=500, content={"detail": _safe_error_detail(exc)})
 
 
 @app.on_event("startup")
@@ -131,6 +131,27 @@ def _set_search_progress(search_id: str, data: Dict[str, Any]):
         )
     except Exception as e:
         print(f"[SEARCH] Could not persist progress to DB: {e}")
+
+def _safe_error_detail(exc: Exception, fallback: str = "Unexpected server error") -> str:
+    if isinstance(exc, HTTPException):
+        detail = getattr(exc, "detail", None)
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        if isinstance(detail, (dict, list)):
+            try:
+                payload = json.dumps(detail)
+                if payload and payload.strip():
+                    return payload
+            except Exception:
+                pass
+    message = str(exc).strip() if exc is not None else ""
+    if message:
+        return message
+    exc_name = exc.__class__.__name__ if exc is not None else ""
+    if exc_name and exc_name != "Exception":
+        return exc_name
+    return fallback
+
 
 # TEMP DEBUG: verify what env vars the running backend process sees
 @app.get("/debug/env")
@@ -1661,11 +1682,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
 
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
 
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         logger.error(f"Streaming failed before started: {e}")
         logger.debug(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_safe_error_detail(e, "Chat stream failed before start"))
 
 def _extract_stream_cards(answer: str):
     """Best-effort card extraction for streamed answers."""
