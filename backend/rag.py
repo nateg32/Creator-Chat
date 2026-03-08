@@ -23,6 +23,17 @@ def get_async_client():
     return _async_client
 
 
+def create_embedding(text: str, model: str = settings.EMBEDDING_MODEL) -> List[float]:
+    """Backward-compatible embedding helper used across older services."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    response = get_client().embeddings.create(
+        model=model,
+        input=text,
+    )
+    return response.data[0].embedding
+
+
 def generate_chat_completion(
     messages: List[Dict[str, str]],
     model: str = settings.CHAT_MODEL,

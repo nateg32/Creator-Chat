@@ -81,21 +81,21 @@ class PersonalBioService:
 
     def _search_internal_knowledge(self, creator_id: int, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         emb = rag.create_embedding(question)
-        rows = db.execute_query("""
-            SELECT content, metadata, 1 - (embedding <=> %s::vector) as sim
-            FROM chunks 
-            WHERE creator_id = %s
-            AND 1 - (embedding <=> %s::vector) > 0.65
-            ORDER BY sim DESC
-            LIMIT 5
-        """, (str(emb), creator_id, str(emb)))
-        
+        retrieved = rag.retrieve_chunks(
+            creator_id=creator_id,
+            query_embedding=emb,
+            top_k=5,
+            max_distance=0.35,
+        )
+
         facts = []
-        for r in rows:
+        for chunk in retrieved:
             facts.append({
-                "text": r["content"],
+                "text": chunk.get("content", ""),
                 "source": "internal",
-                "sim": float(r["sim"])
+                "title": chunk.get("title"),
+                "url": chunk.get("url"),
+                "sim": max(0.0, 1.0 - float(chunk.get("distance", 1.0)))
             })
 
         profile = creator_profile or {}
