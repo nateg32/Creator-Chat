@@ -2678,17 +2678,24 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
         approved_item_ids = []
         denied_item_ids = []
         doc_ids_to_delete = []
+        confirmed_doc_ids = []
         
         for d in request.decisions:
             raw_id = str(d["item_id"])
             decision = d.get("decision")
             
             if raw_id.startswith("doc_"):
-                # Existing document - only handle delete (deny)
-                if decision == "deny":
+                # Existing document - approve means "keep this in the KB", deny means delete it.
+                if decision == "approve":
+                    try:
+                        confirmed_doc_ids.append(int(raw_id.split("_")[1]))
+                    except:
+                        pass
+                elif decision == "deny":
                     try:
                         doc_ids_to_delete.append(int(raw_id.split("_")[1]))
-                    except: pass
+                    except:
+                        pass
             else:
                 # Scrape item (UUID)
                 if decision == "approve":
@@ -2712,7 +2719,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             db.execute_update(deny_query, (denied_item_ids, sid))
         
         if not approved_item_ids:
-            if denied_item_ids or doc_ids_to_delete:
+            if confirmed_doc_ids or denied_item_ids or doc_ids_to_delete:
                 db.execute_update(
                     "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
                     (creator_id,)
@@ -2727,8 +2734,8 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
                     """,
                     (creator_id, json.dumps({"creator_id": creator_id}))
                 )
-                return {"job_id": job_id, "approved": 0}
-            return {"job_id": None, "approved": 0}
+                return {"job_id": job_id, "approved": len(confirmed_doc_ids)}
+            return {"job_id": None, "approved": len(confirmed_doc_ids)}
 
         already_approved = db.execute_one(
             """
