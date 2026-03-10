@@ -388,6 +388,31 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
     if worldview_lines:
         parts.append("WORLDVIEW:\n- " + "\n- ".join(worldview_lines))
 
+    belief_graph = style_fp.get("belief_graph", {})
+    belief_lines = []
+    if belief_graph.get("core_beliefs"):
+        belief_lines.append(f"Core beliefs: {', '.join(belief_graph['core_beliefs'][:5])}")
+    if belief_graph.get("non_negotiables"):
+        belief_lines.append(f"Non negotiables: {', '.join(belief_graph['non_negotiables'][:5])}")
+    if belief_graph.get("beliefs_they_attack"):
+        belief_lines.append(f"Beliefs they attack: {', '.join(belief_graph['beliefs_they_attack'][:5])}")
+    if belief_graph.get("tension_points"):
+        belief_lines.append(f"Tension points: {', '.join(belief_graph['tension_points'][:4])}")
+    if belief_lines:
+        parts.append("BELIEF GRAPH:\n- " + "\n- ".join(belief_lines))
+
+    story_bank = style_fp.get("story_bank") or []
+    if story_bank:
+        story_lines = []
+        for story in story_bank[:2]:
+            if not isinstance(story, dict):
+                continue
+            title = story.get("title") or story.get("story_id") or "Story"
+            summary = story.get("summary") or story.get("lesson") or ""
+            story_lines.append(f"{title}: {summary}".strip())
+        if story_lines:
+            parts.append("STORY BANK:\n- " + "\n- ".join(story_lines))
+
     lexicon = lexical_rules.get("high_signal_words") or style_fp.get("lexicon") or []
     phrases = lexical_rules.get("signature_phrases") or style_fp.get("signature_phrases") or []
     lex_lines = []
@@ -403,8 +428,37 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
     if mode_rules:
         parts.append(f"MODE RULES ({mode_key.upper()}): {json.dumps(mode_rules)}")
 
+    pressure_engine = style_fp.get("pressure_engine") or {}
+    if pressure_engine:
+        pressure_lines = []
+        for key in ("challenged", "user_insecure", "user_needs_comfort", "asked_private_question"):
+            node = pressure_engine.get(key)
+            if isinstance(node, dict) and node.get("default_move"):
+                pressure_lines.append(f"{key}: {node['default_move']}")
+        if pressure_lines:
+            parts.append("PRESSURE ENGINE:\n- " + "\n- ".join(pressure_lines))
+
+    temporal_voice = style_fp.get("temporal_voice") or {}
+    temporal_lines = []
+    if temporal_voice.get("stable_traits"):
+        temporal_lines.append(f"Stable traits: {', '.join(temporal_voice['stable_traits'][:5])}")
+    if temporal_voice.get("current_voice_vs_old_voice"):
+        temporal_lines.append(f"Voice drift: {', '.join(temporal_voice['current_voice_vs_old_voice'][:4])}")
+    if temporal_lines:
+        parts.append("TEMPORAL VOICE:\n- " + "\n- ".join(temporal_lines))
+
+    boundaries = style_fp.get("knowledge_boundaries") or {}
+    boundary_lines = []
+    if boundaries.get("private_or_unknown"):
+        boundary_lines.append(f"Private or unknown: {', '.join(boundaries['private_or_unknown'][:5])}")
+    if boundaries.get("must_verify_topics"):
+        boundary_lines.append(f"Must verify: {', '.join(boundaries['must_verify_topics'][:5])}")
+    if boundary_lines:
+        parts.append("KNOWLEDGE BOUNDARIES:\n- " + "\n- ".join(boundary_lines))
+
     anti = style_fp.get("anti_persona", {})
     markers = style_fp.get("disambiguation_markers", {})
+    contrastive = style_fp.get("contrastive_identity") or {}
     anti_lines = []
     if markers.get("must_show"):
         anti_lines.append(f"Must show naturally: {', '.join(markers['must_show'][:6])}")
@@ -414,6 +468,8 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
         anti_lines.append(f"Forbidden generic lines: {', '.join(anti['forbidden_generic_coach_lines'][:6])}")
     if anti.get("forbidden_emotional_postures"):
         anti_lines.append(f"Forbidden emotional postures: {', '.join(anti['forbidden_emotional_postures'][:6])}")
+    if contrastive.get("confusion_risks"):
+        anti_lines.append(f"Confusion risks: {', '.join(contrastive['confusion_risks'][:5])}")
     if anti_lines:
         parts.append("DIFFERENTIAL CONSTRAINTS:\n- " + "\n- ".join(anti_lines))
 

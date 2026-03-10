@@ -440,14 +440,14 @@ class FingerprintService:
             )
 
     async def _generate_soul_md(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any], style_fingerprint: Dict[str, Any]) -> str:
-        """Synthesizes the deep research summary and style fingerprint into an 18-section soul.md document."""
-        logger.info(f"FingerprintService: Synthesizing 18-section soul.md for {name}...")
+        """Synthesizes the deep research summary and style fingerprint into a 24-section soul.md document."""
+        logger.info(f"FingerprintService: Synthesizing 24-section soul.md for {name}...")
 
         context_text = f"""
         NAME: {name}
         RESEARCH_SUMMARY: {json.dumps(research_summary)}
         VOICE_PROFILE: {json.dumps(voice)}
-        STYLE_FINGERPRINT_V2: {json.dumps(style_fingerprint)}
+        STYLE_FINGERPRINT_V3: {json.dumps(style_fingerprint)}
         """
 
         prompt = f"""
@@ -457,12 +457,12 @@ class FingerprintService:
 
         KNOWLEDGE VS PERSONA RULE:
         - VOICE_PROFILE defines HOW they sound.
-        - STYLE_FINGERPRINT_V2 defines what makes them DISTINCT from other creators.
+        - STYLE_FINGERPRINT_V3 defines what makes them DISTINCT from other creators, what they believe, what stories they repeat, and how they behave under pressure.
         - RESEARCH_SUMMARY defines WHO they are in current reality.
         - CONFLICT RESOLUTION: if transcripts conflict with the search dossier on facts, the search dossier is the truth.
         - DIFFERENTIAL PRIORITY: make the creator feel uniquely identifiable, not just well-described.
 
-        WRITE THESE 18 SECTIONS EXACTLY:
+        WRITE THESE 24 SECTIONS EXACTLY:
         1. CORE IDENTITY LAYER
         2. BEHAVIORAL PATTERNS LAYER
         3. LINGUISTIC DNA LAYER
@@ -481,15 +481,27 @@ class FingerprintService:
         16. PRESSURE / STRESS BEHAVIOR
         17. DISTINGUISHING TELLS
         18. GOLDEN REPLIES
+        19. BELIEF GRAPH
+        20. STORY BANK
+        21. TEMPORAL VOICE
+        22. KNOWLEDGE BOUNDARIES
+        23. CONTRASTIVE NEIGHBORS
+        24. RUNTIME RESPONSE RULES
 
         SECTION REQUIREMENTS:
-        - Sections 13-18 must draw heavily from STYLE_FINGERPRINT_V2.
+        - Sections 13-24 must draw heavily from STYLE_FINGERPRINT_V3.
         - DIFFERENTIAL DNA: what makes {name} unlike adjacent creators in the same niche.
         - ANTI-PERSONA RULES: what would make {name} sound fake, generic, or like somebody else.
-        - MODE MATRIX: how they behave in greeting, teaching, comfort, rebuke, story, sales, uncertainty, and boundary mode.
-        - PRESSURE / STRESS BEHAVIOR: how their voice changes when challenged, when the user is ashamed, when they need to convict, and when they need to protect privacy.
-        - DISTINGUISHING TELLS: specific worldview, cadence, and analogy patterns that should appear naturally.
-        - GOLDEN REPLIES: 1-2 short example replies for greeting, comfort, rebuke, teaching, boundary, and uncertainty.
+        - MODE MATRIX: how they behave in greeting, teaching, comfort, rebuke, story, sales, debate, uncertainty, and boundary mode.
+        - PRESSURE / STRESS BEHAVIOR: how their voice changes when challenged, when the user is ashamed, when they need to convict, when they need to comfort, and when they need to protect privacy.
+        - DISTINGUISHING TELLS: specific worldview, cadence, analogy, and ending patterns that should appear naturally.
+        - GOLDEN REPLIES: 1-2 short example replies for greeting, comfort, rebuke, teaching, boundary, uncertainty, and sales.
+        - BELIEF GRAPH: what they believe, what they defend, what they attack, and where they carry tension or contradiction.
+        - STORY BANK: canonical stories they repeatedly return to, when each should be used, and what lesson each story proves.
+        - TEMPORAL VOICE: what stayed stable over time, what evolved, and what belongs to old versus current voice.
+        - KNOWLEDGE BOUNDARIES: what is public fact, what is only inferred, what is private, and which topics need external verification.
+        - CONTRASTIVE NEIGHBORS: which adjacent creators they could be confused with and the exact cues that separate them.
+        - RUNTIME RESPONSE RULES: how belief graph, story bank, pressure behavior, and boundaries should influence live replies.
 
         FINAL RULE:
         Do not write like a biography. Write like: 'This is who this creator is. This is how they think. This is how they speak. This is how they react.'
@@ -502,7 +514,7 @@ class FingerprintService:
             from backend.rag import generate_chat_completion
             resp = generate_chat_completion(
                 messages=[
-                    {"role": "system", "content": "You are a master of persona synthesis. Create a deep, authentic, and strict soul.md document based on the provided research using the 18-section differential persona blueprint."},
+                    {"role": "system", "content": "You are a master of persona synthesis. Create a deep, authentic, and strict soul.md document based on the provided research using the 24-section differential persona blueprint."},
                     {"role": "user", "content": f"Context Data:\n{context_text}\n\n{prompt}"}
                 ],
                 model=settings.CHAT_MODEL,

@@ -1567,8 +1567,20 @@ def generate_grounded_answer(
     
     logger.info(f"Energy: baseline={energy_data.get('bucket')}, modulated_score={current_score:.2f}, bucket={energy_bucket}")
 
+    runtime_mode = "greeting" if intent in ["greeting", "greeting_only", "small_talk", "vague_request"] else "task"
     style_dna = distiller.get_style_dna(creator_id or 0, style_fingerprint or {})
-    dna_instruction = distiller.format_for_prompt(style_dna, voice_profile=voice_profile, mode="greeting" if intent in ["greeting", "greeting_only", "small_talk", "vague_request"] else "task")
+    identity_packet = distiller.build_runtime_identity_packet(
+        question,
+        creator_profile or {"style_fingerprint": style_fingerprint},
+        user_state=user_state,
+        mode=runtime_mode,
+    )
+    dna_instruction = distiller.format_for_prompt(
+        style_dna,
+        voice_profile=voice_profile,
+        mode=runtime_mode,
+        identity_packet=identity_packet,
+    )
     
     # Intent-specific length and behavioral guidance
     len_guidance = response_length_instruction(intent, mode=mode, energy_bucket=energy_bucket, tone_mirror_limit=tone_mirror_limit, user_priority_constraints=mode_constraints)
@@ -1837,7 +1849,8 @@ Rewrite the response to fix these violations.
         "is_rewrite": is_rewrite,
         "dna_used": style_dna,
         "retrieved_count": len(support_set),
-        "sources": unique_sources[:5]
+        "sources": unique_sources[:5],
+        "identity_packet": identity_packet
     }
     
     return final_response, debug_info
