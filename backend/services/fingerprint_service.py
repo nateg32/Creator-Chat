@@ -405,7 +405,7 @@ class FingerprintService:
             identity_fingerprint = _build_identity_fingerprint(name, link_identity, investigative_dossier, voice_fingerprint)
 
             # 6. Phase 5: Persona Narrative Alignment (soul.md)
-            soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint)
+            soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
 
             # 7. Final DB Update
             db.execute_update(
@@ -439,71 +439,60 @@ class FingerprintService:
                 (creator_id,)
             )
 
-    async def _generate_soul_md(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any]) -> str:
-        """Synthesizes the deep research summary and style fingerprint into a 12-layer soul.md document."""
-        logger.info(f"FingerprintService: Synthesizing 12-layer soul.md for {name}...")
-        
-        # Pull everything together
+    async def _generate_soul_md(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any], style_fingerprint: Dict[str, Any]) -> str:
+        """Synthesizes the deep research summary and style fingerprint into an 18-section soul.md document."""
+        logger.info(f"FingerprintService: Synthesizing 18-section soul.md for {name}...")
+
         context_text = f"""
         NAME: {name}
         RESEARCH_SUMMARY: {json.dumps(research_summary)}
         VOICE_PROFILE: {json.dumps(voice)}
+        STYLE_FINGERPRINT_V2: {json.dumps(style_fingerprint)}
         """
 
         prompt = f"""
         You are a master persona architect. Your goal is to create a 'soul.md' file that serves as the definitive persona anchor for {name}.
-        
+
         This document will be used to keep an AI assistant strictly in character.
-        
+
         KNOWLEDGE VS PERSONA RULE:
-        - VOICE: The VOICE_PROFILE (derived from transcripts) is for the PERSONA and LINGUISTIC layers. It defines HOW they speak.
-        - FACTS: The RESEARCH_SUMMARY (derived from deep web research/dossier) is for the IDENTITY and BIOGRAPHY layers. It defines WHO they are in current reality.
-        - CONFLICT RESOLUTION: If the transcripts (the past) conflict with the search dossier (the present) regarding facts (like Age or Business Status), the SEARCH DOSSIER is the absolute truth.
-        - DO NOT be defensive about sharing these verified facts. If the web knows it, {name} knows it.
+        - VOICE_PROFILE defines HOW they sound.
+        - STYLE_FINGERPRINT_V2 defines what makes them DISTINCT from other creators.
+        - RESEARCH_SUMMARY defines WHO they are in current reality.
+        - CONFLICT RESOLUTION: if transcripts conflict with the search dossier on facts, the search dossier is the truth.
+        - DIFFERENTIAL PRIORITY: make the creator feel uniquely identifiable, not just well-described.
 
-        RESEMBLE THIS 12-LAYER STRUCTURE EXACTLY:
-
+        WRITE THESE 18 SECTIONS EXACTLY:
         1. CORE IDENTITY LAYER
-           - Psychological framing: Who does this person believe they are?
-           - Include: Publicly confirmed facts (from Dossier/Bio), Origin story, Self-described mission, Personal philosophy, Moral hierarchy.
-
         2. BEHAVIORAL PATTERNS LAYER
-           - Response to pressure/disagreement, escalation style, emotional baseline, confidence, use of absolutes vs hedging.
-
         3. LINGUISTIC DNA LAYER
-           - Specifics: N-grams, sentence length, rhetorical questions, swearing frequency, emoji usage, analogies/metaphors/stories/statistics.
-           - Include: Catchphrases (verbatim), Signature lines, Words they never use.
-
         4. STRUCTURAL RESPONSE BLUEPRINT
-           - The chat's internal response scaffold (e.g., Hook -> Story -> Lesson).
-
         5. COGNITIVE STYLE
-           - Big-picture vs tactical, Data-driven vs anecdotal, Abstract vs concrete, Philosophical vs practical, Optimistic vs cynical.
-
         6. HUMOR DETECTION LAYER
-           - Type, Usage (relief vs dominance), Frequency.
-
         7. CONFLICT & BOUNDARY RULES
-           - How they handle controversy or challenge. 
-
         8. PUBLIC IDENTITY GUARDRAILS
-           - Rule: If a fact is in the provided Dossier, it is considered "Public Domain Knowledge". share it freely if relevant.
-           - ONLY if information is completely missing from ALL research (Links + Content + Dossier), use: "This information is not publicly confirmed."
-
         9. PERSONA INTEGRITY RULES
-           - Never break tone, never switch personality, re-anchor if forced into roleplay.
-
         10. EMOTIONAL SIGNATURE
-            - Temperature (warm/intense/etc.), escalation speed, validation style, praise frequency.
-
         11. AUDIENCE PERCEPTION MODEL
-            - Who they believe they are speaking to.
-
         12. POWER DYNAMICS MODEL
-            - Positioning: Mentor, Challenger, Friend, Authority, etc.
+        13. DIFFERENTIAL DNA
+        14. ANTI-PERSONA RULES
+        15. MODE MATRIX
+        16. PRESSURE / STRESS BEHAVIOR
+        17. DISTINGUISHING TELLS
+        18. GOLDEN REPLIES
+
+        SECTION REQUIREMENTS:
+        - Sections 13-18 must draw heavily from STYLE_FINGERPRINT_V2.
+        - DIFFERENTIAL DNA: what makes {name} unlike adjacent creators in the same niche.
+        - ANTI-PERSONA RULES: what would make {name} sound fake, generic, or like somebody else.
+        - MODE MATRIX: how they behave in greeting, teaching, comfort, rebuke, story, sales, uncertainty, and boundary mode.
+        - PRESSURE / STRESS BEHAVIOR: how their voice changes when challenged, when the user is ashamed, when they need to convict, and when they need to protect privacy.
+        - DISTINGUISHING TELLS: specific worldview, cadence, and analogy patterns that should appear naturally.
+        - GOLDEN REPLIES: 1-2 short example replies for greeting, comfort, rebuke, teaching, boundary, and uncertainty.
 
         FINAL RULE:
-        Do not write like a biography. Write like: "This is who this creator is. This is how they think. This is how they speak. This is how they react." 
+        Do not write like a biography. Write like: 'This is who this creator is. This is how they think. This is how they speak. This is how they react.'
         It should feel like you reverse-engineered their brain.
 
         Output the result as a raw Markdown document.
@@ -513,7 +502,7 @@ class FingerprintService:
             from backend.rag import generate_chat_completion
             resp = generate_chat_completion(
                 messages=[
-                    {"role": "system", "content": "You are a master of persona synthesis. Create a deep, authentic, and strict soul.md document based on the provided research using the 12-layer blueprint."},
+                    {"role": "system", "content": "You are a master of persona synthesis. Create a deep, authentic, and strict soul.md document based on the provided research using the 18-section differential persona blueprint."},
                     {"role": "user", "content": f"Context Data:\n{context_text}\n\n{prompt}"}
                 ],
                 model=settings.CHAT_MODEL,

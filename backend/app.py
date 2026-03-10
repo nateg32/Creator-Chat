@@ -1158,6 +1158,8 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
                 if _values_differ(existing_configs, configs):
                     updates.append("platform_configs = %s")
                     params.append(json.dumps(configs))
+                    content_affecting_change = True
+                    content_affecting_change = True
             params.append(creator_id)
             db.execute_update(f"UPDATE creators SET {', '.join(updates)} WHERE id = %s", tuple(params))
         else:
@@ -1282,6 +1284,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
 
         updates = []
         params = []
+        content_affecting_change = False
         name_raw = None
         norm_res = None
         if request.name is not None:
@@ -1297,6 +1300,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             if _values_differ(existing.get("handle"), normalized_handle):
                 updates.append("handle = %s")
                 params.append(normalized_handle)
+                content_affecting_change = True
         if request.profile_picture_url is not None:
             normalized_profile_picture_url = _normalize_optional_string(request.profile_picture_url)
             if _values_differ(existing.get("profile_picture_url"), normalized_profile_picture_url):
@@ -1332,23 +1336,28 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             if _values_differ(existing.get("youtube_channel_id"), normalized_youtube_channel_id):
                 updates.append("youtube_channel_id = %s")
                 params.append(normalized_youtube_channel_id)
+                content_affecting_change = True
         if request.youtube_handle is not None:
             normalized_youtube_handle = _normalize_optional_string(request.youtube_handle)
             if _values_differ(existing.get("youtube_handle"), normalized_youtube_handle):
                 updates.append("youtube_handle = %s")
                 params.append(normalized_youtube_handle)
+                content_affecting_change = True
         if request.official_domains is not None:
             if _values_differ(existing.get("official_domains") or [], request.official_domains or []):
                 updates.append("official_domains = %s")
                 params.append(request.official_domains)
+                content_affecting_change = True
         if request.course_domains is not None:
             if _values_differ(existing.get("course_domains") or [], request.course_domains or []):
                 updates.append("course_domains = %s")
                 params.append(request.course_domains)
+                content_affecting_change = True
         if request.course_base_urls is not None:
             if _values_differ(existing.get("course_base_urls") or [], request.course_base_urls or []):
                 updates.append("course_base_urls = %s")
                 params.append(request.course_base_urls)
+                content_affecting_change = True
         if request.search_mode is not None:
             normalized_search_mode = _normalize_optional_string(request.search_mode)
             if _values_differ(existing.get("search_mode") or "hybrid", normalized_search_mode or "hybrid"):
@@ -1389,7 +1398,8 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
                 status=status_obj,
                 created_at=None,
             )
-        updates.append("config_version = config_version + 1")
+        if content_affecting_change:
+            updates.append("config_version = config_version + 1")
         
         params.append(creator_id)
         db.execute_update(
@@ -2702,12 +2712,13 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             db.execute_update(deny_query, (denied_item_ids, sid))
         
         if not approved_item_ids:
-            # If nothing to ingest but things were deleted, we might want to regenerate fingerprint
-            if doc_ids_to_delete:
+            if denied_item_ids or doc_ids_to_delete:
                 db.execute_update(
                     "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
                     (creator_id,)
                 )
+            # If nothing to ingest but things were deleted, we might want to regenerate fingerprint
+            if doc_ids_to_delete:
                 job_id = db.execute_insert(
                     """
                     INSERT INTO system_jobs (creator_id, job_type, payload, message)

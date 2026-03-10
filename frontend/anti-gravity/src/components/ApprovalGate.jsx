@@ -11,7 +11,14 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
     const initial = {};
     items.forEach((item) => {
       const itemKey = item.item_id || item.queue_id;
-      initial[itemKey] = (item.status === 'ingested' || item.status === 'approved' || item.status === 'completed' || item.item_status === 'ingested') ? DECISION_APPROVE : DECISION_PENDING;
+      const currentStatus = String(item.status || item.item_status || DECISION_PENDING).toLowerCase();
+      if (["ingested", "approved", "completed", "ready"].includes(currentStatus)) {
+        initial[itemKey] = DECISION_APPROVE;
+      } else if (currentStatus === DECISION_DENY || currentStatus === "denied") {
+        initial[itemKey] = DECISION_DENY;
+      } else {
+        initial[itemKey] = DECISION_PENDING;
+      }
     });
     return initial;
   }, [items]);
@@ -87,10 +94,10 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
       };
     });
 
-    const approvedCount = decisionsArray.filter((d) => d.decision === DECISION_APPROVE).length;
+    const actionableCount = decisionsArray.filter((d) => d.decision === DECISION_APPROVE || d.decision === DECISION_DENY).length;
 
-    if (approvedCount === 0) {
-      alert("Please approve at least one item to add to the knowledge base.");
+    if (actionableCount === 0) {
+      alert("Approve or deny at least one item before saving your content decisions.");
       return;
     }
 
@@ -115,6 +122,10 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
     const itemKey = item.item_id || item.queue_id;
     return decisions[itemKey] === DECISION_PENDING;
   }).length;
+  const decidedCount = approvedCount + deniedCount;
+  const saveButtonLabel = !isDirty && forceShowSave
+    ? `Confirm content decisions (${decidedCount} items)`
+    : `Save content decisions (${decidedCount} items)`;
 
   return (
     <div className="approval-gate">
@@ -370,9 +381,9 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
           <button
             onClick={handleSave}
             className="primary-button"
-            disabled={loading || approvedCount === 0}
+            disabled={loading || (approvedCount === 0 && deniedCount === 0)}
           >
-            {loading ? (progress ? progress.message : "Saving...") : (!isDirty && forceShowSave ? `Confirm approved content (${approvedCount} items)` : `Save to knowledge base (${approvedCount} items)`)}
+            {loading ? (progress ? progress.message : "Saving...") : saveButtonLabel}
           </button>
         ) : null}
       </div>

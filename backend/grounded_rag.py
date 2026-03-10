@@ -415,9 +415,18 @@ def _filter_live_web_results(results: List[Dict[str, Any]], question: str, requi
     return filtered
 
 
+def _is_elliptical_followup(question: str) -> bool:
+    words = re.findall(r"[a-z0-9']+", (question or "").lower())
+    if not words or len(words) > 7:
+        return False
+    follow_terms = {"that", "those", "it", "this", "one", "ones", "another", "other", "else", "more", "same", "again"}
+    media_terms = {"video", "videos", "reel", "reels", "post", "posts", "link", "links", "source", "sources", "clip", "clips", "watch"}
+    return any(word in follow_terms for word in words) or any(word in media_terms for word in words)
+
+
 def _recent_discussion_topic(question: str, history: Optional[List[Dict[str, str]]] = None) -> str:
     candidate_text = question or ""
-    if history:
+    if history and _is_elliptical_followup(question):
         recent_user = [m.get("content") or m.get("text") or "" for m in history[-4:] if (m.get("role") or "") == "user"]
         if recent_user:
             candidate_text = recent_user[-1]
@@ -430,12 +439,10 @@ def _recent_discussion_topic(question: str, history: Optional[List[Dict[str, str
 def _build_not_online_fallback(question: str, creator_name: str, history: Optional[List[Dict[str, str]]] = None, kind: str = "source") -> str:
     topic = _recent_discussion_topic(question, history)
     if kind == "video":
-        lead = f"I can't honestly point you to a reliable online video for that right now. I'm not seeing a clean match I can verify."
-        pivot = f"But we can stay on {topic} and I'll break it down directly, or I can point you to the closest related teaching instead."
-    else:
-        lead = f"I can't verify a solid online source for that right now. It doesn't look like there's a clean public result I should pretend is real."
-        pivot = f"So let's stay with {topic} and I'll answer from what we were already discussing, or I can help you narrow the exact thing to look for."
-    return f"{lead} {pivot}"
+        if topic != "this":
+            return f"I don't have a specific video on {topic} I'd feel good sending you right now. I can still answer it directly here, or help narrow what kind of clip you want."
+        return "I don't have a specific video I'd feel good sending you right now. I can still answer it directly here, or help narrow what kind of clip you want."
+    return "I don't have a public source for that I'd trust enough to send you right now. I can still answer it directly here, or help narrow exactly what you want sourced."
 
 
 def needs_links(user_msg: str) -> bool:
@@ -457,6 +464,39 @@ def needs_links(user_msg: str) -> bool:
         "links for", "links to those", "links to both"
     ]
     return any(x in t for x in triggers)
+
+
+def _assistant_recently_offered_resource(last_bot_msg: str) -> bool:
+    msg = (last_bot_msg or "").lower()
+    if not msg:
+        return False
+    return any(token in msg for token in [
+        "video", "videos", "watch this", "watch that", "check out", "link",
+        "links", "source", "sources", "send you", "point you to"
+    ])
+
+
+def _is_followup_resource_request(question: str, last_bot_msg: str) -> bool:
+    q = (question or "").lower().strip()
+    if not q or not _assistant_recently_offered_resource(last_bot_msg):
+        return False
+    if needs_links(question):
+        return True
+
+    followup_phrases = [
+        "another one", "another video", "another reel", "another post", "other videos",
+        "other video", "more videos", "more like that", "more on that", "that one",
+        "those videos", "send it", "show it", "which one", "what else can i watch"
+    ]
+    if any(phrase in q for phrase in followup_phrases):
+        return True
+
+    words = re.findall(r"[a-z0-9']+", q)
+    if len(words) > 6:
+        return False
+    referential = {"that", "those", "it", "another", "other", "more", "same", "one", "ones"}
+    media = {"video", "videos", "reel", "reels", "post", "posts", "link", "links", "source", "sources", "clip", "clips", "watch"}
+    return any(word in referential for word in words) and any(word in media for word in words)
 
 def evaluate_context_sufficiency(question: str, support_set: List[Dict[str, Any]]) -> str:
     """
@@ -732,7 +772,7 @@ Output ONLY a JSON object:
 
 Set request_type="explicit" when the user asks for links, videos, or where to watch.
 Set request_type="implicit" when the user asks a technical or how-to question where a video would be helpful but they didn't ask for one.
-Set request_type="none" for casual chat or meta questions.
+Set request_type="none" for casual chat, meta questions, emotional support, moral/spiritual opinion questions, or relationship pressure unless the user explicitly asks for a resource.
 
 Set needs_resource=true when the user intent implies:
 - Identifying as a beginner or asking for a roadmap (e.g., "I'm new, where do I start?").
@@ -747,7 +787,7 @@ SMART REASONING:
 - Only set needs_resource=true if a specific video provides significantly more depth than a text answer.
 - Detect "Value Gaps": If a user asks a technical question like "How to use order blocks?", a text summary is risky; a video is AUTHENTIC.
 - Explicit Requests: If the user says "link", "video", "resource", "show me", "send me", set request_type="explicit".
-- High-Value Opportunities: If the user describes a struggle or mistake, look for a "Fix" video and set request_type="implicit".
+- High-Value Opportunities: If the user describes a struggle or mistake inside the creator's core teaching domain, a resource may help. If the user is asking for counsel, conviction, emotional support, or a moral take, answer directly unless they explicitly ask for a video/link/source.
 - AVOID REPEATS: If the conversation history shows similar topics were already addressed with links, be more conservative.
 - AUTHENTICITY CHECK: Is this a "core" topic for the creator? If yes, find the MASTERCLASS or most-viewed foundational video.
 
@@ -1527,7 +1567,7 @@ def generate_grounded_answer(
     logger.info(f"Energy: baseline={energy_data.get('bucket')}, modulated_score={current_score:.2f}, bucket={energy_bucket}")
 
     style_dna = distiller.get_style_dna(creator_id or 0, style_fingerprint or {})
-    dna_instruction = distiller.format_for_prompt(style_dna, voice_profile=voice_profile)
+    dna_instruction = distiller.format_for_prompt(style_dna, voice_profile=voice_profile, mode="greeting" if intent in ["greeting", "greeting_only", "small_talk", "vague_request"] else "task")
     
     # Intent-specific length and behavioral guidance
     len_guidance = response_length_instruction(intent, mode=mode, energy_bucket=energy_bucket, tone_mirror_limit=tone_mirror_limit, user_priority_constraints=mode_constraints)
@@ -1782,10 +1822,11 @@ Rewrite the response to fix these violations.
     # --- Step 6: Final Persona Surface Filter ---
     # Guaranteed removal of system voice / meta-statements
     final_response = apply_persona_surface_filter(
-        final_response, 
-        intent, 
-        voice_profile, 
-        creator_name=creator_name or "The Creator"
+        final_response,
+        intent,
+        voice_profile,
+        creator_name=creator_name or "The Creator",
+        style_fingerprint=style_fingerprint,
     )
 
     debug_info = {
@@ -2423,8 +2464,11 @@ Message: {answer_text[:500]}"""
                     last_bot_msg = (m.get("content") or "").lower()
                     break
         
-        context_needs_video = any(w in last_bot_msg for w in ["video", "watch my", "point you to", "send you"])
-        wants_link = needs_links(question) or context_needs_video
+        explicit_link_request = needs_links(question)
+        context_needs_video = _is_followup_resource_request(question, last_bot_msg)
+        wants_link = explicit_link_request or context_needs_video
+        video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
+        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
         
         needs_fallback = False
         if not support_set:
@@ -2819,12 +2863,13 @@ async def grounded_rag_stream(
                     last_bot_msg = (m.get("content") or "").lower()
                     break
         
-        context_needs_video = any(w in last_bot_msg for w in ["video", "watch my", "point you to", "send you"])
-        wants_link = needs_links(question) or context_needs_video
+        explicit_link_request = needs_links(question)
+        context_needs_video = _is_followup_resource_request(question, last_bot_msg)
+        wants_link = explicit_link_request or context_needs_video
         
         # Explicit video intent detection
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
-        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or wants_link
+        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
         
         # OPTIMIZATION: If RAG returned no results or very few, launch web search
         # IN PARALLEL with sufficiency check to save ~1.5s

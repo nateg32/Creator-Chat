@@ -226,6 +226,20 @@ function AppInner() {
     setTimeout(() => setToast(null), 2000);
   };
 
+  async function syncWorkflowApprovalStatus(creatorId) {
+    if (!creatorId) return null;
+    try {
+      const data = await getCreatorConfig(creatorId);
+      const needsReapproval = Boolean(data?.status?.needs_reapproval);
+      setWorkflowHasDetectedChanges(needsReapproval);
+      setWorkflowRequiresApproval(needsReapproval);
+      return data?.status || null;
+    } catch (error) {
+      console.error("Failed to sync creator approval status:", error);
+      return null;
+    }
+  }
+
   function resetWorkflowSession({
     step = 1,
     creatorId = null,
@@ -512,6 +526,12 @@ function AppInner() {
       .then(() => setBackendConnected(true))
       .catch(() => setBackendConnected(false));
   }, []);
+
+  useEffect(() => {
+    if ((state.currentStep === 3 || state.currentStep === 4) && state.creatorId) {
+      syncWorkflowApprovalStatus(state.creatorId);
+    }
+  }, [state.currentStep, state.creatorId]);
 
   // Load existing items if entering Approval step (Step 3) for existing creator
   useEffect(() => {
@@ -1026,7 +1046,7 @@ function AppInner() {
             onBack={handleApproveBack}
             loading={state.loading}
             progress={state.progress}
-            forceShowSave={workflowRequiresApproval && state.scrapedItems.length > 0 && !state.scrapedItems.some((item) => !["ingested", "approved", "completed"].includes(item.status || item.item_status || "pending"))}
+            forceShowSave={workflowRequiresApproval && state.scrapedItems.length > 0}
           />
         );
       case 4:
@@ -1380,6 +1400,22 @@ function AppInner() {
                         fromChat: true,
                         threadId: activeChat.id,
                       });
+                    }
+                  }}
+                  onResolveApproval={async () => {
+                    if (activeChat.creatorId) {
+                      resetWorkflowSession({
+                        step: 3,
+                        creatorId: activeChat.creatorId,
+                        creatorName: activeChat.creatorName || activeChat.handle || "",
+                        handle: activeChat.handle || "",
+                        creatorAvatarUrl: activeChat.creatorAvatarUrl || "",
+                        visualConfig: activeChat.visualConfig || {},
+                        isDraft: false,
+                        fromChat: true,
+                        threadId: activeChat.id,
+                      });
+                      await syncWorkflowApprovalStatus(activeChat.creatorId);
                     }
                   }}
                   creatorAvatarUrl={activeChat.creatorAvatarUrl || state.creatorAvatarUrl}

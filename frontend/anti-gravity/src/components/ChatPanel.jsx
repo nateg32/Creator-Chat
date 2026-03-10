@@ -72,6 +72,7 @@ export function ChatPanel({
   onResetChat,
   onChangePersona,
   onRescrape,
+  onResolveApproval,
   creatorAvatarUrl = "",
   userAvatarUrl = "",
   onUpdateCreatorAvatar,
@@ -87,6 +88,7 @@ export function ChatPanel({
   const [showSettings, setShowSettings] = useState(false);
   const [input, setInput] = useState("");
   const [error, setError] = useState(null);
+  const [approvalRequired, setApprovalRequired] = useState(false);
   const [debugInfo, setDebugInfo] = useState(null);
   const [localLoading, setLocalLoading] = useState(false);
   const [selectedImages, setSelectedImages] = useState([]);
@@ -253,6 +255,7 @@ export function ChatPanel({
     selectedImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
 
     setError(null);
+    setApprovalRequired(false);
     if (!debug) setDebugInfo(null);
 
     const assistantMessageId = Date.now() + 1;
@@ -311,9 +314,11 @@ export function ChatPanel({
         },
         onError: (e) => {
           const rawMessage = e?.message || "Something went wrong.";
-          const friendlyMessage = /approve content to continue/i.test(rawMessage)
-            ? "Changes were detected for this creator. Approve the updated content before chatting again. Use Edit Bot to review the changes."
+          const needsApproval = /approve content to continue/i.test(rawMessage);
+          const friendlyMessage = needsApproval
+            ? "Changes were detected for this creator. Review and confirm the current approvals before chatting again."
             : `Sorry, something went wrong: ${rawMessage}`;
+          setApprovalRequired(needsApproval);
           setError(friendlyMessage);
           setMessages((prev) =>
             prev.map((msg) =>
@@ -326,6 +331,7 @@ export function ChatPanel({
       });
 
     } catch (e) {
+      setApprovalRequired(false);
       setError(e.message);
       if (debug) setDebugInfo(null);
     } finally {
@@ -685,7 +691,16 @@ export function ChatPanel({
           )}
 
 
-          {error && <div className="error-banner">Error: {error}</div>}
+          {error && (
+            <div className="error-banner">
+              <span>Error: {error}</span>
+              {approvalRequired && onResolveApproval ? (
+                <button type="button" className="quick-action-btn" onClick={onResolveApproval}>
+                  Review approvals
+                </button>
+              ) : null}
+            </div>
+          )}
 
           <div ref={messagesEndRef} />
         </div>

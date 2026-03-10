@@ -311,64 +311,110 @@ def strip_all_markdown(text: str, allow_lists: bool = False, allow_links: bool =
 # Extracts voice personality from creator data for the prompt
 # ══════════════════════════════════════════════════════════════
 
-def build_voice_instructions(creator_profile: Dict[str, Any]) -> str:
+def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task") -> str:
     """
-    Build high-resolution voice instructions from the new Style Fingerprint.
-    Handles linguistic DNA, rhetorical moves, and worldview anchoring.
+    Build high-resolution voice instructions from the style fingerprint.
+    Uses differential persona signals so creators sound distinct, not just polished.
     """
     style_fp = creator_profile.get("style_fingerprint") or {}
     if isinstance(style_fp, str):
-        try: style_fp = json.loads(style_fp)
-        except: style_fp = {}
+        try:
+            style_fp = json.loads(style_fp)
+        except Exception:
+            style_fp = {}
+
+    mode_matrix = style_fp.get("mode_matrix") or {}
+    mode_key = {
+        "task": "teaching",
+        "small_talk": "comfort",
+        "greeting": "greeting",
+        "sales": "sales",
+        "story": "story",
+        "rebuke": "rebuke",
+        "boundary": "boundary",
+        "uncertainty": "uncertainty",
+    }.get((mode or "task").lower(), "teaching")
+    mode_rules = mode_matrix.get(mode_key, {})
 
     parts = []
-
-    # 1. CORE TRAITS
     traits = style_fp.get("traits", [])
     if traits:
-        parts.append(f"CORE TRAITS: {'. '.join(traits)}")
+        parts.append(f"CORE TRAITS: {'. '.join(traits[:5])}")
 
-    # 2. LINGUISTIC DNA
+    identity = style_fp.get("identity_signature", {})
+    identity_lines = []
+    if identity.get("self_concept"):
+        identity_lines.append(f"Self-concept: {identity['self_concept']}")
+    if identity.get("mission_frame"):
+        identity_lines.append(f"Mission frame: {identity['mission_frame']}")
+    if identity.get("audience_model"):
+        identity_lines.append(f"Audience model: {identity['audience_model']}")
+    if identity.get("power_position"):
+        identity_lines.append(f"Power position: {identity['power_position']}")
+    if identity_lines:
+        parts.append("IDENTITY SIGNATURE:\n- " + "\n- ".join(identity_lines))
+
     dna = style_fp.get("linguistic_dna", {})
-    if dna:
-        swearing = dna.get("swearing", "none")
-        emoji = dna.get("emoji", "none")
-        humor = dna.get("humor")
-        structure = dna.get("sentence_structure")
-        
-        dna_parts = []
-        if swearing == "frequent": dna_parts.append("Use swearing naturally but don't overdo it.")
-        elif swearing == "none": dna_parts.append("Never swear. Keep it clean.")
-        
-        if emoji == "high": dna_parts.append("Use emojis frequently to match your energy.")
-        elif emoji == "none": dna_parts.append("Do not use emojis.")
-        
-        if humor: dna_parts.append(f"Your humor style: {humor}")
-        if structure: dna_parts.append(f"Your sentence structure is typically {structure}.")
-        
-        if dna_parts:
-            parts.append("LINGUISTIC DNA:\n- " + "\n- ".join(dna_parts))
+    cadence = style_fp.get("cadence_rules", {})
+    lexical_rules = style_fp.get("lexical_rules", {})
+    dna_lines = []
+    if dna.get("sentence_structure"):
+        dna_lines.append(f"Sentence structure: {dna['sentence_structure']}")
+    if dna.get("evidence_style"):
+        dna_lines.append(f"Evidence style: {dna['evidence_style']}")
+    if cadence.get("sentence_shape"):
+        dna_lines.append(f"Cadence: {cadence['sentence_shape']}")
+    if cadence.get("story_vs_list"):
+        dna_lines.append(f"Story vs list balance: {cadence['story_vs_list']}")
+    if style_fp.get("analogy_families"):
+        dna_lines.append(f"Analogy families: {', '.join(style_fp['analogy_families'][:5])}")
+    if dna_lines:
+        parts.append("LINGUISTIC DNA:\n- " + "\n- ".join(dna_lines))
 
-    # 3. RHETORICAL MOVES
-    moves = style_fp.get("rhetorical_moves", [])
+    moves = style_fp.get("signature_moves") or style_fp.get("rhetorical_moves") or []
     if moves:
-        parts.append(f"SIGNATURE RHETORICAL MOVES: {', '.join(moves)}. Weave these into your interactions.")
+        parts.append(f"SIGNATURE MOVES: {', '.join(moves[:6])}. Use the shape of these moves, not the same line every time.")
 
-    # 4. WORLDVIEW ANCHOR
-    wv = style_fp.get("worldview", {})
-    if wv:
-        beliefs = wv.get("core_beliefs", [])
-        enemies = wv.get("conceptual_enemies", [])
-        wv_text = []
-        if beliefs: wv_text.append(f"Core Beliefs: {', '.join(beliefs)}")
-        if enemies: wv_text.append(f"Conceptual Enemies: {', '.join(enemies)}")
-        if wv_text:
-            parts.append("WORLDVIEW:\n- " + "\n- ".join(wv_text))
+    worldview = style_fp.get("worldview", {})
+    hierarchy = style_fp.get("value_hierarchy") or worldview.get("moral_hierarchy") or []
+    worldview_lines = []
+    if worldview.get("core_beliefs"):
+        worldview_lines.append(f"Core beliefs: {', '.join(worldview['core_beliefs'][:5])}")
+    if worldview.get("conceptual_enemies"):
+        worldview_lines.append(f"Conceptual enemies: {', '.join(worldview['conceptual_enemies'][:5])}")
+    if hierarchy:
+        worldview_lines.append(f"Value hierarchy: {' > '.join(hierarchy[:5])}")
+    if worldview_lines:
+        parts.append("WORLDVIEW:\n- " + "\n- ".join(worldview_lines))
 
-    # 5. LEXICON
-    lexicon = style_fp.get("lexicon", [])
+    lexicon = lexical_rules.get("high_signal_words") or style_fp.get("lexicon") or []
+    phrases = lexical_rules.get("signature_phrases") or style_fp.get("signature_phrases") or []
+    lex_lines = []
+    if phrases:
+        lex_lines.append(f"Signature phrases: {', '.join(phrases[:8])}")
     if lexicon:
-        parts.append(f"SIGNATURE LEXICON: {', '.join(lexicon[:10])}. Naturally use these words when appropriate.")
+        lex_lines.append(f"High-signal vocabulary: {', '.join(lexicon[:10])}")
+    if lexical_rules.get("banned_frames"):
+        lex_lines.append(f"Banned frames: {', '.join(lexical_rules['banned_frames'][:6])}")
+    if lex_lines:
+        parts.append("LEXICAL RULES:\n- " + "\n- ".join(lex_lines))
+
+    if mode_rules:
+        parts.append(f"MODE RULES ({mode_key.upper()}): {json.dumps(mode_rules)}")
+
+    anti = style_fp.get("anti_persona", {})
+    markers = style_fp.get("disambiguation_markers", {})
+    anti_lines = []
+    if markers.get("must_show"):
+        anti_lines.append(f"Must show naturally: {', '.join(markers['must_show'][:6])}")
+    if markers.get("must_avoid"):
+        anti_lines.append(f"Must avoid: {', '.join(markers['must_avoid'][:6])}")
+    if anti.get("forbidden_generic_coach_lines"):
+        anti_lines.append(f"Forbidden generic lines: {', '.join(anti['forbidden_generic_coach_lines'][:6])}")
+    if anti.get("forbidden_emotional_postures"):
+        anti_lines.append(f"Forbidden emotional postures: {', '.join(anti['forbidden_emotional_postures'][:6])}")
+    if anti_lines:
+        parts.append("DIFFERENTIAL CONSTRAINTS:\n- " + "\n- ".join(anti_lines))
 
     if not parts:
         return "Speak naturally and conversationally in your own authentic voice."
@@ -860,10 +906,10 @@ Generate InteractionPlan JSON."""
         if route == "ROUTE_0_GREETING":
             domain_q = DOMAIN_GREETING_QUESTIONS.get(creator_category, "What are you working on today?")
             return f"""IDENTITY: You are {creator_name}.
-YOUR VOICE: {build_voice_instructions(creator_profile)}
+YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
 DIRECTIVE: Greet the user concisely and in character. {domain_q}
 Output ONLY your response."""
-        voice_instructions = build_voice_instructions(creator_profile)
+        voice_instructions = build_voice_instructions(creator_profile, mode="task")
         pref_instructions = self._build_user_pref_instructions(user_preferences)
 
         source_context = ""
@@ -983,7 +1029,7 @@ STRICT IDENTITY LOCK:
             
         anti_halluc_rule = "- FALLBACK: If a fact or link is NOT in Priority 1 or 2, say: \"Unfortunately, I don't have access to that information right now.\" DO NOT guess, speculate, or hallucinate."
         if not has_links:
-            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent a title. Tell the user you don't have a link for that right now, but give them your best advice instead."
+            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent a title. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice. If the user did NOT ask for a link or video, do not mention missing links at all."
         
         # If we have web search results, ensure the rule allows them
         has_video_links = any(
@@ -1014,9 +1060,13 @@ YOUR VOICE:
 CORE DIRECTIVE: You are a high-speed interaction engine. 
 1. INTERNAL PLAN: Briefly (mentally) plan your route: EXECUTE if answering a question, COACH if giving guidance, or GREET if just saying hello.
 2. ANSWER DIRECTLY: If the user asked a question, answer it immediately using your knowledge.
-3. STAY IN CHARACTER: Use your personality, tone, and metaphors.
+3. STAY IN CHARACTER: Use your personality, tone, worldview, and metaphors.
 4. NO MARKDOWN: Do not use bold (**) or headers (#). Markdown links [Title](URL) ARE allowed ONLY for specific creator videos or resources.
 5. ONE QUESTION MAX: Only at the end, if it advances the goal.
+6. DO NOT SOUND LIKE A SEARCH TOOL: Never narrate matching, retrieval, verification, or content search unless the user explicitly asked for a link, source, or video.
+7. STAY ON THE CURRENT TURN: If the user changes topic, answer the new topic immediately. Only carry older topic context forward when the user is clearly following up.
+8. FOR MORAL, EMOTIONAL, RELATIONSHIP, OR SPIRITUAL QUESTIONS: default to direct counsel in your worldview. Suggest content only if the user explicitly asks for it.
+9. RHYTHM OVER CATCHPHRASES: Use signature phrases sparingly and keep the cadence human.
 
 CONTEXT:
 {memory_section}
@@ -1030,7 +1080,7 @@ Output ONLY your response to the user."""
     def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None) -> str:
         creator_name = creator_profile.get("name", "the creator")
         creator_category = creator_profile.get("creator_category", "general")
-        voice_instructions = build_voice_instructions(creator_profile)
+        voice_instructions = build_voice_instructions(creator_profile, mode="greeting")
         pref_instructions = self._build_user_pref_instructions(user_preferences)
         user_name = user_name or "the user"
 
@@ -1088,7 +1138,7 @@ Output only the two sentences."""
 
     def _render_small_talk(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, persona: Optional[str] = None) -> str:
         creator_name = creator_profile.get("name", "the creator")
-        voice_instructions = build_voice_instructions(creator_profile)
+        voice_instructions = build_voice_instructions(creator_profile, mode="small_talk")
 
         system_prompt = f"""You are {creator_name}. You're having a casual conversation in DMs.
 
@@ -1172,7 +1222,7 @@ Output only the response."""
                     identity_context += f"- {k.replace('_', ' ').capitalize()}: {v}\n"
 
         creator_category = creator_profile.get("creator_category", "general")
-        voice_instructions = build_voice_instructions(creator_profile)
+        voice_instructions = build_voice_instructions(creator_profile, mode="task")
         pref_instructions = self._build_user_pref_instructions(user_preferences)
 
         # Build context from RAG chunks — these are the creator's actual words
