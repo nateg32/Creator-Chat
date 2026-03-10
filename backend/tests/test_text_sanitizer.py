@@ -70,6 +70,18 @@ class TextSanitizerTests(unittest.TestCase):
             "If you're thinking about going to ACCESS, go for the right reason.",
         )
 
+    def test_inserts_space_before_bible_verse_reference(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("It is built around Matthew28:19, which matters."),
+            "It is built around Matthew 28:19, which matters.",
+        )
+
+    def test_inserts_space_before_bare_domain(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("1. Check2819Church.org for details."),
+            "1. Check 2819Church.org for details.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

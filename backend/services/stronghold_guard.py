@@ -1,11 +1,12 @@
 
 import logging
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 import backend.rag as rag
 from backend.settings import settings
 
 logger = logging.getLogger(__name__)
+
 
 class StrongholdGuardService:
     """
@@ -14,8 +15,8 @@ class StrongholdGuardService:
     """
 
     def calculate_domain_match(
-        self, 
-        question: str, 
+        self,
+        question: str,
         stronghold_config: Dict[str, Any],
         detected_domain: str
     ) -> str:
@@ -28,7 +29,6 @@ class StrongholdGuardService:
         bridge = stronghold_config.get("allowed_bridge_domains", [])
         out_of_scope = stronghold_config.get("out_of_scope_domains", [])
 
-        # Normalize
         detected_domain = detected_domain.lower()
         primary = [d.lower() for d in primary]
         secondary = [d.lower() for d in secondary]
@@ -44,44 +44,60 @@ class StrongholdGuardService:
         if detected_domain in out_of_scope:
             return "DECLINE_HANDOFF"
 
-        # Fallback if domain is unknown but not explicitly out of scope
-        # Heuristic: if we have primary domains, anything NOT in them or secondary
-        # might be a bridge or decline depending on focus score.
         focus_score = stronghold_config.get("focus_score", 0.8)
         if focus_score > 0.9:
             return "DECLINE_HANDOFF"
-        
+
         return "BRIDGE"
 
     def generate_boundary_message(
-        self, 
-        creator_name: str, 
-        persona: str, 
+        self,
+        creator_name: str,
+        persona: str,
         stronghold_config: Dict[str, Any],
-        user_message: str
+        user_message: str,
+        recent_topic: Optional[str] = None,
+        creator_focus: Optional[str] = None,
+        allow_handoff: bool = True,
     ) -> str:
         """
-        Generates a short in-character boundary message when a request is out-of-scope.
+        Generates a short in character boundary or bridge message when a request is out of scope.
         """
         style = stronghold_config.get("style_for_decline", "short")
-        
+        focus_text = (creator_focus or "their core lane").strip()
+        pivot_instruction = ""
+        if recent_topic:
+            pivot_instruction = (
+                f"Pivot naturally back to this recent topic from the conversation: {recent_topic!r}. "
+                "Use one short bridging line, then one grounded follow up question tied to that topic."
+            )
+        elif allow_handoff:
+            pivot_instruction = "If helpful, invite the user to ask about your core lane or switch to a better fit creator."
+        else:
+            pivot_instruction = "Do not suggest apps, exchanges, search tips, or another creator. End by steering back to your own lane with one natural question."
+
+        handoff_instruction = "You may suggest a better fit creator if that feels natural." if allow_handoff else "Do not suggest a different creator."
+
         prompt = f"""
-        You are {creator_name}. 
-        User asked: "{user_message}"
-        
-        This topic is OUTSIDE your expertise/domain. 
-        Your goal is to politely but firmly decline answering OR redirect them back to your main focus.
-        
-        CONSTRAINTS:
-        - Style: {style}
-        - Length: 1-3 sentences max.
-        - Questions: 1 question max.
-        - NO info dumping.
-        - Suggest they switch to a different creator or ask something about your core domain.
-        
-        Creator Persona:
-        {persona}
-        """
+You are {creator_name}.
+User asked: {user_message!r}
+
+This topic is outside your real lane. Your focus is: {focus_text}.
+Your goal is to respond in character, briefly, and naturally.
+
+Constraints:
+- Style: {style}
+- Length: 2 to 4 sentences.
+- Sound like a real person, not a search tool or support agent.
+- Acknowledge that this is not your lane without sounding robotic.
+- {handoff_instruction}
+- {pivot_instruction}
+- Do not say you lack access, cannot browse, or cannot provide live information.
+- Do not dump facts about the out of scope topic.
+
+Creator Persona:
+{persona}
+"""
 
         try:
             resp = rag.generate_chat_completion(
@@ -92,6 +108,9 @@ class StrongholdGuardService:
             return resp.strip()
         except Exception as e:
             logger.error(f"Failed to generate boundary message: {e}")
-            return f"I'm focused on other things right now. Let's stick to what I know best!"
+            if recent_topic:
+                return f"That is not really my lane. Let's come back to {recent_topic}. What are you actually trying to figure out there?"
+            return "That is not really my lane. Ask me something closer to what I actually talk about."
+
 
 stronghold_guard = StrongholdGuardService()

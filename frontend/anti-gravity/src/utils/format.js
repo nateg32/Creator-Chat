@@ -24,7 +24,6 @@ export function toTitleCase(str) {
 export function formatCreatorName(name) {
     if (!name) return '';
 
-    // If it starts with @, preserve it but title case the rest
     if (name.startsWith('@')) {
         return '@' + toTitleCase(name.slice(1));
     }
@@ -32,19 +31,46 @@ export function formatCreatorName(name) {
     return toTitleCase(name);
 }
 
+function protectSpans(text) {
+    const protectedSpans = [];
+    const tokenized = text.replace(/\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s)]+/gi, (match) => {
+        const token = `__CB_PROTECTED_${protectedSpans.length}__`;
+        protectedSpans.push({ token, value: match });
+        return token;
+    });
+    return { tokenized, protectedSpans };
+}
+
+function restoreSpans(text, protectedSpans) {
+    return protectedSpans.reduce((output, span) => output.replace(span.token, span.value), text);
+}
+
+export function repairDisplaySpacing(text) {
+    if (!text) return text;
+
+    const { tokenized, protectedSpans } = protectSpans(text);
+    const repaired = tokenized
+        .replace(/^(\s*\d+[.)])(?=\S)/gm, '$1 ')
+        .replace(/([A-Za-z])(?=([1-3]?\d{1,3}:\d{1,3}(?:-\d{1,3})?))/g, '$1 ')
+        .replace(/([A-Za-z])(?=((?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:\/[^\s]*)?))/g, '$1 ')
+        .replace(/[ \t]{2,}/g, ' ');
+
+    return restoreSpans(repaired, protectedSpans);
+}
+
 /**
  * Formats message text by replacing any instance of the creator's name
  * with the properly formatted (Title Case) version
  */
 export function formatMessageText(text, creatorName) {
-    if (!text || !creatorName) return text;
+    if (!text) return text;
+
+    let formattedText = repairDisplaySpacing(text);
+    if (!creatorName) return formattedText;
 
     const formattedName = formatCreatorName(creatorName);
-
-    // Create a regex to match the creator name case-insensitively
-    // Escape special regex characters in the name
     const escapedName = creatorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(escapedName, 'gi');
 
-    return text.replace(regex, formattedName);
+    return formattedText.replace(regex, formattedName);
 }

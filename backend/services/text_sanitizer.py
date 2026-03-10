@@ -19,6 +19,9 @@ SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?])")
 REPEATED_COMMA_RE = re.compile(r",\s*,+")
 COMMA_BEFORE_END_PUNCT_RE = re.compile(r",\s*([.!?])")
 MULTISPACE_RE = re.compile(r"[ \t]{2,}")
+LIST_NUMBER_SPACE_RE = re.compile(r"(?m)^(\s*\d+[.)])(?=\S)")
+BIBLE_VERSE_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=(?:[1-3]?\d{1,3}:\d{1,3}(?:-\d{1,3})?))")
+DOMAIN_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=(?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:/[^\s]*)?)")
 STREAM_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+|\n")
 
 
@@ -52,6 +55,9 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = REPEATED_COMMA_RE.sub(", ", cleaned)
     cleaned = COMMA_BEFORE_END_PUNCT_RE.sub(r"\1", cleaned)
     cleaned = SPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
+    cleaned = LIST_NUMBER_SPACE_RE.sub(r"\1 ", cleaned)
+    cleaned = BIBLE_VERSE_BOUNDARY_RE.sub(" ", cleaned)
+    cleaned = DOMAIN_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = MULTISPACE_RE.sub(" ", cleaned)
 
     if trim_line_edges:

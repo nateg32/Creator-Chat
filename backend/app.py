@@ -50,6 +50,7 @@ from backend.personality_analyzer import PersonalityAnalyzer
 from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
 from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_sentence_hyphens
+from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 
 logger = logging.getLogger(__name__)
 
@@ -1773,7 +1774,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
                 full_answer = strip_mid_sentence_hyphens(raw_answer)
-                cards = _extract_stream_cards(full_answer)
+                cards = merge_preview_cards(_extract_stream_cards(full_answer))
                 if request.thread_id:
                     finalize_stream_interaction(request.thread_id, request.question, full_answer, cards=cards)
                     # Check for title update
@@ -1803,79 +1804,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
 
 def _extract_stream_cards(answer: str):
     """Best-effort card extraction for streamed answers."""
-    import re
-
-    cards = []
-    seen = set()
-    lines = [line.strip() for line in (answer or "").splitlines()]
-
-    markdown_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
-    url_pattern = re.compile(r"https?://[^\s)]+")
-
-    for title, url in markdown_pattern.findall(answer or ""):
-        key = url.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        thumbnail = ""
-        if "youtube.com" in url or "youtu.be" in url:
-            video_id = ""
-            if "v=" in url:
-                video_id = url.split("v=")[-1].split("&")[0]
-            elif "youtu.be/" in url:
-                video_id = url.split("youtu.be/")[-1].split("?")[0]
-            if video_id:
-                thumbnail = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
-        cards.append({
-            "type": "preview_card",
-            "title": title.strip() or "External Resource",
-            "url": url,
-            "thumbnail_url": thumbnail,
-        })
-
-    for idx, line in enumerate(lines):
-        if not url_pattern.search(line):
-            continue
-        for match in url_pattern.finditer(line):
-            url = match.group(0).rstrip(".,);")
-            key = url.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-
-            title = ""
-            for back in range(idx - 1, max(-1, idx - 4), -1):
-                candidate = lines[back].strip(" -*0123456789.)")
-                if not candidate:
-                    continue
-                if candidate.startswith("http"):
-                    continue
-                if len(candidate) > 140:
-                    continue
-                title = candidate
-                break
-
-            if not title:
-                title = "YouTube Video" if ("youtube.com" in url or "youtu.be" in url) else "External Resource"
-
-            thumbnail = ""
-            if "youtube.com" in url or "youtu.be" in url:
-                video_id = ""
-                if "v=" in url:
-                    video_id = url.split("v=")[-1].split("&")[0]
-                elif "youtu.be/" in url:
-                    video_id = url.split("youtu.be/")[-1].split("?")[0]
-                if video_id:
-                    thumbnail = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
-
-            cards.append({
-                "type": "preview_card",
-                "title": title,
-                "url": url,
-                "thumbnail_url": thumbnail,
-            })
-
-    return cards[:6]
+    return extract_preview_cards(answer)
 
 
 def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None):
@@ -2093,7 +2022,10 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
         if request.thread_id and thread:
              # Save assistant message with cards in metadata
              assistant_metadata = {}
-             cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
+             cards = merge_preview_cards(
+                 result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
+                 extract_preview_cards(answer_text),
+             )
              if cards:
                  assistant_metadata["cards"] = cards
 
@@ -2115,11 +2047,16 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
                   background_tasks.add_task(_update_thread_title_background, request.thread_id)
 
         # Ensure response matches AskResponse format
+        cards = merge_preview_cards(
+            result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
+            extract_preview_cards(answer_text),
+        )
+
         return {
             "answer": answer_text,
             "retrieved": result.get("retrieved", []),
             "sources": result.get("sources", []),
-            "cards": result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
+            "cards": cards,
             "debug_info": result.get("debug") if request.debug else None,
         }
     except Exception as e:

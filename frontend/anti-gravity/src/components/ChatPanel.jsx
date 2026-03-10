@@ -441,7 +441,7 @@ export function ChatPanel({
                       <div className="msg-text">
                         {(() => {
                           const text = formatMessageText(m.content ?? m.text, creatorDisplayName);
-                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)|(https?:\/\/[^\s\)]+)/g;
+                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)|(https?:\/\/[^\s\)]+)|((?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:\/[^\s\)]+)?)/g;
                           const textParts = [];
                           const linkCards = [];
                           let lastIndex = 0;
@@ -449,8 +449,13 @@ export function ChatPanel({
                           let linkCount = 0;
 
                           while ((match = regex.exec(text)) !== null) {
-                            let matchUrl = match[2] || match[3];
-                            let rawUrlMatch = !match[2];
+                            let matchUrl = match[2] || match[3] || match[4];
+                            const isMarkdownLink = Boolean(match[2]);
+                            let rawUrlMatch = !isMarkdownLink;
+
+                            if (matchUrl && !/^https?:\/\//i.test(matchUrl)) {
+                              matchUrl = `https://${matchUrl}`;
+                            }
 
                             // If it's a raw URL, strip trailing punctuation
                             if (rawUrlMatch) {
@@ -579,7 +584,10 @@ export function ChatPanel({
                               })
                             : [];
 
-                          const renderedCards = explicitCards.length > 0 ? explicitCards : linkCards;
+                          const renderedCards = [...explicitCards, ...linkCards].filter((card, idx, arr) => {
+                            const key = (card.url || '').toLowerCase();
+                            return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
+                          });
 
                           return (
                             <div className="msg-content-wrapper">

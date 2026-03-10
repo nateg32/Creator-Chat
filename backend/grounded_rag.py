@@ -37,6 +37,12 @@ from backend.services.grammar_normalizer import grammar_normalizer
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 from backend.services.live_search_rules import build_live_search_query, needs_fresh_public_web_search
+from backend.services.out_of_domain_rules import (
+    default_bridge_question,
+    detect_external_live_fact_topic,
+    recent_bridge_topic,
+    should_soft_decline_external_live_fact,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -2349,6 +2355,43 @@ Message: {answer_text[:500]}"""
         intent = "greeting_only"
         user_state["intent"] = "greeting_only"
         user_state["request_type"] = "casual"
+
+    creator_focus = (
+        creator_row.get("creator_category")
+        or user_state.get("primary_domain")
+        or "general"
+    )
+    if should_soft_decline_external_live_fact(question, creator_focus, stronghold_config):
+        logger.info("Out of domain live fact detected. Triggering soft redirect.")
+        bridge_topic = recent_bridge_topic(conversation_history, question)
+        answer = stronghold_guard.generate_boundary_message(
+            creator_row.get("name") or creator_row.get("handle") or "the creator",
+            persona,
+            stronghold_config,
+            question,
+            recent_topic=bridge_topic,
+            creator_focus=creator_focus,
+            allow_handoff=False,
+        )
+        if not bridge_topic and "?" not in answer:
+            answer = f"{answer} {default_bridge_question(creator_focus)}"
+        csm.state["last_router_meta"] = {
+            "mode": "BOUNDARY",
+            "domain_action": "OUT_OF_DOMAIN_REDIRECT",
+            "user_state": user_state,
+        }
+        csm.save_state()
+        return apply_final_polish({
+            "answer": answer,
+            "retrieved": [],
+            "sources": [],
+            "cards": [],
+            "meta": {
+                "domain_action": "OUT_OF_DOMAIN_REDIRECT",
+                "suggested_mode": "BRIDGE",
+                "bridge_topic": bridge_topic,
+            },
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=0, plan=None)
     
     # Calculate MVC Score
     mvc_score = user_priority_service.calculate_mvc_score(user_state, csm.state.get("memory_loop", {}))
@@ -2808,7 +2851,7 @@ async def grounded_rag_stream(
         yield json.dumps({"content": f"I don't currently have a verified {social_key.title()} link saved for {creator_name}."})
         return    
     # 2. Launch Basic Metadata Tasks (Fast/Async)
-    creator_task = asyncio.to_thread(
+    creator_task = asyncio.create_task(asyncio.to_thread(
         _get_creator_profile_row,
         creator_id,
         [
@@ -2821,14 +2864,43 @@ async def grounded_rag_stream(
             "voice_profile",
             "decision_policy",
             "search_mode",
+            "stronghold_json",
         ],
-    )
+    ))
+    creator_row = None
     
     # 3. Handle Context Gathering (Skip embeddings for greetings)
     support_set = []
     mems = []
     no_online_fallback = None
     rule_intent = classify_intent(question)
+
+    if detect_external_live_fact_topic(question):
+        creator_row = await creator_task
+        if not creator_row:
+            yield "I couldn't find information about that creator."
+            return
+        persona = creator_row.get("soul_md") or ""
+        stronghold_config = creator_row.get("stronghold_json") or {}
+        if isinstance(stronghold_config, str):
+            stronghold_config = json.loads(stronghold_config)
+        creator_focus = creator_row.get("creator_category") or "general"
+        if should_soft_decline_external_live_fact(question, creator_focus, stronghold_config):
+            bridge_topic = recent_bridge_topic(conversation_history, question)
+            answer = await asyncio.to_thread(
+                stronghold_guard.generate_boundary_message,
+                creator_row.get("name") or creator_row.get("handle") or "the creator",
+                persona,
+                stronghold_config,
+                question,
+                bridge_topic,
+                creator_focus,
+                False,
+            )
+            if not bridge_topic and "?" not in answer:
+                answer = f"{answer} {default_bridge_question(creator_focus)}"
+            yield answer
+            return
 
     if rule_intent == "personal_bio_question":
         creator_row = await creator_task
