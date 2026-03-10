@@ -57,6 +57,19 @@ class TextSanitizerTests(unittest.TestCase):
             "If prompt engineering does not work in every case, as models can be unpredictable, you can post process it.",
         )
 
+    def test_streaming_sanitizer_preserves_chunk_spaces(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer(tail_size=12)
+        parts = [
+            sanitizer.feed("If you're thinking "),
+            sanitizer.feed("about going to "),
+            sanitizer.feed("ACCESS, go for the right reason."),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "If you're thinking about going to ACCESS, go for the right reason.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

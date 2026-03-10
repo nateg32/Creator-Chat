@@ -40,11 +40,7 @@ def _restore_spans(text: str, protected: Dict[str, str]) -> str:
     return restored
 
 
-def strip_mid_sentence_hyphens(text: str) -> str:
-    """Remove inline dash punctuation from generated prose while preserving links and bullets."""
-    if not text:
-        return text
-
+def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned, protected = _protect_spans(text)
     for token in MOJIBAKE_DASHES:
         cleaned = cleaned.replace(token, ", ")
@@ -58,9 +54,38 @@ def strip_mid_sentence_hyphens(text: str) -> str:
     cleaned = SPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
     cleaned = MULTISPACE_RE.sub(" ", cleaned)
 
-    lines = [line.strip() for line in cleaned.splitlines()]
-    cleaned = "\n".join(lines).strip()
+    if trim_line_edges:
+        lines = [line.strip() for line in cleaned.splitlines()]
+        cleaned = "\n".join(lines).strip()
+
     return _restore_spans(cleaned, protected)
+
+
+def strip_mid_sentence_hyphens(text: str) -> str:
+    """Remove inline dash punctuation from generated prose while preserving links and bullets."""
+    if not text:
+        return text
+    return _sanitize_core(text, trim_line_edges=True).strip()
+
+
+def sanitize_stream_fragment(text: str) -> str:
+    """Sanitize streamed prose without trimming chunk edge whitespace."""
+    if not text:
+        return text
+
+    leading_match = re.match(r"^\s*", text)
+    trailing_match = re.search(r"\s*$", text)
+    leading_ws = leading_match.group(0) if leading_match else ""
+    trailing_ws = trailing_match.group(0) if trailing_match else ""
+    start = len(leading_ws)
+    end = len(text) - len(trailing_ws) if trailing_ws else len(text)
+    middle = text[start:end]
+
+    if not middle:
+        return text
+
+    cleaned_middle = _sanitize_core(middle, trim_line_edges=False)
+    return f"{leading_ws}{cleaned_middle}{trailing_ws}"
 
 
 class StreamingTextSanitizer:
@@ -76,20 +101,17 @@ class StreamingTextSanitizer:
 
         self._buffer += text
         emit_upto = self._find_emit_boundary()
-        if emit_upto <= 0 and len(self._buffer) > self._tail_size:
-            emit_upto = len(self._buffer) - self._tail_size
-
         if emit_upto <= 0:
             return ""
 
         safe_chunk = self._buffer[:emit_upto]
         self._buffer = self._buffer[emit_upto:]
-        return strip_mid_sentence_hyphens(safe_chunk)
+        return sanitize_stream_fragment(safe_chunk)
 
     def flush(self) -> str:
         if not self._buffer:
             return ""
-        safe_chunk = strip_mid_sentence_hyphens(self._buffer)
+        safe_chunk = sanitize_stream_fragment(self._buffer)
         self._buffer = ""
         return safe_chunk
 
@@ -97,4 +119,18 @@ class StreamingTextSanitizer:
         last_match = None
         for match in STREAM_BOUNDARY_RE.finditer(self._buffer):
             last_match = match
-        return last_match.end() if last_match else 0
+        if last_match:
+            return last_match.end()
+
+        if len(self._buffer) <= self._tail_size:
+            return 0
+
+        limit = len(self._buffer) - self._tail_size
+        soft_break = max(
+            self._buffer.rfind(" ", 0, limit),
+            self._buffer.rfind("\t", 0, limit),
+            self._buffer.rfind("\n", 0, limit),
+        )
+        if soft_break >= 0:
+            return soft_break + 1
+        return limit
