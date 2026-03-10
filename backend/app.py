@@ -49,6 +49,7 @@ from backend.settings import settings
 from backend.personality_analyzer import PersonalityAnalyzer
 from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
+from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_sentence_hyphens
 
 logger = logging.getLogger(__name__)
 
@@ -1741,7 +1742,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
         # 3. Generator Wrapper to capture full answer
         async def stream_wrapper():
             import copy
-            full_answer = ""
+            raw_answer = ""
+            stream_sanitizer = StreamingTextSanitizer()
             try:
                 # Explicitly deepcopy conversation history to prevent frozenset cache poisoning
                 safe_history = copy.deepcopy(conversation_history) if conversation_history else []
@@ -1759,11 +1761,18 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         yield f"data: {json.dumps({'content': ' '})}\n\n"
                         continue
                         
-                    full_answer += chunk
-                    yield f"data: {json.dumps({'content': chunk})}\n\n"
-                
+                    raw_answer += chunk
+                    cleaned_chunk = stream_sanitizer.feed(chunk)
+                    if cleaned_chunk:
+                        yield f"data: {json.dumps({'content': cleaned_chunk})}\n\n"
+
+                final_chunk = stream_sanitizer.flush()
+                if final_chunk:
+                    yield f"data: {json.dumps({'content': final_chunk})}\n\n"
+
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
+                full_answer = strip_mid_sentence_hyphens(raw_answer)
                 cards = _extract_stream_cards(full_answer)
                 if request.thread_id:
                     finalize_stream_interaction(request.thread_id, request.question, full_answer, cards=cards)
@@ -1872,6 +1881,7 @@ def _extract_stream_cards(answer: str):
 def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None):
     """Save the final interaction to DB after stream completion."""
     try:
+        answer = strip_mid_sentence_hyphens(answer)
         # Save User Message
         db.execute_update("""
             INSERT INTO chat_messages (thread_id, role, content)
@@ -2077,7 +2087,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
             thread_id=request.thread_id
         )
         
-        answer_text = result["answer"]
+        answer_text = strip_mid_sentence_hyphens(result["answer"])
         
         # Post-Processing: Save Assistant Message & Update Thread
         if request.thread_id and thread:

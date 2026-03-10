@@ -34,6 +34,29 @@ class TextSanitizerTests(unittest.TestCase):
             "- Keep going",
         )
 
+    def test_replaces_tight_em_dash_clauses(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("If prompt engineering does not work in every case—as models can be unpredictable—you can post process it."),
+            "If prompt engineering does not work in every case, as models can be unpredictable, you can post process it.",
+        )
+
+    def test_preserves_urls(self):
+        text = "Use https://anti-gravity-bice.vercel.app or [this link](https://anti-gravity-bice.vercel.app) for approval."
+        self.assertEqual(text_sanitizer.strip_mid_sentence_hyphens(text), text)
+
+    def test_streaming_sanitizer_cleans_split_em_dash(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer()
+        parts = [
+            sanitizer.feed("If prompt engineering does not work in every case"),
+            sanitizer.feed("—as models can be unpredictable—you can "),
+            sanitizer.feed("post process it."),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "If prompt engineering does not work in every case, as models can be unpredictable, you can post process it.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

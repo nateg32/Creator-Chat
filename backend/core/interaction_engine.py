@@ -1124,6 +1124,7 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 7. STAY ON THE CURRENT TURN: If the user changes topic, answer the new topic immediately. Only carry older topic context forward when the user is clearly following up.
 8. FOR MORAL, EMOTIONAL, RELATIONSHIP, OR SPIRITUAL QUESTIONS: default to direct counsel in your worldview. Suggest content only if the user explicitly asks for it.
 9. RHYTHM OVER CATCHPHRASES: Use signature phrases sparingly and keep the cadence human.
+10. NO INLINE DASHES: Do not use hyphens, en dashes, or em dashes inside sentences. Rewrite with commas, periods, or spaces instead. Leading list bullets are fine.
 
 CONTEXT:
 {memory_section}
@@ -1172,6 +1173,7 @@ CRITICAL RULES:
 - Do NOT give the user options to choose from in the greeting.
 - The question must be SIMPLE and CONVERSATIONAL — like what you'd actually text a stranger who DMed you.
 - Exactly 2 sentences. Exactly 1 question mark. Max 25 words total.
+- No inline hyphens, en dashes, or em dashes inside sentences. Use commas, periods, or rewrite the sentence.
 - No formatting. No lists. No mission statements.
 
 Good examples: "What's up! What are you building right now?"
@@ -1208,6 +1210,7 @@ Mirror their energy briefly, then ask this question in your own words: "{plan.ne
 Rules:
 Max 3 short sentences. Exactly 1 question mark. Max 35 words.
 No advice. No frameworks. No teaching. Just be conversational.
+No inline hyphens, en dashes, or em dashes inside sentences. Use commas or periods instead.
 Sound like a real person chatting, not a bot.
 
 Output only the response."""
@@ -1488,7 +1491,7 @@ Output only the response text."""
             parts = result.split("?")
             result = parts[0] + "?"
 
-        return result.strip()
+        return strip_mid_sentence_hyphens(result.strip())
 
     def _enforce_small_talk_limits(self, text: str) -> str:
         """Hard enforcement for ROUTE 1 small talk responses."""
@@ -1512,7 +1515,7 @@ Output only the response text."""
             parts = result.split("?")
             result = parts[0] + "?"
 
-        return result.strip()
+        return strip_mid_sentence_hyphens(result.strip())
 
     def _enforce_task_reduction(self, draft: str, plan: InteractionPlan, user_msg: str, allow_lists: bool = False, allow_links: bool = False) -> str:
         """
