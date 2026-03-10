@@ -4,6 +4,7 @@ import re
 from typing import Dict, Any, List, Optional
 import backend.rag as rag
 from backend.settings import settings
+from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +17,11 @@ class GrammarNormalizer:
 
     def grammar_cleanup(self, text: str) -> str:
         if not text:
-            return text
+            return strip_mid_sentence_hyphens(text)
             
         # First, a quick regex pass for basic artifacts (Transcript Artifact Removal)
         text = self._basic_cleanup(text)
+        text = strip_mid_sentence_hyphens(text)
         
         system_prompt = """
         You are the Grammar Normalization Layer for a Creator Bot.
@@ -50,7 +52,7 @@ class GrammarNormalizer:
                 model=settings.MODEL_MAIN_REPLY,
                 temperature=0.0
             )
-            return normalized.strip()
+            return strip_mid_sentence_hyphens(normalized.strip())
         except Exception as e:
             logger.error(f"Grammar normalization LLM call failed: {e}")
             # Fallback to a slightly better regex-only pass if LLM fails
@@ -68,8 +70,8 @@ class GrammarNormalizer:
 
     def _final_fallback_normalization(self, text: str) -> str:
         """A more aggressive regex pass to use if the LLM fails."""
-        # Replace all types of dashes with commas/periods (simple heuristic)
-        text = text.replace("—", ",").replace("--", ",").replace(" - ", ", ")
+        # Apply the hard dash-stripper before the capitalization pass.
+        text = strip_mid_sentence_hyphens(text)
         # Basic capitalization
         sentences = re.split(r'([\.!\?]\s*)', text)
         for i in range(len(sentences)):

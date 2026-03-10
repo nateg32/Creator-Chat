@@ -34,6 +34,7 @@ from backend.services.stronghold_guard import stronghold_guard
 from backend.core.interaction_engine import interaction_engine, InteractionPlan, strip_all_markdown
 from backend.services.web_verify import web_verify
 from backend.services.grammar_normalizer import grammar_normalizer
+from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 
 
@@ -1828,6 +1829,7 @@ Rewrite the response to fix these violations.
         creator_name=creator_name or "The Creator",
         style_fingerprint=style_fingerprint,
     )
+    final_response = strip_mid_sentence_hyphens(final_response)
 
     debug_info = {
         "draft": draft,

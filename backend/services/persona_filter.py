@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Any, Optional
 import backend.rag as rag
 from backend.settings import settings
+from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ REWRITE IT SO IT SOUNDS LIKE {creator_name}, NOT A SYSTEM.
             model=settings.REWRITE_MODEL,
             temperature=0.0
         )
-        return filtered.strip().strip('"')
+        return strip_mid_sentence_hyphens(filtered.strip().strip('"'))
     except Exception as e:
         logger.error(f"Persona Surface Filter failed: {e}")
-        return text
+        return strip_mid_sentence_hyphens(text)

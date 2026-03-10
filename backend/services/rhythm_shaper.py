@@ -4,6 +4,8 @@ import random
 import logging
 from typing import List, Dict, Any, Optional
 
+from backend.services.text_sanitizer import strip_mid_sentence_hyphens
+
 logger = logging.getLogger(__name__)
 
 class RhythmShaper:
@@ -25,6 +27,7 @@ class RhythmShaper:
         
         # 1. Bot Phrase Removal (Anti-AI slop)
         text = self._remove_bot_phrases(text)
+        text = strip_mid_sentence_hyphens(text)
         
         # 2. Skill-based Sentence Shortening
         user_state = (state or {}).get("last_router_meta", {}).get("user_state", {})
@@ -61,7 +64,7 @@ class RhythmShaper:
 
         # 6. DM Chunking (Max Paragraphs)
         # Production Rule: Never more than 3 paragraphs for DMs
-        return self._apply_dm_chunking(final_sentences, max_paragraphs=3)
+        return strip_mid_sentence_hyphens(self._apply_dm_chunking(final_sentences, max_paragraphs=3))
 
     def _remove_bot_phrases(self, text: str) -> str:
         forbidden = [

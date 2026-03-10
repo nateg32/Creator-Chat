@@ -13,6 +13,7 @@ import backend.rag as rag
 from backend.settings import settings
 from backend.db import db
 from backend.core.memory_integration import MemoryIntegration
+from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ def strip_all_markdown(text: str, allow_lists: bool = False, allow_links: bool =
     lines = [line.strip() for line in text.split('\n')]
     text = '\n'.join(lines)
 
-    return text.strip()
+    return strip_mid_sentence_hyphens(text.strip())
 
 
 # ══════════════════════════════════════════════════════════════
