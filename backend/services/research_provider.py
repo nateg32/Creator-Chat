@@ -10,6 +10,7 @@ import requests
 from backend.db import db
 from backend.settings import settings
 import backend.rag as rag
+from backend.services.live_search_rules import needs_fresh_public_web_search
 
 logger = logging.getLogger(__name__)
 
@@ -1051,6 +1052,49 @@ class OpenAIResearchProvider(ResearchProvider):
         
         return False
 
+    def _select_event_public_results(
+        self, results: List[Dict[str, Any]], creator_profile: Dict[str, Any], topic_query: str
+    ) -> List[Dict[str, Any]]:
+        creator_name = (creator_profile.get('name') or '').strip().lower()
+        creator_tokens = [t for t in re.split(r'\W+', creator_name) if len(t) > 2]
+        verified = self._collect_verified_creator_identities(creator_profile)
+        topic_terms = [t for t in re.split(r'\W+', (topic_query or '').lower()) if len(t) > 2]
+        event_terms = {'event', 'conference', 'gathering', 'register', 'registration', 'ticket', 'tickets', 'venue', 'arena', 'summit', 'access', 'prayer', 'livestream'}
+
+        selected: List[Dict[str, Any]] = []
+        for result in results:
+            url = str(result.get('url') or '').strip()
+            if not url:
+                continue
+            host = self._normalize_netloc(urlparse(url).netloc)
+            text_blob = ' '.join([
+                str(result.get('title') or ''),
+                str(result.get('snippet') or ''),
+                url,
+            ]).lower()
+            topic_hits = sum(1 for term in topic_terms if term in text_blob)
+            creator_hits = 1 if creator_name and creator_name in text_blob else 0
+            creator_hits += sum(1 for token in creator_tokens if token in text_blob)
+            has_event_term = any(term in text_blob for term in event_terms)
+            trusted_host = host in verified['domains'] or any(term in host for term in ['church', 'ministr', 'conference', 'arena', 'event', 'ticket'])
+            if not has_event_term or not trusted_host:
+                continue
+            if topic_hits < 1 and creator_hits < 1:
+                continue
+
+            candidate = dict(result)
+            candidate.setdefault('platform', self._infer_platform_from_url(url))
+            candidate['relation'] = 'SELF' if host in verified['domains'] else 'PUBLIC_FACTS'
+            candidate['ownership_score'] = max(float(candidate.get('ownership_score') or 0.0), 0.62 if host in verified['domains'] else 0.46)
+            candidate['confidence'] = max(float(candidate.get('confidence') or 0.0), 0.78 if host in verified['domains'] else 0.68)
+            selected.append(candidate)
+
+        selected.sort(key=lambda item: (
+            item.get('relation') == 'SELF',
+            float(item.get('confidence') or 0.0),
+        ), reverse=True)
+        return selected
+
     def _score_relevance(
         self, results: List[Dict[str, Any]], topic_query: str, search_intent: str
     ) -> List[Dict[str, Any]]:
@@ -1117,8 +1161,12 @@ class OpenAIResearchProvider(ResearchProvider):
         extracted_phrase = self._extract_phrase_from_topic(query)
         search_mode = 'PHRASE_HUNT' if extracted_phrase else 'STANDARD'
 
+        event_fact_query = ((intent_metadata or {}).get("intent") or "").upper() == "EVENT_PUBLIC_FACTS" or needs_fresh_public_web_search(query, conversation_history)
+
         if resource_type == 'video':
             search_intent = 'VIDEO'
+        elif event_fact_query:
+            search_intent = 'EVENT'
         elif any(token in query_lower for token in ['course', 'program', 'community', 'product']):
             search_intent = 'PRODUCT'
         elif any(token in query_lower for token in ['instagram', 'tiktok', 'facebook', 'twitter', 'x.com', 'linkedin', 'profile']):
@@ -1149,6 +1197,15 @@ class OpenAIResearchProvider(ResearchProvider):
                 "Return only direct public post/video URLs.\n"
                 "If a result is from a church, podcast, interview, or conference, include it only if the creator is clearly the speaker or guest.\n"
                 "Do not guess URLs. Do not use placeholders like VIDEO_ID, REEL_ID, or POST_ID."
+                f"{exclude_instruction}"
+            )
+        elif search_intent == 'EVENT':
+            search_prompt = (
+                f"Find current public event information for {creator_name} related to {sanitized_topic}.\n"
+                "Prioritize official event pages, registration pages, venue pages, church or ministry pages, and recent announcements.\n"
+                "Focus on next or upcoming dates, venue, registration, livestream details, and status.\n"
+                "Prefer official sources, but include high confidence public event pages when they clearly refer to the same event.\n"
+                "Return real URLs only.\n"
                 f"{exclude_instruction}"
             )
         elif search_intent == 'PRODUCT':
@@ -1191,7 +1248,10 @@ class OpenAIResearchProvider(ResearchProvider):
 
         if results:
             results = self._prefilter_candidates(results, creator_profile)
-            results = self._enforce_cog(results, creator_profile)
+            enforced_results = self._enforce_cog(results, creator_profile)
+            if search_intent == 'EVENT' and not enforced_results:
+                enforced_results = self._select_event_public_results(results, creator_profile, sanitized_topic or query)
+            results = enforced_results
 
         pre_validated = []
         for result in results:

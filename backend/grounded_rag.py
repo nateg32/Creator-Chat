@@ -36,6 +36,7 @@ from backend.services.web_verify import web_verify
 from backend.services.grammar_normalizer import grammar_normalizer
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 from backend.services.assumption_blocker import assumption_blocker
+from backend.services.live_search_rules import build_live_search_query, needs_fresh_public_web_search
 
 
 logger = logging.getLogger(__name__)
@@ -499,7 +500,11 @@ def _is_followup_resource_request(question: str, last_bot_msg: str) -> bool:
     media = {"video", "videos", "reel", "reels", "post", "posts", "link", "links", "source", "sources", "clip", "clips", "watch"}
     return any(word in referential for word in words) and any(word in media for word in words)
 
-def evaluate_context_sufficiency(question: str, support_set: List[Dict[str, Any]]) -> str:
+def evaluate_context_sufficiency(
+    question: str,
+    support_set: List[Dict[str, Any]],
+    history: Optional[List[Dict[str, str]]] = None,
+) -> str:
     """
     Uses a fast LLM call to classify if the retrieved RAG chunks are sufficient to answer the question.
     Returns: "SUFFICIENT", "PARTIAL", or "INSUFFICIENT"
@@ -510,6 +515,11 @@ def evaluate_context_sufficiency(question: str, support_set: List[Dict[str, Any]
     
     if not knowledge_text.strip():
         return "INSUFFICIENT"
+
+    has_live_web_result = any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in support_set)
+    if needs_fresh_public_web_search(question, history) and not has_live_web_result:
+        logger.info("Context Sufficiency: forcing PARTIAL because the question needs fresh public info.")
+        return "PARTIAL"
 
     prompt = f"""
 Evaluate if the following KNOWLEDGE is sufficient to answer the USER QUESTION accurately.
@@ -2467,7 +2477,14 @@ Message: {answer_text[:500]}"""
         support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3]
         if not support_set:
             # Fallback to standard RAG if no recommendation
-            q_emb = rec_result.get("q_emb") or [0.0]*1536
+            q_emb = rec_result.get("q_emb")
+            if not q_emb:
+                try:
+                    fallback_query = build_search_query(question, conversation_history)
+                    q_emb = rag.create_embedding(fallback_query)
+                except Exception as e:
+                    logger.error(f"Fallback embedding build failed: {e}")
+                    q_emb = [0.0] * 1536
             support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
             
         # --- NEW: Real-Time Web Search Fallback (Sync) ---
@@ -2490,7 +2507,7 @@ Message: {answer_text[:500]}"""
             needs_fallback = True
         else:
             # SMART EVALUATOR: Instead of keywords, ask LLM if we have enough info
-            sufficiency = evaluate_context_sufficiency(question, support_set)
+            sufficiency = evaluate_context_sufficiency(question, support_set, history=conversation_history)
             logger.info(f"Context Sufficiency: {sufficiency}")
             if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
                 needs_fallback = True
@@ -2505,22 +2522,31 @@ Message: {answer_text[:500]}"""
 
             rp = get_research_provider()
             web_results = []
+            web_query = build_live_search_query(question, conversation_history)
+            intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
             
             # If no support set, we skip sufficiency check and run web search directly
             if not support_set:
                 try:
                     web_results = rp.search(
-                        question, 
-                        creator_row, 
-                        conversation_history=conversation_history
+                        web_query,
+                        creator_row,
+                        conversation_history=conversation_history,
+                        intent_metadata=intent_metadata,
                     )
                 except Exception as e:
                     logger.error(f"Sync web search failed: {e}")
             else:
                 # If we have a small support set, we can run them in parallel
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    suff_future = executor.submit(evaluate_context_sufficiency, question, support_set)
-                    search_future = executor.submit(rp.search, question, creator_row, conversation_history=conversation_history)
+                    suff_future = executor.submit(evaluate_context_sufficiency, question, support_set, conversation_history)
+                    search_future = executor.submit(
+                        rp.search,
+                        web_query,
+                        creator_row,
+                        conversation_history=conversation_history,
+                        intent_metadata=intent_metadata,
+                    )
                     
                     try:
                         sufficiency = suff_future.result(timeout=2.5)
@@ -2890,6 +2916,8 @@ async def grounded_rag_stream(
         # IN PARALLEL with sufficiency check to save ~1.5s
         needs_fallback = False
         web_results = []
+        web_query = build_live_search_query(question_for_search, conversation_history)
+        intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
         
         if search_mode == "hybrid":
             if is_video_request:
@@ -2900,8 +2928,9 @@ async def grounded_rag_stream(
                 from backend.services.research_provider import get_research_provider
                 rp = get_research_provider()
                 web_results = await asyncio.to_thread(
-                    rp.search, question_for_search, creator_row,
-                    conversation_history=conversation_history
+                    rp.search, web_query, creator_row,
+                    conversation_history=conversation_history,
+                    intent_metadata=intent_metadata
                 )
             elif not support_set:
                 # No RAG results — definitely need web search, skip sufficiency check
@@ -2910,8 +2939,9 @@ async def grounded_rag_stream(
                 from backend.services.research_provider import get_research_provider
                 rp = get_research_provider()
                 web_results = await asyncio.to_thread(
-                    rp.search, question_for_search, creator_row,
-                    conversation_history=conversation_history
+                    rp.search, web_query, creator_row,
+                    conversation_history=conversation_history,
+                    intent_metadata=intent_metadata
                 )
             else:
                 # Have RAG results — run sufficiency check
@@ -2920,10 +2950,11 @@ async def grounded_rag_stream(
                     # PARALLEL: sufficiency + speculative web search
                     from backend.services.research_provider import get_research_provider
                     rp = get_research_provider()
-                    sufficiency_task = asyncio.to_thread(evaluate_context_sufficiency, question, support_set)
+                    sufficiency_task = asyncio.to_thread(evaluate_context_sufficiency, question, support_set, conversation_history)
                     search_task = asyncio.to_thread(
-                        rp.search, question_for_search, creator_row,
-                        conversation_history=conversation_history
+                        rp.search, web_query, creator_row,
+                        conversation_history=conversation_history,
+                        intent_metadata=intent_metadata
                     )
                     sufficiency, web_results = await asyncio.gather(sufficiency_task, search_task)
                     logger.info(f"[LATENCY] Parallel sufficiency={sufficiency}, web_results={len(web_results)}")
@@ -2931,15 +2962,16 @@ async def grounded_rag_stream(
                         needs_fallback = True
                 else:
                     # Standard: sequential sufficiency check
-                    sufficiency = await asyncio.to_thread(evaluate_context_sufficiency, question, support_set)
+                    sufficiency = await asyncio.to_thread(evaluate_context_sufficiency, question, support_set, conversation_history)
                     logger.info(f"Context Sufficiency: {sufficiency}")
                     if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
                         needs_fallback = True
                         from backend.services.research_provider import get_research_provider
                         rp = get_research_provider()
                         web_results = await asyncio.to_thread(
-                            rp.search, question_for_search, creator_row,
-                            conversation_history=conversation_history
+                            rp.search, web_query, creator_row,
+                            conversation_history=conversation_history,
+                            intent_metadata=intent_metadata
                         )
         
         _t_search_end = _time.time()
