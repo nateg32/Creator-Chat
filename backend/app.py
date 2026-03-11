@@ -518,8 +518,9 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     if platform_key == "custom":
         return {"exists": True, "checked_via": "format_only"}
 
+    timeout = 3 if platform_key == "tiktok" else 12
     try:
-        response = requests.get(url, headers=_VALIDATION_HEADERS, timeout=12, allow_redirects=True)
+        response = requests.get(url, headers=_VALIDATION_HEADERS, timeout=timeout, allow_redirects=True)
     except requests.RequestException:
         return {
             "exists": True,
@@ -906,19 +907,6 @@ def validate_platform_url(key: str, url: str = ""):
     ok, err = validate_url(norm, key)
     if not ok:
         return {"valid": False, "error": err or "Invalid"}
-    h = extract_handle(norm, key)
-    if key == "tiktok":
-        out = {
-            "valid": True,
-            "scrape_ready": True,
-            "normalized": norm,
-            "checked_via": "tiktok_normalized",
-        }
-        if raw_url and norm != raw_url:
-            out["message"] = "Valid public link. Converted to creator profile URL."
-        if h:
-            out["handle"] = h
-        return out
     availability = _validate_platform_availability(key, norm)
     if not availability.get("exists"):
         return {
@@ -928,24 +916,15 @@ def validate_platform_url(key: str, url: str = ""):
             "checked_via": availability.get("checked_via"),
             "resolved_url": availability.get("resolved_url"),
         }
+    h = extract_handle(norm, key)
     soft_checks = {"format_only_fallback", "http_fetch_soft", "page_content_soft", "profile_signal_soft"}
     checked_via = availability.get("checked_via")
     scrape_ready = checked_via not in soft_checks
 
-    # TikTok often serves shell/auth pages, so upgrade to a verified state only if the actor confirms the handle.
     if key == "tiktok" and checked_via == "profile_signal_soft":
-        actor_check = verify_tiktok_profile_with_actor(norm, h)
-        if actor_check.get("confirmed"):
-            checked_via = actor_check.get("checked_via") or "tiktok_actor"
-            availability["checked_via"] = checked_via
-            availability["resolved_url"] = actor_check.get("matched_url") or availability.get("resolved_url") or norm
-            availability.pop("warning", None)
-            scrape_ready = True
-        else:
-            scrape_ready = True
-            if availability.get("warning"):
-                availability["warning"] = "Valid TikTok profile URL. Live verification was inconclusive, but scraping can still proceed."
-
+        scrape_ready = False
+        if availability.get("warning"):
+            availability["warning"] = "Valid format, but TikTok could not verify that this account exists publicly."
     out = {
         "valid": True,
         "scrape_ready": scrape_ready,
@@ -3626,7 +3605,7 @@ def _update_thread_title_background(thread_id: str):
             # Cleanup & Enforce Constraints
             title = title.replace('"', '').replace("'", "").replace("\n", "")
             # Remove hyphens/dashes as requested
-            title = title.replace("-", " ").replace("â€“", " ").replace("â€”", " ")
+            title = title.replace("-", " ").replace("\u2013", " ").replace("\u2014", " ")
             # Remove trailing punctuation
             if title and title[-1] in ".,?!;":
                 title = title[:-1]

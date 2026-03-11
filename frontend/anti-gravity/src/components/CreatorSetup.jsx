@@ -280,12 +280,14 @@ export function CreatorSetup({
       return;
     }
 
+    let urlToValidate = url;
     if (key === "tiktok") {
       const normalizedTikTokUrl = normalizeTikTokProfileUrl(url);
       if (!normalizedTikTokUrl) {
         setTestStatus((s) => ({ ...s, [key]: "Enter a valid TikTok profile or video URL" }));
         return;
       }
+      urlToValidate = normalizedTikTokUrl;
       if (normalizedTikTokUrl !== url) {
         updatePlatformConfig(key, { url: normalizedTikTokUrl });
       }
@@ -293,21 +295,14 @@ export function CreatorSetup({
       if (!creatorHandle && handle) {
         setCreatorHandle(handle);
       }
-      setTestStatus((s) => ({
-        ...s,
-        [key]: normalizedTikTokUrl !== url
-          ? "Valid public link. Converted to creator profile URL."
-          : "Valid public link",
-      }));
-      return;
     }
 
-    setTestStatus((s) => ({ ...s, [key]: "Checking public link..." }));
+    setTestStatus((s) => ({ ...s, [key]: key === "tiktok" ? "Checking TikTok account..." : "Checking public link..." }));
     try {
-      const res = await validatePlatformUrl(key, url);
+      const res = await validatePlatformUrl(key, urlToValidate);
       if (res.valid) {
-        const normalized = res.normalized || url;
-        if (normalized !== url) {
+        const normalized = res.normalized || urlToValidate;
+        if (normalized !== urlToValidate) {
           updatePlatformConfig(key, { url: normalized });
         }
         if (!creatorHandle && res.handle) {
@@ -463,7 +458,7 @@ export function CreatorSetup({
       {platforms.length === 0 && !error && (
         <div style={{ textAlign: "center", padding: "20px" }}>
           <div className="progress-spinner" style={{ margin: "0 auto 12px" }}></div>
-          <p className="muted">Loading platformsâ€¦</p>
+          <p className="muted">Loading platforms...</p>
         </div>
       )}
       {duplicateCreator && !savedCreatorId && (
@@ -548,7 +543,7 @@ export function CreatorSetup({
           )}
           {nameSuggestedAcronym && (
             <div className="validation-suggestion">
-              Looks like an acronym â€”{" "}
+              Looks like an acronym -{" "}
               <button
                 type="button"
                 className="text-button"
@@ -735,7 +730,7 @@ export function CreatorSetup({
             onClick={handleSave}
             disabled={!canSaveConfig}
           >
-            {saveLoading ? "Savingâ€¦" : savedCreatorId ? "Update config" : "Save & Continue"}
+            {saveLoading ? "Saving..." : savedCreatorId ? "Update config" : "Save & Continue"}
           </button>
 
           <button
