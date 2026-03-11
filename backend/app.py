@@ -535,7 +535,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     }
 
     if response.status_code >= 400:
-        if response.status_code in {401, 403, 429, 500, 502, 503, 504}:
+        if response.status_code in {401, 403, 429, 500, 502, 503, 504, 999}:
             return {
                 "exists": True,
                 "checked_via": "http_fetch_soft",
