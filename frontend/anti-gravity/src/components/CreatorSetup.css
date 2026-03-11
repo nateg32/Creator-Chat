@@ -327,6 +327,10 @@
   color: #34c759;
 }
 
+.test-status.warn {
+  color: #ff9500;
+}
+
 .test-status.err {
   color: #ff3b30;
 }

@@ -550,8 +550,16 @@ export function CreatorSetup({
               {p.key !== "custom" && testStatus[p.key] && (() => {
                 const statusText = String(testStatus[p.key] || "").toLowerCase();
                 const isVerified = statusText.startsWith("valid public link");
+                const isWarning = !isVerified && (
+                  statusText.startsWith("valid format") ||
+                  statusText.startsWith("valid platform match") ||
+                  statusText.includes("inconclusive") ||
+                  statusText.includes("blocked live verification") ||
+                  statusText.includes("scraping stays locked")
+                );
+                const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
                 return (
-                  <span className={`test-status ${isVerified ? "ok" : "err"}`}>
+                  <span className={`test-status ${statusClass}`}>
                     {testStatus[p.key]}
                   </span>
                 );
