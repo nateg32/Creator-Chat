@@ -19,6 +19,20 @@ const TIME_MODES = [
   { value: "since", label: "Since date" },
 ];
 
+function normalizeTikTokProfileUrl(url) {
+  const value = String(url || "").trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value.startsWith("http") ? value : `https://${value}`);
+    if (!parsed.hostname.toLowerCase().includes("tiktok.com")) return null;
+    const first = (parsed.pathname || "").split("/").filter(Boolean)[0];
+    if (!first || !first.startsWith("@")) return null;
+    return `https://www.tiktok.com/${first}`;
+  } catch {
+    return null;
+  }
+}
+
 export function CreatorSetup({
   onSaveConfig,
   onSearchStart,
@@ -265,6 +279,29 @@ export function CreatorSetup({
       setTestStatus((s) => ({ ...s, [key]: "Enter a URL first" }));
       return;
     }
+
+    if (key === "tiktok") {
+      const normalizedTikTokUrl = normalizeTikTokProfileUrl(url);
+      if (!normalizedTikTokUrl) {
+        setTestStatus((s) => ({ ...s, [key]: "Enter a valid TikTok profile or video URL" }));
+        return;
+      }
+      if (normalizedTikTokUrl !== url) {
+        updatePlatformConfig(key, { url: normalizedTikTokUrl });
+      }
+      const handle = normalizedTikTokUrl.split("/@")[1] || "";
+      if (!creatorHandle && handle) {
+        setCreatorHandle(handle);
+      }
+      setTestStatus((s) => ({
+        ...s,
+        [key]: normalizedTikTokUrl !== url
+          ? "Valid public link. Converted to creator profile URL."
+          : "Valid public link",
+      }));
+      return;
+    }
+
     setTestStatus((s) => ({ ...s, [key]: "Checking public link..." }));
     try {
       const res = await validatePlatformUrl(key, url);
@@ -426,7 +463,7 @@ export function CreatorSetup({
       {platforms.length === 0 && !error && (
         <div style={{ textAlign: "center", padding: "20px" }}>
           <div className="progress-spinner" style={{ margin: "0 auto 12px" }}></div>
-          <p className="muted">Loading platforms…</p>
+          <p className="muted">Loading platformsâ€¦</p>
         </div>
       )}
       {duplicateCreator && !savedCreatorId && (
@@ -511,7 +548,7 @@ export function CreatorSetup({
           )}
           {nameSuggestedAcronym && (
             <div className="validation-suggestion">
-              Looks like an acronym —{" "}
+              Looks like an acronym â€”{" "}
               <button
                 type="button"
                 className="text-button"
@@ -698,7 +735,7 @@ export function CreatorSetup({
             onClick={handleSave}
             disabled={!canSaveConfig}
           >
-            {saveLoading ? "Saving…" : savedCreatorId ? "Update config" : "Save & Continue"}
+            {saveLoading ? "Savingâ€¦" : savedCreatorId ? "Update config" : "Save & Continue"}
           </button>
 
           <button

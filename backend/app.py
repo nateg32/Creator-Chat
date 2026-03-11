@@ -906,6 +906,19 @@ def validate_platform_url(key: str, url: str = ""):
     ok, err = validate_url(norm, key)
     if not ok:
         return {"valid": False, "error": err or "Invalid"}
+    h = extract_handle(norm, key)
+    if key == "tiktok":
+        out = {
+            "valid": True,
+            "scrape_ready": True,
+            "normalized": norm,
+            "checked_via": "tiktok_normalized",
+        }
+        if raw_url and norm != raw_url:
+            out["message"] = "Valid public link. Converted to creator profile URL."
+        if h:
+            out["handle"] = h
+        return out
     availability = _validate_platform_availability(key, norm)
     if not availability.get("exists"):
         return {
@@ -915,7 +928,6 @@ def validate_platform_url(key: str, url: str = ""):
             "checked_via": availability.get("checked_via"),
             "resolved_url": availability.get("resolved_url"),
         }
-    h = extract_handle(norm, key)
     soft_checks = {"format_only_fallback", "http_fetch_soft", "page_content_soft", "profile_signal_soft"}
     checked_via = availability.get("checked_via")
     scrape_ready = checked_via not in soft_checks
@@ -3614,7 +3626,7 @@ def _update_thread_title_background(thread_id: str):
             # Cleanup & Enforce Constraints
             title = title.replace('"', '').replace("'", "").replace("\n", "")
             # Remove hyphens/dashes as requested
-            title = title.replace("-", " ").replace("–", " ").replace("—", " ")
+            title = title.replace("-", " ").replace("â€“", " ").replace("â€”", " ")
             # Remove trailing punctuation
             if title and title[-1] in ".,?!;":
                 title = title[:-1]
