@@ -916,9 +916,18 @@ def validate_platform_url(key: str, url: str = ""):
     h = extract_handle(norm, key)
     soft_checks = {"format_only_fallback", "http_fetch_soft", "page_content_soft", "profile_signal_soft"}
     checked_via = availability.get("checked_via")
+    scrape_ready = checked_via not in soft_checks
+
+    # TikTok profile pages often return shell/login HTML even for valid handles.
+    # The scraper can still work from a valid @handle URL, so do not block scraping on soft verification alone.
+    if key == "tiktok" and checked_via in {"http_fetch_soft", "profile_signal_soft"}:
+        scrape_ready = True
+        if availability.get("warning"):
+            availability["warning"] = "Valid TikTok profile URL. Live verification was inconclusive, but scraping can still proceed."
+
     out = {
         "valid": True,
-        "scrape_ready": checked_via not in soft_checks,
+        "scrape_ready": scrape_ready,
         "normalized": availability.get("resolved_url") or norm,
         "checked_via": checked_via,
     }
