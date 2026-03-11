@@ -51,6 +51,7 @@ from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
 from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_sentence_hyphens
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
+from backend.services.tiktok_validator import verify_tiktok_profile_with_actor
 
 logger = logging.getLogger(__name__)
 
@@ -918,12 +919,19 @@ def validate_platform_url(key: str, url: str = ""):
     checked_via = availability.get("checked_via")
     scrape_ready = checked_via not in soft_checks
 
-    # TikTok profile pages often return shell/login HTML even for valid handles.
-    # Allow scraping only for the specific shell-page case, not for broader HTTP soft failures.
+    # TikTok often serves shell/auth pages, so upgrade to a verified state only if the actor confirms the handle.
     if key == "tiktok" and checked_via == "profile_signal_soft":
-        scrape_ready = True
-        if availability.get("warning"):
-            availability["warning"] = "Valid TikTok profile URL. Live verification was inconclusive, but scraping can still proceed."
+        actor_check = verify_tiktok_profile_with_actor(norm, h)
+        if actor_check.get("confirmed"):
+            checked_via = actor_check.get("checked_via") or "tiktok_actor"
+            availability["checked_via"] = checked_via
+            availability["resolved_url"] = actor_check.get("matched_url") or availability.get("resolved_url") or norm
+            availability.pop("warning", None)
+            scrape_ready = True
+        else:
+            scrape_ready = True
+            if availability.get("warning"):
+                availability["warning"] = "Valid TikTok profile URL. Live verification was inconclusive, but scraping can still proceed."
 
     out = {
         "valid": True,

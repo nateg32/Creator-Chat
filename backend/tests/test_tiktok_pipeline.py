@@ -36,6 +36,7 @@ sys.modules.setdefault("backend.apify_service", SimpleNamespace(
 ))
 scraper_router = _load_module("scraper_router", "scraper_router.py")
 apify_service = _load_module("apify_service", "apify_service.py")
+tiktok_validator = _load_module("tiktok_validator", "services/tiktok_validator.py")
 
 
 class TikTokPlatformTests(unittest.TestCase):
@@ -70,6 +71,30 @@ class TikTokRouterTests(unittest.TestCase):
             })
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0]["matched_time_filter"])
+
+
+class TikTokActorVerifierTests(unittest.TestCase):
+    def test_actor_confirms_matching_handle(self):
+        result = tiktok_validator.verify_tiktok_profile_with_actor(
+            "https://www.tiktok.com/@ahormozi",
+            "ahormozi",
+            fetch_posts_fn=lambda *args, **kwargs: [
+                {"source_url": "https://www.tiktok.com/@ahormozi/video/123", "metadata": {}}
+            ],
+        )
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(result["checked_via"], "tiktok_actor")
+
+    def test_actor_keeps_inconclusive_on_handle_mismatch(self):
+        result = tiktok_validator.verify_tiktok_profile_with_actor(
+            "https://www.tiktok.com/@ahormozi",
+            "ahormozi",
+            fetch_posts_fn=lambda *args, **kwargs: [
+                {"source_url": "https://www.tiktok.com/@someoneelse/video/123", "metadata": {}}
+            ],
+        )
+        self.assertFalse(result["confirmed"])
+        self.assertEqual(result["checked_via"], "tiktok_actor_soft")
 
 
 class _FakeDataset:
