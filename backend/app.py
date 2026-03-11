@@ -501,11 +501,12 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
 
     try:
         response = requests.get(url, headers=_VALIDATION_HEADERS, timeout=12, allow_redirects=True)
-    except requests.RequestException as exc:
+    except requests.RequestException:
         return {
-            "exists": False,
-            "error": "Link invalid",
-            "checked_via": "http_fetch",
+            "exists": True,
+            "checked_via": "format_only_fallback",
+            "resolved_url": url,
+            "warning": "Valid format. Live verification is unavailable right now.",
         }
 
     final_url = response.url or url
@@ -534,6 +535,13 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     }
 
     if response.status_code >= 400:
+        if response.status_code in {401, 403, 429, 500, 502, 503, 504}:
+            return {
+                "exists": True,
+                "checked_via": "http_fetch_soft",
+                "resolved_url": final_url,
+                "warning": "Valid format. The platform blocked live verification right now.",
+            }
         return {
             "exists": False,
             "error": "Link invalid",
@@ -570,18 +578,18 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         path = (urlparse(final_url).path or "").strip("/")
         if path.startswith("@") and "channel" not in body and "videos" not in body and "subscribers" not in body:
             return {
-                "exists": False,
-                "error": "Link invalid",
-                "checked_via": "page_content",
+                "exists": True,
+                "checked_via": "page_content_soft",
                 "resolved_url": final_url,
+                "warning": "Valid channel path. Live content signals were inconclusive.",
             }
 
     if not _page_has_positive_profile_signal(platform_key, url, final_url, response.text or ""):
         return {
-            "exists": False,
-            "error": "Link invalid",
-            "checked_via": "profile_signal",
+            "exists": True,
+            "checked_via": "profile_signal_soft",
             "resolved_url": final_url,
+            "warning": "Valid platform match. Live profile verification was inconclusive.",
         }
 
     return {
@@ -870,11 +878,16 @@ def validate_platform_url(key: str, url: str = ""):
             "resolved_url": availability.get("resolved_url"),
         }
     h = extract_handle(norm, key)
+    soft_checks = {"format_only_fallback", "http_fetch_soft", "page_content_soft", "profile_signal_soft"}
+    checked_via = availability.get("checked_via")
     out = {
         "valid": True,
+        "scrape_ready": checked_via not in soft_checks,
         "normalized": availability.get("resolved_url") or norm,
-        "checked_via": availability.get("checked_via"),
+        "checked_via": checked_via,
     }
+    if availability.get("warning"):
+        out["message"] = availability.get("warning")
     if h:
         out["handle"] = h
     return out

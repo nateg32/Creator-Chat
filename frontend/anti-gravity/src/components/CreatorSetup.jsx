@@ -109,9 +109,14 @@ export function CreatorSetup({
           setTestStatus((s) => ({ ...s, [key]: res.error || "Invalid link" }));
           throw new Error(`${platform.label}: ${res.error || "Invalid link"}`);
         }
+        if (res.scrape_ready === false) {
+          const message = res.message || "Valid format, but this link is not verified enough to scrape yet.";
+          setTestStatus((s) => ({ ...s, [key]: message }));
+          throw new Error(`${platform.label}: ${message}`);
+        }
         const normalized = res.normalized || entry.url;
         nextConfig[key] = { ...(nextConfig[key] || {}), url: normalized };
-        setTestStatus((s) => ({ ...s, [key]: "Valid public link" }));
+        setTestStatus((s) => ({ ...s, [key]: res.message || "Valid public link" }));
         summary.push({
           key,
           label: platform.label,
@@ -188,7 +193,7 @@ export function CreatorSetup({
           if (k === "custom") continue;
           try {
             const res = await validatePlatformUrl(k, v.url);
-            nextStatuses[k] = res.valid ? "Valid public link" : (res.error || "Link invalid");
+            nextStatuses[k] = res.valid ? (res.message || "Valid public link") : (res.error || "Link invalid");
             if (res.valid && res.normalized && res.normalized !== v.url) {
               cf[k] = { ...cf[k], url: res.normalized };
             }
@@ -248,9 +253,12 @@ export function CreatorSetup({
         if (normalized !== url) {
           updatePlatformConfig(key, { url: normalized });
         }
+        const statusMessage = res.scrape_ready === false
+          ? (res.message || "Valid format, but scraping stays locked until the link can be verified publicly.")
+          : (res.message || "Valid public link");
         setTestStatus((s) => ({
           ...s,
-          [key]: "Valid public link",
+          [key]: statusMessage,
         }));
         return;
       }
