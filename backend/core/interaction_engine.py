@@ -841,7 +841,7 @@ Generate InteractionPlan JSON."""
             return strip_all_markdown(raw, allow_links=allow_links)
 
         if plan.route == "ROUTE_1_SMALL_TALK":
-            raw = self._render_small_talk(plan, creator_profile, user_msg, persona)
+            raw = self._render_small_talk(plan, creator_profile, user_msg, user_name, persona)
             return strip_all_markdown(raw, allow_links=allow_links)
 
         raw = self._render_task(plan, creator_profile, rag_chunks, creator_id, user_id, thread_id, user_name, user_msg, persona, history or [], user_preferences)
@@ -961,10 +961,16 @@ Generate InteractionPlan JSON."""
         # ZERO-WAIT GREETING OPTIMIZATION
         # ──────────────────────────────────────────────────────────────
         if route == "ROUTE_0_GREETING":
-            domain_q = DOMAIN_GREETING_QUESTIONS.get(creator_category, "What are you working on today?")
+            dm_rule = "This is a one to one DM. Never address the user as everyone, team, guys, friends, family, or chat."
+            if user_name:
+                domain_q = DOMAIN_GREETING_QUESTIONS.get(creator_category, "What are you working on today?")
+                return f"""IDENTITY: You are {creator_name}.
+YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
+DIRECTIVE: {dm_rule} Greet the user concisely and in character. Use their name, {user_name}, once naturally. Then ask one simple question: {domain_q}
+Output ONLY your response."""
             return f"""IDENTITY: You are {creator_name}.
 YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
-DIRECTIVE: Greet the user concisely and in character. {domain_q}
+DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not know their name yet, ask what they want to be called. Do not jump into advice or a domain question yet.
 Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         pref_instructions = self._build_user_pref_instructions(user_preferences)
@@ -1140,13 +1146,10 @@ Output ONLY your response to the user."""
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="greeting")
         pref_instructions = self._build_user_pref_instructions(user_preferences)
-        user_name = user_name or "the user"
+        known_user_name = (user_name or "").strip()
 
-        # Build persona context for unique greetings — keep SHORT
-        # to prevent specific content/titles from leaking into greetings
         persona_context = ""
         if persona:
-            # key voice/style instructions are often in the first paragraph
             persona_context = f"\nABOUT YOU (personality only, do NOT quote specific content):\n{persona[:600]}\n"
 
         system_prompt = f"""IDENTITY:
@@ -1157,27 +1160,36 @@ YOUR VOICE:
 {voice_instructions}
 
 Your specialty is {creator_category}.
+{pref_instructions}
 
 Respond with EXACTLY two sentences:
 
 Sentence 1: A short greeting that sounds like YOU.
-- If you have a SIGNATURE OPENING (e.g. "What's good", "Hey team", "Hello friends"), USE IT.
+- This is a one to one DM, not a broadcast.
+- Never say everyone, everybody, team, guys, friends, family, folks, or chat.
 - Match your personality: energetic, calm, direct, or casual.
 - Max 8 words.
 
-Sentence 2: ONE simple question about YOUR domain ({creator_category}). Use this as a starting point: "{plan.next_question}"
+Sentence 2:
+- If you know the user's name ({known_user_name or 'unknown'}), ask ONE simple question about YOUR domain ({creator_category}). Use this as a starting point: "{plan.next_question}"
+- If you do NOT know the user's name, ask their name in your own voice. Do not jump into advice or a domain question yet.
 
 CRITICAL RULES:
-- IDENTITY GUARD: You are {creator_name}. NEVER introduce yourself as {user_name} or "ChatGPT".
+- IDENTITY GUARD: You are {creator_name}. NEVER introduce yourself as the user or "ChatGPT".
+- If you know the user's name, use it once naturally.
 - Do NOT reference specific video titles, course names, frameworks, products, or catchphrases from your content.
 - Do NOT give the user options to choose from in the greeting.
-- The question must be SIMPLE and CONVERSATIONAL — like what you'd actually text a stranger who DMed you.
+- The question must be SIMPLE and CONVERSATIONAL, like what you'd actually text a stranger who DMed you.
 - Exactly 2 sentences. Exactly 1 question mark. Max 25 words total.
 - No inline hyphens, en dashes, or em dashes inside sentences. Use commas, periods, or rewrite the sentence.
 - No formatting. No lists. No mission statements.
 
-Good examples: "What's up! What are you building right now?"
-Bad examples: "Hey. Are you interested in my AI-first framework or my scaling program?"
+Good examples:
+- "Hey Nathan. What are you building right now?"
+- "Hi. What's your name?"
+Bad examples:
+- "Hey everyone! What are you trying to build or scale right now?"
+- "Hey. Are you interested in my AI-first framework or my scaling program?"
 
 Output only the two sentences."""
 
@@ -1193,23 +1205,32 @@ Output only the two sentences."""
             return self._enforce_greeting_limits(response.strip())
         except Exception as e:
             logger.error(f"Greeting render failed: {e}")
-            return f"Hey! {plan.next_question}"
+            if known_user_name:
+                return f"Hey {known_user_name}. {plan.next_question}"
+            return "Hi. What's your name?"
 
-    def _render_small_talk(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, persona: Optional[str] = None) -> str:
+    def _render_small_talk(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None) -> str:
         creator_name = creator_profile.get("name", "the creator")
         voice_instructions = build_voice_instructions(creator_profile, mode="small_talk")
+        known_user_name = (user_name or "").strip()
 
-        system_prompt = f"""You are {creator_name}. You're having a casual conversation in DMs.
+        question_instruction = f"Mirror their energy briefly, then ask this question in your own words: \"{plan.next_question}\""
+        if not known_user_name:
+            question_instruction = "Mirror their energy briefly, then ask their name naturally before moving the conversation forward."
+
+        system_prompt = f"""You are {creator_name}. You're having a casual one to one conversation in DMs.
 
 YOUR VOICE:
 {voice_instructions}
 
 The user sent something casual. Respond naturally:
-Mirror their energy briefly, then ask this question in your own words: "{plan.next_question}"
+{question_instruction}
 
 Rules:
 Max 3 short sentences. Exactly 1 question mark. Max 35 words.
 No advice. No frameworks. No teaching. Just be conversational.
+Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.
+If you know the user's name ({known_user_name or 'unknown'}), use it naturally once when it fits.
 No inline hyphens, en dashes, or em dashes inside sentences. Use commas or periods instead.
 Sound like a real person chatting, not a bot.
 
@@ -1227,7 +1248,9 @@ Output only the response."""
             return self._enforce_small_talk_limits(response.strip())
         except Exception as e:
             logger.error(f"Small talk render failed: {e}")
-            return f"Got you. {plan.next_question}"
+            if known_user_name:
+                return f"Got you, {known_user_name}. {plan.next_question}"
+            return "Got you. What's your name?"
 
     def _render_task(
         self,
@@ -1344,11 +1367,11 @@ Output only the response."""
         elif plan.routing == "BRIDGE":
             routing_instruction = f"""\nThis topic connects to your expertise in {creator_category}.\nAnswer it through the lens of what you know. Stay anchored to your world."""
 
-        # Occasional name usage — ~40% of task responses use the user's name
-        name_instruction = ""
-        if user_name and random.random() < 0.4:
-            name_instruction = f"\nNaturally use the user's name ({user_name}) once somewhere in your response. Don't force it — just drop it where it feels natural, like 'Look {user_name},' or 'Here\'s the thing {user_name},' or at the start of a sentence. Only use it once.\n"
-
+        name_instruction = "\nThis is a one to one DM. Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.\n"
+        if user_name:
+            name_instruction += f"Use the user's name ({user_name}) naturally when it fits this reply. Work it in from time to time, not every single turn, and never more than once in one response.\n"
+        elif not history:
+            name_instruction += "You do not know the user's name yet. If it fits naturally in this early exchange, ask what they want to be called before pushing the conversation forward.\n"
 
         # Prepare formatting instructions
         # Determine if lists/bullets should be allowed based on preferences or custom instructions
