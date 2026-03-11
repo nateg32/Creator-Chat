@@ -446,6 +446,24 @@ def _page_has_positive_profile_signal(platform_key: str, requested_url: str, res
     return True
 
 
+def _is_platform_auth_redirect(platform_key: str, resolved_url: str) -> bool:
+    parsed = urlparse(resolved_url or "")
+    path = (parsed.path or "").strip("/").lower()
+
+    auth_prefixes = {
+        "linkedin": {"authwall", "checkpoint", "login", "signup"},
+        "tiktok": {"login", "signup", "foryou", "explore"},
+        "instagram": {"accounts", "login", "challenge"},
+        "twitter": {"i", "login", "signup"},
+        "facebook": {"login", "checkpoint"},
+    }
+    prefixes = auth_prefixes.get(platform_key, set())
+    if not path or not prefixes:
+        return False
+    first = path.split("/", 1)[0]
+    return first in prefixes
+
+
 def _resolved_path_matches_platform(platform_key: str, resolved_url: str) -> bool:
     parsed = urlparse(resolved_url or "")
     path = (parsed.path or "").strip("/")
@@ -555,6 +573,14 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
             "error": "Link invalid",
             "checked_via": "redirect_check",
             "resolved_url": final_url,
+        }
+
+    if _is_platform_auth_redirect(platform_key, final_url):
+        return {
+            "exists": True,
+            "checked_via": "profile_signal_soft",
+            "resolved_url": final_url,
+            "warning": "Valid platform match. Live profile verification was inconclusive.",
         }
 
     if not _resolved_path_matches_platform(platform_key, final_url):
