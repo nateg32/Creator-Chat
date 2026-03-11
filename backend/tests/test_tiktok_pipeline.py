@@ -44,11 +44,10 @@ class TikTokPlatformTests(unittest.TestCase):
         url = platforms.normalize_url("https://www.tiktok.com/@ahormozi", "tiktok")
         self.assertEqual(platforms.validate_url(url, "tiktok"), (True, None))
 
-    def test_tiktok_video_url_is_not_valid_for_profile_setup(self):
+    def test_tiktok_video_url_normalizes_to_profile_url(self):
         url = platforms.normalize_url("https://www.tiktok.com/@ahormozi/video/1234567890", "tiktok")
-        ok, err = platforms.validate_url(url, "tiktok")
-        self.assertFalse(ok)
-        self.assertIn("TikTok", err)
+        self.assertEqual(url, "https://www.tiktok.com/@ahormozi")
+        self.assertEqual(platforms.validate_url(url, "tiktok"), (True, None))
 
     def test_tiktok_extract_handle_strips_at(self):
         handle = platforms.extract_handle("https://www.tiktok.com/@ahormozi", "tiktok")

@@ -19,7 +19,8 @@ export function ChatSidebar({
     onDeleteThread, // (threadId, creatorId) => void
     onRestoreThread, // (threadId, creatorId) => void
     archivedThreadsByCreator = {},
-    onLoadArchived // (creatorId) => void
+    onLoadArchived, // (creatorId) => void
+    canCreateCreator = true,
 }) {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [expandedCreators, setExpandedCreators] = useState({});
@@ -284,6 +285,7 @@ export function ChatSidebar({
 
                         {!isDeleteMode ? (
                             <>
+                                {canCreateCreator && (
                                 <button
                                     onClick={onNewCreator}
                                     className="icon-btn new-creator-btn"
@@ -293,6 +295,7 @@ export function ChatSidebar({
                                         <path d="M12 5V19M5 12H19" strokeLinecap="round" strokeLinejoin="round" />
                                     </svg>
                                 </button>
+                                )}
                                 <button
                                     onClick={toggleDeleteMode}
                                     className="icon-btn delete-mode-btn"
@@ -302,6 +305,7 @@ export function ChatSidebar({
                                         <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
                                     </svg>
                                 </button>
+                                )}
                                 <button
                                     onClick={toggleArchiveMode}
                                     className={`icon-btn archive-mode-btn ${isArchiveMode ? 'active' : ''}`}

@@ -901,6 +901,7 @@ def list_platforms():
 def validate_platform_url(key: str, url: str = ""):
     """Validate URL for a platform. Returns { valid, error?, normalized?, handle? }."""
     # Normalize first so query params like ?lang=en don't fail validation
+    raw_url = (url or "").strip()
     norm = normalize_url(url, key)
     ok, err = validate_url(norm, key)
     if not ok:
@@ -941,6 +942,8 @@ def validate_platform_url(key: str, url: str = ""):
     }
     if availability.get("warning"):
         out["message"] = availability.get("warning")
+    elif key == "tiktok" and raw_url and out["normalized"] != raw_url:
+        out["message"] = "Valid public link. Converted to creator profile URL."
     if h:
         out["handle"] = h
     return out
@@ -2591,6 +2594,22 @@ async def get_search_items(search_id: str):
 # Approval & Ingestion Endpoints
 # ============================================================================
 
+
+
+def _search_run_has_pending_transcripts(search_id: Optional[str]) -> bool:
+    if not search_id:
+        return False
+    row = db.execute_one(
+        """
+        SELECT COUNT(*) AS count
+        FROM scrape_items
+        WHERE scrape_run_id = %s
+          AND transcript_status IN ('processing', 'queued', 'pending', 'not_started')
+        """,
+        (search_id,),
+    )
+    return int((row or {}).get("count", 0) or 0) > 0
+
 @app.post("/approve_ingest", response_model=ApproveIngestResponseNew)
 async def approve_ingest(request: ApproveIngestRequestNew):
     """Ingest items from queue - insert documents from search_queue, then chunk and embed (legacy endpoint)"""
@@ -2723,6 +2742,8 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             # DB cascades will clean up creator_documents
         
         sid = request.search_id or request.scrape_id
+        if sid and _search_run_has_pending_transcripts(sid):
+            raise HTTPException(status_code=409, detail="Transcripts are still processing. Wait for transcript enrichment to finish before approving or denying content.")
         if denied_item_ids:
             deny_query = """
                 UPDATE scrape_items
@@ -2745,7 +2766,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
                     VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Regenerating fingerprint after deletions')
                     RETURNING id
                     """,
-                    (creator_id, json.dumps({"creator_id": creator_id}))
+                    (creator_id, json.dumps({"creator_id": creator_id, "refresh": False, "mode": "incremental"}))
                 )
                 return {"job_id": job_id, "approved": len(confirmed_doc_ids)}
             return {"job_id": None, "approved": len(confirmed_doc_ids)}

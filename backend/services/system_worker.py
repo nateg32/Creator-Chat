@@ -379,7 +379,7 @@ def handle_ingest(job_id: str, payload: dict):
             VALUES (%s, 'FINGERPRINT', %s::jsonb, 'queued', 0, 'Fingerprint job enqueued after ingest')
             RETURNING id
             """,
-            (creator_id, json.dumps({"creator_id": creator_id}))
+            (creator_id, json.dumps({"creator_id": creator_id, "refresh": False, "mode": "incremental"}))
         )
     except Exception as e:
         logger.warning(f"Could not enqueue fingerprint job after ingest: {e}")
@@ -391,10 +391,11 @@ def handle_fingerprint(job_id: str, payload: dict):
     from backend.services.fingerprint_service import fingerprint_service
     update_job_progress(job_id, 10, "processing", "Analyzing personality traits...")
     creator_id = payload["creator_id"]
+    refresh = bool(payload.get("refresh"))
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(fingerprint_service.generate_fingerprint_async(creator_id))
+        loop.run_until_complete(fingerprint_service.generate_fingerprint_async(creator_id, refresh=refresh))
         status_row = db.execute_one(
             "SELECT fingerprint_status FROM creators WHERE id = %s",
             (creator_id,),

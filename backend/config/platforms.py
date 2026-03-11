@@ -153,6 +153,16 @@ def normalize_url(url: str, platform_key: str) -> str:
     if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
         h = u.lstrip("@")
         return f"https://instagram.com/{h}"
+    if platform_key == "tiktok":
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            if path:
+                first = path.split("/", 1)[0]
+                if first.startswith("@"):
+                    return f"https://www.tiktok.com/{first}"
+        except Exception:
+            pass
     if not u.startswith("http"):
         u = "https://" + u
     return _strip_tracking(u)

@@ -221,6 +221,27 @@ function AppInner() {
   const [workflowHasDetectedChanges, setWorkflowHasDetectedChanges] = useState(false);
   const [workflowRequiresApproval, setWorkflowRequiresApproval] = useState(false);
 
+  const workflowSessionActive = useMemo(() => {
+    if ([1, 2, 3, 4].includes(state.currentStep)) return true;
+    return Boolean(
+      state.scrapeId ||
+      state.scrapedItems.length ||
+      workflowRequiresApproval ||
+      workflowHasDetectedChanges ||
+      workflowOrigin.creatorId ||
+      (state.loading && state.creatorId)
+    );
+  }, [
+    state.currentStep,
+    state.scrapeId,
+    state.scrapedItems.length,
+    state.loading,
+    state.creatorId,
+    workflowRequiresApproval,
+    workflowHasDetectedChanges,
+    workflowOrigin.creatorId,
+  ]);
+
   const showToast = (message, type = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 2000);
@@ -266,6 +287,18 @@ function AppInner() {
     dispatch({ type: "SET_IS_DRAFT", isDraft });
     dispatch({ type: "SET_STEP", step });
     setWorkflowOrigin({ fromChat, threadId, creatorId });
+    setWorkflowHasDetectedChanges(false);
+    setWorkflowRequiresApproval(false);
+    setSearchProgress(0);
+  }
+
+  function clearWorkflowTransientState() {
+    dispatch({ type: "SET_SCRAPE_ID", scrapeId: null });
+    dispatch({ type: "SET_SCRAPED_ITEMS", items: [] });
+    dispatch({ type: "SET_PLATFORM_STATUSES", platformStatuses: null });
+    dispatch({ type: "SET_PROGRESS", progress: null });
+    dispatch({ type: "SET_LOADING", loading: false });
+    setWorkflowOrigin({ fromChat: false, threadId: null, creatorId: null });
     setWorkflowHasDetectedChanges(false);
     setWorkflowRequiresApproval(false);
     setSearchProgress(0);
@@ -575,6 +608,34 @@ function AppInner() {
     }
   }, [state.currentStep, state.creatorId, state.scrapedItems.length]);
 
+  useEffect(() => {
+    const pendingStatuses = new Set(["processing", "queued", "pending", "not_started"]);
+    if (state.currentStep !== 3 || !state.scrapeId) return undefined;
+    const hasPendingTranscripts = state.scrapedItems.some((item) => pendingStatuses.has(String(item.transcript_status || "").toLowerCase()));
+    const hasSearchRunItems = state.scrapedItems.some((item) => !String(item.item_id || item.queue_id || "").startsWith("doc_"));
+    if (!hasPendingTranscripts || !hasSearchRunItems) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await getScrapeItems(state.scrapeId);
+        if (cancelled || !res?.items) return;
+        dispatch({ type: "SET_SCRAPED_ITEMS", items: res.items || [] });
+      } catch (err) {
+        console.error("Failed to refresh transcript statuses:", err);
+      }
+    };
+
+    poll();
+    const intervalId = setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [state.currentStep, state.scrapeId, state.scrapedItems]);
+
   // Chat Management
   const activeChat = chats.find((c) => c.id === activeChatId);
 
@@ -764,13 +825,71 @@ function AppInner() {
   }
 
   function handleSaveConfig({ creatorId, name, handle, profile_picture_url, status, visual_config }) {
+    const previousCreator = existingCreators.find((creator) => creator.id === creatorId);
+    const displayName = name || handle || "Creator";
+    const nextCreator = {
+      ...(previousCreator || {}),
+      id: creatorId,
+      name: displayName,
+      handle: handle || previousCreator?.handle || "",
+      profile_picture_url: profile_picture_url || previousCreator?.profile_picture_url || "",
+      visual_config: visual_config || previousCreator?.visual_config || {},
+      search_mode: previousCreator?.search_mode || "hybrid",
+    };
+
     dispatch({ type: "SET_CREATOR_ID", creatorId });
-    dispatch({ type: "SET_CREATOR_INFO", creatorName: name || "", handle: handle || "", creatorAvatarUrl: profile_picture_url || "", visualConfig: visual_config || {}, url: "", platform: "", source: "" });
+    dispatch({ type: "SET_CREATOR_INFO", creatorName: displayName, handle: handle || "", creatorAvatarUrl: profile_picture_url || "", visualConfig: visual_config || {}, url: "", platform: "", source: "" });
+
+    setExistingCreators((prev) => {
+      const exists = prev.some((creator) => creator.id === creatorId);
+      if (exists) {
+        return prev.map((creator) => (creator.id === creatorId ? { ...creator, ...nextCreator } : creator));
+      }
+      return [nextCreator, ...prev];
+    });
+
+    setChats((prev) => prev.map((chat) => (
+      chat.creatorId === creatorId
+        ? {
+            ...chat,
+            creatorName: displayName,
+            handle: handle || chat.handle || "",
+            creatorAvatarUrl: profile_picture_url || chat.creatorAvatarUrl || "",
+            visualConfig: visual_config || chat.visualConfig || {},
+          }
+        : chat
+    )));
+
     const needsReapproval = Boolean(status?.needs_reapproval ?? true);
     setWorkflowHasDetectedChanges(needsReapproval);
     setWorkflowRequiresApproval(needsReapproval);
-    // Refresh list so it shows up in sidebar/modal immediately
+
+    if (previousCreator) {
+      injectSystemNotice(creatorId, `${displayName} has been updated.`);
+      showToast(`${displayName} has been updated.`);
+    } else {
+      showToast(`New creator added: ${displayName}`);
+    }
+
     refreshCreators();
+  }
+
+  function handleUseExistingCreator(existingCreatorId) {
+    const existingCreator = existingCreators.find((creator) => creator.id === existingCreatorId);
+    if (!existingCreator) return;
+
+    resetWorkflowSession({
+      step: 1,
+      creatorId: existingCreator.id,
+      creatorName: existingCreator.name || existingCreator.handle || "",
+      handle: existingCreator.handle || "",
+      creatorAvatarUrl: existingCreator.profile_picture_url || "",
+      visualConfig: existingCreator.visual_config || {},
+      isDraft: false,
+      fromChat: Boolean(activeChatId),
+      threadId: activeChatId,
+    });
+    showToast(`${existingCreator.name || existingCreator.handle || "Creator"} already exists. Switched to edit mode.`);
   }
 
   function handleSearchStart(scrapeId) {
@@ -793,7 +912,7 @@ function AppInner() {
     setWorkflowHasDetectedChanges(Boolean((result.items || []).length));
     setWorkflowRequiresApproval(true);
     const n = (result.items || []).length;
-    if (n) showToast(`Found ${n} items!`);
+    if (n) showToast(`Found ${n} items. Transcript enrichment will keep running in the background.`);
     else showToast("Search finished. No items found—check platform statuses.", "error");
   }
 
@@ -823,7 +942,7 @@ function AppInner() {
 
       if (!res.job_id) {
         // No job needed (e.g. only denials or deletions)
-        showToast("Updates applied successfully.");
+        showToast("Content decisions saved.");
         dispatch({ type: "SET_PROGRESS", progress: null });
         dispatch({ type: "SET_STEP", step: 4 });
         dispatch({ type: "SET_LOADING", loading: false });
@@ -986,8 +1105,7 @@ function AppInner() {
       preferredThreadId: workflowOrigin.fromChat && !shouldCreateFreshChat ? workflowOrigin.threadId : null,
       createFresh: shouldCreateFreshChat || !workflowOrigin.fromChat,
     });
-    setWorkflowHasDetectedChanges(false);
-    setWorkflowRequiresApproval(false);
+    clearWorkflowTransientState();
   }
 
   function handleResetWizard() {
@@ -1027,6 +1145,8 @@ function AppInner() {
             initialAvatarUrl={state.creatorAvatarUrl}
             userAvatarUrl={userAvatarUrl}
             onUserAvatarChange={setUserAvatarUrl}
+            existingCreators={existingCreators}
+            onUseExistingCreator={handleUseExistingCreator}
           />
         );
       case 2:
@@ -1074,7 +1194,15 @@ function AppInner() {
       return;
     }
 
+    if (state.currentStep === 2) {
+      return;
+    }
+
     if (state.currentStep === 5) {
+      if (workflowSessionActive && state.creatorId) {
+        dispatch({ type: "SET_STEP", step });
+        return;
+      }
       resetWorkflowSession({
         step,
         isDraft: false,
@@ -1331,6 +1459,7 @@ function AppInner() {
                 resetWorkflowSession({ step: 1, isDraft: false });
               }}
               onDeleteCreators={handleDeleteCreators}
+              canCreateCreator={!workflowSessionActive}
             />
             <div className="chat-main-area">
               {/* Empty state when no creators exist (requirement #3) */}
@@ -1346,6 +1475,7 @@ function AppInner() {
                   <button
                     onClick={() => resetWorkflowSession({ step: 1, isDraft: false })}
                     className="create-creator-btn"
+                    disabled={workflowSessionActive}
                   >
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                       <path d="M10 4V16M4 10H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />

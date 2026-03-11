@@ -150,6 +150,17 @@ def _load_cached_dossier_from_creator(creator_id: int) -> Dict[str, Any]:
     dossier = summary.get("investigative_dossier") or {}
     return dossier if _has_meaningful_dossier(dossier) else {}
 
+def _load_cached_research_summary(creator_id: int) -> Dict[str, Any]:
+    row = db.execute_one("SELECT research_summary FROM creators WHERE id = %s", (creator_id,))
+    summary = (row or {}).get("research_summary") or {}
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except Exception:
+            summary = {}
+    return summary if isinstance(summary, dict) else {}
+
+
 
 def _normalize_search_hits(results: List[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
     normalized = []
@@ -299,7 +310,7 @@ class FingerprintService:
 
             # 2. Get Creator Info & Setup Links
             creator = db.execute_one(
-                "SELECT name, handle, platform_configs, official_domains FROM creators WHERE id = %s",
+                "SELECT name, handle, platform_configs, official_domains, research_summary FROM creators WHERE id = %s",
                 (creator_id,)
             )
             if not creator:
@@ -321,15 +332,34 @@ class FingerprintService:
                 if d.startswith("http"): links.append(d)
                 else: links.append(f"https://{d}")
 
-            # PHASE 1: Link-First Research (Identity & Surface)
-            logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
-            if hasattr(self.researcher, "research_links"):
-                link_identity = self.researcher.research_links(links, name)
-                if not isinstance(link_identity, dict):
-                    link_identity = {}
+            cached_summary = _load_cached_research_summary(creator_id)
+            reuse_cached_research = (
+                not refresh
+                and isinstance(cached_summary, dict)
+                and bool(cached_summary)
+            )
+
+            if reuse_cached_research:
+                logger.info(f"FingerprintService: Reusing cached research summary for {name} ({creator_id}).")
+                link_identity = cached_summary.get("identity_research") or {}
+                investigative_dossier = cached_summary.get("investigative_dossier") or {}
+                creator_claims = cached_summary.get("creator_stated_claims") or []
+                unknown_fields = cached_summary.get("unknown_fields") or []
+                research_quality = "incremental_cached"
             else:
-                logger.warning("FingerprintService: active research provider has no research_links(); skipping link scan.")
-                link_identity = {}
+                # PHASE 1: Link-First Research (Identity & Surface)
+                logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
+                if hasattr(self.researcher, "research_links"):
+                    link_identity = self.researcher.research_links(links, name)
+                    if not isinstance(link_identity, dict):
+                        link_identity = {}
+                else:
+                    logger.warning("FingerprintService: active research provider has no research_links(); skipping link scan.")
+                    link_identity = {}
+                investigative_dossier = {}
+                creator_claims = link_identity.get("creator_claims", [])
+                unknown_fields = link_identity.get("unknown_fields", [])
+                research_quality = "full"
 
             # PHASE 2: Content-Truth Mining (Voice & Worldview)
             logger.info(f"FingerprintService Phase 2: Analyzing content truth...")
@@ -345,58 +375,54 @@ class FingerprintService:
                 }
 
             # PHASE 3: Targeted Google Expansion (Fill Gaps)
-            # Use Link-First clues to generate missing detail queries
-            logger.info(f"FingerprintService Phase 3: Targeted Google expansion...")
-            # 3. Phase 3: THE GOOGLE DOSSIER ( Investigative Gap-Filling)
-            # Build initial clues from links and content
             clues = {
                 "identity_hints": link_identity.get("identity", {}),
                 "content_milestones": voice_fingerprint.get("content_truth", {}),
-                "claims": link_identity.get("creator_claims", [])
+                "claims": creator_claims,
             }
-            logger.info(f"FingerprintService: Launching Deep Dossier for {name}...")
-            investigative_dossier = {}
-            research_quality = "full"
-            if hasattr(self.researcher, "research_dossier"):
-                investigative_dossier = self.researcher.research_dossier(name, clues)
-                if not isinstance(investigative_dossier, dict):
+            if not reuse_cached_research:
+                logger.info(f"FingerprintService Phase 3: Targeted Google expansion...")
+                logger.info(f"FingerprintService: Launching Deep Dossier for {name}...")
+                if hasattr(self.researcher, "research_dossier"):
+                    investigative_dossier = self.researcher.research_dossier(name, clues)
+                    if not isinstance(investigative_dossier, dict):
+                        investigative_dossier = {}
+                else:
+                    logger.warning("FingerprintService: active research provider has no research_dossier(); skipping dossier phase.")
+
+                if not _has_meaningful_dossier(investigative_dossier):
+                    cached_dossier = _load_cached_dossier_from_creator(creator_id)
+                    if cached_dossier:
+                        logger.info(f"FingerprintService: Reusing cached dossier for {name} ({creator_id}).")
+                        investigative_dossier = cached_dossier
+                        research_quality = "cached"
+
+                if not _has_meaningful_dossier(investigative_dossier):
+                    creator_profile = {
+                        "id": creator_id,
+                        "name": name,
+                        "handle": creator.get("handle"),
+                        "platform_configs": configs,
+                        "official_domains": domains,
+                    }
+                    fallback_dossier = _fallback_openai_dossier(creator_id, name, creator_profile, clues)
+                    if fallback_dossier:
+                        logger.info(f"FingerprintService: OpenAI dossier fallback succeeded for {name}.")
+                        investigative_dossier = fallback_dossier
+                        research_quality = "fallback"
+
+                if not _has_meaningful_dossier(investigative_dossier):
+                    research_quality = "partial"
                     investigative_dossier = {}
-            else:
-                logger.warning("FingerprintService: active research provider has no research_dossier(); skipping dossier phase.")
-
-            if not _has_meaningful_dossier(investigative_dossier):
-                cached_dossier = _load_cached_dossier_from_creator(creator_id)
-                if cached_dossier:
-                    logger.info(f"FingerprintService: Reusing cached dossier for {name} ({creator_id}).")
-                    investigative_dossier = cached_dossier
-                    research_quality = "cached"
-
-            if not _has_meaningful_dossier(investigative_dossier):
-                creator_profile = {
-                    "id": creator_id,
-                    "name": name,
-                    "handle": creator.get("handle"),
-                    "platform_configs": configs,
-                    "official_domains": domains,
-                }
-                fallback_dossier = _fallback_openai_dossier(creator_id, name, creator_profile, clues)
-                if fallback_dossier:
-                    logger.info(f"FingerprintService: OpenAI dossier fallback succeeded for {name}.")
-                    investigative_dossier = fallback_dossier
-                    research_quality = "fallback"
-
-            if not _has_meaningful_dossier(investigative_dossier):
-                research_quality = "partial"
-                investigative_dossier = {}
 
             # 4. Phase 4: Synthesis (Research Summary)
             logger.info(f"FingerprintService Phase 4: Synthesizing research summary...")
             research_summary = {
                 "identity_research": link_identity,
                 "investigative_dossier": investigative_dossier,
-                "creator_stated_claims": link_identity.get("creator_claims", []),
+                "creator_stated_claims": creator_claims,
                 "content_milestones": voice_fingerprint.get("content_truth", {}),
-                "unknown_fields": link_identity.get("unknown_fields", []),
+                "unknown_fields": unknown_fields,
                 "research_quality": research_quality,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }

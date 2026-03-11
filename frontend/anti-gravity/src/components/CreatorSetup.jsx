@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   getPlatforms,
   validatePlatformUrl,
@@ -30,6 +30,8 @@ export function CreatorSetup({
   initialAvatarUrl = "",
   userAvatarUrl = "",
   onUserAvatarChange,
+  existingCreators = [],
+  onUseExistingCreator,
 }) {
   const [platforms, setPlatforms] = useState([]);
   const [creatorName, setCreatorName] = useState(initialCreatorName);
@@ -49,6 +51,21 @@ export function CreatorSetup({
   const [showSearchConfirm, setShowSearchConfirm] = useState(false);
   const [searchSummary, setSearchSummary] = useState([]);
   const [savedConfigSignature, setSavedConfigSignature] = useState("");
+
+  const duplicateCreator = useMemo(() => {
+    const normalizedHandle = String(creatorHandle || "").trim().toLowerCase().replace(/^@/, "");
+    const normalizedName = normalizeCreatorName(creatorName || "");
+    const normalizedNameValue = normalizedName.isValid ? normalizedName.normalized.toLowerCase() : String(creatorName || "").trim().toLowerCase();
+
+    return existingCreators.find((creator) => {
+      if (savedCreatorId && creator.id === savedCreatorId) return false;
+      const creatorHandleValue = String(creator.handle || "").trim().toLowerCase().replace(/^@/, "");
+      const creatorNameValue = String(creator.name || "").trim().toLowerCase();
+      if (normalizedHandle && creatorHandleValue && normalizedHandle === creatorHandleValue) return true;
+      if (normalizedNameValue && creatorNameValue && normalizedNameValue === creatorNameValue) return true;
+      return false;
+    }) || null;
+  }, [creatorHandle, creatorName, existingCreators, savedCreatorId]);
 
   const [nameError, setNameError] = useState(null);
   const [nameHint, setNameHint] = useState(null);
@@ -116,6 +133,9 @@ export function CreatorSetup({
         }
         const normalized = res.normalized || entry.url;
         nextConfig[key] = { ...(nextConfig[key] || {}), url: normalized };
+        if (!creatorHandle && res.handle) {
+          setCreatorHandle(res.handle);
+        }
         setTestStatus((s) => ({ ...s, [key]: res.message || "Valid public link" }));
         summary.push({
           key,
@@ -253,6 +273,9 @@ export function CreatorSetup({
         if (normalized !== url) {
           updatePlatformConfig(key, { url: normalized });
         }
+        if (!creatorHandle && res.handle) {
+          setCreatorHandle(res.handle);
+        }
         const statusMessage = res.scrape_ready === false
           ? (res.message || "Valid format, but scraping stays locked until the link can be verified publicly.")
           : (res.message || "Valid public link");
@@ -290,6 +313,11 @@ export function CreatorSetup({
   const handleSave = async (e) => {
     e.preventDefault();
     if (!valid() || saveLoading) return;
+
+    if (duplicateCreator && !savedCreatorId) {
+      onUseExistingCreator?.(duplicateCreator.id);
+      return;
+    }
 
     // Final backend-parity check
     const norm = normalizeCreatorName(creatorName);
@@ -332,6 +360,10 @@ export function CreatorSetup({
     e.preventDefault();
     const id = savedCreatorId;
     if (!id || scrapeLoading || loading) return;
+    if (duplicateCreator && !savedCreatorId) {
+      onUseExistingCreator?.(duplicateCreator.id);
+      return;
+    }
     setError(null);
 
     const currentSignature = buildConfigSignature();
@@ -397,6 +429,20 @@ export function CreatorSetup({
           <p className="muted">Loading platforms…</p>
         </div>
       )}
+      {duplicateCreator && !savedCreatorId && (
+        <div className="warning-message" style={{ marginBottom: "16px" }}>
+          {duplicateCreator.name || duplicateCreator.handle || "This creator"} already exists. Switch to edit mode instead of creating a duplicate.
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => onUseExistingCreator?.(duplicateCreator.id)}
+            style={{ marginLeft: "8px" }}
+          >
+            Edit existing creator
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="error-message" style={{ marginBottom: "16px" }}>
           {error}
@@ -547,6 +593,11 @@ export function CreatorSetup({
                   </button>
                 )}
               </div>
+              {p.key === "tiktok" && (
+                <div className="validation-hint">
+                  Paste the creator profile URL. If you paste a TikTok video link, we&apos;ll convert it to the profile automatically.
+                </div>
+              )}
               {p.key !== "custom" && testStatus[p.key] && (() => {
                 const statusText = String(testStatus[p.key] || "").toLowerCase();
                 const isVerified = statusText.startsWith("valid public link");

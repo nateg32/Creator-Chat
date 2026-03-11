@@ -33,6 +33,10 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
 
+  const pendingTranscriptStatuses = new Set(["processing", "queued", "pending", "not_started"]);
+  const hasProcessingTranscripts = items.some((item) => pendingTranscriptStatuses.has(String(item.transcript_status || "").toLowerCase()));
+  const processingTranscriptCount = items.filter((item) => pendingTranscriptStatuses.has(String(item.transcript_status || "").toLowerCase())).length;
+
   const filteredItems = useMemo(() => {
     let filtered = items;
 
@@ -63,6 +67,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
   }
 
   function approveAll() {
+    if (hasProcessingTranscripts) return;
     const newDecisions = {};
     items.forEach((item) => {
       const itemKey = item.item_id || item.queue_id;
@@ -72,6 +77,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
   }
 
   function denyAll() {
+    if (hasProcessingTranscripts) return;
     const newDecisions = {};
     items.forEach((item) => {
       const itemKey = item.item_id || item.queue_id;
@@ -85,6 +91,8 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
   }
 
   async function handleSave() {
+    if (hasProcessingTranscripts) return;
+
     // Build decisions array in format expected by API
     const decisionsArray = items.map((item) => {
       const itemKey = item.item_id || item.queue_id;
@@ -133,6 +141,15 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
         <h2>Knowledge Base Gate</h2>
         <p className="subtitle">Approve or deny each item before adding to the knowledge base</p>
       </div>
+
+      {hasProcessingTranscripts && (
+        <div className="progress-container">
+          <div className="progress-info">
+            <span className="progress-stage">Waiting for transcript processing to finish before you can approve or deny content.</span>
+            <span className="progress-count">{processingTranscriptCount} item{processingTranscriptCount === 1 ? "" : "s"} still processing</span>
+          </div>
+        </div>
+      )}
 
       {/* Progress Bar */}
       {progress && (
@@ -205,10 +222,10 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
           <div className="bulk-actions">
             <label>Bulk actions</label>
             <div className="bulk-buttons">
-              <button onClick={approveAll} className="bulk-button">
+              <button onClick={approveAll} className="bulk-button" disabled={hasProcessingTranscripts}>
                 Approve all
               </button>
-              <button onClick={denyAll} className="bulk-button">
+              <button onClick={denyAll} className="bulk-button" disabled={hasProcessingTranscripts}>
                 Deny all
               </button>
               <button onClick={resetDecisions} className="bulk-button">
@@ -338,6 +355,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
                         <div className="decision-controls">
                           <button
                             className={`decision-button ${decision === DECISION_APPROVE ? "active approve" : ""}`}
+                            disabled={hasProcessingTranscripts}
                             onClick={() =>
                               setDecision(
                                 itemKey,
@@ -351,6 +369,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
                           </button>
                           <button
                             className={`decision-button ${decision === DECISION_DENY ? "active deny" : ""}`}
+                            disabled={hasProcessingTranscripts}
                             onClick={() =>
                               setDecision(
                                 itemKey,
@@ -381,7 +400,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
           <button
             onClick={handleSave}
             className="primary-button"
-            disabled={loading || (approvedCount === 0 && deniedCount === 0)}
+            disabled={loading || hasProcessingTranscripts || (approvedCount === 0 && deniedCount === 0)}
           >
             {loading ? (progress ? progress.message : "Saving...") : saveButtonLabel}
           </button>
