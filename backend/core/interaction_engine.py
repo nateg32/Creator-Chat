@@ -1104,14 +1104,15 @@ STRICT IDENTITY LOCK:
             if has_video_links:
                 anti_halluc_rule = (
                     "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have verified video links from a live web search. "
-                    "Share EVERY direct video URL inline in your response using markdown [Title](URL) format. "
-                    "DO NOT redirect the user to a link aggregator, a 'link hub', or tell them to search for it themselves. "
-                    "If you have video links from MULTIPLE platforms (YouTube, Instagram, TikTok, etc.), share them all and briefly explain why each is relevant. "
-                    "PRIORITIZE the platform that best matches what the user asked for. "
-                    "If you're not sure which is best, share 2-3 options and explain the differences."
+                    "Share only the 1-2 best matching links inline using markdown [Title](URL) format. "
+                    "Before each link, explain in plain language exactly why it helps with the user's question. "
+                    "DO NOT dump raw domains, naked URLs, or a pile of links. "
+                    "DO NOT redirect the user to a link aggregator, a link hub, or tell them to search for it themselves. "
+                    "If you have multiple links from the same domain, share only the single best match unless each serves a clearly different purpose. "
+                    "PRIORITIZE the platform that best matches what the user asked for. If needed, share one backup option with a short reason."
                 )
             else:
-                anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links (labeled 'Live Web Search') to answer the user accurately. Share URLs directly using [Title](URL) format."
+                anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. If you share a link, keep it to the 1-2 best options and explain why each one fits before giving it. Use [Title](URL) format, not naked URLs."
 
         return f"""IDENTITY: You are {creator_name}.
 {identity_context}
@@ -1131,6 +1132,7 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 8. FOR MORAL, EMOTIONAL, RELATIONSHIP, OR SPIRITUAL QUESTIONS: default to direct counsel in your worldview. Suggest content only if the user explicitly asks for it.
 9. RHYTHM OVER CATCHPHRASES: Use signature phrases sparingly and keep the cadence human.
 10. NO INLINE DASHES: Do not use hyphens, en dashes, or em dashes inside sentences. Rewrite with commas, periods, or spaces instead. Leading list bullets are fine.
+11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 links max, and explain why each one helps with the user's specific question before you give it.
 
 CONTEXT:
 {memory_section}

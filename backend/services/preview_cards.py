@@ -3,13 +3,14 @@ from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 MARKDOWN_LINK_RE = re.compile(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', re.IGNORECASE)
-HTTP_URL_RE = re.compile(r'https?://[^\s)\]>\'"]+', re.IGNORECASE)
+HTTP_URL_RE = re.compile(r'''https?://[^\s)\]>\'\"]+''', re.IGNORECASE)
 BARE_DOMAIN_RE = re.compile(
-    r'(?<![@/\w])(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/[^\s)\]>\'"]*)?',
+    r'''(?<![@/\w])(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/[^\s)\]>\'\"]*)?''',
     re.IGNORECASE,
 )
 TRAILING_PUNCT = '.,!?;:)'
 GENERIC_TITLES = {'check', 'here', 'link', 'website', 'site', 'resource', 'go', 'visit'}
+MAX_CARDS = 3
 
 
 def _trim_url(url: str) -> str:
@@ -82,31 +83,78 @@ def _title_from_line(line: str, url_fragment: str, title_hint: str = '') -> str:
     return 'External Resource'
 
 
+def _build_card(line: str, raw_url: str, title_hint: str = '') -> Optional[Dict[str, str]]:
+    url = _normalize_url(raw_url)
+    if not url or not _looks_like_public_url(url):
+        return None
+    platform = _platform_from_url(url)
+    thumbnail = ''
+    if platform == 'youtube':
+        video_id = _video_id_from_url(url)
+        if video_id:
+            thumbnail = f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
+    return {
+        'type': 'preview_card',
+        'title': _title_from_line(line, raw_url, title_hint=title_hint),
+        'url': url,
+        'thumbnail_url': thumbnail,
+    }
+
+
+def _is_generic_title(title: str) -> bool:
+    lowered = (title or '').strip().lower()
+    return lowered in {'', 'external resource'} or lowered in GENERIC_TITLES
+
+
+def _path_depth(url: str) -> int:
+    path = urlparse(url or '').path.strip('/')
+    return len(path.split('/')) if path else 0
+
+
+def _prefer_card(existing: Dict[str, str], candidate: Dict[str, str]) -> bool:
+    existing_title = existing.get('title', '')
+    candidate_title = candidate.get('title', '')
+    if _is_generic_title(existing_title) and not _is_generic_title(candidate_title):
+        return True
+    return _path_depth(candidate.get('url', '')) < _path_depth(existing.get('url', ''))
+
+
+def _append_card(cards: List[Dict[str, str]], card: Optional[Dict[str, str]], by_url: dict, by_domain: dict) -> None:
+    if not card:
+        return
+    url_key = card['url'].lower()
+    if url_key in by_url:
+        return
+    domain_key = (urlparse(card['url']).netloc or '').lower().replace('www.', '')
+    existing = by_domain.get(domain_key)
+    if existing:
+        existing_title = (existing.get('title') or '').strip().lower()
+        candidate_title = (card.get('title') or '').strip().lower()
+        if existing_title == candidate_title or _is_generic_title(candidate_title):
+            return
+        if _prefer_card(existing, card):
+            idx = cards.index(existing)
+            cards[idx] = card
+            del by_url[existing['url'].lower()]
+            by_url[url_key] = card
+            by_domain[domain_key] = card
+        return
+    cards.append(card)
+    by_url[url_key] = card
+    by_domain[domain_key] = card
+
+
 def extract_preview_cards(text: str) -> List[Dict[str, str]]:
     cards: List[Dict[str, str]] = []
-    seen = set()
+    by_url = {}
+    by_domain = {}
     content = text or ''
     lines = content.splitlines() or [content]
 
     for line in lines:
         markdown_spans = [match.group(0) for match in MARKDOWN_LINK_RE.finditer(line)]
         for title, raw_url in MARKDOWN_LINK_RE.findall(line):
-            url = _normalize_url(raw_url)
-            if not url or url.lower() in seen:
-                continue
-            seen.add(url.lower())
-            platform = _platform_from_url(url)
-            thumbnail = ''
-            if platform == 'youtube':
-                video_id = _video_id_from_url(url)
-                if video_id:
-                    thumbnail = f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
-            cards.append({
-                'type': 'preview_card',
-                'title': _title_from_line(line, raw_url, title_hint=title),
-                'url': url,
-                'thumbnail_url': thumbnail,
-            })
+            _append_card(cards, _build_card(line, raw_url, title_hint=title), by_url, by_domain)
 
         masked_line = line
         for span in markdown_spans:
@@ -116,43 +164,19 @@ def extract_preview_cards(text: str) -> List[Dict[str, str]]:
         bare_candidates.extend(match.group(0) for match in HTTP_URL_RE.finditer(masked_line))
         bare_candidates.extend(match.group(0) for match in BARE_DOMAIN_RE.finditer(masked_line))
         for raw in bare_candidates:
-            url = _normalize_url(raw)
-            if not url or url.lower() in seen:
-                continue
-            if not _looks_like_public_url(url):
-                continue
-            seen.add(url.lower())
-            platform = _platform_from_url(url)
-            thumbnail = ''
-            if platform == 'youtube':
-                video_id = _video_id_from_url(url)
-                if video_id:
-                    thumbnail = f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
-            cards.append({
-                'type': 'preview_card',
-                'title': _title_from_line(line, raw),
-                'url': url,
-                'thumbnail_url': thumbnail,
-            })
+            _append_card(cards, _build_card(line, raw), by_url, by_domain)
 
-    return cards[:6]
+    return cards[:MAX_CARDS]
 
 
 def merge_preview_cards(*groups: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
     merged: List[Dict[str, str]] = []
-    seen = set()
+    by_url = {}
+    by_domain = {}
     for group in groups:
         for card in group or []:
-            url = _normalize_url(card.get('url') or '')
-            if not url or url.lower() in seen:
-                continue
-            if not _looks_like_public_url(url):
-                continue
-            seen.add(url.lower())
-            merged.append({
-                'type': 'preview_card',
-                'title': (card.get('title') or 'External Resource')[:140],
-                'url': url,
-                'thumbnail_url': card.get('thumbnail_url') or '',
-            })
-    return merged[:6]
+            normalized = _build_card(card.get('title') or '', card.get('url') or '', title_hint=card.get('title') or '')
+            if normalized:
+                normalized['thumbnail_url'] = card.get('thumbnail_url') or normalized.get('thumbnail_url') or ''
+            _append_card(merged, normalized, by_url, by_domain)
+    return merged[:MAX_CARDS]

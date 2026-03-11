@@ -58,6 +58,15 @@ const XIcon = () => (
   </svg>
 );
 
+function looksLikeJunkLinkLabel(label = "") {
+  const trimmed = label.trim();
+  if (!trimmed) return true;
+  if (/^(here|link|source|video|resource)$/i.test(trimmed)) return true;
+  if (/^[A-Za-z]{2,5}\d{2,}$/i.test(trimmed)) return true;
+  if (/^[A-Za-z0-9_-]{5,12}$/i.test(trimmed) && /\d/.test(trimmed) && !/\s/.test(trimmed)) return true;
+  return false;
+}
+
 export function ChatPanel({
   creatorId,
   threadId, // New prop
@@ -535,7 +544,7 @@ export function ChatPanel({
                               });
 
                               // In the text, leave the title if it was a markdown link, otherwise leave nothing (remove raw URLs from text)
-                              if (!rawUrlMatch && match[1]) {
+                              if (!rawUrlMatch && match[1] && !looksLikeJunkLinkLabel(match[1])) {
                                 textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{match[1]}</span>);
                               }
                             } else {
@@ -584,10 +593,12 @@ export function ChatPanel({
                               })
                             : [];
 
-                          const renderedCards = [...explicitCards, ...linkCards].filter((card, idx, arr) => {
-                            const key = (card.url || '').toLowerCase();
-                            return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
-                          });
+                          const renderedCards = explicitCards.length > 0
+                            ? explicitCards
+                            : linkCards.filter((card, idx, arr) => {
+                                const key = (card.url || '').toLowerCase();
+                                return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
+                              });
 
                           return (
                             <div className="msg-content-wrapper">

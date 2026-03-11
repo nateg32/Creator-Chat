@@ -1270,7 +1270,7 @@ def generate_meaning_draft(
          """
     elif intent == "request_sources":
         intent_guidance = """
-        IMPORTANT: The user is asking for links or proof. Plan to provide 1-3 specific sources from the context with brief explanations of why they are relevant.
+        IMPORTANT: The user is asking for links or proof. Plan to provide only the best 1-2 sources from the context, and briefly explain why each one helps with the exact question.
         """
     elif intent in ["greeting", "greeting_only"]:
         intent_guidance = "Plan a short, authentic creator greeting. Do NOT provide advice. Focus on being welcoming and open. IGNORE any retrieved content as it is not relevant to a simple greeting."
@@ -2665,8 +2665,8 @@ Message: {answer_text[:500]}"""
         history=conversation_history or [],
         user_preferences=user_preferences
     )
-    if 'no_online_fallback' in locals() and no_online_fallback:
-        answer = f"{no_online_fallback}\n\n{answer}" if answer else no_online_fallback
+    if 'no_online_fallback' in locals() and no_online_fallback and not (answer or '').strip():
+        answer = no_online_fallback
     
     # Log the turn
     interaction_engine.log_turn(
@@ -3103,9 +3103,6 @@ async def grounded_rag_stream(
             )
 
     # 4. Async Synthesis Stream (Instant Start)
-    if no_online_fallback:
-        yield no_online_fallback + "\n\n"
-
     stream = await interaction_engine.render_combined_pass_stream_async(
         creator_profile=creator_row,
         rag_chunks=support_set,

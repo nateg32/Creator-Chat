@@ -41,5 +41,23 @@ class PreviewCardTests(unittest.TestCase):
         self.assertEqual(merged[0]["title"], "One")
 
 
+    def test_extract_limits_generic_duplicate_domains(self):
+        cards = preview_cards.extract_preview_cards(
+            "acquisition.com\nacquisition.com/free-trial\nskool.com"
+        )
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(cards[0]["url"], "https://acquisition.com")
+        self.assertEqual(cards[1]["url"], "https://skool.com")
+
+    def test_merge_prefers_more_specific_non_generic_card(self):
+        merged = preview_cards.merge_preview_cards(
+            [{"url": "https://acquisition.com", "title": "External Resource", "thumbnail_url": ""}],
+            [{"url": "https://acquisition.com/free-trial", "title": "Free trial", "thumbnail_url": ""}],
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["url"], "https://acquisition.com/free-trial")
+        self.assertEqual(merged[0]["title"], "Free trial")
+
+
 if __name__ == "__main__":
     unittest.main()
