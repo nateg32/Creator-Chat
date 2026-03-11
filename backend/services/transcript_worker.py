@@ -122,19 +122,19 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
     source = "NONE"
     
     try:
-        if platform == "youtube":
-            video_id_match = re.search(r'(?:v=|youtu\.be/|/shorts/)([\w-]+)', source_url)
-            if video_id_match:
-                video_id = video_id_match.group(1)
-                try:
-                    from youtube_transcript_api import YouTubeTranscriptApi
-                    yt_transcript = YouTubeTranscriptApi.get_transcript(video_id)
-                    transcript_text = " ".join([t['text'] for t in yt_transcript])
+        if platform in {"youtube", "youtube_shorts"}:
+            try:
+                from backend.apify_service import _extract_youtube_native_transcripts
+                native_transcript = _extract_youtube_native_transcripts([source_url]).get(source_url, "")
+                if native_transcript:
+                    transcript_text = native_transcript
                     status = "present"
                     source = "YT_CAPTIONS"
-                except Exception as e:
-                    print(f"[TRANSCRIPT] YT caption failed: {e}")
+                else:
                     status = "missing"
+            except Exception as e:
+                print(f"[TRANSCRIPT] YT caption failed: {e}")
+                status = "missing"
             
             if not transcript_text:
                 print(f"[TRANSCRIPT] Falling back to whisper for YT {source_url}")
@@ -147,18 +147,13 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
                 else:
                     status = "error"
         else:
-            if caption and len(caption.strip()) > 10:
-                transcript_text = caption
+            direct_url = synthesize_media_url(source_url, platform)
+            transcript_text = transcribe_with_whisper(direct_url)
+            if transcript_text:
                 status = "present"
-                source = "CAPTION"
+                source = "WHISPER_ASR"
             else:
-                direct_url = synthesize_media_url(source_url, platform)
-                transcript_text = transcribe_with_whisper(direct_url)
-                if transcript_text:
-                    status = "present"
-                    source = "WHISPER_ASR"
-                else:
-                    status = "missing"
+                status = "missing"
                     
         # Update DB
         if transcript_text:
