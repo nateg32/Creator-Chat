@@ -93,8 +93,8 @@ PLATFORMS: List[Dict[str, Any]] = [
         "key": "tiktok",
         "label": "TikTok",
         "icon": "tiktok",
-        "placeholder": "https://www.tiktok.com/@username or video URL",
-        "url_pattern": r"^https?://(www\.)?tiktok\.com/.+",
+        "placeholder": "https://www.tiktok.com/@username",
+        "url_pattern": r"^https?://((www|m)\.)?tiktok\.com/@[\w.-]+/?$",
         "apify_actor": "thenetaji/tiktok-post-scraper",
         "supports_since_date": False,
         "default_max_items": 20,
@@ -233,6 +233,16 @@ def extract_handle(url: str, platform_key: str) -> Optional[str]:
         from backend.lib.instagram_parser import parse_instagram_url
         p = parse_instagram_url(u)
         return p.get("handle") if p else None
+    if platform_key == "tiktok":
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            if not path:
+                return None
+            first = path.split("/", 1)[0]
+            return first.lstrip("@") if first.startswith("@") else None
+        except Exception:
+            return None
     try:
         parsed = urlparse(u if u.startswith("http") else "https://" + u)
         path = (parsed.path or "").strip("/")

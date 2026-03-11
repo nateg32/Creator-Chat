@@ -72,7 +72,7 @@ export function parseCreatorUrl(url) {
     // TikTok
     if (hostname.includes("tiktok.com")) {
       const pathParts = urlObj.pathname.split("/").filter(Boolean);
-      if (pathParts.length > 0 && pathParts[0] !== "video") {
+      if (pathParts.length > 0 && pathParts[0].startsWith("@")) {
         return {
           platform: "tiktok",
           handle: pathParts[0].replace("@", ""),
@@ -119,7 +119,7 @@ export function parseCreatorUrl(url) {
       };
     }
 
-    const tiktokMatch = trimmed.match(/tiktok\.com\/@?([^\/\s]+)/i);
+    const tiktokMatch = trimmed.match(/tiktok\.com\/@([^\/\s]+)/i);
     if (tiktokMatch) {
       return {
         platform: "tiktok",

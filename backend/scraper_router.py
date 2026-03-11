@@ -239,12 +239,12 @@ def _map_tiktok(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
     creator_handle = ctx.get("creator_handle") or handle or "tiktok"
     max_items = int(ctx.get("max_items") or 99999)
+    tf = ctx.get("time_filter") or {}
     items = search_tiktok_posts(url, handle, limit=max_items, skip_transcripts=True)
     for it in items:
         it["creator_handle"] = creator_handle
         it["platform"] = "tiktok"
-    # Actor doesn't support our time filter directly; just mark as matched.
-    return _apply_time_filter(items, {"mode": "all"})
+    return _apply_time_filter(items, tf)
 
 
 PLATFORM_MAPPERS: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = {

@@ -224,7 +224,7 @@ def search_instagram_reels(handle: str, reel_id: Optional[str] = None, limit: in
                 "source_url": source_url,
                 "caption": caption,
                 "transcript": "", # Will be filled in second pass
-                "transcript_status": "missing",
+                "transcript_status": "missing", # Will be filled in second pass
                 "published_at": published_at,
                 "metadata": metadata,
             }
@@ -1140,8 +1140,8 @@ def scrape_tiktok_posts(
         source_url = item.get("webVideoUrl") or item.get("videoUrl") or item.get("url") or ""
         text = item.get("text") or item.get("desc") or ""
         
-        # Initial status
-        transcript_status = "missing"
+        # Caption text is already a usable fallback transcript for TikTok posts.
+        transcript_status = "present" if text and str(text).strip() else "missing"
         
         create_time_iso = item.get("createTimeISO")
         published_at = None
@@ -1377,7 +1377,7 @@ def _scrape_tiktok_videos(urls: List[str], creator_handle: str) -> List[Dict[str
              "source_url": source_url,
              "caption": text,
              "transcript": text,
-             "transcript_status": "missing",
+             "transcript_status": "present" if text and str(text).strip() else "missing",
              "metadata": {
                  "platform": "tiktok", 
                  "title": text[:50] if text else "TikTok Video",

@@ -414,13 +414,13 @@ def _page_has_positive_profile_signal(platform_key: str, requested_url: str, res
     if platform_key == "tiktok":
         if title in {"tiktok", "tiktok - make your day", "make your day", "log in | tiktok"}:
             return False
-        positives = [f'@{handle}' if handle else "", f'/{handle}' if handle else ""]
+        positives = [f'@{handle}' if handle else "", f'/@{handle}' if handle else "", f'"uniqueid":"{handle}"' if handle else ""]
         return any(p and p in body_lower for p in positives) or (handle and f'@{handle}' in title)
 
     if platform_key == "twitter":
         if title in {"x", "twitter", "x / ?search", "log in to x / x"}:
             return False
-        positives = [f'@{handle}' if handle else "", f'/{handle}' if handle else ""]
+        positives = [f'@{handle}' if handle else "", f'/@{handle}' if handle else "", f'"uniqueid":"{handle}"' if handle else ""]
         return any(p and p in body_lower for p in positives) or (handle and handle in title)
 
     if platform_key == "linkedin":
@@ -919,8 +919,8 @@ def validate_platform_url(key: str, url: str = ""):
     scrape_ready = checked_via not in soft_checks
 
     # TikTok profile pages often return shell/login HTML even for valid handles.
-    # The scraper can still work from a valid @handle URL, so do not block scraping on soft verification alone.
-    if key == "tiktok" and checked_via in {"http_fetch_soft", "profile_signal_soft"}:
+    # Allow scraping only for the specific shell-page case, not for broader HTTP soft failures.
+    if key == "tiktok" and checked_via == "profile_signal_soft":
         scrape_ready = True
         if availability.get("warning"):
             availability["warning"] = "Valid TikTok profile URL. Live verification was inconclusive, but scraping can still proceed."
