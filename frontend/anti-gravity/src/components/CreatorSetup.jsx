@@ -547,11 +547,15 @@ export function CreatorSetup({
                   </button>
                 )}
               </div>
-              {p.key !== "custom" && testStatus[p.key] && (
-                <span className={`test-status ${String(testStatus[p.key]).toLowerCase().startsWith("valid") ? "ok" : "err"}`}>
-                  {testStatus[p.key]}
-                </span>
-              )}
+              {p.key !== "custom" && testStatus[p.key] && (() => {
+                const statusText = String(testStatus[p.key] || "").toLowerCase();
+                const isVerified = statusText.startsWith("valid public link");
+                return (
+                  <span className={`test-status ${isVerified ? "ok" : "err"}`}>
+                    {testStatus[p.key]}
+                  </span>
+                );
+              })()}
             </div>
 
             {p.key !== "custom" && (
