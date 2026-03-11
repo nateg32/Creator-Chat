@@ -82,6 +82,18 @@ class TextSanitizerTests(unittest.TestCase):
             "1. Check 2819Church.org for details.",
         )
 
+    def test_inserts_space_between_word_and_number(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Send50 messages a day. Call20 businesses a day. Walk in to5 places a day."),
+            "Send 50 messages a day. Call 20 businesses a day. Walk in to 5 places a day.",
+        )
+
+    def test_inserts_space_before_year(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("We got married in2017."),
+            "We got married in 2017.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
