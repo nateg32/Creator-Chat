@@ -545,7 +545,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         "youtube": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
         "youtube_shorts": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
         "instagram": ["instagram.com", "www.instagram.com"],
-        "tiktok": ["tiktok.com", "www.tiktok.com"],
+        "tiktok": ["tiktok.com", "www.tiktok.com", "m.tiktok.com"],
         "facebook": ["facebook.com", "www.facebook.com", "m.facebook.com", "fb.com"],
         "twitter": ["twitter.com", "www.twitter.com", "x.com", "www.x.com"],
         "linkedin": ["linkedin.com", "www.linkedin.com"],
