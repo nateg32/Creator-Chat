@@ -412,7 +412,7 @@ def _page_has_positive_profile_signal(platform_key: str, requested_url: str, res
         return any(p and p in body_lower for p in positives) or (handle and handle in title)
 
     if platform_key == "tiktok":
-        if title in {"tiktok", "make your day", "log in | tiktok"}:
+        if title in {"tiktok", "tiktok - make your day", "make your day", "log in | tiktok"}:
             return False
         positives = [f'@{handle}' if handle else "", f'/{handle}' if handle else ""]
         return any(p and p in body_lower for p in positives) or (handle and f'@{handle}' in title)
@@ -589,6 +589,16 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
             "error": "Link invalid",
             "checked_via": "path_check",
             "resolved_url": final_url,
+        }
+
+    title = _extract_html_title(response.text or "")
+
+    if platform_key == "tiktok" and title in {"tiktok", "tiktok - make your day", "make your day", "log in | tiktok"}:
+        return {
+            "exists": True,
+            "checked_via": "profile_signal_soft",
+            "resolved_url": final_url,
+            "warning": "Valid platform match. Live profile verification was inconclusive.",
         }
 
     for marker in invalid_markers.get(platform_key, []):
