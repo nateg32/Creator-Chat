@@ -1864,7 +1864,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
 
 def _extract_stream_cards(answer: str):
     """Best-effort card extraction for streamed answers."""
-    return extract_preview_cards(answer)
+    return extract_preview_cards(answer, enrich_titles=True)
 
 
 def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None):
@@ -2084,7 +2084,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
              assistant_metadata = {}
              cards = merge_preview_cards(
                  result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
-                 extract_preview_cards(answer_text),
+                 extract_preview_cards(answer_text, enrich_titles=True),
              )
              if cards:
                  assistant_metadata["cards"] = cards
@@ -2109,7 +2109,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
         # Ensure response matches AskResponse format
         cards = merge_preview_cards(
             result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
-            extract_preview_cards(answer_text),
+            extract_preview_cards(answer_text, enrich_titles=True),
         )
 
         return {
@@ -3821,4 +3821,3 @@ async def trigger_fingerprint_generation(creator_id: int, background_tasks: Back
     from backend.services.fingerprint_service import fingerprint_service
     background_tasks.add_task(fingerprint_service.generate_fingerprint_async, creator_id)
     return {"message": "Fingerprint generation started"}
-

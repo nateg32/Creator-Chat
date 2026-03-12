@@ -1,6 +1,9 @@
+import html
 import re
+from functools import lru_cache
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+
 
 MARKDOWN_LINK_RE = re.compile(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', re.IGNORECASE)
 HTTP_URL_RE = re.compile(r'''https?://[^\s)\]>\'\"]+''', re.IGNORECASE)
@@ -11,6 +14,17 @@ BARE_DOMAIN_RE = re.compile(
 TRAILING_PUNCT = '.,!?;:)'
 GENERIC_TITLES = {'check', 'here', 'link', 'website', 'site', 'resource', 'go', 'visit'}
 MAX_CARDS = 3
+TITLE_FETCH_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (compatible; CreatorBotPreview/1.0; +https://creator-bot.local)',
+    'Accept-Language': 'en-US,en;q=0.9',
+}
+TITLE_META_PATTERNS = (
+    re.compile(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']', re.IGNORECASE | re.DOTALL),
+    re.compile(r'<meta[^>]+content=["\'](.*?)["\'][^>]+property=["\']og:title["\']', re.IGNORECASE | re.DOTALL),
+    re.compile(r'<meta[^>]+name=["\']twitter:title["\'][^>]+content=["\'](.*?)["\']', re.IGNORECASE | re.DOTALL),
+    re.compile(r'<meta[^>]+content=["\'](.*?)["\'][^>]+name=["\']twitter:title["\']', re.IGNORECASE | re.DOTALL),
+)
+TITLE_TAG_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
 
 
 def _trim_url(url: str) -> str:
@@ -83,6 +97,61 @@ def _title_from_line(line: str, url_fragment: str, title_hint: str = '') -> str:
     return 'External Resource'
 
 
+def _normalize_title(value: str, url: str = '') -> str:
+    cleaned = html.unescape((value or '').strip())
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -:\t|')
+    host = (urlparse(url or '').netloc or '').lower()
+    suffixes = []
+    if 'youtube.com' in host or 'youtu.be' in host:
+        suffixes.append(' - YouTube')
+    if 'facebook.com' in host:
+        suffixes.append(' | Facebook')
+    if 'instagram.com' in host:
+        suffixes.append(' - Instagram')
+    for suffix in suffixes:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[:-len(suffix)].rstrip(' -:|')
+    return cleaned
+
+
+def _extract_remote_title(body: str, url: str) -> str:
+    if not body:
+        return ''
+    for pattern in TITLE_META_PATTERNS:
+        match = pattern.search(body)
+        if match:
+            title = _normalize_title(match.group(1), url)
+            if title:
+                return title
+    match = TITLE_TAG_RE.search(body)
+    if not match:
+        return ''
+    return _normalize_title(match.group(1), url)
+
+
+@lru_cache(maxsize=128)
+def _lookup_remote_title(url: str) -> str:
+    import requests
+
+    normalized = _normalize_url(url)
+    if not normalized:
+        return ''
+    try:
+        response = requests.get(
+            normalized,
+            headers=TITLE_FETCH_HEADERS,
+            timeout=(3.05, 4.5),
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        content_type = (response.headers.get('Content-Type') or '').lower()
+        if content_type and 'html' not in content_type and 'xml' not in content_type:
+            return ''
+        return _extract_remote_title(response.text or '', response.url or normalized)
+    except Exception:
+        return ''
+
+
 def _build_card(line: str, raw_url: str, title_hint: str = '') -> Optional[Dict[str, str]]:
     url = _normalize_url(raw_url)
     if not url or not _looks_like_public_url(url):
@@ -99,6 +168,17 @@ def _build_card(line: str, raw_url: str, title_hint: str = '') -> Optional[Dict[
         'url': url,
         'thumbnail_url': thumbnail,
     }
+
+
+def _enrich_card_title(card: Dict[str, str]) -> Dict[str, str]:
+    if not card:
+        return card
+    remote_title = _lookup_remote_title(card.get('url', ''))
+    if not remote_title:
+        return card
+    enriched = dict(card)
+    enriched['title'] = remote_title[:140]
+    return enriched
 
 
 def _is_generic_title(title: str) -> bool:
@@ -144,7 +224,7 @@ def _append_card(cards: List[Dict[str, str]], card: Optional[Dict[str, str]], by
     by_domain[domain_key] = card
 
 
-def extract_preview_cards(text: str) -> List[Dict[str, str]]:
+def extract_preview_cards(text: str, enrich_titles: bool = False) -> List[Dict[str, str]]:
     cards: List[Dict[str, str]] = []
     by_url = {}
     by_domain = {}
@@ -166,7 +246,10 @@ def extract_preview_cards(text: str) -> List[Dict[str, str]]:
         for raw in bare_candidates:
             _append_card(cards, _build_card(line, raw), by_url, by_domain)
 
-    return cards[:MAX_CARDS]
+    cards = cards[:MAX_CARDS]
+    if enrich_titles:
+        return [_enrich_card_title(card) for card in cards]
+    return cards
 
 
 def merge_preview_cards(*groups: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
