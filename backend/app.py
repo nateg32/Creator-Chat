@@ -1834,7 +1834,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
                 full_answer = strip_mid_sentence_hyphens(raw_answer)
-                cards = merge_preview_cards(_extract_stream_cards(full_answer))
+                cards = merge_preview_cards(_extract_stream_cards(full_answer), enrich_titles=True)
                 if request.thread_id:
                     finalize_stream_interaction(request.thread_id, request.question, full_answer, cards=cards)
                     # Check for title update
@@ -2085,6 +2085,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
              cards = merge_preview_cards(
                  result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
                  extract_preview_cards(answer_text, enrich_titles=True),
+                 enrich_titles=True,
              )
              if cards:
                  assistant_metadata["cards"] = cards
@@ -2110,6 +2111,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
         cards = merge_preview_cards(
             result.get("cards") or ([] if result.get("card") is None else [result.get("card")]),
             extract_preview_cards(answer_text, enrich_titles=True),
+            enrich_titles=True,
         )
 
         return {
