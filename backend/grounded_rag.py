@@ -177,6 +177,30 @@ def _candidate_title(candidate: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def _normalize_resource_title(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower()).strip()
+
+
+def _is_recent_duplicate_candidate(
+    candidate: Optional[Dict[str, Any]],
+    seen_resources: Optional[Dict[str, Set[str]]] = None,
+) -> bool:
+    if not candidate or not seen_resources:
+        return False
+
+    url = _candidate_url(candidate)
+    if url:
+        youtube_match = re.search(r"(?:v=|youtu\.be/|/shorts/)([\w-]+)", url, re.IGNORECASE)
+        if youtube_match and youtube_match.group(1) in (seen_resources.get("ids") or set()):
+            return True
+
+    title_key = _normalize_resource_title(_candidate_title(candidate))
+    if title_key and title_key in (seen_resources.get("titles") or set()):
+        return True
+
+    return False
+
+
 def _filter_candidates_for_requested_platforms(
     candidates: List[Dict[str, Any]],
     preferred_platforms: Optional[List[str]] = None,
@@ -2218,6 +2242,18 @@ def _get_suggested_resources(history: Optional[List[Dict[str, str]]]) -> Dict[st
             
     return seen
 
+
+def _build_resource_search_query(
+    user_message: str,
+    resource_intent: Optional[Dict[str, Any]] = None,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    base_query = (resource_intent or {}).get("query") or user_message
+    contextual_query = build_search_query(base_query, history)
+    if contextual_query and len(contextual_query.split()) > len(base_query.split()):
+        return contextual_query
+    return base_query
+
 def llm_rerank(candidates: List[Dict[str, Any]], intent_plan: Dict[str, Any], top_n: int = 5) -> List[Dict[str, Any]]:
     """
     Stage 4: Helpful Rerank (LLM-based).
@@ -2335,9 +2371,10 @@ def recommend_one_content(
     """
     # Stage 0: Request parsing + creator context
     resource_intent = classify_resource_intent(user_message, conversation_history, creator_row)
-    q_search = resource_intent.get("query", user_message)
+    q_search = _build_resource_search_query(user_message, resource_intent, conversation_history)
     preferred_platforms = extract_requested_platforms(user_message, conversation_history)
     resource_intent["preferred_platforms"] = preferred_platforms
+    seen_resources = _get_suggested_resources(conversation_history)
     
     # Early Exit for Small Talk or non-resource turns
     if not resource_intent.get("needs_resource") and resource_intent.get("request_type") == "none":
@@ -2365,6 +2402,12 @@ def recommend_one_content(
     # Stage 2: Evidence-first chunk scoring
     candidates = _aggregate_document_evidence(raw_chunks)
     candidates = _filter_candidates_for_requested_platforms(candidates, preferred_platforms)
+    deduped_candidates = [
+        candidate for candidate in candidates
+        if not _is_recent_duplicate_candidate(candidate, seen_resources)
+    ]
+    if deduped_candidates:
+        candidates = deduped_candidates
     
     # Stage 3: Goal/Intent compatibility + Contradiction handling
     # (Incorporated into rerank_candidates)
@@ -2817,6 +2860,19 @@ Message: {answer_text[:500]}"""
                 question,
                 require_video=is_video_request if 'is_video_request' in locals() else wants_link,
             )
+            seen_resources = _get_suggested_resources(conversation_history)
+            if seen_resources:
+                deduped_web_results = []
+                for result in web_results:
+                    pseudo_candidate = {
+                        "title": result.get("title"),
+                        "url": result.get("url"),
+                        "platform": result.get("platform"),
+                    }
+                    if not _is_recent_duplicate_candidate(pseudo_candidate, seen_resources):
+                        deduped_web_results.append(result)
+                if deduped_web_results:
+                    web_results = deduped_web_results
             if preferred_platforms:
                 platform_filtered = [
                     result for result in web_results
@@ -3288,6 +3344,19 @@ async def grounded_rag_stream(
         logger.info(f"[LATENCY] Search fallback phase: {_t_search_end - _t_search_start:.2f}s (fallback={needs_fallback}, results={len(web_results)})")
         
         web_results = _filter_live_web_results(web_results, question, require_video=is_video_request)
+        seen_resources = _get_suggested_resources(conversation_history)
+        if seen_resources:
+            deduped_web_results = []
+            for result in web_results:
+                pseudo_candidate = {
+                    "title": result.get("title"),
+                    "url": result.get("url"),
+                    "platform": result.get("platform"),
+                }
+                if not _is_recent_duplicate_candidate(pseudo_candidate, seen_resources):
+                    deduped_web_results.append(result)
+            if deduped_web_results:
+                web_results = deduped_web_results
         if preferred_platforms:
             platform_filtered = [
                 result for result in web_results
