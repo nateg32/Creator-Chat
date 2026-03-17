@@ -643,7 +643,7 @@ export function CreatorSetup({
           <div className="setup-section-head">
             <div>
               <div className="setup-section-kicker">Identity</div>
-              <h3>Creator profile</h3>
+              <h3>Profile</h3>
             </div>
           </div>
           <div className="setup-section-body">
@@ -725,7 +725,7 @@ export function CreatorSetup({
           <div className="setup-section-head">
             <div>
               <div className="setup-section-kicker">Sources</div>
-              <h3>Select platforms</h3>
+              <h3>Platforms</h3>
             </div>
           </div>
           <div className="setup-section-body">
@@ -763,7 +763,7 @@ export function CreatorSetup({
           <div className="setup-section-body setup-platform-list">
             {selectedPlatformDetails.length === 0 ? (
               <div className="setup-empty-state">
-                Select a platform to continue.
+                Select a platform.
               </div>
             ) : (
               <>

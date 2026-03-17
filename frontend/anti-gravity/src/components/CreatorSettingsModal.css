@@ -8,6 +8,7 @@
     display: flex;
     justify-content: center;
     align-items: center;
+    padding: 16px;
     z-index: 2000;
     backdrop-filter: blur(8px);
 }
@@ -16,6 +17,8 @@
     background: rgba(255, 255, 255, 0.96);
     width: 368px;
     max-width: 90vw;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
     border-radius: 20px;
     padding: 20px;
     border: 1px solid var(--border);

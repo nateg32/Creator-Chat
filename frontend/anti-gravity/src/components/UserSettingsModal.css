@@ -57,10 +57,10 @@
 }
 
 .user-settings-header p {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   max-width: 460px;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .user-settings-close {
@@ -107,10 +107,7 @@
 }
 
 .user-settings-section-head p {
-  margin: 8px 0 0;
-  max-width: 640px;
-  font-size: 13px;
-  line-height: 1.5;
+  display: none;
 }
 
 .user-settings-profile-grid {
@@ -233,12 +230,6 @@
   outline: none;
   border-color: var(--border-strong);
   box-shadow: 0 0 0 4px rgba(36, 87, 197, 0.08);
-}
-
-.user-settings-help {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.45;
 }
 
 .user-settings-presets {

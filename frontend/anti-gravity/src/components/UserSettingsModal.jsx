@@ -108,9 +108,7 @@ export function UserSettingsModal({
           <div>
             <div className="user-settings-kicker">Personalization</div>
             <h2 id="user-settings-title">User Settings</h2>
-            <p>
-              Personalize delivery, keep the creator&apos;s voice.
-            </p>
+            <p>Personalize replies.</p>
           </div>
           <button type="button" className="user-settings-close" onClick={onClose} aria-label="Close settings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -124,7 +122,7 @@ export function UserSettingsModal({
           <section className="user-settings-section">
             <div className="user-settings-section-head">
               <div className="user-settings-section-kicker">Profile</div>
-              <h3>How creators should address you</h3>
+              <h3>Profile</h3>
             </div>
 
             <div className="user-settings-profile-grid">
@@ -173,9 +171,6 @@ export function UserSettingsModal({
                   onChange={(event) => setDisplayName(event.target.value)}
                   placeholder="What should creators call you?"
                 />
-                <p className="user-settings-help">
-                  Used naturally in chat.
-                </p>
               </div>
             </div>
           </section>
@@ -183,10 +178,7 @@ export function UserSettingsModal({
           <section className="user-settings-section">
             <div className="user-settings-section-head">
               <div className="user-settings-section-kicker">Delivery</div>
-              <h3>Response preferences</h3>
-              <p>
-                Pick the style you want most often.
-              </p>
+              <h3>Style</h3>
             </div>
 
             <div className="user-settings-presets">
@@ -210,10 +202,7 @@ export function UserSettingsModal({
           <section className="user-settings-section">
             <div className="user-settings-section-head">
               <div className="user-settings-section-kicker">Context</div>
-              <h3>Custom instructions</h3>
-              <p>
-                Share context they can use naturally.
-              </p>
+              <h3>Custom</h3>
             </div>
 
             <div className="user-settings-form">
@@ -228,9 +217,7 @@ export function UserSettingsModal({
                 rows={6}
               />
               <div className="user-settings-custom-meta">
-                <span>
-                  Unsafe meta-instructions are filtered server-side.
-                </span>
+                <span>Filtered server-side.</span>
                 <span>{customPref.length}/{CUSTOM_PREF_LIMIT}</span>
               </div>
             </div>
