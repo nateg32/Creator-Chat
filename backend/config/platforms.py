@@ -68,17 +68,6 @@ PLATFORMS: List[Dict[str, Any]] = [
         "url_to_handle": "linkedin",
     },
     {
-        "key": "reddit",
-        "label": "Reddit",
-        "icon": "reddit",
-        "placeholder": "https://reddit.com/user/username",
-        "url_pattern": r"^https?://(www\.)?reddit\.com/user/[\w-]+/?",
-        "apify_actor": "harshmaur/reddit-scraper",
-        "supports_since_date": False,
-        "default_max_items": 20,
-        "url_to_handle": "reddit",
-    },
-    {
         "key": "facebook",
         "label": "Facebook",
         "icon": "facebook",

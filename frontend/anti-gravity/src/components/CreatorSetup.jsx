@@ -6,8 +6,6 @@ import {
   updateCreator,
   getCreatorConfig,
   scrape,
-  getScrapeItems,
-  getSearchProgress,
 } from "../api/client";
 import { resizeImage } from "../utils/image";
 import { normalizeCreatorName } from "../utils/nameFormatter";
@@ -40,7 +38,6 @@ export function CreatorSetup({
   loading,
   savedCreatorId,
   initialCreatorName = "",
-  initialHandle = "",
   initialAvatarUrl = "",
   userAvatarUrl = "",
   onUserAvatarChange,
@@ -49,7 +46,6 @@ export function CreatorSetup({
 }) {
   const [platforms, setPlatforms] = useState([]);
   const [creatorName, setCreatorName] = useState(initialCreatorName);
-  const [creatorHandle, setCreatorHandle] = useState(initialHandle);
   const [creatorAvatarUrl, setCreatorAvatarUrl] = useState(initialAvatarUrl);
   const [selected, setSelected] = useState(new Set());
   const [config, setConfig] = useState({});
@@ -65,21 +61,26 @@ export function CreatorSetup({
   const [showSearchConfirm, setShowSearchConfirm] = useState(false);
   const [searchSummary, setSearchSummary] = useState([]);
   const [savedConfigSignature, setSavedConfigSignature] = useState("");
+  const visiblePlatforms = useMemo(
+    () => platforms.filter((platform) => platform.key !== "reddit"),
+    [platforms]
+  );
+  const selectedPlatformDetails = useMemo(
+    () => visiblePlatforms.filter((platform) => selected.has(platform.key)),
+    [selected, visiblePlatforms]
+  );
 
   const duplicateCreator = useMemo(() => {
-    const normalizedHandle = String(creatorHandle || "").trim().toLowerCase().replace(/^@/, "");
     const normalizedName = normalizeCreatorName(creatorName || "");
     const normalizedNameValue = normalizedName.isValid ? normalizedName.normalized.toLowerCase() : String(creatorName || "").trim().toLowerCase();
 
     return existingCreators.find((creator) => {
       if (savedCreatorId && creator.id === savedCreatorId) return false;
-      const creatorHandleValue = String(creator.handle || "").trim().toLowerCase().replace(/^@/, "");
-      const creatorNameValue = String(creator.name || "").trim().toLowerCase();
-      if (normalizedHandle && creatorHandleValue && normalizedHandle === creatorHandleValue) return true;
+      const creatorNameValue = String(creator.name || creator.handle || "").trim().toLowerCase();
       if (normalizedNameValue && creatorNameValue && normalizedNameValue === creatorNameValue) return true;
       return false;
     }) || null;
-  }, [creatorHandle, creatorName, existingCreators, savedCreatorId]);
+  }, [creatorName, existingCreators, savedCreatorId]);
 
   const [nameError, setNameError] = useState(null);
   const [nameHint, setNameHint] = useState(null);
@@ -165,8 +166,11 @@ export function CreatorSetup({
     getPlatforms()
       .then((data) => {
         console.log("Platforms loaded:", data);
-        if (Array.isArray(data) && data.length > 0) {
-          setPlatforms(data);
+        const nextPlatforms = Array.isArray(data)
+          ? data.filter((platform) => platform.key !== "reddit")
+          : [];
+        if (nextPlatforms.length > 0) {
+          setPlatforms(nextPlatforms);
         } else {
           setError("No platforms available. Please check backend connection.");
         }
@@ -178,15 +182,16 @@ export function CreatorSetup({
   }, []);
 
   useEffect(() => {
-    if (!savedCreatorId) return;
+    if (!savedCreatorId || platforms.length === 0) return;
     getCreatorConfig(savedCreatorId)
       .then(async (data) => {
         const pc = data.platform_configs || {};
         const next = new Set();
         const cf = {};
         const nextStatuses = {};
+        const allowedKeys = new Set(platforms.map((platform) => platform.key));
         for (const [k, v] of Object.entries(pc)) {
-          if (v && v.enabled && v.url) {
+          if (v && v.enabled && v.url && allowedKeys.has(k)) {
             next.add(k);
             cf[k] = {
               url: v.url,
@@ -201,9 +206,7 @@ export function CreatorSetup({
         setSelected(next);
         setConfig(cf);
         setCreatorName(data.name || "");
-        setCreatorHandle(data.handle || "");
         setCreatorAvatarUrl(data.profile_picture_url || "");
-        setSavedConfigSignature(JSON.stringify(pc || {}));
         setTestStatus(nextStatuses);
 
         for (const [k, v] of Object.entries(cf)) {
@@ -219,10 +222,11 @@ export function CreatorSetup({
           }
         }
         setConfig({ ...cf });
+        setSavedConfigSignature(JSON.stringify(cf));
         setTestStatus({ ...nextStatuses });
       })
       .catch(() => { });
-  }, [savedCreatorId]);
+  }, [platforms, savedCreatorId]);
 
   const togglePlatform = (key) => {
     setSelected((prev) => {
@@ -274,10 +278,6 @@ export function CreatorSetup({
       if (normalizedTikTokUrl !== url) {
         updatePlatformConfig(key, { url: normalizedTikTokUrl });
       }
-      const handle = normalizedTikTokUrl.split("/@")[1] || "";
-      if (!creatorHandle && handle) {
-        setCreatorHandle(handle);
-      }
     }
 
     setTestStatus((s) => ({ ...s, [key]: key === "tiktok" ? "Checking TikTok account..." : "Checking public link..." }));
@@ -287,9 +287,6 @@ export function CreatorSetup({
         const normalized = res.normalized || urlToValidate;
         if (normalized !== urlToValidate) {
           updatePlatformConfig(key, { url: normalized });
-        }
-        if (!creatorHandle && res.handle) {
-          setCreatorHandle(res.handle);
         }
         const statusMessage = res.scrape_ready === false
           ? (res.message || "Valid format, but scraping stays locked until the link can be verified publicly.")
@@ -348,7 +345,6 @@ export function CreatorSetup({
       if (savedCreatorId) {
         const res = await updateCreator(savedCreatorId, {
           name: creatorName.trim() || undefined,
-          handle: creatorHandle.trim() || undefined,
           profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
@@ -356,7 +352,6 @@ export function CreatorSetup({
       } else {
         const res = await createCreatorWithConfig({
           name: creatorName.trim() || undefined,
-          handle: creatorHandle.trim() || undefined,
           profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
@@ -429,14 +424,49 @@ export function CreatorSetup({
     }
     return true;
   }, [config, isLinkValidated, selected]);
+  const configuredPlatformCount = useMemo(
+    () => selectedPlatformDetails.filter((platform) => String(config[platform.key]?.url || "").trim()).length,
+    [config, selectedPlatformDetails]
+  );
+  const readyPlatformCount = useMemo(
+    () =>
+      selectedPlatformDetails.filter((platform) => {
+        const value = String(config[platform.key]?.url || "").trim();
+        if (!value) return false;
+        if (platform.key === "custom") {
+          return value.split("\n").map((line) => line.trim()).filter(Boolean).length > 0;
+        }
+        return isLinkValidated(platform.key);
+      }).length,
+    [config, isLinkValidated, selectedPlatformDetails]
+  );
 
   const canSaveConfig = valid() && allSelectedLinksReady() && !saveLoading && !scrapeLoading;
   const canScrape = Boolean(savedCreatorId) && allSelectedLinksReady() && !scrapeLoading && !loading;
 
   return (
     <div className="creator-setup-card">
-      <h2>Create a bot</h2>
-      <p className="subtitle">Select platforms, add profile URLs, and set time filters. Save before searching.</p>
+      <div className="setup-hero">
+        <div>
+          <div className="setup-kicker">Setup</div>
+          <h2>Create a bot</h2>
+          <p className="subtitle">Set the creator identity, choose the sources worth monitoring, and save a clean crawl plan before you search.</p>
+        </div>
+        <div className="setup-summary">
+          <div className="setup-summary-metric">
+            <strong>{selectedPlatformDetails.length}</strong>
+            <span>Platforms</span>
+          </div>
+          <div className="setup-summary-metric">
+            <strong>{configuredPlatformCount}</strong>
+            <span>Configured</span>
+          </div>
+          <div className="setup-summary-metric">
+            <strong>{readyPlatformCount}</strong>
+            <span>Ready</span>
+          </div>
+        </div>
+      </div>
 
       {platforms.length === 0 && !error && (
         <div style={{ textAlign: "center", padding: "20px" }}>
@@ -470,267 +500,299 @@ export function CreatorSetup({
       )}
 
       <form onSubmit={(e) => e.preventDefault()} className="setup-form">
-        <div className="form-group">
-          <label>Creator name</label>
-          <input
-            type="text"
-            className={nameError ? "input-error" : ""}
-            value={creatorName}
-            onChange={(e) => {
-              setCreatorName(e.target.value);
-              if (!e.target.value.trim()) setNameError("Enter a creator name.");
-              else if (e.target.value.trim().length < 2) setNameError("Name is too short.");
-              else setNameError(null);
-              setNameHint(null);
-              setNameSuggestedAcronym(null);
-            }}
-            onBlur={() => {
-              const res = normalizeCreatorName(creatorName);
-              if (!res.isValid) {
-                setNameError(res.error);
-              } else {
-                setNameError(null);
-                if (res.flags.changed) {
-                  if (!nameOriginalBeforeFormat) {
-                    setNameOriginalBeforeFormat(creatorName);
-                  }
-                  setCreatorName(res.normalized);
-                  setNameHint(`Formatted to: ${res.normalized}`);
-                }
-                if (res.flags.likelyAcronym && res.suggested) {
-                  setNameSuggestedAcronym(res.suggested);
-                }
-              }
-            }}
-            placeholder="e.g. Dan Martell"
-            disabled={saveLoading}
-          />
-          {nameError && <div className="validation-error">{nameError}</div>}
-          {nameHint && (
-            <div className="validation-hint">
-              {nameHint}{" "}
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => {
-                  setCreatorName(nameOriginalBeforeFormat);
-                  setNameOriginalBeforeFormat(null);
-                  setNameHint(null);
-                  setNameSuggestedAcronym(null);
-                  setNameError(null);
-                }}
-              >
-                Undo
-              </button>
+        <section className="setup-section">
+          <div className="setup-section-head">
+            <div>
+              <div className="setup-section-kicker">Identity</div>
+              <h3>Creator profile</h3>
+              <p>Use the public name that should appear throughout approval, persona, and chat.</p>
             </div>
-          )}
-          {nameSuggestedAcronym && (
-            <div className="validation-suggestion">
-              Looks like an acronym -{" "}
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => {
-                  setCreatorName(nameSuggestedAcronym);
-                  setNameSuggestedAcronym(null);
-                  setNameHint(null);
-                }}
-              >
-                Use {nameSuggestedAcronym}
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="form-group">
-          <label>Handle (optional)</label>
-          <input
-            type="text"
-            value={creatorHandle}
-            onChange={(e) => setCreatorHandle(e.target.value)}
-            placeholder="e.g. danmartell"
-            disabled={saveLoading}
-          />
-        </div>
-
-        <div className="form-group">
-          <label>Platforms</label>
-          <div className="platform-selection-hint">
-            Choose the channels you want to monitor. Start with the platforms that best represent the creator's public voice.
           </div>
-          <div className="platform-checkboxes">
-            {platforms.map((p) => {
-              const implemented = p.implemented !== false;
-              const checked = selected.has(p.key);
-              return (
-                <label key={p.key} className={`platform-check ${checked ? "selected" : ""} ${implemented ? "" : "disabled"}`}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => togglePlatform(p.key)}
-                    disabled={saveLoading || !implemented}
-                  />
-                  <span className="platform-check-indicator" aria-hidden="true" />
-                  <span className="platform-check-content">
-                    <span className={`badge badge-${p.icon}`}>{p.label}</span>
-                    {!implemented && <span className="coming-soon">Coming soon</span>}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-
-        {platforms.filter((p) => selected.has(p.key)).map((p) => (
-          <div key={p.key} className="platform-block">
-            <h3 className="platform-block-title">{p.label}</h3>
+          <div className="setup-section-body">
             <div className="form-group">
-              <label>{p.key === "custom" ? "Resource URLs (one per line)" : "Profile URL"}</label>
-              <div className="url-row">
-                {p.key === "custom" ? (
-                  <textarea
-                    value={config[p.key]?.url || ""}
-                    onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
-                    placeholder={p.placeholder}
-                    disabled={saveLoading}
-                    rows={6}
-                    style={{ width: "100%", fontFamily: "monospace", resize: "vertical" }}
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    value={config[p.key]?.url || ""}
-                    onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
-                    placeholder={p.placeholder}
-                    disabled={saveLoading}
-                  />
-                )}
-                {p.key !== "custom" && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => handleTestLink(p.key)}
-                    disabled={saveLoading}
-                  >
-                    Test link
-                  </button>
-                )}
-              </div>
-              {p.key === "tiktok" && (
-                <div className="validation-hint">
-                  Paste the creator profile URL. If you paste a TikTok video link, we&apos;ll convert it to the profile automatically.
-                </div>
-              )}
-              {p.key !== "custom" && testStatus[p.key] && (() => {
-                const statusText = String(testStatus[p.key] || "").toLowerCase();
-                const isVerified = statusText.startsWith("valid public link");
-                const isWarning = !isVerified && (
-                  statusText.startsWith("valid format") ||
-                  statusText.startsWith("valid platform match") ||
-                  statusText.includes("inconclusive") ||
-                  statusText.includes("blocked live verification") ||
-                  statusText.includes("scraping stays locked")
-                );
-                const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
-                return (
-                  <span className={`test-status ${statusClass}`}>
-                    {testStatus[p.key]}
-                  </span>
-                );
-              })()}
-            </div>
-
-            {p.key !== "custom" && (
-              <div className="form-group">
-                <label>Search from</label>
-                <div className="time-mode-radios">
-                  {TIME_MODES.map((m) => (
-                    <label key={m.value}>
-                      <input
-                        type="radio"
-                        name={`time-${p.key}`}
-                        checked={(config[p.key]?.timeFilter?.mode || "all") === m.value}
-                        onChange={() =>
-                          updatePlatformConfig(p.key, {
-                            timeFilter: { ...(config[p.key]?.timeFilter || {}), mode: m.value },
-                          })
-                        }
-                        disabled={saveLoading}
-                      />
-                      {m.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-            {(config[p.key]?.timeFilter?.mode === "last_days" || config[p.key]?.timeFilter?.mode === "since") && (
-              <div className="form-group inline">
-                {config[p.key]?.timeFilter?.mode === "last_days" && (
-                  <>
-                    <label>Days</label>
-                    <select
-                      value={config[p.key]?.timeFilter?.days ?? 30}
-                      onChange={(e) =>
-                        updatePlatformConfig(p.key, {
-                          timeFilter: { ...(config[p.key]?.timeFilter || {}), days: Number(e.target.value) },
-                        })
-                      }
-                      disabled={saveLoading}
-                    >
-                      {[7, 30, 90].map((d) => (
-                        <option key={d} value={d}>{d}</option>
-                      ))}
-                    </select>
-                  </>
-                )}
-                {config[p.key]?.timeFilter?.mode === "since" && (
-                  <>
-                    <label>Since</label>
-                    <input
-                      type="date"
-                      value={config[p.key]?.timeFilter?.since || ""}
-                      onChange={(e) =>
-                        updatePlatformConfig(p.key, {
-                          timeFilter: { ...(config[p.key]?.timeFilter || {}), since: e.target.value },
-                        })
-                      }
-                      disabled={saveLoading}
-                    />
-                  </>
-                )}
-              </div>
-            )}
-            <div className="form-group">
-              <label>Max items (default {p.default_max_items})</label>
+              <label>Creator name</label>
               <input
-                type="number"
-                min={1}
-                max={50}
-                value={config[p.key]?.maxItems ?? p.default_max_items ?? 10}
-                onChange={(e) => updatePlatformConfig(p.key, { maxItems: e.target.value })}
+                type="text"
+                className={nameError ? "input-error" : ""}
+                value={creatorName}
+                onChange={(e) => {
+                  setCreatorName(e.target.value);
+                  if (!e.target.value.trim()) setNameError("Enter a creator name.");
+                  else if (e.target.value.trim().length < 2) setNameError("Name is too short.");
+                  else setNameError(null);
+                  setNameHint(null);
+                  setNameSuggestedAcronym(null);
+                }}
+                onBlur={() => {
+                  const res = normalizeCreatorName(creatorName);
+                  if (!res.isValid) {
+                    setNameError(res.error);
+                  } else {
+                    setNameError(null);
+                    if (res.flags.changed) {
+                      if (!nameOriginalBeforeFormat) {
+                        setNameOriginalBeforeFormat(creatorName);
+                      }
+                      setCreatorName(res.normalized);
+                      setNameHint(`Formatted to: ${res.normalized}`);
+                    }
+                    if (res.flags.likelyAcronym && res.suggested) {
+                      setNameSuggestedAcronym(res.suggested);
+                    }
+                  }
+                }}
+                placeholder="e.g. Dan Martell"
                 disabled={saveLoading}
               />
+              {nameError && <div className="validation-error">{nameError}</div>}
+              {nameHint && (
+                <div className="validation-hint">
+                  {nameHint}{" "}
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      setCreatorName(nameOriginalBeforeFormat);
+                      setNameOriginalBeforeFormat(null);
+                      setNameHint(null);
+                      setNameSuggestedAcronym(null);
+                      setNameError(null);
+                    }}
+                  >
+                    Undo
+                  </button>
+                </div>
+              )}
+              {nameSuggestedAcronym && (
+                <div className="validation-suggestion">
+                  Looks like an acronym -{" "}
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      setCreatorName(nameSuggestedAcronym);
+                      setNameSuggestedAcronym(null);
+                      setNameHint(null);
+                    }}
+                  >
+                    Use {nameSuggestedAcronym}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-        ))}
+        </section>
 
-        <div className="button-row">
-          <button
-            type="button"
-            className="primary-button"
-            onClick={handleSave}
-            disabled={!canSaveConfig}
-          >
-            {saveLoading ? "Saving..." : savedCreatorId ? "Update config" : "Save & Continue"}
-          </button>
+        <section className="setup-section">
+          <div className="setup-section-head">
+            <div>
+              <div className="setup-section-kicker">Sources</div>
+              <h3>Select platforms</h3>
+              <p>Pick the public channels you want to monitor. Focus on the platforms that best represent the creator&apos;s voice.</p>
+            </div>
+          </div>
+          <div className="setup-section-body">
+            <div className="platform-checkboxes">
+              {visiblePlatforms.map((p) => {
+                const implemented = p.implemented !== false;
+                const checked = selected.has(p.key);
+                return (
+                  <label key={p.key} className={`platform-check ${checked ? "selected" : ""} ${implemented ? "" : "disabled"}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => togglePlatform(p.key)}
+                      disabled={saveLoading || !implemented}
+                    />
+                    <span className="platform-check-indicator" aria-hidden="true" />
+                    <span className="platform-check-content">
+                      <span className={`badge badge-${p.icon}`}>{p.label}</span>
+                      {!implemented && <span className="coming-soon">Coming soon</span>}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </section>
 
-          <button
-            type="button"
-            className={`primary-button search-button ${scrapeLoading ? 'searching' : ''}`}
-            onClick={handleScrape}
-            disabled={!canScrape}
-          >
-            {scrapeLoading ? "Starting..." : "Search now"}
-          </button>
+        <section className="setup-section">
+          <div className="setup-section-head">
+            <div>
+              <div className="setup-section-kicker">Configuration</div>
+              <h3>Configure sources</h3>
+              <p>Add the exact public URLs, set the time range, and choose how much content to pull from each source.</p>
+            </div>
+          </div>
+          <div className="setup-section-body setup-platform-list">
+            {selectedPlatformDetails.length === 0 ? (
+              <div className="setup-empty-state">
+                Select at least one platform to configure source URLs and search rules.
+              </div>
+            ) : selectedPlatformDetails.map((p) => (
+              <div key={p.key} className="platform-block">
+                <div className="platform-block-header">
+                  <div>
+                    <div className="platform-block-eyebrow">Source</div>
+                    <h3 className="platform-block-title">{p.label}</h3>
+                  </div>
+                  <span className={`badge badge-${p.key === "youtube_shorts" ? "youtube" : p.icon}`}>{p.label}</span>
+                </div>
+                <div className="form-group">
+                  <label>{p.key === "custom" ? "Resource URLs (one per line)" : "Profile URL"}</label>
+                  <div className="url-row">
+                    {p.key === "custom" ? (
+                      <textarea
+                        value={config[p.key]?.url || ""}
+                        onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
+                        placeholder={p.placeholder}
+                        disabled={saveLoading}
+                        rows={6}
+                        style={{ width: "100%", fontFamily: "monospace", resize: "vertical" }}
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={config[p.key]?.url || ""}
+                        onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
+                        placeholder={p.placeholder}
+                        disabled={saveLoading}
+                      />
+                    )}
+                    {p.key !== "custom" && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => handleTestLink(p.key)}
+                        disabled={saveLoading}
+                      >
+                        Test link
+                      </button>
+                    )}
+                  </div>
+                  {p.key === "tiktok" && (
+                    <div className="validation-hint">
+                      Paste the creator profile URL. If you paste a TikTok video link, we&apos;ll convert it to the profile automatically.
+                    </div>
+                  )}
+                  {p.key !== "custom" && testStatus[p.key] && (() => {
+                    const statusText = String(testStatus[p.key] || "").toLowerCase();
+                    const isVerified = statusText.startsWith("valid public link");
+                    const isWarning = !isVerified && (
+                      statusText.startsWith("valid format") ||
+                      statusText.startsWith("valid platform match") ||
+                      statusText.includes("inconclusive") ||
+                      statusText.includes("blocked live verification") ||
+                      statusText.includes("scraping stays locked")
+                    );
+                    const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
+                    return (
+                      <span className={`test-status ${statusClass}`}>
+                        {testStatus[p.key]}
+                      </span>
+                    );
+                  })()}
+                </div>
+
+                {p.key !== "custom" && (
+                  <div className="form-group">
+                    <label>Search from</label>
+                    <div className="time-mode-radios">
+                      {TIME_MODES.map((m) => (
+                        <label key={m.value}>
+                          <input
+                            type="radio"
+                            name={`time-${p.key}`}
+                            checked={(config[p.key]?.timeFilter?.mode || "all") === m.value}
+                            onChange={() =>
+                              updatePlatformConfig(p.key, {
+                                timeFilter: { ...(config[p.key]?.timeFilter || {}), mode: m.value },
+                              })
+                            }
+                            disabled={saveLoading}
+                          />
+                          {m.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(config[p.key]?.timeFilter?.mode === "last_days" || config[p.key]?.timeFilter?.mode === "since") && (
+                  <div className="form-group inline">
+                    {config[p.key]?.timeFilter?.mode === "last_days" && (
+                      <>
+                        <label>Days</label>
+                        <select
+                          value={config[p.key]?.timeFilter?.days ?? 30}
+                          onChange={(e) =>
+                            updatePlatformConfig(p.key, {
+                              timeFilter: { ...(config[p.key]?.timeFilter || {}), days: Number(e.target.value) },
+                            })
+                          }
+                          disabled={saveLoading}
+                        >
+                          {[7, 30, 90].map((d) => (
+                            <option key={d} value={d}>{d}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                    {config[p.key]?.timeFilter?.mode === "since" && (
+                      <>
+                        <label>Since</label>
+                        <input
+                          type="date"
+                          value={config[p.key]?.timeFilter?.since || ""}
+                          onChange={(e) =>
+                            updatePlatformConfig(p.key, {
+                              timeFilter: { ...(config[p.key]?.timeFilter || {}), since: e.target.value },
+                            })
+                          }
+                          disabled={saveLoading}
+                        />
+                      </>
+                    )}
+                  </div>
+                )}
+                <div className="form-group">
+                  <label>Max items (default {p.default_max_items})</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={config[p.key]?.maxItems ?? p.default_max_items ?? 10}
+                    onChange={(e) => updatePlatformConfig(p.key, { maxItems: e.target.value })}
+                    disabled={saveLoading}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <div className="setup-footer">
+          <div className="setup-footer-copy">
+            Save the configuration first, then search once every selected source is fully validated.
+          </div>
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={handleSave}
+              disabled={!canSaveConfig}
+            >
+              {saveLoading ? "Saving..." : savedCreatorId ? "Update config" : "Save & Continue"}
+            </button>
+
+            <button
+              type="button"
+              className={`primary-button search-button ${scrapeLoading ? 'searching' : ''}`}
+              onClick={handleScrape}
+              disabled={!canScrape}
+            >
+              {scrapeLoading ? "Starting..." : "Search now"}
+            </button>
+          </div>
         </div>
       </form>
 

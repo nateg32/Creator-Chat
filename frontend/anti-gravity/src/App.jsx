@@ -1183,7 +1183,6 @@ function AppInner() {
             loading={state.loading}
             savedCreatorId={state.creatorId}
             initialCreatorName={state.creatorName}
-            initialHandle={state.handle}
             initialAvatarUrl={state.creatorAvatarUrl}
             userAvatarUrl={userAvatarUrl}
             onUserAvatarChange={setUserAvatarUrl}

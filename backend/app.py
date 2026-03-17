@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import os
 import json
+import re
 import bcrypt
 import uuid
 import requests
@@ -1203,6 +1204,11 @@ def _derive_handle_from_configs(configs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _slugify_creator_name(name: str) -> Optional[str]:
+    value = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+    return value or None
+
+
 @app.post("/creators/config", response_model=CreatorWithConfigResponse)
 async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
     """Create creator with platform_configs. Validate & normalize URLs, then save."""
@@ -1218,10 +1224,6 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         updated_profile = autofill_creator_identity(0, dummy_profile)
         configs = updated_profile.get("platform_configs", configs)
 
-        handle = request.handle or _derive_handle_from_configs(configs)
-        if not handle:
-            raise HTTPException(status_code=400, detail="Could not derive handle from URLs. Provide handle or fix platform URLs.")
-        
         name_raw = request.name
         if not name_raw:
             raise HTTPException(status_code=400, detail={"field": "name", "message": "Creator name is required."})
@@ -1229,6 +1231,9 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         if not norm_res.is_valid:
             raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
         name = norm_res.normalized
+        handle = request.handle or _derive_handle_from_configs(configs) or _slugify_creator_name(name)
+        if not handle:
+            raise HTTPException(status_code=400, detail="Could not derive a stable creator id from the selected URLs or name.")
 
         user_row = db.execute_one("SELECT id FROM users ORDER BY id LIMIT 1", ())
         user_id = user_row["id"] if user_row and user_row.get("id") else 1
