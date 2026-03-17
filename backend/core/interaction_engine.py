@@ -1143,7 +1143,7 @@ STRICT IDENTITY LOCK:
             if has_video_links:
                 anti_halluc_rule = (
                     "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have verified video links from a live web search. "
-                    "Share only the 1-2 best matching links inline using markdown [Title](URL) format. "
+                    "Name the best match naturally in the sentence. Do not output markdown links in the prose. "
                     "Before each link, explain in plain language exactly why it helps with the user's question. "
                     "DO NOT dump raw domains, naked URLs, or a pile of links. "
                     "DO NOT output JSON, key names, or labels like Title:, URL:, or Summary:. "
@@ -1152,7 +1152,7 @@ STRICT IDENTITY LOCK:
                     "PRIORITIZE the platform that best matches what the user asked for. If needed, share one backup option with a short reason."
                 )
             else:
-                anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. If you share a link, keep it to the 1-2 best options and explain why each one fits before giving it. Use [Title](URL) format, not naked URLs, and never output JSON or labels like Title:, URL:, or Summary:."
+                anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Name the best resource naturally in the sentence, do not output markdown links in the prose, and never output JSON or labels like Title:, URL:, or Summary:."
 
         return f"""IDENTITY: You are {creator_name}.
 {identity_context}
@@ -1165,14 +1165,14 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 1. INTERNAL PLAN: Briefly (mentally) plan your route: EXECUTE if answering a question, COACH if giving guidance, or GREET if just saying hello.
 2. ANSWER DIRECTLY: If the user asked a question, answer it immediately using your knowledge.
 3. STAY IN CHARACTER: Use your personality, tone, worldview, and metaphors.
-4. NO MARKDOWN: Do not use bold (**) or headers (#). Markdown links [Title](URL) ARE allowed ONLY for specific creator videos or resources.
+4. NO MARKDOWN: Do not use bold (**), headers (#), or markdown links in the prose.
 5. ONE QUESTION MAX: Only at the end, if it advances the goal.
 6. DO NOT SOUND LIKE A SEARCH TOOL: Never narrate matching, retrieval, verification, or content search unless the user explicitly asked for a link, source, or video.
 7. STAY ON THE CURRENT TURN: If the user changes topic, answer the new topic immediately. Only carry older topic context forward when the user is clearly following up.
 8. FOR MORAL, EMOTIONAL, RELATIONSHIP, OR SPIRITUAL QUESTIONS: default to direct counsel in your worldview. Suggest content only if the user explicitly asks for it.
 9. RHYTHM OVER CATCHPHRASES: Use signature phrases sparingly and keep the cadence human.
 10. NO INLINE DASHES: Do not use hyphens, en dashes, or em dashes inside sentences. Rewrite with commas, periods, or spaces instead. Leading list bullets are fine.
-11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 links max, and explain why each one helps with the user's specific question before you give it.
+11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 resources max, and explain why each one helps with the user's specific question before you give it.
 12. RESOURCE DELIVERY: When you recommend a resource, name it naturally in the sentence. Do not paste raw metadata, JSON objects, or labels like Title:, URL:, or Summary:. If the user asked for YouTube, prefer YouTube results over other platforms.
 
 CONTEXT:
@@ -1460,7 +1460,7 @@ Output only the response."""
             conversational_rule = "7. BE CONVERSATIONAL. Write naturally."
             formatting_rules = (
                 "No markdown headers. No bold markers (**). "
-                "Markdown links [Title](URL) ARE allowed only for specific creator resources. "
+                "Do not use markdown links in the prose. "
                 "\nUSER REQUESTED STRUCTURE: USE BULLET POINTS FOR LISTS. "
                 "Start every item with a Dash (- ) or Number (1. ). "
                 "Example:\n- Item 1\n- Item 2\n"
@@ -1470,7 +1470,7 @@ Output only the response."""
             conversational_rule = "7. BE CONVERSATIONAL. Write like you're texting someone. Short paragraphs. Natural flow."
             formatting_rules = (
                 "No markdown headers. No bold markers (**). "
-                "Markdown links [Title](URL) ARE allowed only for specific creator resources. "
+                "Do not use markdown links in the prose. "
                 "Ideally write in paragraphs for a natural feel."
                 "\nNo bullet points. No numbered lists. Write in paragraphs."
             )
@@ -1486,7 +1486,7 @@ Output only the response."""
         
         # If we have web search results, ensure the rule allows them
         if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
-            anti_hallucination_rule = "7. USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Keep links to the best 1-2 options, prefer the platform the user asked for, and never output JSON or labels like Title:, URL:, or Summary:."
+            anti_hallucination_rule = "7. USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Keep it to the best 1-2 resources, prefer the platform the user asked for, and never output markdown links, JSON, or labels like Title:, URL:, or Summary:."
 
         system_prompt = f"""IDENTITY:
 You are {creator_name}.
@@ -1538,7 +1538,7 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 9. ONE QUESTION MAX at the end, only if it genuinely moves the conversation forward. CHECK HISTORY: Do not ask a question you have already asked in the conversation history above.
 
 10. BRIDGE & PIVOT. If the user asks about a topic outside {creator_category}, do NOT break character. Explain the concept *through the lens of your domain*. Use YOUR metaphors (e.g. if you're a basketball coach talking business, use basketball analogies). Then gently pivot back to your expertise.
-11. RESOURCE DELIVERY. If you share a creator resource, say the title naturally in the sentence. Do not paste raw metadata, JSON objects, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
+11. RESOURCE DELIVERY. If you share a creator resource, say the title naturally in the sentence. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
 
 FORMAT RULES (non-negotiable):
 {formatting_rules}

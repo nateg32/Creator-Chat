@@ -256,6 +256,58 @@ def _make_live_web_chunk(result: Dict[str, Any], index: int) -> Dict[str, Any]:
     }
 
 
+def _thumbnail_for_url(url: str) -> str:
+    youtube_match = re.search(r"(?:v=|youtu\.be/|/shorts/)([\w-]+)", url or "", re.IGNORECASE)
+    if youtube_match:
+        return f"https://img.youtube.com/vi/{youtube_match.group(1)}/mqdefault.jpg"
+    return ""
+
+
+def _preview_card_from_resource(title: str, url: str) -> Optional[Dict[str, str]]:
+    title = (title or "").strip()
+    url = (url or "").strip()
+    if not title or not url:
+        return None
+    return {
+        "type": "preview_card",
+        "title": title,
+        "url": url,
+        "thumbnail_url": _thumbnail_for_url(url),
+    }
+
+
+def _build_response_cards(
+    rec_result: Optional[Dict[str, Any]],
+    support_set: Optional[List[Dict[str, Any]]] = None,
+    preferred_platforms: Optional[List[str]] = None,
+) -> List[Dict[str, str]]:
+    cards: List[Dict[str, str]] = []
+
+    if _has_recommendable_resource(rec_result, preferred_platforms=preferred_platforms):
+        best = (rec_result or {}).get("best_candidate") or {}
+        card = _preview_card_from_resource(_candidate_title(best), _candidate_url(best))
+        if card:
+            cards.append(card)
+            return cards
+
+    for chunk in support_set or []:
+        if not (chunk.get("content") or "").startswith("[LIVE WEB SEARCH RESULT]"):
+            continue
+        card = _preview_card_from_resource(
+            chunk.get("title") or (chunk.get("source_ref") or {}).get("title") or "",
+            chunk.get("url") or (chunk.get("source_ref") or {}).get("canonical_url") or "",
+        )
+        if not card:
+            continue
+        platform = _platform_from_url(card["url"])
+        if preferred_platforms and platform not in {p.lower() for p in preferred_platforms if p}:
+            continue
+        cards.append(card)
+        break
+
+    return cards
+
+
 def _unwrap_structured_answer(answer: str) -> str:
     text = (answer or "").strip()
     if not text:
@@ -2957,22 +3009,12 @@ Message: {answer_text[:500]}"""
 
     # --- Step 9: Video Recommendation (ONE ONLY) ---
     card = []
-    if (
-        plan_obj.grounding.video_policy in ["one_if_helpful", "forced"]
-        and _has_recommendable_resource(
+    if plan_obj.grounding.video_policy in ["one_if_helpful", "forced"]:
+        card = _build_response_cards(
             rec_result,
+            support_set,
             preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms"),
         )
-    ):
-        best = rec_result["best_candidate"]
-        best_url = _candidate_url(best)
-        youtube_match = re.search(r"(?:v=|youtu\.be/|/shorts/)([\w-]+)", best_url)
-        card = [{
-            "type": "preview_card",
-            "title": _candidate_title(best),
-            "url": best_url,
-            "thumbnail_url": f"https://img.youtube.com/vi/{youtube_match.group(1)}/mqdefault.jpg" if youtube_match else ""
-        }]
 
     # --- Step 10: Persist + Return ---
     logger.info("Pipeline Step 10: Finalizing Output...")
@@ -3415,10 +3457,19 @@ async def grounded_rag_stream(
         route=route
     )
 
+    stream_cards = _build_response_cards(
+        rec_result if route == "ROUTE_2_TASK" else None,
+        support_set,
+        preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms") if route == "ROUTE_2_TASK" else None,
+    )
+
     async for chunk in stream:
         content = chunk.choices[0].delta.content
         if content:
             yield content
+
+    if stream_cards:
+        yield f"__CARDS__{json.dumps(stream_cards)}"
 
 def build_source_list(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert support_set chunks into a flat list of unique source references."""
