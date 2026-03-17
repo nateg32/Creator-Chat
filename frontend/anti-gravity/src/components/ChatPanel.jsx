@@ -81,9 +81,14 @@ function cleanCardTitle(title = "", url = "") {
   const domain = getDomainLabel(url);
   const lowered = cleaned.toLowerCase();
   const genericHomeSuffixes = ["home", "homepage", "official site", "official website", "site"];
+  const genericTitles = ["external resource", "resource", "link", "source", "website", "site"];
 
   if (!cleaned) {
     return domain || "External Resource";
+  }
+
+  if (domain && genericTitles.includes(lowered)) {
+    return domain;
   }
 
   if (domain) {

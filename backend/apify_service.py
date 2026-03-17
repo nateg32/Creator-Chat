@@ -339,6 +339,10 @@ def extract_title_from_metadata(item: Dict[str, Any], platform: str, source_url:
         # Clean up and truncate caption for title use
         # Remove hashtags and excessive whitespace
         clean_caption = re.sub(r'#\w+\s*', '', str(caption))
+        clean_caption = re.sub(r'https?://\S+', '', clean_caption)
+        if platform == "twitter":
+            clean_caption = re.sub(r'^RT\s+@\w+:\s*', '', clean_caption, flags=re.IGNORECASE)
+            clean_caption = re.sub(r'^(?:@\w+\s+){1,5}', '', clean_caption)
         clean_caption = re.sub(r'\s+', ' ', clean_caption).strip()
         if len(clean_caption) > 60:
             title = clean_caption[:57] + "..."

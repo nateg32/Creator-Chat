@@ -37,6 +37,7 @@ from backend.services.grammar_normalizer import grammar_normalizer
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 from backend.services.live_search_rules import build_live_search_query, needs_fresh_public_web_search
+from backend.services.rag_text_matcher import merge_support_sets, retrieve_exact_text_matches
 from backend.services.out_of_domain_rules import (
     default_bridge_question,
     detect_external_live_fact_topic,
@@ -2529,6 +2530,15 @@ Message: {answer_text[:500]}"""
                     logger.error(f"Fallback embedding build failed: {e}")
                     q_emb = [0.0] * 1536
             support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
+
+        exact_text_matches = retrieve_exact_text_matches(
+            creator_id,
+            question,
+            limit=4,
+            enabled_platforms=enabled_platforms,
+        )
+        if exact_text_matches:
+            support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
             
         # --- NEW: Real-Time Web Search Fallback (Sync) ---
         # Check context: Did the bot just talk about a video/link?
@@ -2961,6 +2971,15 @@ async def grounded_rag_stream(
         retrieve_task = asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
         
         support_set, mems = await asyncio.gather(retrieve_task, mems_task)
+        exact_text_matches = await asyncio.to_thread(
+            retrieve_exact_text_matches,
+            creator_id,
+            question,
+            4,
+            None,
+        )
+        if exact_text_matches:
+            support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
         
         # --- Optimized Real-Time Web Search Fallback ---
         import time as _time

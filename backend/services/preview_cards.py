@@ -29,6 +29,7 @@ GENERIC_TITLE_PATTERNS = (
     re.compile(r'^here(?: it is| you go)?$', re.IGNORECASE),
     re.compile(r'^this(?: one| link| video)?$', re.IGNORECASE),
 )
+SENTENCE_START_WORDS = {"i", "you", "we", "they", "he", "she", "it", "my", "our", "their"}
 MAX_CARDS = 3
 TITLE_FETCH_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (compatible; CreatorBotPreview/1.0; +https://creator-bot.local)',
@@ -124,7 +125,14 @@ def _title_from_line(line: str, url_fragment: str, title_hint: str = '') -> str:
     cleaned = HTTP_URL_RE.sub(' ', cleaned)
     cleaned = re.sub(r'^\s*(?:\d+[.)]\s*|[-*]\s*)', '', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -:\t')
-    if cleaned and not _is_generic_title(cleaned, url_fragment) and len(cleaned) <= 140:
+    words = re.findall(r"[A-Za-z0-9']+", cleaned.lower())
+    looks_like_sentence = (
+        len(words) >= 8
+        or (words and words[0] in SENTENCE_START_WORDS)
+        or "," in cleaned
+        or cleaned.endswith(".")
+    )
+    if cleaned and not looks_like_sentence and not _is_generic_title(cleaned, url_fragment) and len(cleaned) <= 140:
         return cleaned
     normalized_url = _normalize_url(url_fragment)
     parsed = urlparse(normalized_url)

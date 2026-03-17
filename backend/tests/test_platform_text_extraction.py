@@ -56,6 +56,20 @@ class PlatformTextExtractionTests(unittest.TestCase):
         caption = apify_service._extract_platform_caption(item, "twitter")
         self.assertEqual(caption, "Tweet body text")
 
+    def test_twitter_title_strips_leading_mentions(self):
+        item = {
+            "legacy": {
+                "full_text": "@dom_lucre They said the same thing about index funds and ETFs",
+            },
+        }
+
+        title = apify_service.extract_title_from_metadata(
+            item,
+            "twitter",
+            "https://twitter.com/alexhormozi/status/123",
+        )
+        self.assertEqual(title, "They said the same thing about index funds and ETFs")
+
     def test_linkedin_caption_reads_commentary_text(self):
         item = {
             "commentary": {

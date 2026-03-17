@@ -27,6 +27,13 @@ class PreviewCardTests(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]['url'], 'https://2819Church.org')
 
+    def test_sentence_wrapped_bare_domain_uses_domain_title(self):
+        cards = preview_cards.extract_preview_cards(
+            'I build and invest in companies through acquisition.com, and I teach operators how to grow.'
+        )
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]['title'], 'acquisition.com')
+
     def test_extracts_youtube_thumbnail(self):
         cards = preview_cards.extract_preview_cards('Watch https://youtu.be/abc123XYZ')
         self.assertEqual(len(cards), 1)
