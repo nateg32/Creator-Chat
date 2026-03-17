@@ -51,7 +51,7 @@ from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
 from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_sentence_hyphens
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
-from backend.services.tiktok_validator import verify_tiktok_profile_with_actor
+from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 
 logger = logging.getLogger(__name__)
 
@@ -518,10 +518,26 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
     if platform_key == "custom":
         return {"exists": True, "checked_via": "format_only"}
 
+    tiktok_handle = _handle_from_profile_url(url, "tiktok") if platform_key == "tiktok" else ""
+
     timeout = 3 if platform_key == "tiktok" else 12
     try:
         response = requests.get(url, headers=_VALIDATION_HEADERS, timeout=timeout, allow_redirects=True)
     except requests.RequestException:
+        if platform_key == "tiktok":
+            tiktok_result = verify_tiktok_profile(url, tiktok_handle, fetch_posts_fn=None)
+            if tiktok_result.get("confirmed"):
+                return {
+                    "exists": True,
+                    "checked_via": tiktok_result.get("checked_via") or "tiktok_actor",
+                    "resolved_url": tiktok_result.get("matched_url") or url,
+                }
+            return {
+                "exists": False,
+                "error": tiktok_result.get("error") or "TikTok could not verify that this account exists publicly.",
+                "checked_via": tiktok_result.get("checked_via") or "tiktok_strict",
+                "resolved_url": url,
+            }
         return {
             "exists": True,
             "checked_via": "format_only_fallback",
@@ -578,6 +594,26 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         }
 
     if _is_platform_auth_redirect(platform_key, final_url):
+        if platform_key == "tiktok":
+            tiktok_result = verify_tiktok_profile(
+                url,
+                tiktok_handle,
+                resolved_url=final_url,
+                page_title=_extract_html_title(response.text or ""),
+                page_body=response.text or "",
+            )
+            if tiktok_result.get("confirmed"):
+                return {
+                    "exists": True,
+                    "checked_via": tiktok_result.get("checked_via") or "tiktok_actor",
+                    "resolved_url": tiktok_result.get("matched_url") or final_url,
+                }
+            return {
+                "exists": False,
+                "error": tiktok_result.get("error") or "TikTok could not verify that this account exists publicly.",
+                "checked_via": tiktok_result.get("checked_via") or "tiktok_strict",
+                "resolved_url": final_url,
+            }
         return {
             "exists": True,
             "checked_via": "profile_signal_soft",
@@ -594,14 +630,6 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         }
 
     title = _extract_html_title(response.text or "")
-
-    if platform_key == "tiktok" and title in {"tiktok", "tiktok - make your day", "make your day", "log in | tiktok"}:
-        return {
-            "exists": True,
-            "checked_via": "profile_signal_soft",
-            "resolved_url": final_url,
-            "warning": "Valid platform match. Live profile verification was inconclusive.",
-        }
 
     for marker in invalid_markers.get(platform_key, []):
         if marker in body:
@@ -621,6 +649,27 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
                 "resolved_url": final_url,
                 "warning": "Valid channel path. Live content signals were inconclusive.",
             }
+
+    if platform_key == "tiktok":
+        tiktok_result = verify_tiktok_profile(
+            url,
+            tiktok_handle,
+            resolved_url=final_url,
+            page_title=title,
+            page_body=response.text or "",
+        )
+        if tiktok_result.get("confirmed"):
+            return {
+                "exists": True,
+                "checked_via": tiktok_result.get("checked_via") or "tiktok_page",
+                "resolved_url": tiktok_result.get("matched_url") or final_url,
+            }
+        return {
+            "exists": False,
+            "error": tiktok_result.get("error") or "TikTok could not verify that this account exists publicly.",
+            "checked_via": tiktok_result.get("checked_via") or "tiktok_strict",
+            "resolved_url": final_url,
+        }
 
     if not _page_has_positive_profile_signal(platform_key, url, final_url, response.text or ""):
         return {

@@ -1,5 +1,6 @@
 import importlib.util
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -56,9 +57,10 @@ class TikTokPlatformTests(unittest.TestCase):
 
 class TikTokRouterTests(unittest.TestCase):
     def test_tiktok_route_applies_time_filter(self):
+        now = datetime.now(timezone.utc)
         items = [
-            {"published_at": "2026-03-10T00:00:00+00:00"},
-            {"published_at": "2026-01-01T00:00:00+00:00"},
+            {"published_at": (now - timedelta(days=1)).isoformat()},
+            {"published_at": (now - timedelta(days=30)).isoformat()},
         ]
         with patch.object(scraper_router, "search_tiktok_posts", return_value=[dict(item) for item in items]):
             result = scraper_router._map_tiktok({
@@ -94,6 +96,34 @@ class TikTokActorVerifierTests(unittest.TestCase):
         )
         self.assertFalse(result["confirmed"])
         self.assertEqual(result["checked_via"], "tiktok_actor_soft")
+
+    def test_strict_validator_accepts_strong_page_signal(self):
+        result = tiktok_validator.verify_tiktok_profile(
+            "https://www.tiktok.com/@ahormozi",
+            "ahormozi",
+            resolved_url="https://www.tiktok.com/@ahormozi",
+            page_title="@ahormozi | TikTok",
+            page_body='{"uniqueId":"ahormozi","profile":"/@ahormozi"}',
+            fetch_posts_fn=lambda *args, **kwargs: [],
+        )
+
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(result["checked_via"], "tiktok_page")
+
+    def test_strict_validator_falls_back_to_actor_for_generic_page(self):
+        result = tiktok_validator.verify_tiktok_profile(
+            "https://www.tiktok.com/@ahormozi",
+            "ahormozi",
+            resolved_url="https://www.tiktok.com/@ahormozi",
+            page_title="TikTok - Make Your Day",
+            page_body="",
+            fetch_posts_fn=lambda *args, **kwargs: [
+                {"source_url": "https://www.tiktok.com/@ahormozi/video/123", "metadata": {}}
+            ],
+        )
+
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(result["checked_via"], "tiktok_actor")
 
 
 class _FakeDataset:
@@ -131,7 +161,7 @@ class _FakeClient:
 
 
 class TikTokApifyTests(unittest.TestCase):
-    def test_tiktok_caption_sets_transcript_present(self):
+    def test_tiktok_caption_is_preserved_when_transcripts_are_deferred(self):
         with patch.object(apify_service, "APIFY_AVAILABLE", True), \
      patch.object(apify_service, "ApifyClient", _FakeClient, create=True), \
      patch.object(apify_service, "get_apify_token", return_value="token"):
@@ -142,8 +172,9 @@ class TikTokApifyTests(unittest.TestCase):
                 skip_transcripts=True,
             )
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["transcript"], "short caption")
-        self.assertEqual(items[0]["transcript_status"], "present")
+        self.assertEqual(items[0]["caption"], "short caption")
+        self.assertEqual(items[0]["transcript"], "")
+        self.assertEqual(items[0]["transcript_status"], "pending")
 
 
 if __name__ == "__main__":

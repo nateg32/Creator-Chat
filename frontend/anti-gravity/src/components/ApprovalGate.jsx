@@ -6,6 +6,14 @@ const DECISION_APPROVE = "approve";
 const DECISION_DENY = "deny";
 
 export function ApprovalGate({ items, onSave, onBack, loading, progress, forceShowSave = false }) {
+  const initialDecisionSignature = useMemo(() => JSON.stringify(
+    items.map((item) => {
+      const itemKey = item.item_id || item.queue_id;
+      const currentStatus = String(item.status || item.item_status || DECISION_PENDING).toLowerCase();
+      return [itemKey, currentStatus];
+    })
+  ), [items]);
+
   const initialDecisions = useMemo(() => {
     const initial = {};
     items.forEach((item) => {
@@ -26,7 +34,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
 
   useEffect(() => {
     setDecisions(initialDecisions);
-  }, [initialDecisions]);
+  }, [initialDecisionSignature]);
 
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");

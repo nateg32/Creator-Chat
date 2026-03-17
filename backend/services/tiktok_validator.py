@@ -76,3 +76,82 @@ def verify_tiktok_profile_with_actor(
         "reason": "handle_mismatch",
         "item_count": len(items),
     }
+
+
+def verify_tiktok_profile(
+    url: str,
+    handle: Optional[str],
+    resolved_url: str = "",
+    page_title: str = "",
+    page_body: str = "",
+    fetch_posts_fn=None,
+) -> Dict[str, Any]:
+    """Strict TikTok profile verification.
+
+    Success requires one of:
+    - strong public page signals for the expected handle, or
+    - actor confirmation that scraped items belong to the expected handle.
+    """
+    expected_handle = _canonical_handle(handle)
+    final_url = (resolved_url or url or "").strip()
+    title = str(page_title or "").strip().lower()
+    body = str(page_body or "").strip().lower()
+
+    if not expected_handle:
+        return {
+            "confirmed": False,
+            "checked_via": "tiktok_strict",
+            "reason": "missing_handle",
+            "error": "TikTok link must include a creator handle.",
+        }
+
+    if final_url and not _url_matches_handle(final_url, expected_handle):
+        return {
+            "confirmed": False,
+            "checked_via": "tiktok_strict",
+            "reason": "resolved_handle_mismatch",
+            "error": "TikTok link resolved to a different profile.",
+        }
+
+    invalid_markers = (
+        "couldn't find this account",
+        "couldn't find this video",
+        "page not available",
+        "profile unavailable",
+    )
+    if any(marker in body for marker in invalid_markers):
+        return {
+            "confirmed": False,
+            "checked_via": "tiktok_page",
+            "reason": "page_not_found",
+            "error": "TikTok could not verify that this account exists publicly.",
+        }
+
+    generic_titles = {"tiktok", "tiktok - make your day", "make your day", "log in | tiktok"}
+    positive_markers = [
+        f'"uniqueid":"{expected_handle}"',
+        f'"uniqueId":"{expected_handle}"',
+        f'/@{expected_handle}',
+        f'@{expected_handle}',
+        f'"authorname":"{expected_handle}"',
+        f'"authorName":"{expected_handle}"'.lower(),
+        f'"profile":"/@{expected_handle}"',
+    ]
+    page_has_strong_signal = any(marker in body for marker in positive_markers)
+    if title not in generic_titles and page_has_strong_signal:
+        return {
+            "confirmed": True,
+            "checked_via": "tiktok_page",
+            "matched_url": final_url or url,
+        }
+
+    actor_result = verify_tiktok_profile_with_actor(url, expected_handle, fetch_posts_fn=fetch_posts_fn)
+    if actor_result.get("confirmed"):
+        return actor_result
+
+    return {
+        "confirmed": False,
+        "checked_via": actor_result.get("checked_via") or "tiktok_strict",
+        "reason": actor_result.get("reason") or "inconclusive",
+        "error": "TikTok could not verify that this account exists publicly.",
+    }
