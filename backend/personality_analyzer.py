@@ -354,7 +354,16 @@ def _backfill_v3_fields(fingerprint: dict) -> dict:
         confirmed.extend(content_truth.get("products") or [])
         knowledge_boundaries["confirmed_public_facts"] = confirmed[:12]
     if not knowledge_boundaries.get("must_verify_topics"):
-        knowledge_boundaries["must_verify_topics"] = ["age", "net worth", "family", "private life"]
+        knowledge_boundaries["must_verify_topics"] = [
+            "age",
+            "net worth",
+            "family",
+            "private life",
+            "medical advice",
+            "legal advice",
+            "financial advice",
+            "current events",
+        ]
     fingerprint["knowledge_boundaries"] = knowledge_boundaries
 
     unknown_topic_policy = fingerprint.get("unknown_topic_policy") or {}

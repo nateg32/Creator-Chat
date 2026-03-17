@@ -53,7 +53,10 @@
 }
 
 .fingerprint-progress-card {
-  padding: 18px 18px 16px;
+  padding: 20px 20px 18px;
+  background:
+    radial-gradient(circle at top right, rgba(29, 78, 216, 0.08), transparent 34%),
+    linear-gradient(180deg, #fcfdff 0%, #f8fafc 100%);
 }
 
 .fingerprint-progress-header {
@@ -70,7 +73,15 @@
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #475467;
+  color: #667085;
+}
+
+.fingerprint-progress-title {
+  margin: 0 0 6px;
+  font-size: 24px;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+  color: #101828;
 }
 
 .fingerprint-progress-percent {
@@ -98,9 +109,102 @@
 
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 100%);
+  background: linear-gradient(90deg, #0f172a 0%, #1459d9 52%, #27b3a8 100%);
   border-radius: inherit;
   transition: width 0.45s ease;
+}
+
+.fingerprint-progress-stage-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.fingerprint-stage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.fingerprint-stage-chip.complete {
+  background: #f0fdf9;
+  border-color: #b7efe1;
+  color: #0f766e;
+}
+
+.fingerprint-stage-chip.current {
+  background: #eef4ff;
+  border-color: #c9dafe;
+  color: #1d4ed8;
+  box-shadow: 0 8px 20px rgba(29, 78, 216, 0.12);
+}
+
+.fingerprint-stage-chip-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.fingerprint-stage-chip.complete .fingerprint-stage-chip-index {
+  background: rgba(15, 118, 110, 0.12);
+}
+
+.fingerprint-stage-chip.current .fingerprint-stage-chip-index {
+  background: rgba(29, 78, 216, 0.14);
+}
+
+.fingerprint-stage-chip-label {
+  font-weight: 600;
+}
+
+.fingerprint-progress-callouts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.fingerprint-callout {
+  padding: 14px 15px;
+  border-radius: 16px;
+  border: 1px solid #e9edf5;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.fingerprint-callout.playful {
+  background: linear-gradient(135deg, rgba(255, 247, 237, 0.95), rgba(239, 246, 255, 0.95));
+}
+
+.fingerprint-callout-label {
+  display: inline-block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #98a2b3;
+}
+
+.fingerprint-callout p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #475467;
 }
 
 .fingerprint-progress-meta {
@@ -257,6 +361,10 @@
   .fingerprint-progress-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .fingerprint-progress-callouts {
+    grid-template-columns: 1fr;
   }
 
   .fingerprint-progress-meta {

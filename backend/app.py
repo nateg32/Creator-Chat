@@ -83,6 +83,114 @@ def startup_event():
 # Also persisted to DB so progress survives backend restarts (e.g. uvicorn --reload)
 _search_progress: Dict[str, Dict[str, Any]] = {}
 
+_FINGERPRINT_STAGE_FLOW = [
+    {
+        "key": "preparing",
+        "label": "Preparing Workspace",
+        "description": "Checking creator config, approved content, and any reusable research.",
+        "range": [0, 12],
+    },
+    {
+        "key": "research_cache",
+        "label": "Loading Cached Research",
+        "description": "Reusing dossier material that is still valid so we do not waste time.",
+        "range": [12, 30],
+    },
+    {
+        "key": "link_scan",
+        "label": "Scanning Public Signals",
+        "description": "Walking official links, channels, and domains for identity clues.",
+        "range": [18, 40],
+    },
+    {
+        "key": "voice_analysis",
+        "label": "Distilling Voice",
+        "description": "Mining approved content for recurring values, cadence, arguments, and tells.",
+        "range": [40, 62],
+    },
+    {
+        "key": "dossier",
+        "label": "Expanding Public Profile",
+        "description": "Filling missing identity gaps with targeted public research.",
+        "range": [62, 80],
+    },
+    {
+        "key": "synthesis",
+        "label": "Building The Model",
+        "description": "Combining research, worldview, and voice into the working fingerprint.",
+        "range": [80, 92],
+    },
+    {
+        "key": "finalizing",
+        "label": "Writing The Soul",
+        "description": "Finalizing soul.md, runtime instructions, and last pass validation.",
+        "range": [92, 99],
+    },
+    {
+        "key": "complete",
+        "label": "Ready",
+        "description": "Fingerprint is built and ready to steer replies.",
+        "range": [100, 100],
+    },
+]
+
+
+def _fingerprint_stage_meta(stage: str) -> Dict[str, Any]:
+    stage_key = str(stage or "").lower().strip()
+    for item in _FINGERPRINT_STAGE_FLOW:
+        if item["key"] == stage_key:
+            return item
+    if stage_key == "error":
+        return {
+            "key": "error",
+            "label": "Error",
+            "description": "The build hit an error before the fingerprint finished.",
+            "range": [0, 0],
+        }
+    return {
+        "key": stage_key or "processing",
+        "label": "Processing",
+        "description": "Fingerprint generation is in progress.",
+        "range": [0, 100],
+    }
+
+
+def _fingerprint_fun_line(stage: str) -> str:
+    lines = {
+        "preparing": "Opening the case file and checking what we already know.",
+        "research_cache": "Dusting off cached receipts instead of reinventing the wheel.",
+        "link_scan": "Walking the public trail for bios, channels, and identity clues.",
+        "voice_analysis": "Listening for signature phrases, recurring values, and favorite arguments.",
+        "dossier": "Cross-examining the public record to fill in the missing pieces.",
+        "synthesis": "Turning scattered evidence into one coherent operating system.",
+        "finalizing": "Polishing the brain, the voice, and the soul.md handoff.",
+        "complete": "The profile is locked in and ready to talk.",
+        "error": "The fingerprint machine dropped a bolt. It needs another pass.",
+    }
+    return lines.get(str(stage or "").lower().strip(), "Fingerprint generation is moving through the pipeline.")
+
+
+def _build_fingerprint_stage_list(current_stage: str, percent: int, status: str) -> List[Dict[str, Any]]:
+    current_key = str(current_stage or "").lower().strip()
+    complete = str(status or "").lower().strip() != "processing"
+    stage_cards = []
+    for index, item in enumerate(_FINGERPRINT_STAGE_FLOW, start=1):
+        state = "upcoming"
+        if complete:
+            state = "complete"
+        elif item["key"] == current_key:
+            state = "current"
+        elif percent >= item["range"][1]:
+            state = "complete"
+        stage_cards.append({
+            "key": item["key"],
+            "label": item["label"],
+            "description": item["description"],
+            "state": state,
+            "index": index,
+        })
+    return stage_cards
+
 
 def _ensure_search_progress_table():
     """Create search_progress table if it doesn't exist."""
@@ -3922,6 +4030,18 @@ async def get_fingerprint_status(creator_id: int):
         "message": "Fingerprint ready." if bool(row.get("style_fingerprint") or row.get("identity_fingerprint")) and status != "processing" else "Waiting to start.",
     }
     progress = {**default_progress, **progress, "status": status}
+    stage_meta = _fingerprint_stage_meta(progress.get("stage"))
+    stage_list = _build_fingerprint_stage_list(progress.get("stage"), int(progress.get("percent") or 0), status)
+    current_stage_index = next((item["index"] for item in stage_list if item["key"] == stage_meta["key"]), 1)
+    progress = {
+        **progress,
+        "stage_label": stage_meta["label"],
+        "stage_description": stage_meta["description"],
+        "fun_line": _fingerprint_fun_line(progress.get("stage")),
+        "stage_index": current_stage_index,
+        "stage_total": len(stage_list),
+        "stages": stage_list,
+    }
 
     return {
         "status": status,

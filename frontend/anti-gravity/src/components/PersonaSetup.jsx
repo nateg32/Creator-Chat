@@ -24,6 +24,15 @@ function formatFingerprintStage(stage) {
   return labels[String(stage || "").toLowerCase()] || "Processing";
 }
 
+function formatStageCounter(progress) {
+  const index = Number(progress?.stage_index);
+  const total = Number(progress?.stage_total);
+  if (!Number.isFinite(index) || !Number.isFinite(total) || total <= 0) {
+    return "Live progress";
+  }
+  return `Step ${index} of ${total}`;
+}
+
 export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) {
   const [hasContent, setHasContent] = useState(false);
   const [contentLoading, setContentLoading] = useState(true);
@@ -126,12 +135,16 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
   const stats = getStatements();
   const showFinishButton = Boolean(creatorId) && status !== "processing" && (Boolean(fingerprint) || !hasContent);
   const progressPercent = clampPercent(fingerprintProgress?.percent);
-  const progressStage = formatFingerprintStage(fingerprintProgress?.stage || status);
+  const progressStage = fingerprintProgress?.stage_label || formatFingerprintStage(fingerprintProgress?.stage || status);
   const progressMessage = fingerprintProgress?.message || (
     status === "processing"
       ? "Analyzing approved content and public-source identity signals."
       : "Fingerprint ready."
   );
+  const progressDescription = fingerprintProgress?.stage_description || "Fingerprint generation is moving through the pipeline.";
+  const progressFunLine = fingerprintProgress?.fun_line || "The engine is turning approved content into a creator operating system.";
+  const progressStageCounter = formatStageCounter(fingerprintProgress);
+  const progressStages = Array.isArray(fingerprintProgress?.stages) ? fingerprintProgress.stages : [];
 
   return (
     <div className="persona-setup-card">
@@ -150,7 +163,8 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
           <div className="fingerprint-progress-card">
             <div className="fingerprint-progress-header">
               <div>
-                <p className="fingerprint-progress-label">{progressStage}</p>
+                <p className="fingerprint-progress-label">{progressStageCounter}</p>
+                <h3 className="fingerprint-progress-title">{progressStage}</h3>
                 <p className="loading-text">{progressMessage}</p>
               </div>
               <div className="fingerprint-progress-percent">{progressPercent}%</div>
@@ -158,9 +172,31 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
             <div className="progress-bar-container">
               <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }}></div>
             </div>
+            <div className="fingerprint-progress-stage-rail">
+              {progressStages.map((stage) => (
+                <div
+                  key={stage.key}
+                  className={`fingerprint-stage-chip ${stage.state || "upcoming"}`}
+                  title={stage.description}
+                >
+                  <span className="fingerprint-stage-chip-index">{stage.index}</span>
+                  <span className="fingerprint-stage-chip-label">{stage.label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="fingerprint-progress-callouts">
+              <div className="fingerprint-callout">
+                <span className="fingerprint-callout-label">What&apos;s happening</span>
+                <p>{progressDescription}</p>
+              </div>
+              <div className="fingerprint-callout playful">
+                <span className="fingerprint-callout-label">Backstage</span>
+                <p>{progressFunLine}</p>
+              </div>
+            </div>
             <div className="fingerprint-progress-meta">
-              <span>Live progress</span>
-              <span>Updates automatically</span>
+              <span>{progressStageCounter}</span>
+              <span>Auto-refreshing every 3 seconds</span>
             </div>
           </div>
         )}

@@ -66,6 +66,13 @@ def normalize_transcript_status(input_status: str) -> str:
     return sorted(_ALLOWED_TRANSCRIPT_STATUSES)[0]
 
 
+def resolve_transcript_status(transcript_text: Any, input_status: str) -> str:
+    text = str(transcript_text or "").strip()
+    if text:
+        return normalize_transcript_status("present")
+    return normalize_transcript_status(input_status or "missing")
+
+
 def _infer_platform(item: Dict[str, Any], default_platform: str) -> str:
     base_meta = item.get('metadata') or {}
     if not isinstance(base_meta, dict):
@@ -242,7 +249,7 @@ def persist_search_items(
             is_primary, dup_item_id, dup_method, dup_confidence = _find_duplicate_preloaded(
                 canon_key, fingerprint, canonical_map, fingerprints
             )
-            norm_status = normalize_transcript_status(item.get('transcript_status', 'missing'))
+            norm_status = resolve_transcript_status(item.get('transcript'), item.get('transcript_status', 'missing'))
             db_item_id = db.execute_insert(
                 insert_query,
                 (

@@ -9,6 +9,12 @@ _STOP_WORDS = {
     "who", "why", "with", "you", "your",
 }
 
+_HIGH_STAKES_TERMS = {
+    "medical", "diagnosis", "diagnose", "symptom", "symptoms", "treatment", "prescription",
+    "dosage", "dosages", "medicine", "medication", "legal", "lawsuit", "contract", "tax",
+    "irs", "attorney", "lawyer", "financial", "investment", "investing", "equity", "debt",
+}
+
 
 def _normalize_terms(text: str) -> List[str]:
     return [term for term in re.findall(r"[a-z0-9']+", (text or "").lower()) if term not in _STOP_WORDS]
@@ -200,12 +206,13 @@ def select_stance(
     domain = _domain_score(question_terms, domain_map, fallback_topics)
     identity = _identity_score(question_terms, value_model, belief_graph, reasoning_profile)
     knowledge_score = _knowledge_score(question_terms, support_stats, identity_facts)
+    high_stakes_hit = bool(set(question_terms).intersection(_HIGH_STAKES_TERMS))
 
     allow_identity_fallback = bool(unknown_topic_policy.get("allow_identity_fallback", True))
     disclosure_threshold = float(unknown_topic_policy.get("disclosure_threshold", 0.45) or 0.45)
     max_assertiveness = float(unknown_topic_policy.get("max_assertiveness", 0.65) or 0.65)
 
-    if domain["unsafe_hits"] and knowledge_score < 0.7:
+    if (domain["unsafe_hits"] or high_stakes_hit) and knowledge_score < 0.7:
         response_mode = "BOUNDARY"
     elif knowledge_score >= 0.65:
         response_mode = "KNOWLEDGE"
@@ -259,4 +266,5 @@ def select_stance(
         "boundary_style": unknown_topic_policy.get("boundary_style") or "",
         "never_infer": _collect_text(unknown_topic_policy.get("never_infer")),
         "support_stats": support_stats,
+        "high_stakes_hit": high_stakes_hit,
     }

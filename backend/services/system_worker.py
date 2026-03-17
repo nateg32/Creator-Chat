@@ -21,7 +21,11 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from backend.db import db
-from backend.services.search_persistence import persist_search_items, merge_platform_statuses_with_checkpoints
+from backend.services.search_persistence import (
+    persist_search_items,
+    merge_platform_statuses_with_checkpoints,
+    resolve_transcript_status,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("system_worker")
@@ -237,7 +241,7 @@ def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
     published_at = item.get("published_at") or item.get("timestamp") or None
     content_type = item.get("content_type") or "post"
 
-    transcript_status = "present" if transcript else "missing"
+    transcript_status = resolve_transcript_status(transcript, item.get("transcript_status"))
 
     insert_sql = """
         INSERT INTO scrape_items (

@@ -336,7 +336,7 @@ class FingerprintService:
                 status="processing",
                 percent=6,
                 stage="preparing",
-                message="Preparing creator profile for analysis.",
+                message="Checking creator config, approved content, and reusable research before analysis starts.",
             )
 
             # 2. Get Creator Info & Setup Links
@@ -376,7 +376,7 @@ class FingerprintService:
                     status="processing",
                     percent=24,
                     stage="research_cache",
-                    message="Loading cached research and identity signals.",
+                    message="Reloading cached dossier material and identity signals to skip duplicate work.",
                 )
                 logger.info(f"FingerprintService: Reusing cached research summary for {name} ({creator_id}).")
                 link_identity = cached_summary.get("identity_research") or {}
@@ -391,7 +391,7 @@ class FingerprintService:
                     status="processing",
                     percent=22,
                     stage="link_scan",
-                    message="Scanning source links and public profiles.",
+                    message="Walking public links, domains, and profile surfaces for identity clues.",
                 )
                 logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
                 if hasattr(self.researcher, "research_links"):
@@ -412,7 +412,7 @@ class FingerprintService:
                 status="processing",
                 percent=46,
                 stage="voice_analysis",
-                message="Distilling voice patterns from approved content.",
+                message="Mining approved content for cadence, signature moves, values, and recurring beliefs.",
             )
             logger.info(f"FingerprintService Phase 2: Analyzing content truth...")
             voice_fingerprint = self.analyzer.analyze_creator(creator_id)
@@ -438,7 +438,7 @@ class FingerprintService:
                     status="processing",
                     percent=64,
                     stage="dossier",
-                    message="Filling identity gaps with targeted research.",
+                    message="Filling the remaining public identity gaps with targeted research.",
                 )
                 logger.info(f"FingerprintService Phase 3: Targeted Google expansion...")
                 logger.info(f"FingerprintService: Launching Deep Dossier for {name}...")
@@ -480,7 +480,7 @@ class FingerprintService:
                 status="processing",
                 percent=82,
                 stage="synthesis",
-                message="Synthesizing the identity and style model.",
+                message="Combining voice, worldview, and public facts into one runtime model.",
             )
             logger.info(f"FingerprintService Phase 4: Synthesizing research summary...")
             research_summary = {
@@ -502,7 +502,7 @@ class FingerprintService:
                 status="processing",
                 percent=93,
                 stage="finalizing",
-                message="Finalizing the creator fingerprint and narrative layer.",
+                message="Writing soul.md and locking the final fingerprint for runtime use.",
             )
             soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
 

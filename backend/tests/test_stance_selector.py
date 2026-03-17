@@ -72,6 +72,28 @@ class StanceSelectorTests(unittest.TestCase):
 
         self.assertEqual(stance["response_mode"], "BOUNDARY")
 
+    def test_boundary_selected_for_high_stakes_question_even_without_unsafe_topics(self):
+        creator_profile = {
+            "style_fingerprint": {
+                "domain_map": {
+                    "creator_lane": "business",
+                    "strong_topics": ["business", "sales"],
+                },
+                "value_model": {
+                    "core_values": ["truth"],
+                },
+            }
+        }
+
+        stance = select_stance(
+            "What dosage should I take for this medication?",
+            creator_profile,
+            support_set=[],
+        )
+
+        self.assertEqual(stance["response_mode"], "BOUNDARY")
+        self.assertTrue(stance["high_stakes_hit"])
+
 
 if __name__ == "__main__":
     unittest.main()

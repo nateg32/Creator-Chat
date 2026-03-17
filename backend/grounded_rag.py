@@ -2802,7 +2802,11 @@ Message: {answer_text[:500]}"""
     verified_fact_data = None
     if user_state.get("flags", {}).get("personal_question_flag"):
         logger.info("Pipeline Step 5: Web Verifying Personal Question...")
-        verified_fact_data = web_verify.verify_fact(question)
+        verified_fact_data = web_verify.verify_fact(
+            question,
+            creator_profile=creator_row,
+            conversation_history=conversation_history,
+        )
         if verified_fact_data["confidence"] < 0.4:
             # Low confidence fallback logic
             verified_fact_data["answer"] = "I'm not quite sure about that one myself, best to check my official sources."
