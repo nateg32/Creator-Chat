@@ -5,27 +5,27 @@ import { resizeImage } from "../utils/image";
 const RESPONSE_STYLES = [
   {
     label: "Simple English",
-    description: "Keep the creator clear and easy to follow without losing their voice.",
+    description: "Clearer, simpler explanations.",
   },
   {
     label: "Concise answers",
-    description: "Lead with the point and trim extra setup.",
+    description: "Lead with the point.",
   },
   {
     label: "Step-by-step explanations",
-    description: "Break advice into a sequence when the topic needs structure.",
+    description: "More structured guidance.",
   },
   {
     label: "Friendly and conversational",
-    description: "More warmth and day-to-day language.",
+    description: "Warmer, more relaxed tone.",
   },
   {
     label: "Professional and direct",
-    description: "Tighter, sharper, and more consultative.",
+    description: "Sharper and more formal.",
   },
   {
     label: "Examples-first explanations",
-    description: "Open with a concrete example before the principle.",
+    description: "Start with a concrete example.",
   },
 ];
 
@@ -109,8 +109,7 @@ export function UserSettingsModal({
             <div className="user-settings-kicker">Personalization</div>
             <h2 id="user-settings-title">User Settings</h2>
             <p>
-              Shape delivery without breaking the creator&apos;s persona. These
-              settings help responses feel more personal, not more robotic.
+              Personalize delivery, keep the creator&apos;s voice.
             </p>
           </div>
           <button type="button" className="user-settings-close" onClick={onClose} aria-label="Close settings">
@@ -175,7 +174,7 @@ export function UserSettingsModal({
                   placeholder="What should creators call you?"
                 />
                 <p className="user-settings-help">
-                  Used naturally in chat when it fits. Never forced into every reply.
+                  Used naturally in chat.
                 </p>
               </div>
             </div>
@@ -186,8 +185,7 @@ export function UserSettingsModal({
               <div className="user-settings-section-kicker">Delivery</div>
               <h3>Response preferences</h3>
               <p>
-                Pick the delivery patterns you want most often. The creator still
-                sounds like themselves.
+                Pick the style you want most often.
               </p>
             </div>
 
@@ -214,9 +212,7 @@ export function UserSettingsModal({
               <div className="user-settings-section-kicker">Context</div>
               <h3>Custom instructions</h3>
               <p>
-                Give creators user context they can weave in naturally, such as
-                your goals, background, level, constraints, or the kinds of
-                examples that click for you.
+                Share context they can use naturally.
               </p>
             </div>
 
@@ -233,7 +229,7 @@ export function UserSettingsModal({
               />
               <div className="user-settings-custom-meta">
                 <span>
-                  These instructions personalize delivery. Unsafe meta-instructions are filtered server-side.
+                  Unsafe meta-instructions are filtered server-side.
                 </span>
                 <span>{customPref.length}/{CUSTOM_PREF_LIMIT}</span>
               </div>
