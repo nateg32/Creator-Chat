@@ -17,6 +17,24 @@ class StyleDistillerTests(unittest.TestCase):
             "signature_response_moves": ["hard truth first"],
             "value_hierarchy": ["truth", "discipline", "comfort"],
             "analogy_families": ["basketball", "warfare"],
+            "domain_map": {
+                "creator_lane": "business discipline",
+                "strong_topics": ["business", "sales"],
+                "adjacent_topics": ["mindset"],
+            },
+            "value_model": {
+                "core_values": ["discipline", "truth"],
+                "decision_heuristics": ["bias toward action"],
+            },
+            "reasoning_profile": {
+                "framework_vs_story": "framework",
+                "default_problem_solving_pattern": ["reframe to principle", "close with command"],
+            },
+            "unknown_topic_policy": {
+                "allow_identity_fallback": True,
+                "disclosure_threshold": 0.4,
+                "max_assertiveness": 0.6,
+            },
             "belief_graph": {
                 "core_beliefs": ["discipline compounds"],
                 "non_negotiables": ["personal responsibility"],
@@ -52,6 +70,7 @@ class StyleDistillerTests(unittest.TestCase):
         self.assertIn("discipline compounds", prompt)
         self.assertIn("protective conviction", prompt)
         self.assertIn("empty motivational fluff", prompt)
+        self.assertIn("UNKNOWN TOPIC POLICY", prompt)
 
     def test_style_distiller_maps_small_talk_to_comfort_mode(self):
         distiller = StyleDistiller()
@@ -72,6 +91,26 @@ class StyleDistillerTests(unittest.TestCase):
                 "belief_graph": {
                     "core_beliefs": ["discipline beats mood"],
                     "beliefs_they_attack": ["victim mindset"],
+                },
+                "domain_map": {
+                    "creator_lane": "business",
+                    "strong_topics": ["money", "business", "sales"],
+                    "adjacent_topics": ["confidence"],
+                    "unsafe_topics": ["medical advice"],
+                },
+                "value_model": {
+                    "core_values": ["discipline", "personal responsibility"],
+                    "decision_heuristics": ["bias toward action", "simplify before scaling"],
+                },
+                "reasoning_profile": {
+                    "framework_vs_story": "balanced",
+                    "default_problem_solving_pattern": ["identify bottleneck", "pick the highest-leverage move"],
+                },
+                "unknown_topic_policy": {
+                    "allow_identity_fallback": True,
+                    "disclosure_threshold": 0.35,
+                    "max_assertiveness": 0.55,
+                    "never_infer": ["private life", "exact medical advice"],
                 },
                 "story_bank": [
                     {
@@ -111,12 +150,21 @@ class StyleDistillerTests(unittest.TestCase):
             creator_profile,
             user_state={"emotion": "insecure"},
             mode="task",
+            support_set=[
+                {
+                    "title": "Business basics",
+                    "content": "He explains business and money principles through discipline and skill building.",
+                    "source_ref": {"title": "Business basics"},
+                }
+            ],
         )
 
         self.assertEqual(packet["pressure_key"], "user_insecure")
         self.assertEqual(packet["stories"][0]["story_id"], "s1")
         self.assertIn("discipline beats mood", packet["belief_focus"]["core_beliefs"])
         self.assertIn("Built multiple businesses", packet["identity_facts"])
+        self.assertIn(packet["stance"]["response_mode"], {"KNOWLEDGE_PLUS_IDENTITY", "KNOWLEDGE"})
+        self.assertIn("discipline", packet["stance"]["activated_values"])
 
 
 if __name__ == "__main__":

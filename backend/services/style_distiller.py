@@ -1,8 +1,20 @@
 import json
 import logging
+import pathlib
 import re
+import importlib.util
 from copy import deepcopy
 from typing import Any, Dict, List
+
+try:
+    from backend.services.stance_selector import select_stance
+except Exception:
+    _STANCE_SELECTOR_PATH = pathlib.Path(__file__).resolve().parent / "stance_selector.py"
+    _STANCE_SPEC = importlib.util.spec_from_file_location("stance_selector_module", _STANCE_SELECTOR_PATH)
+    _STANCE_MODULE = importlib.util.module_from_spec(_STANCE_SPEC)
+    assert _STANCE_SPEC.loader is not None
+    _STANCE_SPEC.loader.exec_module(_STANCE_MODULE)
+    select_stance = _STANCE_MODULE.select_stance
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +70,34 @@ class StyleDistiller:
                 "beliefs_they_attack": [],
                 "beliefs_they_protect": [],
                 "tension_points": [],
+            },
+            "domain": {
+                "creator_lane": "",
+                "strong_topics": [],
+                "adjacent_topics": [],
+                "weak_topics": [],
+                "unsafe_topics": [],
+            },
+            "values": {
+                "core_values": [],
+                "tradeoff_preferences": [],
+                "rejections": [],
+                "decision_heuristics": [],
+            },
+            "reasoning": {
+                "framework_vs_story": "balanced",
+                "premise_challenge_rate": "medium",
+                "action_bias": "medium",
+                "proof_style": "hybrid",
+                "emotional_vs_analytical": "balanced",
+                "default_problem_solving_pattern": [],
+            },
+            "unknown_topic_policy": {
+                "allow_identity_fallback": True,
+                "disclosure_threshold": 0.45,
+                "max_assertiveness": 0.65,
+                "boundary_style": "",
+                "never_infer": [],
             },
             "stories": [],
             "pressure": {},
@@ -217,6 +257,10 @@ class StyleDistiller:
         cadence = creator_profile.get("cadence_rules") or {}
         mode_matrix = creator_profile.get("mode_matrix") or {}
         belief_graph = creator_profile.get("belief_graph") or {}
+        domain_map = creator_profile.get("domain_map") or {}
+        value_model = creator_profile.get("value_model") or {}
+        reasoning_profile = creator_profile.get("reasoning_profile") or {}
+        unknown_topic_policy = creator_profile.get("unknown_topic_policy") or {}
         temporal_voice = creator_profile.get("temporal_voice") or {}
         knowledge_boundaries = creator_profile.get("knowledge_boundaries") or {}
         contrastive = creator_profile.get("contrastive_identity") or {}
@@ -248,6 +292,26 @@ class StyleDistiller:
         dna["beliefs"]["beliefs_they_attack"] = belief_graph.get("beliefs_they_attack") or worldview.get("conceptual_enemies") or []
         dna["beliefs"]["beliefs_they_protect"] = belief_graph.get("beliefs_they_protect") or []
         dna["beliefs"]["tension_points"] = belief_graph.get("tension_points") or []
+        dna["domain"]["creator_lane"] = domain_map.get("creator_lane") or ""
+        dna["domain"]["strong_topics"] = domain_map.get("strong_topics") or creator_profile.get("recurring_themes") or []
+        dna["domain"]["adjacent_topics"] = domain_map.get("adjacent_topics") or []
+        dna["domain"]["weak_topics"] = domain_map.get("weak_topics") or []
+        dna["domain"]["unsafe_topics"] = domain_map.get("unsafe_topics") or knowledge_boundaries.get("must_verify_topics") or []
+        dna["values"]["core_values"] = value_model.get("core_values") or worldview.get("values") or creator_profile.get("value_hierarchy") or []
+        dna["values"]["tradeoff_preferences"] = value_model.get("tradeoff_preferences") or []
+        dna["values"]["rejections"] = value_model.get("rejections") or worldview.get("conceptual_enemies") or []
+        dna["values"]["decision_heuristics"] = value_model.get("decision_heuristics") or creator_profile.get("signature_moves") or []
+        dna["reasoning"]["framework_vs_story"] = reasoning_profile.get("framework_vs_story") or cadence.get("story_vs_list") or "balanced"
+        dna["reasoning"]["premise_challenge_rate"] = reasoning_profile.get("premise_challenge_rate") or "medium"
+        dna["reasoning"]["action_bias"] = reasoning_profile.get("action_bias") or creator_profile.get("behavioral_patterns", {}).get("decision_style") or "medium"
+        dna["reasoning"]["proof_style"] = reasoning_profile.get("proof_style") or mode_matrix.get("teaching", {}).get("proof_style") or linguistic.get("evidence_style") or "hybrid"
+        dna["reasoning"]["emotional_vs_analytical"] = reasoning_profile.get("emotional_vs_analytical") or emotional.get("temperature") or "balanced"
+        dna["reasoning"]["default_problem_solving_pattern"] = reasoning_profile.get("default_problem_solving_pattern") or creator_profile.get("signature_response_moves") or creator_profile.get("signature_moves") or []
+        dna["unknown_topic_policy"]["allow_identity_fallback"] = unknown_topic_policy.get("allow_identity_fallback", True)
+        dna["unknown_topic_policy"]["disclosure_threshold"] = unknown_topic_policy.get("disclosure_threshold", 0.45)
+        dna["unknown_topic_policy"]["max_assertiveness"] = unknown_topic_policy.get("max_assertiveness", 0.65)
+        dna["unknown_topic_policy"]["boundary_style"] = unknown_topic_policy.get("boundary_style") or identity.get("private_boundary_style") or ""
+        dna["unknown_topic_policy"]["never_infer"] = unknown_topic_policy.get("never_infer") or knowledge_boundaries.get("private_or_unknown") or knowledge_boundaries.get("must_verify_topics") or []
         dna["stories"] = creator_profile.get("story_bank") or []
         dna["pressure"] = creator_profile.get("pressure_engine") or creator_profile.get("pressure_map") or {}
         dna["boundaries"] = knowledge_boundaries
@@ -265,7 +329,14 @@ class StyleDistiller:
         dna["modes"] = mode_matrix
         return dna
 
-    def build_runtime_identity_packet(self, question: str, creator_profile: Dict[str, Any], user_state: Dict[str, Any] = None, mode: str = "task") -> Dict[str, Any]:
+    def build_runtime_identity_packet(
+        self,
+        question: str,
+        creator_profile: Dict[str, Any],
+        user_state: Dict[str, Any] = None,
+        mode: str = "task",
+        support_set: List[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         creator_profile = creator_profile or {}
         style_fp = self._coerce_json(creator_profile.get("style_fingerprint") or creator_profile)
         identity_fp = self._coerce_json(creator_profile.get("identity_fingerprint"))
@@ -285,6 +356,14 @@ class StyleDistiller:
         boundaries = style_fp.get("knowledge_boundaries") or {}
         temporal = style_fp.get("temporal_voice") or {}
         contrastive = style_fp.get("contrastive_identity") or {}
+        stance_packet = select_stance(
+            question,
+            {
+                "style_fingerprint": style_fp,
+                "identity_fingerprint": identity_fp,
+            },
+            support_set=support_set or [],
+        )
 
         return {
             "belief_focus": belief_focus,
@@ -308,6 +387,7 @@ class StyleDistiller:
                 "nearest_neighbors": (contrastive.get("nearest_neighbor_creators") or style_fp.get("disambiguation_markers", {}).get("closest_neighbor_creators") or [])[:5],
                 "confusion_risks": (contrastive.get("confusion_risks") or [])[:5],
             },
+            "stance": stance_packet,
             "research_quality": research_summary.get("research_quality"),
             "mode": mode_key,
         }
@@ -329,6 +409,10 @@ HIGH SIGNAL VOCAB: {json.dumps(dna['lexical']['high_signal_vocab'][:12])}
 BANNED WORDS: {json.dumps(dna['lexical']['banned_words'] + dna['lexical']['filler_banlist'])}
 BANNED FRAMES: {json.dumps(dna['lexical'].get('banned_frames', []))}
 ATTITUDE: {json.dumps(dna['attitude'])}
+DOMAIN MAP: {json.dumps(dna['domain'])}
+VALUE MODEL: {json.dumps(dna['values'])}
+REASONING PROFILE: {json.dumps(dna['reasoning'])}
+UNKNOWN TOPIC POLICY: {json.dumps(dna['unknown_topic_policy'])}
 """.strip()
 
         mode_block = f"""
@@ -369,6 +453,17 @@ PRESSURE GUIDANCE: {json.dumps(identity_packet.get('pressure_guidance', {}))}
 IDENTITY FACTS: {json.dumps(identity_packet.get('identity_facts', [])[:8])}
 BOUNDARIES: {json.dumps(identity_packet.get('boundaries', {}))}
 CONTRASTIVE FOCUS: {json.dumps(identity_packet.get('contrastive_focus', {}))}
+STANCE MODE: {json.dumps((identity_packet.get('stance') or {}).get('response_mode'))}
+STANCE SCORES: {json.dumps({
+    "knowledge_score": (identity_packet.get('stance') or {}).get('knowledge_score'),
+    "scope_score": (identity_packet.get('stance') or {}).get('scope_score'),
+    "identity_score": (identity_packet.get('stance') or {}).get('identity_score'),
+})}
+PREDICTED STANCE: {json.dumps((identity_packet.get('stance') or {}).get('predicted_stance'))}
+ACTIVATED VALUES: {json.dumps((identity_packet.get('stance') or {}).get('activated_values', []))}
+ACTIVATED HEURISTICS: {json.dumps((identity_packet.get('stance') or {}).get('activated_heuristics', []))}
+DISCLAIMER REQUIRED: {json.dumps((identity_packet.get('stance') or {}).get('disclaimer_required'))}
+NEVER INFER: {json.dumps((identity_packet.get('stance') or {}).get('never_infer', []))}
 """.strip()
             blocks.append(packet_block)
 

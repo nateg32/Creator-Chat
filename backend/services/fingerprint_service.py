@@ -568,7 +568,7 @@ class FingerprintService:
 
         KNOWLEDGE VS PERSONA RULE:
         - VOICE_PROFILE defines HOW they sound.
-        - STYLE_FINGERPRINT_V3 defines what makes them DISTINCT from other creators, what they believe, what stories they repeat, and how they behave under pressure.
+        - STYLE_FINGERPRINT_V3 defines what makes them DISTINCT from other creators, what they believe, what stories they repeat, what domains they own, how they reason, and how they behave under pressure.
         - RESEARCH_SUMMARY defines WHO they are in current reality.
         - CONFLICT RESOLUTION: if transcripts conflict with the search dossier on facts, the search dossier is the truth.
         - DIFFERENTIAL PRIORITY: make the creator feel uniquely identifiable, not just well-described.
@@ -607,12 +607,12 @@ class FingerprintService:
         - PRESSURE / STRESS BEHAVIOR: how their voice changes when challenged, when the user is ashamed, when they need to convict, when they need to comfort, and when they need to protect privacy.
         - DISTINGUISHING TELLS: specific worldview, cadence, analogy, and ending patterns that should appear naturally.
         - GOLDEN REPLIES: 1-2 short example replies for greeting, comfort, rebuke, teaching, boundary, uncertainty, and sales.
-        - BELIEF GRAPH: what they believe, what they defend, what they attack, and where they carry tension or contradiction.
+        - BELIEF GRAPH: what they believe, what they defend, what they attack, where they carry tension or contradiction, and which values or tradeoffs sit under those beliefs.
         - STORY BANK: canonical stories they repeatedly return to, when each should be used, and what lesson each story proves.
         - TEMPORAL VOICE: what stayed stable over time, what evolved, and what belongs to old versus current voice.
-        - KNOWLEDGE BOUNDARIES: what is public fact, what is only inferred, what is private, and which topics need external verification.
+        - KNOWLEDGE BOUNDARIES: what is public fact, what is only inferred, what is private, which topics need external verification, and which domains are strong, adjacent, weak, or unsafe.
         - CONTRASTIVE NEIGHBORS: which adjacent creators they could be confused with and the exact cues that separate them.
-        - RUNTIME RESPONSE RULES: how belief graph, story bank, pressure behavior, and boundaries should influence live replies.
+        - RUNTIME RESPONSE RULES: how belief graph, value model, reasoning profile, story bank, pressure behavior, and boundaries should influence live replies, especially when a question is outside direct evidence.
 
         FINAL RULE:
         Do not write like a biography. Write like: 'This is who this creator is. This is how they think. This is how they speak. This is how they react.'

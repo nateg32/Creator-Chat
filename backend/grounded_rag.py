@@ -1831,6 +1831,7 @@ def generate_grounded_answer(
         creator_profile or {"style_fingerprint": style_fingerprint},
         user_state=user_state,
         mode=runtime_mode,
+        support_set=support_set,
     )
     dna_instruction = distiller.format_for_prompt(
         style_dna,
@@ -1838,6 +1839,7 @@ def generate_grounded_answer(
         mode=runtime_mode,
         identity_packet=identity_packet,
     )
+    stance_packet = identity_packet.get("stance") or {}
     
     # Intent-specific length and behavioral guidance
     len_guidance = response_length_instruction(intent, mode=mode, energy_bucket=energy_bucket, tone_mirror_limit=tone_mirror_limit, user_priority_constraints=mode_constraints)
@@ -1861,6 +1863,29 @@ def generate_grounded_answer(
            - Sentence 1: Pick one literal opener from the ALLOWED GREETINGS list.
            - Sentence 2: Ask one short, domain-aware question (e.g. "What's the goal today?").
            - MAXIMUM 2 sentences total.
+        """
+
+    identity_fallback_rule = ""
+    if stance_packet.get("response_mode") == "IDENTITY_FALLBACK":
+        identity_fallback_rule = """
+        IDENTITY FALLBACK MODE:
+        - Retrieval is weak, but the question is still inferable from the creator's worldview.
+        - Answer through the creator's values, beliefs, decision heuristics, and response structure.
+        - Do NOT invent facts, personal history, dates, or exact claims.
+        - Make uncertainty visible in-character when needed. Frame it as how the creator would likely approach the issue.
+        """
+    elif stance_packet.get("response_mode") == "KNOWLEDGE_PLUS_IDENTITY":
+        identity_fallback_rule = """
+        HYBRID MODE:
+        - Use retrieved support first, then sharpen the answer with the creator's values and reasoning profile.
+        - Do NOT let inferred worldview override grounded facts.
+        """
+    elif stance_packet.get("response_mode") == "BOUNDARY":
+        identity_fallback_rule = """
+        BOUNDARY MODE:
+        - The topic is outside supported knowledge or inference safety.
+        - Do not fake an answer.
+        - Set a limit in the creator's voice, then redirect to a nearby principle or domain they can genuinely speak on.
         """
     
     # Decide Move-Specific Guidance
@@ -1915,6 +1940,8 @@ Rewrite the NEUTRAL CONTENT PLAN below into your unique voice and style.
 Strictly adhere to the STYLE DNA constraints.
 
 {dna_instruction}
+
+{identity_fallback_rule}
 
 STRICT RULE: If CONVERSATION MODE is 'GREETING_MODE', you MUST NOT provide advice, plans, or mention any specific business topics. Simply greet and ask one open-ended question.
 

@@ -129,6 +129,39 @@ def _default_fingerprint() -> dict:
             "beliefs_they_attack": [],
             "beliefs_they_protect": [],
         },
+        "domain_map": {
+            "creator_lane": "",
+            "strong_topics": [],
+            "adjacent_topics": [],
+            "weak_topics": [],
+            "unsafe_topics": [],
+        },
+        "value_model": {
+            "core_values": [],
+            "tradeoff_preferences": [],
+            "rejections": [],
+            "decision_heuristics": [],
+        },
+        "reasoning_profile": {
+            "framework_vs_story": "balanced",
+            "premise_challenge_rate": "medium",
+            "action_bias": "medium",
+            "proof_style": "hybrid",
+            "emotional_vs_analytical": "balanced",
+            "default_problem_solving_pattern": [],
+        },
+        "unknown_topic_policy": {
+            "allow_identity_fallback": True,
+            "disclosure_threshold": 0.45,
+            "max_assertiveness": 0.65,
+            "boundary_style": "",
+            "never_infer": [
+                "exact facts without evidence",
+                "private life",
+                "personal history not grounded in content",
+                "medical, legal, or financial claims without support",
+            ],
+        },
         "story_bank": [],
         "pressure_engine": {
             "challenged": {},
@@ -246,6 +279,38 @@ def _backfill_v3_fields(fingerprint: dict) -> dict:
         belief_graph["beliefs_they_attack"] = list(worldview.get("conceptual_enemies") or [])
     fingerprint["belief_graph"] = belief_graph
 
+    domain_map = fingerprint.get("domain_map") or {}
+    if not domain_map.get("creator_lane"):
+        domain_map["creator_lane"] = ", ".join((fingerprint.get("recurring_themes") or [])[:2])
+    if not domain_map.get("strong_topics"):
+        domain_map["strong_topics"] = list(fingerprint.get("recurring_themes") or [])[:8]
+    if not domain_map.get("unsafe_topics"):
+        domain_map["unsafe_topics"] = list((fingerprint.get("knowledge_boundaries") or {}).get("must_verify_topics") or [])
+    fingerprint["domain_map"] = domain_map
+
+    value_model = fingerprint.get("value_model") or {}
+    if not value_model.get("core_values"):
+        value_model["core_values"] = list(worldview.get("values") or fingerprint.get("value_hierarchy") or worldview.get("moral_hierarchy") or [])
+    if not value_model.get("rejections"):
+        value_model["rejections"] = list(worldview.get("conceptual_enemies") or belief_graph.get("beliefs_they_attack") or [])
+    if not value_model.get("decision_heuristics"):
+        value_model["decision_heuristics"] = list(fingerprint.get("signature_moves") or fingerprint.get("rhetorical_moves") or [])[:8]
+    fingerprint["value_model"] = value_model
+
+    reasoning_profile = fingerprint.get("reasoning_profile") or {}
+    if not reasoning_profile.get("framework_vs_story"):
+        reasoning_profile["framework_vs_story"] = cadence.get("story_vs_list", "balanced")
+    if not reasoning_profile.get("proof_style"):
+        reasoning_profile["proof_style"] = fingerprint.get("mode_matrix", {}).get("teaching", {}).get("proof_style") or linguistic.get("evidence_style", "hybrid")
+    if not reasoning_profile.get("action_bias"):
+        reasoning_profile["action_bias"] = fingerprint.get("behavioral_patterns", {}).get("decision_style") or "medium"
+    if not reasoning_profile.get("emotional_vs_analytical"):
+        temperature = (fingerprint.get("emotional_signature") or {}).get("temperature", "hybrid")
+        reasoning_profile["emotional_vs_analytical"] = "emotional" if temperature in {"warm", "hot"} else "balanced"
+    if not reasoning_profile.get("default_problem_solving_pattern"):
+        reasoning_profile["default_problem_solving_pattern"] = list(fingerprint.get("signature_response_moves") or fingerprint.get("signature_moves") or [])[:6]
+    fingerprint["reasoning_profile"] = reasoning_profile
+
     speech_mechanics = fingerprint.get("speech_mechanics") or {}
     if not speech_mechanics.get("sentence_shape"):
         speech_mechanics["sentence_shape"] = cadence.get("sentence_shape") or linguistic.get("sentence_structure") or "balanced"
@@ -291,6 +356,19 @@ def _backfill_v3_fields(fingerprint: dict) -> dict:
     if not knowledge_boundaries.get("must_verify_topics"):
         knowledge_boundaries["must_verify_topics"] = ["age", "net worth", "family", "private life"]
     fingerprint["knowledge_boundaries"] = knowledge_boundaries
+
+    unknown_topic_policy = fingerprint.get("unknown_topic_policy") or {}
+    if "allow_identity_fallback" not in unknown_topic_policy:
+        unknown_topic_policy["allow_identity_fallback"] = True
+    if not isinstance(unknown_topic_policy.get("disclosure_threshold"), (int, float)):
+        unknown_topic_policy["disclosure_threshold"] = 0.45
+    if not isinstance(unknown_topic_policy.get("max_assertiveness"), (int, float)):
+        unknown_topic_policy["max_assertiveness"] = 0.65
+    if not unknown_topic_policy.get("boundary_style"):
+        unknown_topic_policy["boundary_style"] = fingerprint.get("mode_matrix", {}).get("boundary", {}).get("private_life_style") or identity.get("private_boundary_style") or ""
+    if not unknown_topic_policy.get("never_infer"):
+        unknown_topic_policy["never_infer"] = list(knowledge_boundaries.get("private_or_unknown") or []) + list(knowledge_boundaries.get("must_verify_topics") or [])
+    fingerprint["unknown_topic_policy"] = unknown_topic_policy
 
     temporal_voice = fingerprint.get("temporal_voice") or {}
     if not temporal_voice.get("stable_traits"):
@@ -400,6 +478,7 @@ RULES:
 - Capture how the creator thinks, teaches, frames problems, uses evidence, and presents identity.
 - Most important: identify what makes this creator DISTINCTIVE, not just competent.
 - Extract stories they repeat, pressures that change their tone, and beliefs they defend or attack.
+- Infer a practical domain map, value model, reasoning profile, and unknown-topic policy from recurring patterns in the corpus.
 - Fill contrastive_identity, anti_persona, and disambiguation_markers aggressively.
 - Preserve the older fields for compatibility, but prioritize the v3 fields.
 
@@ -427,6 +506,34 @@ Return JSON only with this schema:
     "tension_points": ["where they contain real contradiction or evolution"],
     "beliefs_they_attack": [""],
     "beliefs_they_protect": [""]
+  },
+  "domain_map": {
+    "creator_lane": "short phrase for their main lane",
+    "strong_topics": ["topics they can answer with high confidence"],
+    "adjacent_topics": ["topics they can discuss through worldview and reasoning"],
+    "weak_topics": ["topics they touch lightly"],
+    "unsafe_topics": ["topics where inference should usually stop"]
+  },
+  "value_model": {
+    "core_values": [""],
+    "tradeoff_preferences": ["what they would prioritize over what"],
+    "rejections": ["ideas, habits, or mindsets they reject"],
+    "decision_heuristics": ["repeatable rules they use to make decisions"]
+  },
+  "reasoning_profile": {
+    "framework_vs_story": "framework|story|balanced",
+    "premise_challenge_rate": "low|medium|high",
+    "action_bias": "low|medium|high",
+    "proof_style": "anecdotal|analytical|hybrid",
+    "emotional_vs_analytical": "emotional|balanced|analytical",
+    "default_problem_solving_pattern": ["how they usually structure an answer or solve a problem"]
+  },
+  "unknown_topic_policy": {
+    "allow_identity_fallback": true,
+    "disclosure_threshold": 0.0,
+    "max_assertiveness": 0.0,
+    "boundary_style": "how they should set limits on unsupported topics",
+    "never_infer": ["facts or stance categories that should never be guessed"]
   },
   "story_bank": [
     {
