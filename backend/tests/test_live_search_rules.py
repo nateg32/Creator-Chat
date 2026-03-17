@@ -40,6 +40,35 @@ class LiveSearchRuleTests(unittest.TestCase):
             "when is the next event? ACCESS event",
         )
 
+    def test_extract_requested_platforms_from_current_turn(self):
+        platforms = live_search_rules.extract_requested_platforms("what youtube video is good for ai")
+        self.assertEqual(platforms, ["youtube"])
+
+    def test_extract_requested_platforms_from_follow_up_history(self):
+        history = [
+            {"role": "user", "content": "what youtube video is good for ai"},
+            {"role": "assistant", "content": "Try this one."},
+        ]
+        platforms = live_search_rules.extract_requested_platforms("any other video?", history=history)
+        self.assertEqual(platforms, ["youtube"])
+
+    def test_build_live_search_query_adds_creator_platform_and_video_context(self):
+        history = [
+            {"role": "user", "content": "I need a good youtube video for ai"},
+            {"role": "assistant", "content": "What kind of business are you thinking about?"},
+        ]
+        query = live_search_rules.build_live_search_query(
+            "what about one for beginners?",
+            history=history,
+            creator_name="Alex Hormozi",
+            preferred_platforms=["youtube"],
+            require_video=True,
+        )
+        self.assertIn("Alex Hormozi", query)
+        self.assertIn("youtube", query.lower())
+        self.assertIn("video", query.lower())
+        self.assertIn("beginners", query.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

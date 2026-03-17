@@ -45,6 +45,29 @@ EVENT_PHRASES = (
     "access",
 )
 
+PLATFORM_PATTERNS = {
+    "youtube": (r"\byoutube\b", r"\byt\b", r"\bchannel\b"),
+    "instagram": (r"\binstagram\b", r"\binsta\b", r"\big\b", r"\breel\b", r"\breels\b"),
+    "tiktok": (r"\btiktok\b",),
+    "facebook": (r"\bfacebook\b", r"\bfb\b"),
+    "twitter": (r"\btwitter\b", r"\bx\b"),
+}
+
+VIDEO_TERMS = (
+    "video",
+    "videos",
+    "watch",
+    "clip",
+    "clips",
+    "reel",
+    "reels",
+    "short",
+    "shorts",
+    "episode",
+    "episodes",
+    "podcast",
+)
+
 
 def _recent_user_turns(history: Optional[List[Dict[str, str]]], limit: int = 3) -> List[str]:
     if not history:
@@ -57,6 +80,36 @@ def _recent_user_turns(history: Optional[List[Dict[str, str]]], limit: int = 3) 
         if content:
             turns.append(content)
     return turns[-limit:]
+
+
+def extract_requested_platforms(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> List[str]:
+    text = (question or "").strip().lower()
+    requested: List[str] = []
+
+    for platform, patterns in PLATFORM_PATTERNS.items():
+        if any(re.search(pattern, text) for pattern in patterns):
+            requested.append(platform)
+
+    if requested:
+        return requested
+
+    words = re.findall(r"[a-z0-9']+", text)
+    if len(words) > 7:
+        return []
+
+    recent_turns = _recent_user_turns(history, limit=2)
+    if not recent_turns:
+        return []
+
+    combined = " ".join(recent_turns).lower()
+    for platform, patterns in PLATFORM_PATTERNS.items():
+        if any(re.search(pattern, combined) for pattern in patterns):
+            requested.append(platform)
+
+    return requested
 
 
 def needs_fresh_public_web_search(
@@ -88,6 +141,9 @@ def needs_fresh_public_web_search(
 def build_live_search_query(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
+    creator_name: Optional[str] = None,
+    preferred_platforms: Optional[List[str]] = None,
+    require_video: bool = False,
 ) -> str:
     """Enrich short follow up questions with recent user context for web search."""
     query = (question or "").strip()
@@ -95,20 +151,31 @@ def build_live_search_query(
         return query
 
     user_turns = _recent_user_turns(history)
-    if not user_turns:
-        return query
+    if user_turns:
+        words = re.findall(r"[a-z0-9']+", query.lower())
+        is_short_follow_up = len(words) <= 5
+        if is_short_follow_up:
+            prior_turns = [turn for turn in user_turns[:-1] if turn.strip()]
+            if prior_turns:
+                context = " ".join(prior_turns[-2:]).strip()
+                if context:
+                    query = f"{context} {query}".strip()
 
-    words = re.findall(r"[a-z0-9']+", query.lower())
-    is_short_follow_up = len(words) <= 5
-    if not is_short_follow_up:
-        return query
+    query_lower = query.lower()
 
-    prior_turns = [turn for turn in user_turns[:-1] if turn.strip()]
-    if not prior_turns:
-        return query
+    if creator_name:
+        creator_lower = creator_name.lower().strip()
+        if creator_lower and creator_lower not in query_lower:
+            query = f"{creator_name} {query}".strip()
+            query_lower = query.lower()
 
-    context = " ".join(prior_turns[-2:]).strip()
-    if not context:
-        return query
+    platforms = [platform for platform in (preferred_platforms or []) if platform]
+    for platform in platforms:
+        if platform not in query_lower:
+            query = f"{query} {platform}".strip()
+            query_lower = query.lower()
 
-    return f"{context} {query}".strip()
+    if require_video and not any(term in query_lower for term in VIDEO_TERMS):
+        query = f"{query} video".strip()
+
+    return re.sub(r"\s+", " ", query).strip()

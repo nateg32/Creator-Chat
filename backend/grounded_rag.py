@@ -36,7 +36,11 @@ from backend.services.web_verify import web_verify
 from backend.services.grammar_normalizer import grammar_normalizer
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 from backend.services.assumption_blocker import assumption_blocker
-from backend.services.live_search_rules import build_live_search_query, needs_fresh_public_web_search
+from backend.services.live_search_rules import (
+    build_live_search_query,
+    extract_requested_platforms,
+    needs_fresh_public_web_search,
+)
 from backend.services.rag_text_matcher import merge_support_sets, retrieve_exact_text_matches
 from backend.services.out_of_domain_rules import (
     default_bridge_question,
@@ -96,6 +100,158 @@ def _platform_from_url(url: str) -> str:
     if "facebook.com" in u or "fb.com" in u:
         return "facebook"
     return "unknown"
+
+
+_GENERIC_RESOURCE_TITLES = {
+    "",
+    "youtube",
+    "youtube video",
+    "video",
+    "watch this",
+    "watch this one",
+    "this one",
+    "link",
+    "resource",
+    "external resource",
+}
+
+
+def _resource_title_quality(title: str, url: str = "") -> float:
+    cleaned = re.sub(r"\s+", " ", (title or "").strip())
+    lowered = cleaned.lower()
+    if lowered in _GENERIC_RESOURCE_TITLES:
+        return 0.0
+    if not cleaned:
+        return 0.0
+
+    words = re.findall(r"[a-z0-9']+", lowered)
+    score = 1.0
+
+    if re.search(r"https?://|www\.", cleaned, re.IGNORECASE):
+        score -= 0.55
+
+    if "." in cleaned and len(words) <= 4:
+        score -= 0.35
+
+    if len(words) <= 2:
+        score -= 0.15
+
+    if url:
+        host = re.sub(r"^www\.", "", (re.sub(r"^https?://", "", url.lower())).split("/", 1)[0])
+        if host and host in lowered and len(words) <= 4:
+            score -= 0.3
+
+    return max(0.0, min(1.0, score))
+
+
+def _candidate_platform(candidate: Optional[Dict[str, Any]]) -> str:
+    if not candidate:
+        return ""
+    platform = (candidate.get("platform") or "").lower().strip()
+    if platform:
+        return platform
+    source_ref = candidate.get("source_ref") or {}
+    platform = (source_ref.get("platform") or "").lower().strip()
+    if platform:
+        return platform
+    return _platform_from_url(candidate.get("url") or source_ref.get("canonical_url") or "")
+
+
+def _candidate_url(candidate: Optional[Dict[str, Any]]) -> str:
+    if not candidate:
+        return ""
+    return (
+        candidate.get("url")
+        or ((candidate.get("source_ref") or {}).get("canonical_url"))
+        or ""
+    )
+
+
+def _candidate_title(candidate: Optional[Dict[str, Any]]) -> str:
+    if not candidate:
+        return ""
+    return (
+        candidate.get("title")
+        or ((candidate.get("source_ref") or {}).get("title"))
+        or ""
+    )
+
+
+def _filter_candidates_for_requested_platforms(
+    candidates: List[Dict[str, Any]],
+    preferred_platforms: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    if not preferred_platforms:
+        return candidates
+    preferred = {platform.lower() for platform in preferred_platforms if platform}
+    matching = [candidate for candidate in candidates if _candidate_platform(candidate) in preferred]
+    return matching or candidates
+
+
+def _has_recommendable_resource(
+    rec_result: Optional[Dict[str, Any]],
+    preferred_platforms: Optional[List[str]] = None,
+) -> bool:
+    if not rec_result:
+        return False
+    best = rec_result.get("best_candidate") or {}
+    url = _candidate_url(best)
+    title = _candidate_title(best)
+    if not url or not title:
+        return False
+    if preferred_platforms:
+        preferred = {platform.lower() for platform in preferred_platforms if platform}
+        if preferred and _candidate_platform(best) not in preferred:
+            return False
+    title_quality = float(best.get("title_quality", _resource_title_quality(title, url)))
+    rerank_score = float(best.get("rerank_score", 0.0) or 0.0)
+    return title_quality >= 0.45 and rerank_score >= 0.25
+
+
+def _make_live_web_chunk(result: Dict[str, Any], index: int) -> Dict[str, Any]:
+    title = (result.get("title") or "").strip()
+    url = (result.get("url") or "").strip()
+    snippet = re.sub(r"\s+", " ", (result.get("snippet") or "").strip())
+    summary = snippet or title or "Verified external result."
+    platform = _platform_from_url(url)
+    if not platform or platform == "unknown":
+        platform = "web"
+    return {
+        "chunk_id": f"web_{index}",
+        "chunk_index": index,
+        "distance": 0.05,
+        "content": f"[LIVE WEB SEARCH RESULT]\n{summary}",
+        "snippet": snippet,
+        "url": url,
+        "title": title,
+        "source_ref": {
+            "platform": platform,
+            "canonical_url": url,
+            "title": title,
+        },
+    }
+
+
+def _unwrap_structured_answer(answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return text
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            for key in ("content", "answer", "message"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    text = value.strip()
+                    break
+
+    text = re.sub(r"(?im)^\[LIVE WEB SEARCH RESULT\]\s*", "", text)
+    text = re.sub(r"(?im)^(Title|Summary):\s*", "", text)
+    text = re.sub(r"(?im)^URL:\s*", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 # Algorithm settings
@@ -1115,6 +1271,7 @@ def rerank_candidates(
     candidates: List[Dict[str, Any]],
     query: str,
     intent_plan: Dict[str, Any],
+    preferred_platforms: Optional[List[str]] = None,
     k_final: int = K_FINAL
 ) -> List[Dict[str, Any]]:
     """
@@ -1123,6 +1280,7 @@ def rerank_candidates(
     """
     scored = []
     user_goal = intent_plan.get("intent_type", "how_to")
+    preferred = {platform.lower() for platform in (preferred_platforms or []) if platform}
     
     for cand in candidates:
         # 1. Base Evidence Score (from Stage 2 Metrics)
@@ -1148,6 +1306,10 @@ def rerank_candidates(
             comp_boost = 0.15
         elif user_goal == "recommend_content" and "video" in c_type:
             comp_boost = 0.1
+
+        platform_boost = 0.12 if preferred and _candidate_platform(cand) in preferred else 0.0
+        title_quality = _resource_title_quality(_candidate_title(cand), _candidate_url(cand))
+        cand["title_quality"] = title_quality
             
         # Composite score
         score = (
@@ -1156,7 +1318,9 @@ def rerank_candidates(
             0.15 * recency +
             0.10 * quality +
             0.05 * overlap +
-            0.10 * comp_boost
+            0.10 * comp_boost +
+            0.08 * platform_boost +
+            0.12 * title_quality
         )
         
         cand["rerank_score"] = score
@@ -2162,7 +2326,8 @@ def recommend_one_content(
     user_message: str, 
     conversation_history: Optional[List[Dict[str, str]]] = None,
     creator_row: Optional[Dict[str, Any]] = None,
-    debug: bool = False
+    debug: bool = False,
+    q_emb: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """
     Advanced, creator-aware 'ONE BEST CONTENT' recommender.
@@ -2171,6 +2336,8 @@ def recommend_one_content(
     # Stage 0: Request parsing + creator context
     resource_intent = classify_resource_intent(user_message, conversation_history, creator_row)
     q_search = resource_intent.get("query", user_message)
+    preferred_platforms = extract_requested_platforms(user_message, conversation_history)
+    resource_intent["preferred_platforms"] = preferred_platforms
     
     # Early Exit for Small Talk or non-resource turns
     if not resource_intent.get("needs_resource") and resource_intent.get("request_type") == "none":
@@ -2179,13 +2346,14 @@ def recommend_one_content(
     
     # Stage 1: Candidate retrieval (Broad + Fast)
     # Get embedding for semantic search
-    from backend.rag import get_client
-    try:
-        emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=q_search)
-        q_emb = emb_resp.data[0].embedding
-    except Exception as e:
-        logger.error(f"Embedding failed: {e}")
-        return {"answer": "I'm having trouble searching my content right now.", "recommended": None}
+    if not q_emb:
+        from backend.rag import get_client
+        try:
+            emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=q_search)
+            q_emb = emb_resp.data[0].embedding
+        except Exception as e:
+            logger.error(f"Embedding failed: {e}")
+            return {"answer": "I'm having trouble searching my content right now.", "recommended": None}
 
     # Broad Vector Search
     enabled_platforms = get_enabled_platforms_for_creator(creator_id)
@@ -2196,10 +2364,11 @@ def recommend_one_content(
     
     # Stage 2: Evidence-first chunk scoring
     candidates = _aggregate_document_evidence(raw_chunks)
+    candidates = _filter_candidates_for_requested_platforms(candidates, preferred_platforms)
     
     # Stage 3: Goal/Intent compatibility + Contradiction handling
     # (Incorporated into rerank_candidates)
-    candidates = rerank_candidates(candidates, q_search, resource_intent)
+    candidates = rerank_candidates(candidates, q_search, resource_intent, preferred_platforms=preferred_platforms)
     
     # Stage 4: Helpfulness rerank (LLM)
     candidates = llm_rerank(candidates, resource_intent)
@@ -2222,11 +2391,29 @@ def recommend_one_content(
     
     # HIGH CONFIDENCE: Pick top 1
     best_one = candidates[0]
+    best_title = _candidate_title(best_one)
+    best_url = _candidate_url(best_one)
+    best_one["title_quality"] = _resource_title_quality(best_title, best_url)
+    if preferred_platforms and _candidate_platform(best_one) not in {platform.lower() for platform in preferred_platforms}:
+        confidence = min(confidence, 0.45)
+    if best_one["title_quality"] < 0.45:
+        confidence = min(confidence, 0.45)
+    if confidence < 0.65:
+        cl_question = best_one.get("llm_reason") or "Give me one more detail on what kind of resource you want."
+        return {
+            "recommended": None,
+            "confidence": confidence,
+            "clarify_question": cl_question,
+            "best_candidate": best_one,
+            "candidates": candidates[:1],
+            "resource_intent": resource_intent,
+            "q_emb": q_emb,
+        }
     return {
         "recommended": {
             "id": best_one.get("id"),
-            "title": best_one.get("title"),
-            "url": best_one.get("url"),
+            "title": best_title,
+            "url": best_url,
             "thumbnail": best_one.get("thumbnail"),
             "platform": best_one.get("platform"),
             "creator_id": creator_id
@@ -2255,7 +2442,7 @@ def grounded_rag_ask(
     
     def apply_final_polish(result_dict: Dict[str, Any], profile: Dict[str, Any], state_mgr: Any, mvc_score: int = 0, plan: Optional[InteractionPlan] = None) -> Dict[str, Any]:
         if "answer" in result_dict:
-            answer = result_dict["answer"]
+            answer = _unwrap_structured_answer(result_dict["answer"])
             
             # The interaction engine already handles voice, structure, reduction,
             # and markdown stripping. The old post-processors are fully bypassed.
@@ -2554,10 +2741,17 @@ Message: {answer_text[:500]}"""
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or extract_requested_platforms(question, conversation_history)
+        has_recommendable_ingested_resource = _has_recommendable_resource(
+            rec_result,
+            preferred_platforms=preferred_platforms,
+        )
         
         needs_fallback = False
         if not support_set:
             needs_fallback = True
+        elif is_video_request and has_recommendable_ingested_resource:
+            needs_fallback = False
         else:
             # SMART EVALUATOR: Instead of keywords, ask LLM if we have enough info
             sufficiency = evaluate_context_sufficiency(question, support_set, history=conversation_history)
@@ -2575,7 +2769,13 @@ Message: {answer_text[:500]}"""
 
             rp = get_research_provider()
             web_results = []
-            web_query = build_live_search_query(question, conversation_history)
+            web_query = build_live_search_query(
+                question,
+                conversation_history,
+                creator_name=creator_row.get("name") or creator_row.get("handle"),
+                preferred_platforms=preferred_platforms,
+                require_video=is_video_request,
+            )
             intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
             
             # If no support set, we skip sufficiency check and run web search directly
@@ -2612,39 +2812,34 @@ Message: {answer_text[:500]}"""
                     except concurrent.futures.TimeoutError:
                         logger.warning("Parallel sufficiency check timed out, proceeding with existing RAG results.")
             
-            web_results = _filter_live_web_results(web_results, question, require_video=is_video_request if 'is_video_request' in locals() else wants_link)
+            web_results = _filter_live_web_results(
+                web_results,
+                question,
+                require_video=is_video_request if 'is_video_request' in locals() else wants_link,
+            )
+            if preferred_platforms:
+                platform_filtered = [
+                    result for result in web_results
+                    if (result.get("platform") or "").lower() in {platform.lower() for platform in preferred_platforms}
+                ]
+                if platform_filtered:
+                    web_results = platform_filtered
             # Inject Live Search results as faux-chunks
             if web_results:
                 logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
                 for i, w in enumerate(web_results[:6]):
-                    title = w.get('title', '')
-                    url = w.get('url', '')
-                    snippet = w.get('snippet', '')
-                    content_parts = [f"[LIVE WEB SEARCH RESULT]"]
-                    if title:
-                        content_parts.append(f"Title: {title}")
-                    if url:
-                        content_parts.append(f"URL: {url}")
-                    if snippet:
-                        content_parts.append(f"Summary: {snippet}")
-                    
-                    faux_chunk = {
-                        "chunk_id": f"web_{i}",
-                        "chunk_index": i,
-                        "distance": 0.05,
-                        "content": "\n".join(content_parts),
-                        "url": url,
-                        "title": title,
-                        "source_ref": {
-                            "platform": "web",
-                            "canonical_url": url,
-                            "title": title,
-                        }
-                    }
-                    logger.info(f"[SEARCH]   [{i}] {title[:60]} -> {url[:80]}")
+                    faux_chunk = _make_live_web_chunk(w, i)
+                    logger.info(f"[SEARCH]   [{i}] {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}")
                     support_set.insert(i, faux_chunk)
             elif wants_link:
                 no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if (is_video_request if 'is_video_request' in locals() else False) else "source")
+        elif wants_link and not has_recommendable_ingested_resource:
+            no_online_fallback = _build_not_online_fallback(
+                question,
+                creator_row.get("name") or creator_row.get("handle") or "the creator",
+                conversation_history,
+                kind="video" if is_video_request else "source",
+            )
 
     # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
 
@@ -2706,13 +2901,21 @@ Message: {answer_text[:500]}"""
 
     # --- Step 9: Video Recommendation (ONE ONLY) ---
     card = []
-    if plan_obj.grounding.video_policy in ["one_if_helpful", "forced"] and rec_result.get("best_candidate"):
+    if (
+        plan_obj.grounding.video_policy in ["one_if_helpful", "forced"]
+        and _has_recommendable_resource(
+            rec_result,
+            preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms"),
+        )
+    ):
         best = rec_result["best_candidate"]
+        best_url = _candidate_url(best)
+        youtube_match = re.search(r"(?:v=|youtu\.be/|/shorts/)([\w-]+)", best_url)
         card = [{
             "type": "preview_card",
-            "title": best["title"],
-            "url": best.get("url", ""),
-            "thumbnail_url": f"https://img.youtube.com/vi/{best.get('url', '').split('v=')[-1].split('&')[0]}/mqdefault.jpg" if "youtube.com" in best.get("url", "") else ""
+            "title": _candidate_title(best),
+            "url": best_url,
+            "thumbnail_url": f"https://img.youtube.com/vi/{youtube_match.group(1)}/mqdefault.jpg" if youtube_match else ""
         }]
 
     # --- Step 10: Persist + Return ---
@@ -2793,7 +2996,7 @@ async def grounded_rag_stream(
             (creator_id,)
         )
         if not creator_row:
-            yield json.dumps({"content": "I don't have a verified profile for this creator."})
+            yield "I don't have a verified profile for this creator."
             return
             
         pc = creator_row.get("platform_configs") or {}
@@ -2805,7 +3008,7 @@ async def grounded_rag_stream(
 
         if url:
              card_html = f"Here is the verified link you requested:\n\n[{social_key.title()}]({url})"
-             yield json.dumps({"content": card_html})
+             yield card_html
              return
              
         # Fallback to research provider SOCIAL_LOOKUP
@@ -2849,7 +3052,7 @@ async def grounded_rag_stream(
                         )
                         
                         card_html = f"I found the verified link for you:\n\n[{social_key.title()}]({best_url})"
-                        yield json.dumps({"content": card_html})
+                        yield card_html
                         return
                     elif confidence >= 0.6:
                         import logging
@@ -2858,7 +3061,7 @@ async def grounded_rag_stream(
                         import logging
                         logging.getLogger(__name__).info(f"SOCIAL_LOOKUP: platform={social_key} confidence={confidence:.2f} action=discard reasons=[{reasons}]")
 
-        yield json.dumps({"content": f"I don't currently have a verified {social_key.title()} link saved for {creator_name}."})
+        yield f"I don't currently have a verified {social_key.title()} link saved for {creator_name}."
         return    
     # 2. Launch Basic Metadata Tasks (Fast/Async)
     creator_task = asyncio.create_task(asyncio.to_thread(
@@ -2968,9 +3171,21 @@ async def grounded_rag_stream(
         mems_task = interaction_engine.memory.search_with_embedding_async(
             str(creator_id), str(user_id), str(thread_id or "new"), q_emb
         )
-        retrieve_task = asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
+        rec_task = asyncio.to_thread(
+            recommend_one_content,
+            user_id,
+            creator_id,
+            question,
+            conversation_history,
+            creator_row,
+            False,
+            q_emb,
+        )
         
-        support_set, mems = await asyncio.gather(retrieve_task, mems_task)
+        rec_result, mems = await asyncio.gather(rec_task, mems_task)
+        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3]
+        if not support_set:
+            support_set = await asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
         exact_text_matches = await asyncio.to_thread(
             retrieve_exact_text_matches,
             creator_id,
@@ -3002,42 +3217,46 @@ async def grounded_rag_stream(
         # Explicit video intent detection
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or extract_requested_platforms(question, conversation_history)
+        has_recommendable_ingested_resource = _has_recommendable_resource(
+            rec_result,
+            preferred_platforms=preferred_platforms,
+        )
         
         # OPTIMIZATION: If RAG returned no results or very few, launch web search
         # IN PARALLEL with sufficiency check to save ~1.5s
         needs_fallback = False
         web_results = []
-        web_query = build_live_search_query(question_for_search, conversation_history)
+        web_query = build_live_search_query(
+            question,
+            conversation_history,
+            creator_name=creator_row.get("name") or creator_row.get("handle"),
+            preferred_platforms=preferred_platforms,
+            require_video=is_video_request,
+        )
         intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
         
         if search_mode == "hybrid":
-            if is_video_request:
-                # User literally asked for a video. RAG is for answering questions, Web Search
-                # is optimized for finding specific videos by title. Force search.
+            if not support_set:
+                # No RAG results, so run web search immediately in hybrid mode.
                 needs_fallback = True
-                logger.info(f"[LATENCY] Explicit video request detected. Forcing web search.")
+                logger.info("[LATENCY] RAG empty. Direct web search trigger.")
                 from backend.services.research_provider import get_research_provider
                 rp = get_research_provider()
                 web_results = await asyncio.to_thread(
-                    rp.search, web_query, creator_row,
+                    rp.search,
+                    web_query,
+                    creator_row,
                     conversation_history=conversation_history,
-                    intent_metadata=intent_metadata
+                    intent_metadata=intent_metadata,
                 )
-            elif not support_set:
+            elif is_video_request and has_recommendable_ingested_resource:
                 # No RAG results — definitely need web search, skip sufficiency check
-                needs_fallback = True
-                logger.info(f"[LATENCY] RAG empty. Direct web search trigger.")
-                from backend.services.research_provider import get_research_provider
-                rp = get_research_provider()
-                web_results = await asyncio.to_thread(
-                    rp.search, web_query, creator_row,
-                    conversation_history=conversation_history,
-                    intent_metadata=intent_metadata
-                )
+                logger.info("[LATENCY] Strong ingested video match found. Skipping web fallback.")
             else:
                 # Have RAG results — run sufficiency check
                 # If few results, speculatively launch web search in parallel
-                if len(support_set) <= 2:
+                if len(support_set) <= 2 and not has_recommendable_ingested_resource:
                     # PARALLEL: sufficiency + speculative web search
                     from backend.services.research_provider import get_research_provider
                     rp = get_research_provider()
@@ -3069,39 +3288,29 @@ async def grounded_rag_stream(
         logger.info(f"[LATENCY] Search fallback phase: {_t_search_end - _t_search_start:.2f}s (fallback={needs_fallback}, results={len(web_results)})")
         
         web_results = _filter_live_web_results(web_results, question, require_video=is_video_request)
+        if preferred_platforms:
+            platform_filtered = [
+                result for result in web_results
+                if (result.get("platform") or "").lower() in {platform.lower() for platform in preferred_platforms}
+            ]
+            if platform_filtered:
+                web_results = platform_filtered
         if needs_fallback and web_results:
             # Inject Live Search results as faux-chunks
             logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
             for i, w in enumerate(web_results[:6]):
-                title = w.get('title', '')
-                url = w.get('url', '')
-                snippet = w.get('snippet', '')
-                # Include title + URL directly in content so the model can see & cite them
-                content_parts = [f"[LIVE WEB SEARCH RESULT]"]
-                if title:
-                    content_parts.append(f"Title: {title}")
-                if url:
-                    content_parts.append(f"URL: {url}")
-                if snippet:
-                    content_parts.append(f"Summary: {snippet}")
-                
-                faux_chunk = {
-                    "chunk_id": f"web_{i}",
-                    "chunk_index": i,
-                    "distance": 0.05,  # Force highest priority
-                    "content": "\n".join(content_parts),
-                    "url": url,
-                    "title": title,
-                    "source_ref": {
-                        "platform": "web",
-                        "canonical_url": url,
-                        "title": title,
-                    }
-                }
-                logger.info(f"[SEARCH]   [{i}] {title[:60]} -> {url[:80]}")
+                faux_chunk = _make_live_web_chunk(w, i)
+                logger.info(f"[SEARCH]   [{i}] {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}")
                 support_set.insert(i, faux_chunk)
         elif needs_fallback and wants_link:
             no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if is_video_request else "source")
+        elif wants_link and not has_recommendable_ingested_resource:
+            no_online_fallback = _build_not_online_fallback(
+                question,
+                creator_row.get("name") or creator_row.get("handle") or "the creator",
+                conversation_history,
+                kind="video" if is_video_request else "source",
+            )
 
     else:
         # Greeting/Small-talk Route: No Embeddings needed for TTFT
