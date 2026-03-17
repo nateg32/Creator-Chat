@@ -22,6 +22,10 @@ MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 LIST_NUMBER_SPACE_RE = re.compile(r"(?m)^(\s*\d+[.)])(?=\S)")
 BIBLE_VERSE_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=(?:[1-3]?\d{1,3}:\d{1,3}(?:-\d{1,3})?))")
 WORD_TO_NUMBER_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=\d{1,4}(?=(?:\s|[,.;:!?)]|$)))")
+WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE = re.compile(
+    r"(?<=[A-Za-z])(?=\d{1,4}(?:s|x|st|nd|rd|th)(?=(?:\s|[,.;:!?)]|$)))",
+    re.IGNORECASE,
+)
 NUMBER_TO_WORD_BOUNDARY_RE = re.compile(r"(?<=\d)(?=[A-Za-z]{2,}(?=(?:\s|[,;:!?)]|$)))")
 DOMAIN_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=(?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:/[^\s]*)?)")
 STREAM_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+|\n")
@@ -60,6 +64,7 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = LIST_NUMBER_SPACE_RE.sub(r"\1 ", cleaned)
     cleaned = BIBLE_VERSE_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = WORD_TO_NUMBER_BOUNDARY_RE.sub(" ", cleaned)
+    cleaned = WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = NUMBER_TO_WORD_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = DOMAIN_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = MULTISPACE_RE.sub(" ", cleaned)

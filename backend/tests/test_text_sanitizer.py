@@ -94,6 +94,18 @@ class TextSanitizerTests(unittest.TestCase):
             "We got married in 2017.",
         )
 
+    def test_inserts_space_before_frequency_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Lift or do hard exercise3x a week."),
+            "Lift or do hard exercise 3x a week.",
+        )
+
+    def test_inserts_space_before_age_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Watch How to disappoint your dad in your20s."),
+            "Watch How to disappoint your dad in your 20s.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

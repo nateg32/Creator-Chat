@@ -114,6 +114,17 @@ function getInlineLinkLabel(url = "", title = "") {
   return getDomainLabel(url) || cleanedTitle;
 }
 
+function stripInlineLinksFromMessageText(text = "") {
+  return String(text || "")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
+    .replace(/(?:https?:\/\/[^\s)]+|(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:\/[^\s)]*)?)/g, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/([:;,-])\s*(?=\n|$)/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function ChatPanel({
   creatorId,
   threadId, // New prop
@@ -497,122 +508,6 @@ export function ChatPanel({
                       <div className="msg-text">
                         {(() => {
                           const text = formatMessageText(m.content ?? m.text, creatorDisplayName);
-                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)|(https?:\/\/[^\s\)]+)|((?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:\/[^\s\)]+)?)/g;
-                          const textParts = [];
-                          const linkCards = [];
-                          let lastIndex = 0;
-                          let match;
-                          let linkCount = 0;
-
-                          while ((match = regex.exec(text)) !== null) {
-                            let matchUrl = match[2] || match[3] || match[4];
-                            const isMarkdownLink = Boolean(match[2]);
-                            let rawUrlMatch = !isMarkdownLink;
-
-                            if (matchUrl && !/^https?:\/\//i.test(matchUrl)) {
-                              matchUrl = `https://${matchUrl}`;
-                            }
-
-                            // If it's a raw URL, strip trailing punctuation
-                            if (rawUrlMatch) {
-                              const trailing = matchUrl.match(/[\.,!?;:)]+$/);
-                              if (trailing) {
-                                const punLength = trailing[0].length;
-                                matchUrl = matchUrl.substring(0, matchUrl.length - punLength);
-                                regex.lastIndex -= punLength;
-                              }
-                            }
-
-                            if (match.index > lastIndex) {
-                              textParts.push(text.substring(lastIndex, match.index));
-                            }
-
-                            let isValidUrl = false;
-                            let domain = "";
-                            let isVideo = false;
-                            let videoId = null;
-                            let platform = "web";
-                            let linkTitle = match[1] || "";
-
-                            try {
-                                const urlObj = new URL(matchUrl);
-                                domain = getDomainLabel(urlObj.toString());
-
-                              // Detect platform and video type
-                              if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
-                                isVideo = true;
-                                platform = 'youtube';
-                                if (domain.includes('youtube.com')) {
-                                  videoId = urlObj.searchParams.get('v') || urlObj.pathname.split('/shorts/')[1];
-                                } else if (domain.includes('youtu.be')) {
-                                  videoId = urlObj.pathname.slice(1);
-                                }
-                              } else if (domain.includes('instagram.com')) {
-                                isVideo = matchUrl.includes('/reel/') || matchUrl.includes('/p/');
-                                platform = 'instagram';
-                              } else if (domain.includes('tiktok.com')) {
-                                isVideo = matchUrl.includes('/video/') || matchUrl.includes('/@');
-                                platform = 'tiktok';
-                              } else if (domain.includes('facebook.com')) {
-                                isVideo = matchUrl.includes('/watch') || matchUrl.includes('/reel');
-                                platform = 'facebook';
-                              } else if (domain.includes('twitter.com') || domain.includes('x.com')) {
-                                isVideo = matchUrl.includes('/status/');
-                                platform = 'twitter';
-                              }
-
-                              isValidUrl = true;
-                              if (!linkTitle) {
-                                const platformLabels = {
-                                  youtube: 'YouTube Video',
-                                  instagram: 'Instagram Reel',
-                                  tiktok: 'TikTok Video',
-                                  facebook: 'Facebook Video',
-                                  twitter: 'Tweet',
-                                  web: 'External Resource'
-                                };
-                                linkTitle = platformLabels[platform] || 'External Resource';
-                              }
-                              linkTitle = cleanCardTitle(linkTitle, matchUrl);
-                            } catch (e) {
-                              isValidUrl = false;
-                            }
-
-                            if (isValidUrl) {
-                              // Track the card to render at the bottom
-                              linkCount++;
-                              linkCards.push({
-                                id: linkCount,
-                                url: matchUrl,
-                                domain,
-                                isVideo,
-                                videoId,
-                                platform,
-                                title: linkTitle
-                              });
-
-                              const inlineLabel = rawUrlMatch
-                                ? getInlineLinkLabel(matchUrl, linkTitle)
-                                : cleanCardTitle(match[1] || linkTitle, matchUrl);
-
-                              if (!looksLikeJunkLinkLabel(inlineLabel)) {
-                                textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{inlineLabel}</span>);
-                              }
-                            } else {
-                              textParts.push(
-                                <a key={match.index} href={matchUrl} target="_blank" rel="noopener noreferrer" className="chat-link">
-                                  {linkTitle || matchUrl}
-                                </a>
-                              );
-                            }
-
-                            lastIndex = regex.lastIndex;
-                          }
-
-                          if (lastIndex < text.length) {
-                            textParts.push(text.substring(lastIndex));
-                          }
-
                           const explicitCards = Array.isArray(m.cards) && m.cards.length > 0
                             ? m.cards.map((card, idx) => {
                                 let domain = "web";
@@ -644,6 +539,125 @@ export function ChatPanel({
                               })
                             : [];
 
+                          const regex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)|(https?:\/\/[^\s\)]+)|((?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:\/[^\s\)]+)?)/g;
+                          const textParts = [];
+                          const linkCards = [];
+                          let displayText = text;
+
+                          if (explicitCards.length === 0) {
+                            let lastIndex = 0;
+                            let match;
+                            let linkCount = 0;
+
+                            while ((match = regex.exec(text)) !== null) {
+                              let matchUrl = match[2] || match[3] || match[4];
+                              const isMarkdownLink = Boolean(match[2]);
+                              let rawUrlMatch = !isMarkdownLink;
+
+                              if (matchUrl && !/^https?:\/\//i.test(matchUrl)) {
+                                matchUrl = `https://${matchUrl}`;
+                              }
+
+                              if (rawUrlMatch) {
+                                const trailing = matchUrl.match(/[\.,!?;:)]+$/);
+                                if (trailing) {
+                                  const punLength = trailing[0].length;
+                                  matchUrl = matchUrl.substring(0, matchUrl.length - punLength);
+                                  regex.lastIndex -= punLength;
+                                }
+                              }
+
+                              if (match.index > lastIndex) {
+                                textParts.push(text.substring(lastIndex, match.index));
+                              }
+
+                              let isValidUrl = false;
+                              let domain = "";
+                              let isVideo = false;
+                              let videoId = null;
+                              let platform = "web";
+                              let linkTitle = match[1] || "";
+
+                              try {
+                                const urlObj = new URL(matchUrl);
+                                domain = getDomainLabel(urlObj.toString());
+
+                                if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+                                  isVideo = true;
+                                  platform = 'youtube';
+                                  if (domain.includes('youtube.com')) {
+                                    videoId = urlObj.searchParams.get('v') || urlObj.pathname.split('/shorts/')[1];
+                                  } else if (domain.includes('youtu.be')) {
+                                    videoId = urlObj.pathname.slice(1);
+                                  }
+                                } else if (domain.includes('instagram.com')) {
+                                  isVideo = matchUrl.includes('/reel/') || matchUrl.includes('/p/');
+                                  platform = 'instagram';
+                                } else if (domain.includes('tiktok.com')) {
+                                  isVideo = matchUrl.includes('/video/') || matchUrl.includes('/@');
+                                  platform = 'tiktok';
+                                } else if (domain.includes('facebook.com')) {
+                                  isVideo = matchUrl.includes('/watch') || matchUrl.includes('/reel');
+                                  platform = 'facebook';
+                                } else if (domain.includes('twitter.com') || domain.includes('x.com')) {
+                                  isVideo = matchUrl.includes('/status/');
+                                  platform = 'twitter';
+                                }
+
+                                isValidUrl = true;
+                                if (!linkTitle) {
+                                  const platformLabels = {
+                                    youtube: 'YouTube Video',
+                                    instagram: 'Instagram Reel',
+                                    tiktok: 'TikTok Video',
+                                    facebook: 'Facebook Video',
+                                    twitter: 'Tweet',
+                                    web: 'External Resource'
+                                  };
+                                  linkTitle = platformLabels[platform] || 'External Resource';
+                                }
+                                linkTitle = cleanCardTitle(linkTitle, matchUrl);
+                              } catch (e) {
+                                isValidUrl = false;
+                              }
+
+                              if (isValidUrl) {
+                                linkCount++;
+                                linkCards.push({
+                                  id: linkCount,
+                                  url: matchUrl,
+                                  domain,
+                                  isVideo,
+                                  videoId,
+                                  platform,
+                                  title: linkTitle
+                                });
+
+                                const inlineLabel = rawUrlMatch
+                                  ? getInlineLinkLabel(matchUrl, linkTitle)
+                                  : cleanCardTitle(match[1] || linkTitle, matchUrl);
+
+                                if (!looksLikeJunkLinkLabel(inlineLabel)) {
+                                  textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{inlineLabel}</span>);
+                                }
+                              } else {
+                                textParts.push(
+                                  <a key={match.index} href={matchUrl} target="_blank" rel="noopener noreferrer" className="chat-link">
+                                    {linkTitle || matchUrl}
+                                  </a>
+                                );
+                              }
+
+                              lastIndex = regex.lastIndex;
+                            }
+
+                            if (lastIndex < text.length) {
+                              textParts.push(text.substring(lastIndex));
+                            }
+                          } else {
+                            displayText = stripInlineLinksFromMessageText(text);
+                          }
+
                           const renderedCards = explicitCards.length > 0
                             ? explicitCards
                             : linkCards.filter((card, idx, arr) => {
@@ -654,7 +668,7 @@ export function ChatPanel({
                           return (
                             <div className="msg-content-wrapper">
                               <div className="msg-text-blocks">
-                                {textParts.length > 0 ? textParts : text}
+                                {textParts.length > 0 ? textParts : displayText}
                               </div>
                               {renderedCards.length > 0 && (
                                 <div className="msg-preview-cards">
