@@ -65,7 +65,7 @@ class PreviewCardTests(unittest.TestCase):
         finally:
             preview_cards._lookup_remote_title = original
         self.assertEqual(len(cards), 1)
-        self.assertEqual(cards[0]['title'], 'Acquisition.com Home')
+        self.assertEqual(cards[0]['title'], 'acquisition.com')
 
     def test_keeps_fallback_title_when_remote_lookup_is_empty(self):
         original = preview_cards._lookup_remote_title

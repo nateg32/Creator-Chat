@@ -138,6 +138,7 @@ def _normalize_title(value: str, url: str = '') -> str:
     cleaned = html.unescape((value or '').strip())
     cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -:\t|')
     host = (urlparse(url or '').netloc or '').lower()
+    domain = host.replace('www.', '')
     suffixes = []
     if 'youtube.com' in host or 'youtu.be' in host:
         suffixes.append(' - YouTube')
@@ -148,6 +149,17 @@ def _normalize_title(value: str, url: str = '') -> str:
     for suffix in suffixes:
         if cleaned.endswith(suffix):
             cleaned = cleaned[:-len(suffix)].rstrip(' -:|')
+    lowered = cleaned.lower()
+    if domain and lowered in {
+        domain,
+        f'{domain} home',
+        f'{domain} homepage',
+        f'{domain} official site',
+        f'{domain} official website',
+    }:
+        return domain
+    if domain and lowered in {'home', 'homepage', 'official site', 'official website'}:
+        return domain
     return cleaned
 
 
@@ -213,7 +225,7 @@ def _enrich_card_title(card: Dict[str, str], prefer_remote: bool = False) -> Dic
     current_title = card.get('title', '')
     if not prefer_remote and not _is_generic_title(current_title, card.get('url', '')):
         return card
-    remote_title = _lookup_remote_title(card.get('url', ''))
+    remote_title = _normalize_title(_lookup_remote_title(card.get('url', '')), card.get('url', ''))
     if not remote_title:
         return card
     if _is_generic_title(remote_title, card.get('url', '')) and not _is_generic_title(current_title, card.get('url', '')):

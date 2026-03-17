@@ -61,10 +61,52 @@ const XIcon = () => (
 function looksLikeJunkLinkLabel(label = "") {
   const trimmed = label.trim();
   if (!trimmed) return true;
+  if (/^\d{1,4}$/.test(trimmed)) return true;
   if (/^(here|link|source|video|resource)$/i.test(trimmed)) return true;
   if (/^[A-Za-z]{2,5}\d{2,}$/i.test(trimmed)) return true;
   if (/^[A-Za-z0-9_-]{5,12}$/i.test(trimmed) && /\d/.test(trimmed) && !/\s/.test(trimmed)) return true;
   return false;
+}
+
+function getDomainLabel(url = "") {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function cleanCardTitle(title = "", url = "") {
+  const cleaned = String(title || "").replace(/\s+/g, " ").trim();
+  const domain = getDomainLabel(url);
+  const lowered = cleaned.toLowerCase();
+  const genericHomeSuffixes = ["home", "homepage", "official site", "official website", "site"];
+
+  if (!cleaned) {
+    return domain || "External Resource";
+  }
+
+  if (domain) {
+    if (lowered === domain) {
+      return domain;
+    }
+    if (genericHomeSuffixes.some((suffix) => lowered === `${domain} ${suffix}` || lowered === `${domain} | ${suffix}` || lowered === `${domain} - ${suffix}`)) {
+      return domain;
+    }
+    if (genericHomeSuffixes.includes(lowered)) {
+      return domain;
+    }
+  }
+
+  return cleaned;
+}
+
+function getInlineLinkLabel(url = "", title = "") {
+  const cleanedTitle = cleanCardTitle(title, url);
+  if (!looksLikeJunkLinkLabel(cleanedTitle)) {
+    return cleanedTitle;
+  }
+  return getDomainLabel(url) || cleanedTitle;
 }
 
 export function ChatPanel({
@@ -488,8 +530,8 @@ export function ChatPanel({
                             let linkTitle = match[1] || "";
 
                             try {
-                              const urlObj = new URL(matchUrl);
-                              domain = urlObj.hostname.replace('www.', '');
+                                const urlObj = new URL(matchUrl);
+                                domain = getDomainLabel(urlObj.toString());
 
                               // Detect platform and video type
                               if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
@@ -526,6 +568,7 @@ export function ChatPanel({
                                 };
                                 linkTitle = platformLabels[platform] || 'External Resource';
                               }
+                              linkTitle = cleanCardTitle(linkTitle, matchUrl);
                             } catch (e) {
                               isValidUrl = false;
                             }
@@ -543,9 +586,12 @@ export function ChatPanel({
                                 title: linkTitle
                               });
 
-                              // In the text, leave the title if it was a markdown link, otherwise leave nothing (remove raw URLs from text)
-                              if (!rawUrlMatch && match[1] && !looksLikeJunkLinkLabel(match[1])) {
-                                textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{match[1]}</span>);
+                              const inlineLabel = rawUrlMatch
+                                ? getInlineLinkLabel(matchUrl, linkTitle)
+                                : cleanCardTitle(match[1] || linkTitle, matchUrl);
+
+                              if (!looksLikeJunkLinkLabel(inlineLabel)) {
+                                textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{inlineLabel}</span>);
                               }
                             } else {
                               textParts.push(
@@ -570,7 +616,7 @@ export function ChatPanel({
                                 let platform = "web";
                                 try {
                                   const urlObj = new URL(card.url);
-                                  domain = urlObj.hostname.replace('www.', '');
+                                  domain = getDomainLabel(urlObj.toString());
                                   if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
                                     isVideo = true;
                                     platform = 'youtube';
@@ -588,7 +634,7 @@ export function ChatPanel({
                                   isVideo,
                                   videoId,
                                   platform,
-                                  title: card.title || 'External Resource',
+                                  title: cleanCardTitle(card.title || 'External Resource', card.url),
                                 };
                               })
                             : [];
