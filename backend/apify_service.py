@@ -202,6 +202,12 @@ def _flatten_text_value(value: Any) -> str:
         parts = [part for part in parts if part]
         return _normalize_text_whitespace(' '.join(parts))
     if isinstance(value, dict):
+        for nested_key in ('node', 'item', 'media', 'data'):
+            if nested_key in value:
+                nested_text = _flatten_text_value(value.get(nested_key))
+                if nested_text:
+                    return nested_text
+
         edge_texts = []
         if isinstance(value.get('edges'), list):
             for edge in value.get('edges', []):
@@ -241,6 +247,13 @@ def _pick_richest_text(candidates: List[Any]) -> str:
         return ''
     cleaned.sort(key=lambda value: (len(value), value.count(' ')), reverse=True)
     return cleaned[0]
+
+
+def _has_meaningful_text(*values: Any) -> bool:
+    for value in values:
+        if _flatten_text_value(value):
+            return True
+    return False
 
 
 def _extract_platform_caption(item: Dict[str, Any], platform: str) -> str:
@@ -1193,6 +1206,8 @@ def search_twitter_profile(
         user = item.get("userName") or item.get("username") or item.get("author") or h
         source_url = item.get("url") or (f"https://twitter.com/{user}/status/{tid}" if tid else "")
         text = _extract_platform_caption(item, "twitter")
+        if not _has_meaningful_text(text):
+            continue
         transcript_status = "present" if text and text.strip() else "missing"
         published_at = item.get("created_at") or item.get("postedAt") or item.get("date")
         if isinstance(published_at, (int, float)):
@@ -1254,7 +1269,7 @@ def search_linkedin_posts(
     # The apimaestro/linkedin-profile-posts actor expects 'username' according to the UI help.
     # To ensure it doesn't fall back to the default (Satya Nadella), we use 'username'.
     run_input = {
-        "username": url,
+        "username": normalized_url,
         "totalPostsToScrape": limit,
     }
     
@@ -1275,6 +1290,8 @@ def search_linkedin_posts(
         for item in posts:
             source_url = item.get("url") or item.get("postUrl") or ""
             text = _extract_platform_caption(item, "linkedin")
+            if not _has_meaningful_text(text):
+                continue
             
             # Date handling
             published_at = None
@@ -1362,8 +1379,18 @@ def search_facebook_posts(
     items = []
     for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         source_url = item.get("url") or item.get("postUrl") or item.get("link", "") or ""
-        text = item.get("text") or item.get("message") or item.get("caption", "") or ""
-        transcript = item.get("transcript") or item.get("captionText", "") or text
+        text = _pick_richest_text([
+            item.get("text"),
+            item.get("message"),
+            item.get("caption"),
+        ])
+        transcript = _pick_richest_text([
+            item.get("transcript"),
+            item.get("captionText"),
+            text,
+        ])
+        if not _has_meaningful_text(text, transcript):
+            continue
         transcript_status = "present" if (transcript and str(transcript).strip()) else "missing"
         published_at = item.get("time") or item.get("postedAt") or item.get("creationTime")
         if isinstance(published_at, (int, float)):
@@ -1430,6 +1457,8 @@ def search_reddit_user(
         text = item.get("selftext") or item.get("body") or item.get("title", "") or ""
         title = item.get("title") or ""
         caption = f"{title}\n\n{text}".strip() if text else title
+        if not _has_meaningful_text(caption):
+            continue
         transcript_status = "present" if caption and caption.strip() else "missing"
         published_at = item.get("created_utc") or item.get("created") or item.get("postedAt")
         if isinstance(published_at, (int, float)):

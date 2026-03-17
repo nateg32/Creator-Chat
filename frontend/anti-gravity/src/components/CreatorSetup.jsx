@@ -125,40 +125,15 @@ export function CreatorSetup({
     return "All available";
   }, []);
 
-  const validateSelectedLinksForSearch = useCallback(async () => {
+  const buildSearchSummary = useCallback(() => {
     const platform_configs = buildPlatformConfigs();
-    const nextConfig = { ...config };
     const summary = [];
 
     for (const [key, entry] of Object.entries(platform_configs)) {
       const platform = platforms.find((p) => p.key === key);
       if (!platform) continue;
 
-      if (key !== "custom") {
-        const res = await validatePlatformUrl(key, entry.url);
-        if (!res.valid) {
-          setTestStatus((s) => ({ ...s, [key]: res.error || "Invalid link" }));
-          throw new Error(`${platform.label}: ${res.error || "Invalid link"}`);
-        }
-        if (res.scrape_ready === false) {
-          const message = res.message || "Valid format, but this link is not verified enough to scrape yet.";
-          setTestStatus((s) => ({ ...s, [key]: message }));
-          throw new Error(`${platform.label}: ${message}`);
-        }
-        const normalized = res.normalized || entry.url;
-        nextConfig[key] = { ...(nextConfig[key] || {}), url: normalized };
-        if (!creatorHandle && res.handle) {
-          setCreatorHandle(res.handle);
-        }
-        setTestStatus((s) => ({ ...s, [key]: res.message || "Valid public link" }));
-        summary.push({
-          key,
-          label: platform.label,
-          url: normalized,
-          maxItems: entry.maxItems,
-          timeLabel: formatTimeFilterSummary(entry.timeFilter),
-        });
-      } else {
+      if (key === "custom") {
         const lines = (entry.url || "").split('\n').map((line) => line.trim()).filter(Boolean);
         if (!lines.length) {
           throw new Error('Custom Links: add at least one link');
@@ -170,12 +145,20 @@ export function CreatorSetup({
           maxItems: entry.maxItems,
           timeLabel: "Manual links",
         });
+        continue;
       }
+
+      summary.push({
+        key,
+        label: platform.label,
+        url: entry.url,
+        maxItems: entry.maxItems,
+        timeLabel: formatTimeFilterSummary(entry.timeFilter),
+      });
     }
 
-    setConfig(nextConfig);
     return { summary, signature: JSON.stringify(platform_configs) };
-  }, [buildPlatformConfigs, config, formatTimeFilterSummary, platforms]);
+  }, [buildPlatformConfigs, formatTimeFilterSummary, platforms]);
 
 
   useEffect(() => {
@@ -405,7 +388,7 @@ export function CreatorSetup({
     }
 
     try {
-      const { summary } = await validateSelectedLinksForSearch();
+      const { summary } = buildSearchSummary();
       setSearchSummary(summary);
       setShowSearchConfirm(true);
     } catch (err) {

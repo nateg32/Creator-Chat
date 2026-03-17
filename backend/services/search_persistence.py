@@ -148,6 +148,7 @@ def _build_response_item(db_item_id: Any, item: Dict[str, Any], creator_handle: 
     return {
         'item_id': str(db_item_id),
         'source_url': item['source_url'],
+        'title': meta.get('title') or item.get('caption') or '',
         'caption': item.get('caption'),
         'content': preview_text,
         'creator_handle': creator_handle,

@@ -262,6 +262,29 @@ def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
     ))
 
 
+def _compose_ingest_text(caption: str, transcript: str) -> str:
+    caption_text = str(caption or "").strip()
+    transcript_text = str(transcript or "").strip()
+
+    if not caption_text and not transcript_text:
+        return ""
+    if not caption_text:
+        return transcript_text
+    if not transcript_text:
+        return caption_text
+
+    cap_norm = " ".join(caption_text.split()).casefold()
+    transcript_norm = " ".join(transcript_text.split()).casefold()
+    if cap_norm == transcript_norm:
+        return transcript_text if len(transcript_text) >= len(caption_text) else caption_text
+    if cap_norm in transcript_norm:
+        return transcript_text
+    if transcript_norm in cap_norm:
+        return caption_text
+
+    return f"Caption:\n{caption_text}\n\nTranscript:\n{transcript_text}"
+
+
 def handle_transcript(job_id: str, payload: dict):
     from backend.services.transcript_worker import run_transcripts_for_search
     update_job_progress(job_id, 10, "processing", "Processing transcripts...")
@@ -305,7 +328,7 @@ def handle_ingest(job_id: str, payload: dict):
         update_job_progress(job_id, current_percent, "processing", f"Ingesting item {idx+1}/{total_items}...")
 
         try:
-            text_content = item.get("transcript") or item.get("caption") or ""
+            text_content = _compose_ingest_text(item.get("caption"), item.get("transcript"))
             if not text_content:
                 failed_count += 1
                 continue

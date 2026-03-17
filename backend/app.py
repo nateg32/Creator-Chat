@@ -2603,6 +2603,29 @@ def _search_run_has_pending_transcripts(search_id: Optional[str]) -> bool:
     )
     return int((row or {}).get("count", 0) or 0) > 0
 
+
+def _compose_ingest_text(caption: str, transcript: str) -> str:
+    caption_text = str(caption or "").strip()
+    transcript_text = str(transcript or "").strip()
+
+    if not caption_text and not transcript_text:
+        return ""
+    if not caption_text:
+        return transcript_text
+    if not transcript_text:
+        return caption_text
+
+    cap_norm = " ".join(caption_text.split()).casefold()
+    transcript_norm = " ".join(transcript_text.split()).casefold()
+    if cap_norm == transcript_norm:
+        return transcript_text if len(transcript_text) >= len(caption_text) else caption_text
+    if cap_norm in transcript_norm:
+        return transcript_text
+    if transcript_norm in cap_norm:
+        return caption_text
+
+    return f"Caption:\n{caption_text}\n\nTranscript:\n{transcript_text}"
+
 @app.post("/approve_ingest", response_model=ApproveIngestResponseNew)
 async def approve_ingest(request: ApproveIngestRequestNew):
     """Ingest items from queue - insert documents from search_queue, then chunk and embed (legacy endpoint)"""
@@ -2735,8 +2758,6 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             # DB cascades will clean up creator_documents
         
         sid = request.search_id or request.scrape_id
-        if sid and _search_run_has_pending_transcripts(sid):
-            raise HTTPException(status_code=409, detail="Transcripts are still processing. Wait for transcript enrichment to finish before approving or denying content.")
         if denied_item_ids:
             deny_query = """
                 UPDATE scrape_items
@@ -2956,10 +2977,10 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                                 print(f"Transcription failed for {item_id}: {e}")
                                 transcript_status = "error"
                     
-                    text_content = transcript if transcript and transcript.strip() else (item.get("caption") or "")
+                    text_content = _compose_ingest_text(item.get("caption"), transcript)
                     
                     if not text_content:
-                        print(f"Skipping item {item_id}: no transcript or caption")
+                        print(f"Skipping item {item_id}: no transcript, caption, or post text")
                         continue
                     
                     # Extract source metadata
