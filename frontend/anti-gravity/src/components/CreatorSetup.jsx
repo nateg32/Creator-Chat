@@ -554,19 +554,26 @@ export function CreatorSetup({
 
         <div className="form-group">
           <label>Platforms</label>
+          <div className="platform-selection-hint">
+            Choose the channels you want to monitor. Start with the platforms that best represent the creator's public voice.
+          </div>
           <div className="platform-checkboxes">
             {platforms.map((p) => {
               const implemented = p.implemented !== false;
+              const checked = selected.has(p.key);
               return (
-                <label key={p.key} className="platform-check">
+                <label key={p.key} className={`platform-check ${checked ? "selected" : ""} ${implemented ? "" : "disabled"}`}>
                   <input
                     type="checkbox"
-                    checked={selected.has(p.key)}
+                    checked={checked}
                     onChange={() => togglePlatform(p.key)}
                     disabled={saveLoading || !implemented}
                   />
-                  <span className={`badge badge-${p.icon}`}>{p.label}</span>
-                  {!implemented && <span className="coming-soon">Coming soon</span>}
+                  <span className="platform-check-indicator" aria-hidden="true" />
+                  <span className="platform-check-content">
+                    <span className={`badge badge-${p.icon}`}>{p.label}</span>
+                    {!implemented && <span className="coming-soon">Coming soon</span>}
+                  </span>
                 </label>
               );
             })}
