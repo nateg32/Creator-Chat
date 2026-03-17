@@ -2,11 +2,13 @@
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
   background: transparent;
 }
 
 .app-shell.fixed-height {
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -27,15 +29,16 @@
   width: 100%;
   max-width: 1100px;
   margin: 0 auto;
-  padding: 18px 18px 28px;
+  padding: clamp(12px, 2vw, 18px) clamp(12px, 2vw, 18px) clamp(20px, 3vw, 28px);
+  min-height: 0;
 }
 
 .chat-fullscreen {
   flex: 1;
   display: flex;
   min-height: 0;
-  gap: 12px;
-  padding: 10px 12px 12px;
+  gap: clamp(8px, 1.4vw, 12px);
+  padding: clamp(8px, 1.6vw, 10px) clamp(8px, 1.8vw, 12px) clamp(8px, 1.8vw, 12px);
   overflow: hidden;
 }
 
@@ -237,7 +240,7 @@
   }
 
   .chat-fullscreen {
-    gap: 10px;
+    gap: 8px;
     padding: 8px;
   }
 
@@ -248,5 +251,12 @@
   .empty-title,
   .select-chat-state h2 {
     font-size: 34px;
+  }
+}
+
+@media (max-width: 680px) {
+  .chat-fullscreen {
+    gap: 6px;
+    padding: 6px;
   }
 }

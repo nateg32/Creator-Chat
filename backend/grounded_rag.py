@@ -36,6 +36,7 @@ from backend.services.web_verify import web_verify
 from backend.services.grammar_normalizer import grammar_normalizer
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
 from backend.services.assumption_blocker import assumption_blocker
+from backend.services.image_identity_service import image_identity_service
 from backend.services.live_search_rules import (
     build_live_search_query,
     extract_requested_platforms,
@@ -2760,6 +2761,26 @@ Message: {answer_text[:500]}"""
             }
         }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
 
+    # --- Step 4.5: Image Understanding / Identity Routing ---
+    image_result = None
+    if images:
+        logger.info("Pipeline Step 4.5: Inspecting attached images...")
+        image_result = image_identity_service.inspect(
+            question=question,
+            images=images,
+            creator_id=creator_id,
+            creator_profile=creator_row,
+            allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+        )
+        if image_result.get("handled"):
+            return apply_final_polish({
+                "answer": image_result.get("answer", "I can tell you what I see, but I wouldn't want to guess who it is."),
+                "retrieved": [image_result.get("support_chunk")] if image_result.get("support_chunk") else [],
+                "sources": image_result.get("sources") or [],
+                "cards": [],
+                "meta": image_result.get("meta") or {},
+            }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
+
     # --- Step 5: Personal / Biographical Routing ---
     rule_intent = classify_intent(question)
     if user_state.get("flags", {}).get("personal_question_flag") or rule_intent == "personal_bio_question":
@@ -2979,6 +3000,9 @@ Message: {answer_text[:500]}"""
                 conversation_history,
                 kind="video" if is_video_request else "source",
             )
+
+        if image_result and image_result.get("support_chunk"):
+            support_set = [image_result["support_chunk"], *support_set]
 
     # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
 

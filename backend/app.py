@@ -1967,6 +1967,12 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
         user_prefs, user_name = _get_user_meta()
         conversation_history = _get_thread_history()
 
+        images_payload = None
+        user_image_metadata = {}
+        if request.images and len(request.images) > 0:
+            images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in request.images[:4]]
+            user_image_metadata["images"] = images_payload
+
         # 3. Generator Wrapper to capture full answer
         async def stream_wrapper():
             import copy
@@ -1974,6 +1980,59 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
             explicit_cards = []
             stream_sanitizer = StreamingTextSanitizer()
             try:
+                if images_payload:
+                    yield f"data: {json.dumps({'content': ' '})}\n\n"
+                    creator_name = "Creator"
+                    try:
+                        creator_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (request.creator_id,))
+                        if creator_row:
+                            creator_name = (creator_row.get("name") or "").strip()
+                            if not creator_name:
+                                creator_name = (creator_row.get("handle") or "").strip().lstrip("@") or "Creator"
+                    except Exception:
+                        pass
+
+                    image_question = request.question
+                    if not image_question or not image_question.strip():
+                        image_question = "Describe this image and point out anything important."
+
+                    result = grounded_rag_ask(
+                        creator_id=request.creator_id,
+                        question=image_question,
+                        thread_id=request.thread_id,
+                        conversation_history=copy.deepcopy(conversation_history) if conversation_history else [],
+                        top_k=request.top_k or 6,
+                        max_distance=request.max_distance or 1.15,
+                        debug=request.debug or False,
+                        user_preferences=user_prefs,
+                        user_name=user_name,
+                        creator_name=creator_name,
+                        images=images_payload,
+                        user_id=1,
+                    )
+                    full_answer = strip_mid_sentence_hyphens(result.get("answer") or "")
+                    cards = merge_preview_cards(result.get("cards") or [], enrich_titles=True)
+                    for token in re.findall(r".{1,120}(?:\s+|$)", full_answer):
+                        if token:
+                            yield f"data: {json.dumps({'content': token})}\n\n"
+
+                    if request.thread_id:
+                        finalize_stream_interaction(
+                            request.thread_id,
+                            image_question,
+                            full_answer,
+                            cards=cards,
+                            user_metadata=user_image_metadata,
+                        )
+                        thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                        if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
+                            background_tasks.add_task(_update_thread_title_background, request.thread_id)
+
+                    if cards:
+                        yield f"data: {json.dumps({'cards': cards})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
                 # Explicitly deepcopy conversation history to prevent frozenset cache poisoning
                 safe_history = copy.deepcopy(conversation_history) if conversation_history else []
                 async for chunk in grounded_rag_stream(
@@ -2016,7 +2075,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     else merge_preview_cards(_extract_stream_cards(full_answer), enrich_titles=True)
                 )
                 if request.thread_id:
-                    finalize_stream_interaction(request.thread_id, request.question, full_answer, cards=cards)
+                    finalize_stream_interaction(
+                        request.thread_id,
+                        request.question,
+                        full_answer,
+                        cards=cards,
+                        user_metadata=user_image_metadata,
+                    )
                     # Check for title update
                     thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
                     if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
@@ -2047,15 +2112,16 @@ def _extract_stream_cards(answer: str):
     return extract_preview_cards(answer, enrich_titles=True)
 
 
-def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None):
+def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, user_metadata=None):
     """Save the final interaction to DB after stream completion."""
     try:
         answer = strip_mid_sentence_hyphens(answer)
+        user_metadata = user_metadata or {}
         # Save User Message
         db.execute_update("""
-            INSERT INTO chat_messages (thread_id, role, content)
-            VALUES (%s, 'user', %s)
-        """, (thread_id, question))
+            INSERT INTO chat_messages (thread_id, role, content, metadata)
+            VALUES (%s, 'user', %s, %s::jsonb)
+        """, (thread_id, question, json.dumps(user_metadata)))
 
         assistant_metadata = {}
         if cards:

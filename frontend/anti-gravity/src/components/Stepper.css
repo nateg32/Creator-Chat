@@ -1,11 +1,11 @@
 .global-nav-stepper {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: minmax(36px, auto) minmax(0, 1fr) minmax(36px, auto);
   align-items: center;
-  gap: 12px;
-  width: min(1240px, calc(100% - 32px));
-  margin: 10px auto 0;
-  padding: 10px 14px;
+  gap: clamp(8px, 1.4vw, 12px);
+  width: min(1240px, calc(100% - clamp(16px, 3vw, 32px)));
+  margin: clamp(8px, 1.4vw, 10px) auto 0;
+  padding: clamp(8px, 1.4vw, 10px) clamp(10px, 1.6vw, 14px);
   border: 1px solid var(--border);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.9);
@@ -20,12 +20,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 52px;
+  min-width: 36px;
+  min-height: 36px;
 }
 
 .app-branding-mark {
   display: block;
-  width: 42px;
+  width: clamp(24px, 1.9vw, 30px);
   height: auto;
 }
 
@@ -33,8 +34,17 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: clamp(4px, 0.8vw, 6px);
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 2px;
+}
+
+.nav-steps-container::-webkit-scrollbar {
+  display: none;
 }
 
 .nav-step {
@@ -42,13 +52,14 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 38px;
-  padding: 0 14px;
+  flex: 0 0 auto;
+  min-height: clamp(34px, 3vw, 38px);
+  padding: 0 clamp(10px, 1.4vw, 14px);
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: clamp(12px, 1.2vw, 13px);
   font-weight: 600;
   transition: all 0.2s ease;
   outline: none;
@@ -84,11 +95,12 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  min-width: 36px;
 }
 
 .user-profile-btn {
-  width: 38px;
-  height: 38px;
+  width: clamp(34px, 3vw, 38px);
+  height: clamp(34px, 3vw, 38px);
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 50%;
@@ -114,35 +126,17 @@
   object-fit: cover;
 }
 
-@media (max-width: 960px) {
+@media (max-width: 720px) {
   .global-nav-stepper {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      "brand user"
-      "steps steps";
-    gap: 12px;
-    width: calc(100% - 24px);
-    margin-top: 12px;
-    padding: 14px;
+    border-radius: 18px;
   }
 
   .app-branding {
-    grid-area: brand;
-    justify-content: flex-start;
-  }
-
-  .app-branding-mark {
-    width: 38px;
-  }
-
-  .nav-right-actions {
-    grid-area: user;
+    min-width: 32px;
+    min-height: 32px;
   }
 
   .nav-steps-container {
-    grid-area: steps;
     justify-content: flex-start;
-    overflow-x: auto;
-    padding-bottom: 2px;
   }
 }

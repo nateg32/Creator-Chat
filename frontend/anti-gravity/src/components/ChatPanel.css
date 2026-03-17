@@ -16,6 +16,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 18px;
+  flex-wrap: wrap;
   padding: 12px 16px;
   border-bottom: 1px solid #eef1f5;
   background: rgba(255, 255, 255, 0.98);
@@ -25,6 +26,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 1 1 220px;
   min-width: 0;
 }
 
@@ -67,19 +69,31 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.gemini-actions::-webkit-scrollbar {
+  display: none;
 }
 
 .gemini-actions button {
   min-height: 34px;
   padding: 0 10px;
+  flex: 0 0 auto;
   border-radius: 999px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-soft);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 
@@ -115,9 +129,9 @@
 
 .messages-stream {
   width: 100%;
-  max-width: 720px;
+  max-width: min(720px, 100%);
   margin: 0 auto;
-  padding: 22px 24px 118px;
+  padding: clamp(16px, 2.4vw, 22px) clamp(14px, 2.4vw, 24px) clamp(96px, 14vw, 118px);
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -344,21 +358,23 @@
 .msg-images-container {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 4px;
+  gap: 10px;
+  margin-bottom: 6px;
 }
 
 .msg-image-wrapper {
+  position: relative;
   border-radius: 18px;
   overflow: hidden;
   border: 1px solid var(--border);
   background: #f7f9fc;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.05);
 }
 
 .msg-image-content {
   display: block;
-  max-width: 180px;
-  max-height: 180px;
+  width: clamp(104px, 18vw, 136px);
+  height: clamp(104px, 18vw, 136px);
   object-fit: cover;
 }
 
@@ -491,7 +507,7 @@
   position: sticky;
   bottom: 0;
   z-index: 5;
-  padding: 8px 14px 10px;
+  padding: clamp(8px, 1.6vw, 10px) clamp(10px, 1.8vw, 14px) clamp(8px, 1.6vw, 10px);
   border-top: 1px solid #eef1f5;
   background: linear-gradient(180deg, rgba(245, 247, 251, 0) 0%, rgba(255, 255, 255, 0.95) 32%, rgba(255, 255, 255, 0.98) 100%);
   backdrop-filter: blur(8px);
@@ -528,21 +544,22 @@
 
 .input-image-previews {
   display: flex;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 0 6px;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0 4px;
   overflow-x: auto;
 }
 
 .preview-chip {
   position: relative;
-  width: 68px;
-  height: 68px;
-  border-radius: 18px;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--border);
   background: #f7f9fc;
   flex-shrink: 0;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.05);
 }
 
 .preview-chip img {
@@ -553,13 +570,13 @@
 
 .preview-remove {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 4px;
+  right: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: none;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.74);
@@ -637,44 +654,65 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
-  background: rgba(15, 23, 42, 0.74);
-  backdrop-filter: blur(10px);
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(8px);
   z-index: 2000;
 }
 
 .image-modal-content {
   position: relative;
+  width: min(78vw, 860px);
+  max-height: 84vh;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(8, 15, 28, 0.82);
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.42);
+  overflow: hidden;
+}
+
+.image-modal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 16px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.image-modal-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px 18px;
 }
 
 .image-modal-content img {
   display: block;
-  max-width: min(92vw, 1200px);
-  max-height: 88vh;
-  border-radius: 22px;
-  box-shadow: 0 28px 56px rgba(15, 23, 42, 0.34);
+  max-width: 100%;
+  max-height: calc(84vh - 74px);
+  border-radius: 20px;
+  object-fit: contain;
+  box-shadow: 0 24px 40px rgba(15, 23, 42, 0.24);
 }
 
 .image-modal-close {
-  position: absolute;
-  top: 14px;
-  right: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   border: none;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
 }
 
 @media (max-width: 900px) {
-  .gemini-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
   .gemini-actions {
     width: 100%;
     justify-content: flex-start;
@@ -682,6 +720,15 @@
 
   .messages-stream {
     padding: 20px 18px 126px;
+  }
+
+  .msg-image-content {
+    width: 112px;
+    height: 112px;
+  }
+
+  .image-modal-content {
+    width: min(92vw, 560px);
   }
 
   .welcome-message h1 {
@@ -698,13 +745,18 @@
   }
 
   .gemini-input-area {
-    padding: 14px 16px 16px;
+    padding: 12px 14px 14px;
   }
 }
 
 @media (max-width: 640px) {
   .gemini-layout {
-    border-radius: 24px;
+    border-radius: 20px;
+  }
+
+  .gemini-header {
+    gap: 12px;
+    padding: 10px 12px;
   }
 
   .msg-row {
@@ -745,5 +797,28 @@
 
   .welcome-message h1 {
     font-size: 26px;
+  }
+
+  .gemini-actions button {
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .gemini-actions .action-icon-btn {
+    width: 32px;
+    min-width: 32px;
+  }
+
+  .input-pill {
+    min-height: 48px;
+    border-radius: 18px;
+  }
+
+  .gemini-attach-btn,
+  .gemini-send-btn {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
   }
 }

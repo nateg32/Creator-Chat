@@ -281,6 +281,21 @@ export function ChatPanel({
     if (!debug) setDebugInfo(null);
   }, [debug]);
 
+  useEffect(() => {
+    if (!activeImage) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setActiveImage(null);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [activeImage]);
+
   async function send() {
     const q = input.trim();
     if ((!q && selectedImages.length === 0) || loading) return;
@@ -491,6 +506,7 @@ export function ChatPanel({
                               alt="attachment"
                               className="msg-image-content clickable"
                               title="Click to expand"
+                              loading="lazy"
                               onClick={() => setActiveImage(img.data_url || img.url)}
                               onError={(e) => {
                                 e.target.style.display = 'none';
@@ -886,12 +902,17 @@ export function ChatPanel({
         {activeImage && (
           <div className="image-modal-overlay" onClick={() => setActiveImage(null)}>
             <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
-              <img src={activeImage} alt="Full size" />
-              <button className="image-modal-close" onClick={() => setActiveImage(null)}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M18 6L6 18M6 6L18 18" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
+              <div className="image-modal-topbar">
+                <span>Image preview</span>
+                <button className="image-modal-close" onClick={() => setActiveImage(null)} type="button" aria-label="Close image preview">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </div>
+              <div className="image-modal-frame">
+                <img src={activeImage} alt="Expanded attachment" />
+              </div>
             </div>
           </div>
         )}
