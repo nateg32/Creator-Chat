@@ -1,7 +1,7 @@
 .creator-setup-card {
   max-width: 920px;
   margin: 0 auto;
-  padding: 38px;
+  padding: 32px;
   border-radius: 32px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.88);
@@ -11,8 +11,8 @@
 
 .creator-setup-card h2 {
   margin: 0;
-  font-size: 48px;
-  line-height: 1.02;
+  font-size: 42px;
+  line-height: 1.04;
   letter-spacing: -0.05em;
   color: var(--text);
 }
@@ -20,7 +20,7 @@
 .creator-setup-card .subtitle {
   margin: 12px 0 0;
   max-width: 620px;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.65;
   color: var(--text-soft);
 }
@@ -28,8 +28,8 @@
 .setup-form {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  margin-top: 32px;
+  gap: 20px;
+  margin-top: 28px;
 }
 
 .form-group {
@@ -57,19 +57,19 @@
 .creator-setup-card textarea,
 .creator-setup-card select {
   width: 100%;
-  min-height: 54px;
-  padding: 0 18px;
-  border-radius: 18px;
+  min-height: 50px;
+  padding: 0 16px;
+  border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--surface-soft);
   color: var(--text);
-  font-size: 16px;
+  font-size: 15px;
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .creator-setup-card textarea {
   min-height: 180px;
-  padding: 16px 18px;
+  padding: 14px 16px;
   line-height: 1.6;
 }
 
@@ -119,8 +119,8 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 50px;
-  padding: 0 16px;
+  min-height: 46px;
+  padding: 0 14px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: rgba(247, 249, 252, 0.9);
@@ -195,15 +195,15 @@
 }
 
 .platform-block {
-  padding: 26px;
-  border-radius: 24px;
+  padding: 22px;
+  border-radius: 22px;
   border: 1px solid var(--border);
   background: rgba(251, 251, 253, 0.92);
 }
 
 .platform-block-title {
   margin: 0 0 20px;
-  font-size: 26px;
+  font-size: 22px;
   line-height: 1.1;
   letter-spacing: -0.03em;
   color: var(--text);
@@ -249,12 +249,12 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 50px;
-  padding: 0 16px;
+  min-height: 46px;
+  padding: 0 14px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: #ffffff;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: normal;
   text-transform: none;
@@ -278,7 +278,7 @@
 
 .button-row .primary-button,
 .button-row .secondary-button {
-  min-width: 180px;
+  min-width: 168px;
 }
 
 .search-button.searching {
@@ -314,8 +314,8 @@
   width: min(720px, 100%);
   max-height: min(80vh, 760px);
   overflow: auto;
-  padding: 28px;
-  border-radius: 28px;
+  padding: 24px;
+  border-radius: 24px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.96);
   box-shadow: var(--shadow-md);
@@ -323,7 +323,7 @@
 
 .creator-setup-modal-header h3 {
   margin: 0;
-  font-size: 30px;
+  font-size: 26px;
   line-height: 1.08;
   letter-spacing: -0.04em;
   color: var(--text);
@@ -344,8 +344,8 @@
 }
 
 .search-summary-card {
-  padding: 18px 18px 16px;
-  border-radius: 20px;
+  padding: 16px;
+  border-radius: 18px;
   border: 1px solid var(--border);
   background: var(--surface-soft);
 }
@@ -420,12 +420,12 @@
 
 @media (max-width: 900px) {
   .creator-setup-card {
-    padding: 28px 22px;
+    padding: 24px 20px;
     border-radius: 26px;
   }
 
   .creator-setup-card h2 {
-    font-size: 38px;
+    font-size: 34px;
   }
 
   .url-row,
