@@ -1,4 +1,8 @@
-import { API_BASE_URL } from "../config";
+import {
+  API_BASE_URL,
+  formatBackendConnectionError,
+  formatBackendTimeoutError,
+} from "../config";
 
 async function readErrorPayload(res) {
   // Try JSON first, fall back to text.
@@ -37,7 +41,7 @@ async function postJson(path, body) {
     // Network error, server down, CORS, etc.
     const errorMsg = err?.message || "Network error";
     if (errorMsg.includes("Failed to fetch") || errorMsg.includes("NetworkError")) {
-      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Make sure the backend server is running on port 8000.`);
+      throw new Error(formatBackendConnectionError());
     }
     throw new Error(`Network error: ${errorMsg}`);
   }
@@ -335,10 +339,10 @@ async function getJson(path) {
   } catch (err) {
     const errorMsg = err?.message || "Network error";
     if (err.name === "AbortError") {
-      throw new Error(`Request timeout: Backend at ${API_BASE_URL} is not responding. Make sure the backend server is running.`);
+      throw new Error(formatBackendTimeoutError());
     }
     if (errorMsg.includes("Failed to fetch") || errorMsg.includes("NetworkError")) {
-      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Make sure the backend server is running on port 8000.`);
+      throw new Error(formatBackendConnectionError());
     }
     throw new Error(`Network error: ${errorMsg}`);
   }

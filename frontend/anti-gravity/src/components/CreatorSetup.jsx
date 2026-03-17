@@ -9,6 +9,7 @@ import {
 } from "../api/client";
 import { resizeImage } from "../utils/image";
 import { normalizeCreatorName } from "../utils/nameFormatter";
+import { API_BASE_URL, API_CONNECTION_HELP } from "../config";
 import "./CreatorSetup.css";
 
 const TIME_MODES = [
@@ -631,7 +632,7 @@ export function CreatorSetup({
           {error}
           {(error.includes("Cannot connect") || error.includes("Network error") || error.includes("timeout") || error.includes("Failed to fetch")) && (
             <small style={{ marginTop: "8px", display: "block" }}>
-              Make sure the backend is running on http://127.0.0.1:8000
+              API target: {API_BASE_URL}. {API_CONNECTION_HELP}
             </small>
           )}
         </div>
@@ -847,7 +848,7 @@ export function CreatorSetup({
                             }
                             disabled={saveLoading}
                           />
-                          {m.label}
+                          <span className="time-mode-label-text">{m.label}</span>
                         </label>
                       ))}
                     </div>

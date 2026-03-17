@@ -283,8 +283,8 @@
 }
 
 .badge-instagram {
-  background: #f8f1f6;
-  color: #8d4b6e;
+  background: #f4e7ef;
+  color: #9a466f;
 }
 
 .badge-youtube {
@@ -337,7 +337,7 @@
   display: inline-flex;
   align-items: center;
   min-height: 30px;
-  padding: 0 4px;
+  padding: 2px;
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
@@ -345,7 +345,15 @@
 
 .platform-config-tab.active {
   border-color: var(--border);
-  background: #ffffff;
+  background: #f7f9fc;
+}
+
+.platform-config-tab .badge {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.platform-config-tab.active .badge {
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.03);
 }
 
 .platform-block {
@@ -409,21 +417,21 @@
 
 .time-mode-radios label {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 0 12px;
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  padding: 0;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: #ffffff;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: normal;
   text-transform: none;
   color: var(--text-soft);
   cursor: pointer;
   text-align: center;
+  line-height: 1;
 }
 
 .time-mode-radios input {
@@ -431,6 +439,17 @@
   inset: 0;
   opacity: 0;
   cursor: pointer;
+}
+
+.time-mode-label-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  line-height: 1.12;
+  text-align: center;
 }
 
 .time-mode-radios label:has(input:checked) {

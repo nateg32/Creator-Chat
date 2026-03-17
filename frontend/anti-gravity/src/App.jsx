@@ -9,6 +9,7 @@ import { SourcesPanel } from "./components/SourcesPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { NewChatModal } from "./components/NewChatModal";
 import { UserSettingsModal } from "./components/UserSettingsModal";
+import { API_BASE_URL, API_CONNECTION_HELP } from "./config";
 import {
   scrape,
   approveIngestCommit,
@@ -1469,7 +1470,7 @@ function AppInner() {
 
       {backendConnected === false && (
         <div className="error-banner">
-          Cannot connect to backend at http://127.0.0.1:8000. Make sure the backend server is running on port 8000.
+          Cannot connect to backend at {API_BASE_URL}. {API_CONNECTION_HELP}
         </div>
       )}
 
