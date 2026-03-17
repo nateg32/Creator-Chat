@@ -1,4 +1,4 @@
-import { useReducer, useState, useMemo, useEffect, Component } from "react";
+import { useReducer, useState, useMemo, useEffect, useRef, Component } from "react";
 import { Stepper } from "./components/Stepper";
 import { CreatorSetup } from "./components/CreatorSetup";
 import { ScrapeProgress } from "./components/ScrapeProgress";
@@ -75,6 +75,58 @@ const STEPS = [
 // Unique ID generator
 let chatIdCounter = 0;
 const generateChatId = () => `chat_${Date.now()}_${chatIdCounter++}`;
+
+function normalizeApprovalItem(item) {
+  const metadata = typeof item?.metadata === "string"
+    ? (() => {
+      try {
+        return JSON.parse(item.metadata);
+      } catch {
+        return {};
+      }
+    })()
+    : (item?.metadata || {});
+  const safeMetadata = metadata && typeof metadata === "object" ? metadata : {};
+  const platform = item?.platform || safeMetadata.platform || item?.source || "unknown";
+  const sourceUrl = item?.source_url || item?.url || safeMetadata.source_url || safeMetadata.canonical_url || "";
+  const itemId = item?.item_id || item?.queue_id || item?.id || "";
+  const normalizedStatus = item?.item_status || item?.status || item?.review_status || "pending";
+
+  return {
+    ...item,
+    item_id: itemId ? String(itemId) : "",
+    queue_id: itemId ? String(itemId) : "",
+    title: item?.title || safeMetadata.title || "Untitled content",
+    source_url: sourceUrl,
+    url: sourceUrl,
+    caption: item?.caption || item?.preview || safeMetadata.title || "",
+    preview: item?.preview || item?.caption || "",
+    status: normalizedStatus,
+    item_status: normalizedStatus,
+    transcript_status: item?.transcript_status || safeMetadata.transcript_status || "missing",
+    platform,
+    creator_handle: item?.creator_handle || safeMetadata.creator_handle || safeMetadata.channelName || safeMetadata.authorMeta?.name || "",
+    metadata: { ...safeMetadata, platform },
+  };
+}
+
+function normalizeApprovalItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => normalizeApprovalItem(item));
+}
+
+function buildApprovalItemsSignature(items) {
+  return JSON.stringify(
+    (items || []).map((item) => ([
+      item.item_id || item.queue_id || "",
+      item.item_status || item.status || "",
+      item.transcript_status || "",
+      item.title || "",
+      item.caption || "",
+      item.source_url || item.url || "",
+    ]))
+  );
+}
 
 function wizardReducer(state, action) {
   switch (action.type) {
@@ -220,6 +272,11 @@ function AppInner() {
   const [workflowOrigin, setWorkflowOrigin] = useState({ fromChat: false, threadId: null, creatorId: null });
   const [workflowHasDetectedChanges, setWorkflowHasDetectedChanges] = useState(false);
   const [workflowRequiresApproval, setWorkflowRequiresApproval] = useState(false);
+  const scrapedItemsRef = useRef(state.scrapedItems);
+
+  useEffect(() => {
+    scrapedItemsRef.current = state.scrapedItems;
+  }, [state.scrapedItems]);
 
   const workflowSessionActive = useMemo(() => {
     if ([1, 2, 3, 4].includes(state.currentStep)) return true;
@@ -573,27 +630,7 @@ function AppInner() {
       getQueueItems(state.creatorId)
         .then((data) => {
           if (data && data.items) {
-            const mappedItems = data.items.map((i) => {
-              const metadata = i.metadata || {};
-              const platform = i.platform || metadata.platform || i.source || "unknown";
-              const sourceUrl = i.source_url || i.url || metadata.source_url || metadata.canonical_url || "";
-              return {
-                ...i,
-                item_id: i.item_id || i.queue_id,
-                queue_id: i.queue_id || i.item_id,
-                title: i.title || metadata.title || "Untitled Content",
-                source_url: sourceUrl,
-                url: sourceUrl,
-                caption: i.caption || i.preview || metadata.title || "",
-                preview: i.preview || i.caption || "",
-                status: i.item_status || i.status,
-                item_status: i.item_status || i.status,
-                transcript_status: i.transcript_status || metadata.transcript_status || "missing",
-                platform,
-                creator_handle: i.creator_handle || metadata.creator_handle || metadata.channelName || metadata.authorMeta?.name || "",
-                metadata: { ...metadata, platform },
-              };
-            });
+            const mappedItems = normalizeApprovalItems(data.items);
 
             // Use search_id from backend (likely creatorId) as scrapeId to pass validation
             dispatch({ type: "SET_SCRAPE_ID", scrapeId: data.search_id });
@@ -622,7 +659,12 @@ function AppInner() {
       try {
         const res = await getScrapeItems(state.scrapeId);
         if (cancelled || !res?.items) return;
-        dispatch({ type: "SET_SCRAPED_ITEMS", items: res.items || [] });
+        const normalizedItems = normalizeApprovalItems(res.items || []);
+        const nextSignature = buildApprovalItemsSignature(normalizedItems);
+        const currentSignature = buildApprovalItemsSignature(scrapedItemsRef.current || []);
+        if (nextSignature !== currentSignature) {
+          dispatch({ type: "SET_SCRAPED_ITEMS", items: normalizedItems });
+        }
       } catch (err) {
         console.error("Failed to refresh transcript statuses:", err);
       }
@@ -906,7 +948,7 @@ function AppInner() {
       dispatch({ type: "SET_SCRAPE_ID", scrapeId: newScrapeId });
     }
     if (result.creator_id) dispatch({ type: "SET_CREATOR_ID", creatorId: result.creator_id });
-    dispatch({ type: "SET_SCRAPED_ITEMS", items: result.items || [] });
+    dispatch({ type: "SET_SCRAPED_ITEMS", items: normalizeApprovalItems(result.items || []) });
     dispatch({ type: "SET_PLATFORM_STATUSES", platformStatuses: result.platform_statuses || null });
     dispatch({ type: "SET_STEP", step: 3 }); // Skip Preview, go straight to Approve
     setWorkflowHasDetectedChanges(Boolean((result.items || []).length));

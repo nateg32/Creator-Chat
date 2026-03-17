@@ -1,5 +1,6 @@
 import os
 import json
+import html
 import re
 import time
 from typing import List, Dict, Any, Optional
@@ -187,7 +188,7 @@ def _get_nested_value(data: Any, *path: Any) -> Any:
 
 
 def _normalize_text_whitespace(value: str) -> str:
-    return re.sub(r'\s+', ' ', value or '').strip()
+    return re.sub(r'\s+', ' ', html.unescape(value or '')).strip()
 
 
 def _flatten_text_value(value: Any) -> str:

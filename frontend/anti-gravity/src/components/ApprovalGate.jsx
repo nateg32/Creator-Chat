@@ -5,13 +5,36 @@ const DECISION_PENDING = "pending";
 const DECISION_APPROVE = "approve";
 const DECISION_DENY = "deny";
 
+function decodeHtmlEntities(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (typeof document === "undefined") return text;
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+function normalizeDisplayText(value) {
+  let text = decodeHtmlEntities(value);
+  const replacements = [
+    ["â€™", "'"],
+    ["â€˜", "'"],
+    ['â€œ', '"'],
+    ['â€�', '"'],
+    ["â€“", "-"],
+    ["â€”", "-"],
+    ["â€¦", "..."],
+    ["Â", ""],
+  ];
+  replacements.forEach(([from, to]) => {
+    text = text.split(from).join(to);
+  });
+  return text;
+}
+
 export function ApprovalGate({ items, onSave, onBack, loading, progress, forceShowSave = false }) {
-  const initialDecisionSignature = useMemo(() => JSON.stringify(
-    items.map((item) => {
-      const itemKey = item.item_id || item.queue_id;
-      const currentStatus = String(item.status || item.item_status || DECISION_PENDING).toLowerCase();
-      return [itemKey, currentStatus];
-    })
+  const itemKeySignature = useMemo(() => JSON.stringify(
+    items.map((item) => item.item_id || item.queue_id)
   ), [items]);
 
   const initialDecisions = useMemo(() => {
@@ -30,11 +53,27 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
     return initial;
   }, [items]);
 
-  const [decisions, setDecisions] = useState(initialDecisions);
+  const [decisions, setDecisions] = useState(() => initialDecisions);
 
   useEffect(() => {
-    setDecisions(initialDecisions);
-  }, [initialDecisionSignature]);
+    setDecisions((prev) => {
+      const next = {};
+      let changed = Object.keys(prev).length !== items.length;
+
+      items.forEach((item) => {
+        const itemKey = item.item_id || item.queue_id;
+        const nextDecision = Object.prototype.hasOwnProperty.call(prev, itemKey)
+          ? prev[itemKey]
+          : (initialDecisions[itemKey] ?? DECISION_PENDING);
+        next[itemKey] = nextDecision;
+        if (prev[itemKey] !== nextDecision) {
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [itemKeySignature, items, initialDecisions]);
 
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -54,8 +93,8 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
       filtered = filtered.filter(
         (item) =>
           (item.source_url || item.url || "").toLowerCase().includes(query) ||
-          (item.title || item.caption || "").toLowerCase().includes(query) ||
-          ((item.metadata || {}).title || "").toLowerCase().includes(query)
+          normalizeDisplayText(item.title || item.caption || "").toLowerCase().includes(query) ||
+          normalizeDisplayText(((item.metadata || {}).title || "")).toLowerCase().includes(query)
       );
     }
 
@@ -168,24 +207,28 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
             <label>Filter by decision</label>
             <div className="filter-buttons">
               <button
+                type="button"
                 className={filter === "all" ? "active" : ""}
                 onClick={() => setFilter("all")}
               >
                 All ({items.length})
               </button>
               <button
+                type="button"
                 className={filter === DECISION_APPROVE ? "active" : ""}
                 onClick={() => setFilter(DECISION_APPROVE)}
               >
                 Approved ({approvedCount})
               </button>
               <button
+                type="button"
                 className={filter === DECISION_DENY ? "active" : ""}
                 onClick={() => setFilter(DECISION_DENY)}
               >
                 Denied ({deniedCount})
               </button>
               <button
+                type="button"
                 className={filter === DECISION_PENDING ? "active" : ""}
                 onClick={() => setFilter(DECISION_PENDING)}
               >
@@ -207,13 +250,13 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
           <div className="bulk-actions">
             <label>Bulk actions</label>
             <div className="bulk-buttons">
-              <button onClick={approveAll} className="bulk-button">
+              <button type="button" onClick={approveAll} className="bulk-button">
                 Approve all
               </button>
-              <button onClick={denyAll} className="bulk-button">
+              <button type="button" onClick={denyAll} className="bulk-button">
                 Deny all
               </button>
-              <button onClick={resetDecisions} className="bulk-button">
+              <button type="button" onClick={resetDecisions} className="bulk-button">
                 Reset
               </button>
             </div>
@@ -232,7 +275,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
                 const decision = decisions[itemKey] || DECISION_PENDING;
                 const metadata = item.metadata || {};
                 const platform = item.platform || metadata.platform || metadata.source || "unknown";
-                const title = item.title || metadata.title || item.caption || "Untitled content";
+                const title = normalizeDisplayText(item.title || metadata.title || item.caption || "Untitled content");
 
                 return (
                   <div
@@ -269,6 +312,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
 
                         <div className="decision-controls">
                           <button
+                            type="button"
                             className={`decision-button ${decision === DECISION_APPROVE ? "active approve" : ""}`}
                             onClick={() =>
                               setDecision(
@@ -282,6 +326,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
                             Approve
                           </button>
                           <button
+                            type="button"
                             className={`decision-button ${decision === DECISION_DENY ? "active deny" : ""}`}
                             onClick={() =>
                               setDecision(
@@ -306,11 +351,12 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
       </div>
 
       <div className="approval-footer">
-        <button onClick={onBack} className="secondary-button" disabled={loading}>
+        <button type="button" onClick={onBack} className="secondary-button" disabled={loading}>
           Back
         </button>
         {isDirty || forceShowSave ? (
           <button
+            type="button"
             onClick={handleSave}
             className="primary-button"
             disabled={loading || (approvedCount === 0 && deniedCount === 0)}
