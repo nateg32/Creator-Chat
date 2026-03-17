@@ -17,11 +17,16 @@
 }
 
 .app-branding {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+}
+
+.app-branding-mark {
+  display: block;
+  width: 42px;
+  height: auto;
 }
 
 .nav-steps-container {
@@ -123,6 +128,11 @@
 
   .app-branding {
     grid-area: brand;
+    justify-content: flex-start;
+  }
+
+  .app-branding-mark {
+    width: 38px;
   }
 
   .nav-right-actions {

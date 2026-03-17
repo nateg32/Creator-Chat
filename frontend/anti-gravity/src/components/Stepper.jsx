@@ -1,9 +1,12 @@
+import creatorBotMark from "../assets/creator-bot-mark.svg";
 import "./Stepper.css";
 
 export function Stepper({ currentStep, steps, onStepClick, searchProgress = 0, onUserClick, userAvatarUrl }) {
   return (
     <div className="global-nav-stepper">
-      <div className="app-branding">Creator Bot</div>
+      <div className="app-branding">
+        <img src={creatorBotMark} alt="Creator Bot" className="app-branding-mark" />
+      </div>
       <div className="nav-steps-container">
         {steps.map((step, index) => {
           const stepNumber = index + 1;
