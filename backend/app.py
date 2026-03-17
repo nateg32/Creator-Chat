@@ -258,6 +258,7 @@ async def startup():
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS soul_md TEXT")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS research_summary JSONB")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_status TEXT DEFAULT 'idle'")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_progress JSONB DEFAULT '{}'::jsonb")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
     except Exception as e:
         print(f"[STARTUP] Migration warning: {e}")
@@ -3873,14 +3874,33 @@ async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: 
 async def get_fingerprint_status(creator_id: int):
     """Get the current fingerprinting status and timestamps."""
     row = db.execute_one(
-        "SELECT fingerprint_status, fingerprint_updated_at, style_fingerprint, identity_fingerprint FROM creators WHERE id = %s",
+        "SELECT fingerprint_status, fingerprint_progress, fingerprint_updated_at, style_fingerprint, identity_fingerprint FROM creators WHERE id = %s",
         (creator_id,)
     )
     if not row:
         raise HTTPException(status_code=404, detail="Creator not found")
-        
+
+    progress = row.get("fingerprint_progress") or {}
+    if isinstance(progress, str):
+        try:
+            progress = json.loads(progress)
+        except Exception:
+            progress = {}
+    if not isinstance(progress, dict):
+        progress = {}
+
+    status = row.get("fingerprint_status") or "idle"
+    default_progress = {
+        "status": status,
+        "percent": 100 if bool(row.get("style_fingerprint") or row.get("identity_fingerprint")) and status != "processing" else 0,
+        "stage": "complete" if bool(row.get("style_fingerprint") or row.get("identity_fingerprint")) and status != "processing" else status,
+        "message": "Fingerprint ready." if bool(row.get("style_fingerprint") or row.get("identity_fingerprint")) and status != "processing" else "Waiting to start.",
+    }
+    progress = {**default_progress, **progress, "status": status}
+
     return {
-        "status": row.get("fingerprint_status") or "idle",
+        "status": status,
+        "progress": progress,
         "updated_at": row.get("fingerprint_updated_at"),
         "has_fingerprint": bool(row.get("style_fingerprint") or row.get("identity_fingerprint")),
         "style": row.get("style_fingerprint") or {},

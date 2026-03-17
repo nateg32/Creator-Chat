@@ -2,12 +2,35 @@ import { useState, useEffect } from "react";
 import { getFingerprintStatus, getQueueItems, getCreatorConfig } from "../api/client";
 import "./PersonaSetup.css";
 
+function clampPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function formatFingerprintStage(stage) {
+  const labels = {
+    preparing: "Preparing",
+    research_cache: "Loading cached research",
+    link_scan: "Scanning source links",
+    voice_analysis: "Analyzing voice patterns",
+    dossier: "Expanding public profile",
+    synthesis: "Synthesizing fingerprint",
+    finalizing: "Finalizing profile",
+    complete: "Complete",
+    idle: "Ready",
+    error: "Error",
+  };
+  return labels[String(stage || "").toLowerCase()] || "Processing";
+}
+
 export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) {
   const [hasContent, setHasContent] = useState(false);
   const [contentLoading, setContentLoading] = useState(true);
   const [fingerprint, setFingerprint] = useState(null);
   const [status, setStatus] = useState("idle"); // idle, processing, error
   const [creatorStatus, setCreatorStatus] = useState(null);
+  const [fingerprintProgress, setFingerprintProgress] = useState(null);
 
   useEffect(() => {
     if (creatorId) {
@@ -50,6 +73,7 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
       ]);
 
       setStatus(fp.status);
+      setFingerprintProgress(fp.progress || null);
       if (fp.has_fingerprint) {
         setFingerprint({
           style: fp.style,
@@ -101,30 +125,51 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
 
   const stats = getStatements();
   const showFinishButton = Boolean(creatorId) && status !== "processing" && (Boolean(fingerprint) || !hasContent);
+  const progressPercent = clampPercent(fingerprintProgress?.percent);
+  const progressStage = formatFingerprintStage(fingerprintProgress?.stage || status);
+  const progressMessage = fingerprintProgress?.message || (
+    status === "processing"
+      ? "Analyzing approved content and public-source identity signals."
+      : "Fingerprint ready."
+  );
 
   return (
     <div className="persona-setup-card">
       <div className="persona-header">
+        <div className="persona-kicker">Fingerprint</div>
         <h2>Style Fingerprint</h2>
         <p className="persona-subtitle">
           {status === "processing"
-            ? "Analyzing content to build unique identity..."
-            : "Data-driven identity generated from public records and content."}
+            ? "Building a voice and identity model from approved content."
+            : "A distilled profile generated from approved content and public records."}
         </p>
       </div>
 
       <div className="persona-form read-only">
         {status === "processing" && (
-          <div className="fingerprint-loading">
-            <div className="progress-bar-container">
-              <div className="progress-bar-fill animate"></div>
+          <div className="fingerprint-progress-card">
+            <div className="fingerprint-progress-header">
+              <div>
+                <p className="fingerprint-progress-label">{progressStage}</p>
+                <p className="loading-text">{progressMessage}</p>
+              </div>
+              <div className="fingerprint-progress-percent">{progressPercent}%</div>
             </div>
-            <p className="loading-text">Extracting voice patterns & verified facts...</p>
+            <div className="progress-bar-container">
+              <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }}></div>
+            </div>
+            <div className="fingerprint-progress-meta">
+              <span>Live progress</span>
+              <span>Updates automatically</span>
+            </div>
           </div>
         )}
 
         {stats.length > 0 ? (
           <div className="fingerprint-glass-card">
+            <div className="fingerprint-section-header">
+              <span>Current profile</span>
+            </div>
             {stats.map((text, i) => (
               <div key={i} className="fingerprint-statement">
                 <div className="statement-bullet"></div>
@@ -137,7 +182,7 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
         )}
 
         {fingerprint?.identity?.is_verified && (
-          <div className="identity-badge"> Verified Identity Layer Active </div>
+          <div className="identity-badge">Verified identity layer active</div>
         )}
 
         <div className="disclaimer-text">

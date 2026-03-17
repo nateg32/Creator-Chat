@@ -1,213 +1,274 @@
 .persona-setup-card {
-  background: white;
-  border-radius: 40px;
-  padding: 48px;
-  max-width: 720px;
+  background: #ffffff;
+  border: 1px solid #ececf1;
+  border-radius: 28px;
+  padding: 36px;
+  max-width: 760px;
   margin: 0 auto;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 18px 40px rgba(18, 24, 40, 0.04);
+}
+
+.persona-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.persona-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8a94a6;
+}
+
+.persona-header h2 {
+  margin: 0;
+  font-size: 42px;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  color: #101828;
+}
+
+.persona-subtitle {
+  margin: 0;
+  max-width: 560px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #667085;
+}
+
+.persona-form.read-only {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.fingerprint-progress-card,
+.fingerprint-glass-card {
+  background: #fbfbfc;
+  border: 1px solid #ececf1;
+  border-radius: 20px;
+}
+
+.fingerprint-progress-card {
+  padding: 18px 18px 16px;
+}
+
+.fingerprint-progress-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.fingerprint-progress-label {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #475467;
+}
+
+.fingerprint-progress-percent {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #101828;
+}
+
+.loading-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #667085;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 10px;
+  background: #edf0f5;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 100%);
+  border-radius: inherit;
+  transition: width 0.45s ease;
+}
+
+.fingerprint-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #98a2b3;
 }
 
 .fingerprint-glass-card {
-  background: #f8f8fa;
-  border: 1px solid #efeff2;
-  border-radius: 24px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-top: 8px;
+  padding: 12px 18px;
+}
+
+.fingerprint-section-header {
+  padding: 4px 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #98a2b3;
 }
 
 .fingerprint-statement {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
-  animation: fadeIn 0.5s ease-out forwards;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid #eef1f5;
+}
+
+.fingerprint-statement:first-of-type {
+  border-top: none;
 }
 
 .statement-bullet {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #007aff;
-  margin-top: 8px;
+  background: #1d4ed8;
+  margin-top: 9px;
   flex-shrink: 0;
 }
 
 .statement-text {
-  font-size: 16px;
-  line-height: 1.5;
-  color: #1d1d1f;
-  font-weight: 500;
   margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #1f2937;
 }
 
-.disclaimer-text {
-  font-size: 12px;
-  color: #86868b;
-  text-align: center;
-  margin-top: 16px;
-  font-style: italic;
-  font-weight: 500;
-}
-
-.fingerprint-loading {
-  padding: 24px;
-  text-align: center;
-}
-
-.progress-bar-container {
-  width: 100%;
-  height: 6px;
-  background: #f2f2f7;
-  border-radius: 10px;
-  overflow: hidden;
-  margin-bottom: 12px;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background: #007aff;
-  width: 0%;
-  transition: width 0.5s ease;
-}
-
-.progress-bar-fill.animate {
-  animation: pulseProgress 2s infinite ease-in-out;
-}
-
-@keyframes pulseProgress {
-  0% {
-    width: 10%;
-    margin-left: -10%;
-  }
-
-  50% {
-    width: 40%;
-    margin-left: 30%;
-  }
-
-  100% {
-    width: 10%;
-    margin-left: 100%;
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.muted-notice {
+  margin: 0;
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: #fbfbfc;
+  border: 1px solid #ececf1;
+  color: #667085;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .identity-badge {
-  align-self: center;
-  background: #e1f0ff;
-  color: #0066cc;
-  font-size: 11px;
+  align-self: flex-start;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: #eef4ff;
+  border: 1px solid #dbe7ff;
+  color: #2457c5;
+  font-size: 12px;
   font-weight: 700;
-  padding: 4px 12px;
-  border-radius: 20px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-top: -8px;
 }
 
-.button-group.single-center {
-  justify-content: center;
-}
-
-.persona-setup-card .primary-button {
-  width: auto;
-  min-width: 200px;
-  background: #000;
-  color: #fff;
-  border-radius: 18px;
-  padding: 16px 32px;
-  font-size: 16px;
-  font-weight: 600;
-  transition: transform 0.2s;
-}
-
-.persona-setup-card .primary-button:hover:not(:disabled) {
-  transform: scale(1.02);
-}
-
-.loading-text {
-  font-size: 13px;
-  color: #86868b;
-  font-weight: 500;
+.disclaimer-text {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #98a2b3;
 }
 
 .persona-cta-container {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
-  margin-top: 32px;
-  width: 100%;
+  margin-top: 6px;
 }
 
 .finish-btn {
-  min-width: 260px;
-  height: 56px;
-  padding: 0 28px;
+  min-width: 220px;
+  height: 48px;
+  padding: 0 22px;
   border-radius: 999px;
   font-weight: 600;
-  font-size: 16px;
-  background: #1d1d1f;
-  color: #fff;
+  font-size: 15px;
+  background: #111827;
+  color: #ffffff;
   border: none;
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  transition: background 0.2s ease, transform 0.2s ease;
 }
 
 .finish-btn:hover:not(:disabled) {
+  background: #0f172a;
   transform: translateY(-1px);
-  background: #000;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
 }
 
 .finish-btn:disabled {
-  background: #f5f5f7;
-  color: #86868b;
-  box-shadow: none;
+  background: #e5e7eb;
+  color: #98a2b3;
   cursor: not-allowed;
-  pointer-events: none;
 }
 
 .persona-block-hint {
   font-size: 13px;
-  color: #86868b;
-  text-align: center;
+  color: #667085;
+  line-height: 1.5;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-start;
+  gap: 6px;
 }
 
 .go-to-approve-link {
   background: none;
   border: none;
   padding: 0;
-  color: #007aff;
+  color: #1d4ed8;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  transition: text-decoration-color 0.2s;
 }
 
 .go-to-approve-link:hover {
-  text-decoration-color: #007aff;
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .persona-setup-card {
+    padding: 24px;
+    border-radius: 24px;
+  }
+
+  .persona-header h2 {
+    font-size: 34px;
+  }
+
+  .fingerprint-progress-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .fingerprint-progress-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .persona-cta-container {
+    align-items: stretch;
+  }
+
+  .finish-btn {
+    width: 100%;
+  }
 }

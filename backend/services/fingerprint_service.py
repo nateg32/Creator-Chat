@@ -12,6 +12,35 @@ from backend.rag import get_client
 logger = logging.getLogger(__name__)
 
 
+def _set_fingerprint_progress(
+    creator_id: int,
+    *,
+    status: str,
+    percent: int,
+    stage: str,
+    message: str,
+    error: Optional[str] = None,
+):
+    payload = {
+        "status": status,
+        "percent": max(0, min(int(percent), 100)),
+        "stage": stage,
+        "message": message,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if error:
+        payload["error"] = error
+    db.execute_update(
+        """
+        UPDATE creators
+        SET fingerprint_status = %s,
+            fingerprint_progress = %s
+        WHERE id = %s
+        """,
+        (status, json.dumps(payload), creator_id),
+    )
+
+
 def _flatten_strings(value):
     out = []
     if isinstance(value, str) and value.strip():
@@ -302,10 +331,12 @@ class FingerprintService:
         Phases: Link-First, Content Mining, Google Expansion, Synthesis.
         """
         try:
-            # 1. Update status to 'processing'
-            db.execute_update(
-                "UPDATE creators SET fingerprint_status = 'processing' WHERE id = %s",
-                (creator_id,)
+            _set_fingerprint_progress(
+                creator_id,
+                status="processing",
+                percent=6,
+                stage="preparing",
+                message="Preparing creator profile for analysis.",
             )
 
             # 2. Get Creator Info & Setup Links
@@ -340,6 +371,13 @@ class FingerprintService:
             )
 
             if reuse_cached_research:
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="processing",
+                    percent=24,
+                    stage="research_cache",
+                    message="Loading cached research and identity signals.",
+                )
                 logger.info(f"FingerprintService: Reusing cached research summary for {name} ({creator_id}).")
                 link_identity = cached_summary.get("identity_research") or {}
                 investigative_dossier = cached_summary.get("investigative_dossier") or {}
@@ -348,6 +386,13 @@ class FingerprintService:
                 research_quality = "incremental_cached"
             else:
                 # PHASE 1: Link-First Research (Identity & Surface)
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="processing",
+                    percent=22,
+                    stage="link_scan",
+                    message="Scanning source links and public profiles.",
+                )
                 logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
                 if hasattr(self.researcher, "research_links"):
                     link_identity = self.researcher.research_links(links, name)
@@ -362,6 +407,13 @@ class FingerprintService:
                 research_quality = "full"
 
             # PHASE 2: Content-Truth Mining (Voice & Worldview)
+            _set_fingerprint_progress(
+                creator_id,
+                status="processing",
+                percent=46,
+                stage="voice_analysis",
+                message="Distilling voice patterns from approved content.",
+            )
             logger.info(f"FingerprintService Phase 2: Analyzing content truth...")
             voice_fingerprint = self.analyzer.analyze_creator(creator_id)
             if not isinstance(voice_fingerprint, dict):
@@ -381,6 +433,13 @@ class FingerprintService:
                 "claims": creator_claims,
             }
             if not reuse_cached_research:
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="processing",
+                    percent=64,
+                    stage="dossier",
+                    message="Filling identity gaps with targeted research.",
+                )
                 logger.info(f"FingerprintService Phase 3: Targeted Google expansion...")
                 logger.info(f"FingerprintService: Launching Deep Dossier for {name}...")
                 if hasattr(self.researcher, "research_dossier"):
@@ -416,6 +475,13 @@ class FingerprintService:
                     investigative_dossier = {}
 
             # 4. Phase 4: Synthesis (Research Summary)
+            _set_fingerprint_progress(
+                creator_id,
+                status="processing",
+                percent=82,
+                stage="synthesis",
+                message="Synthesizing the identity and style model.",
+            )
             logger.info(f"FingerprintService Phase 4: Synthesizing research summary...")
             research_summary = {
                 "identity_research": link_identity,
@@ -431,6 +497,13 @@ class FingerprintService:
             identity_fingerprint = _build_identity_fingerprint(name, link_identity, investigative_dossier, voice_fingerprint)
 
             # 6. Phase 5: Persona Narrative Alignment (soul.md)
+            _set_fingerprint_progress(
+                creator_id,
+                status="processing",
+                percent=93,
+                stage="finalizing",
+                message="Finalizing the creator fingerprint and narrative layer.",
+            )
             soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
 
             # 7. Final DB Update
@@ -442,6 +515,7 @@ class FingerprintService:
                     research_summary = %s,
                     soul_md = %s,
                     fingerprint_status = 'idle',
+                    fingerprint_progress = %s,
                     fingerprint_updated_at = %s
                 WHERE id = %s
                 """,
@@ -450,6 +524,13 @@ class FingerprintService:
                     json.dumps(voice_fingerprint),
                     json.dumps(research_summary),
                     soul_md,
+                    json.dumps({
+                        "status": "idle",
+                        "percent": 100,
+                        "stage": "complete",
+                        "message": "Fingerprint ready.",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }),
                     datetime.now(timezone.utc),
                     creator_id
                 )
@@ -460,9 +541,13 @@ class FingerprintService:
             logger.error(f"FingerprintService Deep Research Error for {creator_id}: {e}")
             import traceback
             traceback.print_exc()
-            db.execute_update(
-                "UPDATE creators SET fingerprint_status = 'error' WHERE id = %s",
-                (creator_id,)
+            _set_fingerprint_progress(
+                creator_id,
+                status="error",
+                percent=0,
+                stage="error",
+                message="Fingerprint generation failed.",
+                error=str(e),
             )
 
     async def _generate_soul_md(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any], style_fingerprint: Dict[str, Any]) -> str:
