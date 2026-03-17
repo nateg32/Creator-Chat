@@ -28,17 +28,34 @@
 .header-actions-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
   flex: 1;
+  min-width: 0;
+}
+
+.sidebar-title-group {
+  display: flex;
+  align-items: center;
   min-width: 0;
 }
 
 .sidebar-header h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--text);
+}
+
+.sidebar-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(247, 249, 252, 0.9);
 }
 
 .toggle-button,
@@ -46,11 +63,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
   padding: 0;
-  border-radius: 12px;
+  border-radius: 999px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-soft);
@@ -59,8 +76,7 @@
 
 .toggle-button:hover,
 .icon-btn:hover {
-  border-color: var(--border);
-  background: rgba(247, 249, 252, 0.92);
+  background: #ffffff;
   color: var(--text);
 }
 
@@ -73,17 +89,16 @@
 }
 
 .archive-mode-btn.active {
-  border-color: #d8e4ff;
-  background: #eef4ff;
-  color: var(--accent);
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .delete-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
-  min-width: 0;
+  margin-left: auto;
 }
 
 .delete-count {

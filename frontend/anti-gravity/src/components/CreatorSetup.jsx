@@ -131,8 +131,8 @@ export function CreatorSetup({
     return "All available";
   }, []);
 
-  const buildSearchSummary = useCallback(() => {
-    const platform_configs = buildPlatformConfigs();
+  const buildSearchSummary = useCallback((platformConfigOverride = null) => {
+    const platform_configs = platformConfigOverride || buildPlatformConfigs();
     const summary = [];
 
     for (const [key, entry] of Object.entries(platform_configs)) {
@@ -227,7 +227,19 @@ export function CreatorSetup({
           }
         }
         setConfig({ ...cf });
-        setSavedConfigSignature(JSON.stringify(cf));
+        setSavedConfigSignature(JSON.stringify(
+          Object.fromEntries(
+            Object.entries(cf).map(([key, value]) => [
+              key,
+              {
+                enabled: true,
+                url: value.url,
+                timeFilter: value.timeFilter || { mode: "all" },
+                maxItems: value.maxItems,
+              },
+            ])
+          )
+        ));
         setTestStatus({ ...nextStatuses });
       })
       .catch(() => { });
@@ -381,6 +393,99 @@ export function CreatorSetup({
     }
   };
 
+  const validateSelectedPlatforms = useCallback(async () => {
+    const nextStatuses = { ...testStatus };
+    const nextConfig = { ...config };
+    let changed = false;
+    const invalidMessages = [];
+
+    for (const platform of selectedPlatformDetails) {
+      const key = platform.key;
+      const value = String(config[key]?.url || "").trim();
+      if (!value) {
+        nextStatuses[key] = "Enter a URL first";
+        invalidMessages.push(platform.label);
+        continue;
+      }
+      if (key === "custom") {
+        const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
+        nextStatuses[key] = lines.length ? "Ready" : "Enter at least one link";
+        if (!lines.length) invalidMessages.push(platform.label);
+        continue;
+      }
+
+      let urlToValidate = value;
+      if (key === "tiktok") {
+        const normalizedTikTokUrl = normalizeTikTokProfileUrl(value);
+        if (!normalizedTikTokUrl) {
+          nextStatuses[key] = "Enter a valid TikTok profile or video URL";
+          invalidMessages.push(platform.label);
+          continue;
+        }
+        urlToValidate = normalizedTikTokUrl;
+      }
+
+      try {
+        const res = await validatePlatformUrl(key, urlToValidate);
+        if (!res.valid) {
+          nextStatuses[key] = res.error || "Link invalid";
+          invalidMessages.push(platform.label);
+          continue;
+        }
+        const normalized = res.normalized || urlToValidate;
+        nextStatuses[key] = res.scrape_ready === false
+          ? (res.message || "Valid format, but scraping stays locked until the link can be verified publicly.")
+          : (res.message || "Valid public link");
+        if (normalized !== value) {
+          nextConfig[key] = { ...(nextConfig[key] || {}), url: normalized };
+          changed = true;
+        }
+      } catch (err) {
+        nextStatuses[key] = err.message || "Link invalid";
+        invalidMessages.push(platform.label);
+      }
+    }
+
+    if (changed) {
+      setConfig(nextConfig);
+    }
+    setTestStatus(nextStatuses);
+
+    return {
+      valid: invalidMessages.length === 0,
+      invalidMessages,
+      normalizedPlatformConfigs: (() => {
+        const platformConfigs = {};
+        for (const key of selected) {
+          const c = nextConfig[key];
+          const url = String(c?.url || "").trim();
+          if (!url) continue;
+          const plat = platforms.find((item) => item.key === key);
+          const maxItems = c?.maxItems ?? plat?.default_max_items ?? 10;
+          const mode = c?.timeFilter?.mode || "all";
+          let timeFilter = { mode };
+          if (mode === "since") {
+            timeFilter.since = (c?.timeFilter?.since || "").trim() || null;
+            timeFilter.days = undefined;
+          } else if (mode === "last_days") {
+            timeFilter.days = c?.timeFilter?.days ?? 30;
+            timeFilter.since = undefined;
+          } else {
+            timeFilter.since = undefined;
+            timeFilter.days = undefined;
+          }
+          platformConfigs[key] = {
+            enabled: true,
+            url,
+            timeFilter,
+            maxItems: Math.min(Math.max(1, Number(maxItems) || 10), 50),
+          };
+        }
+        return platformConfigs;
+      })(),
+    };
+  }, [config, platforms, selected, selectedPlatformDetails, testStatus]);
+
   const handleScrape = async (e) => {
     e.preventDefault();
     const id = savedCreatorId;
@@ -391,14 +496,32 @@ export function CreatorSetup({
     }
     setError(null);
 
-    const currentSignature = buildConfigSignature();
-    if (savedConfigSignature && currentSignature !== savedConfigSignature) {
-      setError("Save config changes before searching so the scraper uses the latest links.");
-      return;
-    }
-
     try {
-      const { summary } = buildSearchSummary();
+      const validation = await validateSelectedPlatforms();
+      if (!validation.valid) {
+        setError(`Fix the source links for ${validation.invalidMessages.join(", ")} before searching.`);
+        return;
+      }
+
+      const normalizedSignature = JSON.stringify(validation.normalizedPlatformConfigs);
+      if (normalizedSignature !== savedConfigSignature) {
+        const res = await updateCreator(id, {
+          name: creatorName.trim() || undefined,
+          profile_picture_url: creatorAvatarUrl.trim() || undefined,
+          platform_configs: validation.normalizedPlatformConfigs,
+        });
+        onSaveConfig({
+          creatorId: id,
+          name: res.name,
+          handle: res.handle,
+          profile_picture_url: res.profile_picture_url,
+          status: res.status,
+          visual_config: res.visual_config,
+        });
+        setSavedConfigSignature(normalizedSignature);
+      }
+
+      const { summary } = buildSearchSummary(validation.normalizedPlatformConfigs);
       setSearchSummary(summary);
       setShowSearchConfirm(true);
     } catch (err) {
@@ -456,8 +579,8 @@ export function CreatorSetup({
     [config, isLinkValidated, selectedPlatformDetails]
   );
 
-  const canSaveConfig = valid() && allSelectedLinksReady() && !saveLoading && !scrapeLoading;
-  const canScrape = Boolean(savedCreatorId) && allSelectedLinksReady() && !scrapeLoading && !loading;
+  const canSaveConfig = valid() && !saveLoading && !scrapeLoading;
+  const canScrape = Boolean(savedCreatorId) && valid() && !scrapeLoading && !loading;
 
   return (
     <div className="creator-setup-card">
@@ -683,16 +806,6 @@ export function CreatorSetup({
                         placeholder={activePlatform.placeholder}
                         disabled={saveLoading}
                       />
-                    )}
-                    {activePlatform.key !== "custom" && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => handleTestLink(activePlatform.key)}
-                        disabled={saveLoading}
-                      >
-                        Verify
-                      </button>
                     )}
                   </div>
                   {activePlatform.key === "tiktok" && (

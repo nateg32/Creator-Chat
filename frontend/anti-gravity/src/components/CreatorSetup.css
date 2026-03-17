@@ -1,7 +1,7 @@
 .creator-setup-card {
   max-width: 940px;
   margin: 0 auto;
-  padding: 22px;
+  padding: 20px;
   border-radius: 24px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.94);
@@ -13,7 +13,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
 }
 
 .setup-kicker,
@@ -61,17 +61,17 @@
 
 .creator-setup-card h2 {
   margin: 0;
-  font-size: 32px;
+  font-size: 30px;
   line-height: 1.02;
   letter-spacing: -0.05em;
   color: var(--text);
 }
 
 .creator-setup-card .subtitle {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   max-width: 620px;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.4;
   color: var(--text-soft);
 }
 
@@ -83,7 +83,7 @@
 }
 
 .setup-section {
-  padding: 14px;
+  padding: 12px;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(250, 251, 253, 0.84);
@@ -91,7 +91,7 @@
 
 .setup-section-head h3 {
   margin: 4px 0 0;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.1;
   letter-spacing: -0.03em;
   color: var(--text);
@@ -100,8 +100,8 @@
 .setup-section-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .setup-platform-list {
@@ -197,17 +197,17 @@
 
 .platform-checkboxes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
 .platform-check {
   position: relative;
   display: flex;
-  min-height: 68px;
+  min-height: 62px;
   flex-direction: column;
   justify-content: space-between;
-  padding: 12px;
+  padding: 10px;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: rgba(247, 249, 252, 0.9);
@@ -330,13 +330,13 @@
 .platform-config-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .platform-config-tab {
   display: inline-flex;
   align-items: center;
-  min-height: 34px;
+  min-height: 30px;
   padding: 0 4px;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -349,7 +349,7 @@
 }
 
 .platform-block {
-  padding: 14px;
+  padding: 12px;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: #ffffff;
@@ -360,12 +360,12 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .platform-block-title {
-  margin: 6px 0 0;
-  font-size: 17px;
+  margin: 4px 0 0;
+  font-size: 15px;
   line-height: 1.1;
   letter-spacing: -0.03em;
   color: var(--text);
@@ -374,7 +374,7 @@
 .url-row {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .url-row > *:first-child {
@@ -403,7 +403,7 @@
 
 .time-mode-radios {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -448,13 +448,13 @@
 .setup-footer {
   display: flex;
   justify-content: flex-end;
-  padding: 14px 0 0;
+  padding: 12px 0 0;
   border-top: 1px solid #eef1f5;
 }
 
 .button-row .primary-button,
 .button-row .secondary-button {
-  min-width: 148px;
+  min-width: 144px;
 }
 
 .search-button.searching {
@@ -594,7 +594,7 @@
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 820px) {
   .creator-setup-card {
     padding: 18px 14px;
     border-radius: 24px;
@@ -608,6 +608,14 @@
 
   .setup-summary {
     min-width: 0;
+  }
+
+  .platform-checkboxes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .time-mode-radios {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .creator-setup-card h2 {
@@ -629,5 +637,12 @@
   .button-row .primary-button,
   .button-row .secondary-button {
     width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .platform-checkboxes,
+  .time-mode-radios {
+    grid-template-columns: 1fr;
   }
 }

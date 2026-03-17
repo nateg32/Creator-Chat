@@ -281,10 +281,12 @@ export function ChatSidebar({
             <div className="sidebar-header">
                 {!isCollapsed && (
                     <div className="header-actions-left">
-                        <h3>{isArchiveMode ? "Archived" : "Chats"}</h3>
+                        <div className="sidebar-title-group">
+                            <h3>{isArchiveMode ? "Archived" : "Chats"}</h3>
+                        </div>
 
                         {!isDeleteMode ? (
-                            <>
+                            <div className="sidebar-toolbar" role="toolbar" aria-label="Chat actions">
                                 {canCreateCreator && (
                                     <button
                                         onClick={onNewCreator}
@@ -316,7 +318,7 @@ export function ChatSidebar({
                                         <line x1="10" y1="12" x2="14" y2="12" />
                                     </svg>
                                 </button>
-                            </>
+                            </div>
                         ) : (
                             <div className="delete-actions">
                                 <span className="delete-count">{selectedCreators.size} selected</span>
