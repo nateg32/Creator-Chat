@@ -1,9 +1,7 @@
 import traceback
 import os
-import re
 from typing import List, Dict, Any, Optional
 from backend.db import db
-from backend.lib.transcription import transcribe_video
 import tempfile
 import subprocess
 import json
@@ -69,6 +67,17 @@ def synthesize_media_url(source_url: str, platform: str) -> Optional[str]:
         print(f"yt-dlp extract failed for {source_url}: {e}")
     return source_url
 
+
+def _looks_like_direct_media_url(url: str) -> bool:
+    lowered = (url or "").lower()
+    if not lowered:
+        return False
+    if any(ext in lowered for ext in [".mp4", ".mp3", ".wav", ".m4a", ".ogg", ".webm", ".mov"]):
+        return True
+    if any(host in lowered for host in ["googlevideo.com", ".cdninstagram.com", ".fbcdn.net", "akamaized.net", "cloudfront.net"]):
+        return True
+    return False
+
 def transcribe_with_whisper(media_url_or_path: str) -> Optional[str]:
     """Helper to run whisper unconditionally"""
     from backend.settings import settings
@@ -113,50 +122,75 @@ def transcribe_with_whisper(media_url_or_path: str) -> Optional[str]:
         print(f"transcribe_with_whisper error: {e}")
         return None
 
-def process_transcript_job(item_id: str, source_url: str, platform: str, caption: str = ""):
+def process_transcript_job(item_id: str, source_url: str, platform: str, caption: str = "", metadata: Optional[Dict[str, Any]] = None):
     """Processes a single item's transcript and updates DB."""
     print(f"[TRANSCRIPT] Starting job for {item_id} ({source_url})")
     
     transcript_text = None
-    status = "error"
+    status = "missing"
     source = "NONE"
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata) if metadata else {}
+        except Exception:
+            metadata = {}
+    else:
+        metadata = metadata or {}
+    platform_key = (platform or "unknown").lower()
     
     try:
-        if platform in {"youtube", "youtube_shorts"}:
+        if platform_key in {"youtube", "youtube_shorts"}:
             try:
-                from backend.apify_service import _extract_youtube_native_transcripts
-                native_transcript = _extract_youtube_native_transcripts([source_url]).get(source_url, "")
-                if native_transcript:
-                    transcript_text = native_transcript
+                from backend.apify_service import _extract_youtube_transcripts, get_apify_token
+                token = get_apify_token()
+                youtube_transcript = _extract_youtube_transcripts([source_url], token).get(source_url, "")
+                if youtube_transcript:
+                    transcript_text = youtube_transcript
                     status = "present"
-                    source = "YT_CAPTIONS"
-                else:
-                    status = "missing"
+                    source = "YOUTUBE_ACTOR"
             except Exception as e:
-                print(f"[TRANSCRIPT] YT caption failed: {e}")
-                status = "missing"
-            
-            if not transcript_text:
-                print(f"[TRANSCRIPT] Falling back to whisper for YT {source_url}")
-                # Use yt-dlp to get media url
-                direct_url = synthesize_media_url(source_url, "youtube")
+                print(f"[TRANSCRIPT] YouTube transcript recovery failed for {source_url}: {e}")
+        elif platform_key in {"instagram", "tiktok"}:
+            try:
+                from backend.apify_service import _extract_social_transcripts, get_apify_token
+                token = get_apify_token()
+                social_transcript = _extract_social_transcripts([source_url], token, platform=platform_key).get(source_url, "")
+                if social_transcript:
+                    transcript_text = social_transcript
+                    status = "present"
+                    source = "SOCIAL_ACTOR"
+            except Exception as e:
+                print(f"[TRANSCRIPT] Social transcript recovery failed for {source_url}: {e}")
+
+        if not transcript_text:
+            media_candidates = [
+                metadata.get("video_url"),
+                metadata.get("videoUrl"),
+                metadata.get("video"),
+                source_url,
+            ]
+            for candidate_url in media_candidates:
+                if not candidate_url:
+                    continue
+                direct_url = str(candidate_url).strip()
+                if not direct_url:
+                    continue
+
+                if not _looks_like_direct_media_url(direct_url):
+                    resolved_url = synthesize_media_url(direct_url, platform_key)
+                    if not resolved_url or (resolved_url == direct_url and not _looks_like_direct_media_url(resolved_url)):
+                        continue
+                    direct_url = resolved_url
+
                 transcript_text = transcribe_with_whisper(direct_url)
                 if transcript_text:
                     status = "present"
                     source = "WHISPER_ASR"
-                else:
-                    status = "error"
-        else:
-            direct_url = synthesize_media_url(source_url, platform)
-            transcript_text = transcribe_with_whisper(direct_url)
-            if transcript_text:
-                status = "present"
-                source = "WHISPER_ASR"
-            else:
-                status = "missing"
+                    break
                     
         # Update DB
         if transcript_text:
+            print(f"[TRANSCRIPT] Completed {item_id} via {source}")
             db.execute_update(
                 "UPDATE scrape_items SET transcript = %s, transcript_status = 'present' WHERE id = %s",
                 (transcript_text, item_id)
@@ -258,6 +292,7 @@ def run_transcripts_for_search(search_run_id: str):
                         item.get("source_url") or "",
                         item.get("platform") or "unknown",
                         item.get("caption") or "",
+                        item.get("metadata") or {},
                     ): item for item in pending_fallback
                 }
                 for future in as_completed(futures):

@@ -40,11 +40,17 @@ class YouTubeTranscriptBatchTests(unittest.TestCase):
             },
         ]
 
-        with patch.object(apify_service, "get_apify_token", return_value="token"),              patch.object(apify_service, "_extract_youtube_native_transcripts", return_value={
-                 "https://www.youtube.com/watch?v=abcdefghijk": "native youtube transcript"
-             }) as native_mock,              patch.object(apify_service, "_extract_transcripts_invideoiq", return_value={
-                 "https://www.tiktok.com/@creator/video/123": "tiktok transcript"
-             }) as actor_mock:
+        with patch.object(apify_service, "get_apify_token", return_value="token"), \
+             patch.object(
+                 apify_service,
+                 "_extract_youtube_native_transcripts",
+                 return_value={"https://www.youtube.com/watch?v=abcdefghijk": "native youtube transcript"},
+             ) as native_mock, \
+             patch.object(
+                 apify_service,
+                 "_extract_transcripts_invideoiq",
+                 return_value={"https://www.tiktok.com/@creator/video/123": "tiktok transcript"},
+             ) as actor_mock:
             result = apify_service.batch_extract_all_transcripts(items)
 
         self.assertEqual(result[0]["transcript"], "native youtube transcript")
@@ -60,16 +66,57 @@ class YouTubeTranscriptBatchTests(unittest.TestCase):
             "https://www.youtube.com/shorts/lmnopqrstuv",
         ]
 
-        with patch.object(apify_service, "_extract_youtube_native_transcripts", return_value={
-            urls[0]: "native one",
-            urls[1]: "native two",
-        }) as native_mock,              patch.object(apify_service, "_extract_transcripts_invideoiq") as actor_mock:
+        with patch.object(
+            apify_service,
+            "_extract_youtube_native_transcripts",
+            return_value={urls[0]: "native one", urls[1]: "native two"},
+        ) as native_mock, patch.object(apify_service, "_extract_transcripts_invideoiq") as actor_mock:
             result = apify_service._extract_youtube_transcripts(urls, "token")
 
         self.assertEqual(result[urls[0]], "native one")
         self.assertEqual(result[urls[1]], "native two")
         native_mock.assert_called_once_with(urls)
         actor_mock.assert_not_called()
+
+    def test_transcript_alias_matching_handles_canonicalized_social_urls(self):
+        alias_map = apify_service._build_transcript_alias_map(
+            ["https://www.instagram.com/reel/ABC123/?utm_source=ig_web_copy_link"],
+            "instagram",
+        )
+
+        matches = apify_service._resolve_transcript_matches(
+            alias_map,
+            ["https://instagram.com/reel/ABC123"],
+            "instagram",
+        )
+
+        self.assertEqual(matches, ["https://www.instagram.com/reel/ABC123/?utm_source=ig_web_copy_link"])
+
+    def test_batch_uses_social_fallback_for_remaining_instagram_urls(self):
+        instagram_url = "https://www.instagram.com/reel/ABC123/"
+        items = [
+            {
+                "platform": "instagram",
+                "source_url": instagram_url,
+                "transcript_status": "missing",
+                "transcript": "",
+            },
+        ]
+
+        with patch.object(apify_service, "get_apify_token", return_value="token"), \
+             patch.object(apify_service, "_extract_youtube_native_transcripts", return_value={}), \
+             patch.object(apify_service, "_extract_transcripts_invideoiq", return_value={}) as actor_mock, \
+             patch.object(
+                 apify_service,
+                 "_extract_social_transcripts",
+                 return_value={instagram_url: "instagram transcript"},
+             ) as social_mock:
+            result = apify_service.batch_extract_all_transcripts(items)
+
+        self.assertEqual(result[0]["transcript"], "instagram transcript")
+        self.assertEqual(result[0]["transcript_status"], "present")
+        actor_mock.assert_called_once_with([instagram_url], "token")
+        social_mock.assert_called_once_with([instagram_url], "token", platform="instagram")
 
 
 if __name__ == "__main__":

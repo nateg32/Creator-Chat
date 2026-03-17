@@ -149,6 +149,7 @@ def _build_response_item(db_item_id: Any, item: Dict[str, Any], creator_handle: 
         'item_id': str(db_item_id),
         'source_url': item['source_url'],
         'caption': item.get('caption'),
+        'content': preview_text,
         'creator_handle': creator_handle,
         'transcript_status': norm_status,
         'published_at': published_at_str,

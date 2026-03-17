@@ -1,5 +1,4 @@
 import { useState, useMemo, useEffect } from "react";
-import { retryTranscript } from "../api/client";
 import "./ApprovalGate.css";
 
 const DECISION_PENDING = "pending";
@@ -40,7 +39,6 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
   const filteredItems = useMemo(() => {
     let filtered = items;
 
-    // Filter by decision
     if (filter !== "all") {
       filtered = filtered.filter((item) => {
         const itemKey = item.item_id || item.queue_id;
@@ -48,13 +46,12 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
       });
     }
 
-    // Search
     if (search.trim()) {
       const query = search.toLowerCase();
       filtered = filtered.filter(
         (item) =>
           (item.source_url || item.url || "").toLowerCase().includes(query) ||
-          (item.caption || item.title || "").toLowerCase().includes(query) ||
+          (item.content || item.caption || item.title || "").toLowerCase().includes(query) ||
           (item.preview || "").toLowerCase().includes(query)
       );
     }
@@ -93,7 +90,6 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
   async function handleSave() {
     if (hasProcessingTranscripts) return;
 
-    // Build decisions array in format expected by API
     const decisionsArray = items.map((item) => {
       const itemKey = item.item_id || item.queue_id;
       return {
@@ -151,7 +147,6 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
         </div>
       )}
 
-      {/* Progress Bar */}
       {progress && (
         <div className="progress-container">
           <div className="progress-info">
@@ -164,7 +159,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
             <div
               className="progress-bar-fill"
               style={{
-                width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : "0%"
+                width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : "0%",
               }}
             >
               {progress.total > 0 && (
@@ -213,7 +208,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
             <label>Search</label>
             <input
               type="text"
-              placeholder="Search by title or content..."
+              placeholder="Search by content..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -246,30 +241,9 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
                 const itemKey = item.item_id || item.queue_id;
                 const decision = decisions[itemKey] || DECISION_PENDING;
                 const isExpanded = expanded[itemKey];
-                const previewText = item.preview || item.caption || "";
-                const transcriptStatus = item.transcript_status || "missing";
-
-                // Extract metadata for better display
+                const previewText = item.content || item.preview || item.caption || "";
                 const metadata = item.metadata || {};
                 const platform = item.platform || metadata.platform || metadata.source || "unknown";
-                const displayTitle = item.title || metadata.title || item.caption?.substring(0, 50) || "Untitled Content";
-
-                const handleCandidates = [
-                  item.creator_handle,
-                  metadata.creator_handle,
-                  metadata.channelName,
-                  metadata.authorMeta?.name,
-                  metadata.author,
-                ].filter(Boolean);
-                let creatorHandle = handleCandidates[0] || "";
-                if (!creatorHandle && displayTitle.toLowerCase().includes("|")) {
-                  creatorHandle = displayTitle.split("|").pop().trim();
-                }
-                const safePlatform = String(platform || "unknown");
-                const normalizedHandle = String(creatorHandle || "").trim();
-                const displayHandle = normalizedHandle
-                  ? (normalizedHandle.startsWith("@") ? normalizedHandle : `@${normalizedHandle}`)
-                  : `@${safePlatform}`;
 
                 return (
                   <div
@@ -281,52 +255,19 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
                         <span className={`platform-badge platform-${platform.toLowerCase().replace(" / ", "-")}`}>
                           {platform.toUpperCase()}
                         </span>
-                        <span className="creator-name">{displayHandle}</span>
                       </div>
-
-                      <div className="transcript-badge">
-                        {!item.is_primary && item.duplicate_of_item_id !== undefined ? (
-                          <span className="badge badge-warning">Duplicate</span>
-                        ) : transcriptStatus === "present" ? (
-                          <span className="badge badge-success">✓ Transcript ready</span>
-                        ) : transcriptStatus === "missing" || transcriptStatus === "no_captions" ? (
-                          <span className="badge badge-warning">No captions</span>
-                        ) : transcriptStatus === "error" ? (
-                          <span className="badge badge-error">
-                            Transcript failed
-                            <button
-                              style={{ marginLeft: "6px", fontSize: "10px", padding: "2px 6px" }}
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  await retryTranscript(itemKey);
-                                  // Update local state to reflect it's processing
-                                  if (window.location) window.location.reload();
-                                } catch (err) {
-                                  alert(err.message || "Failed to retry");
-                                }
-                              }}
-                            >
-                              Retry
-                            </button>
-                          </span>
-                        ) : (
-                          <span className="badge badge-info">Transcribing...</span>
-                        )}
-                      </div>
+                      {!item.is_primary && item.duplicate_of_item_id !== undefined && (
+                        <span className="badge badge-warning">Duplicate</span>
+                      )}
                     </div>
 
                     <div className="card-body">
-                      <h3 className="card-title" title={displayTitle}>
-                        {displayTitle}
-                      </h3>
-
                       <p className="card-preview">
-                        {isExpanded ? previewText : (previewText.substring(0, 150) || "No preview available")}
-                        {previewText.length > 150 && !isExpanded && "..."}
+                        {isExpanded ? previewText : (previewText.substring(0, 280) || "No content available")}
+                        {previewText.length > 280 && !isExpanded && "..."}
                       </p>
 
-                      {previewText.length > 150 && (
+                      {previewText.length > 280 && (
                         <button
                           className="expand-button"
                           onClick={() =>

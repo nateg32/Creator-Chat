@@ -67,6 +67,108 @@ def extract_content_id(url: str, platform: str) -> str:
     return ""
 
 
+def _get_platform_from_url(url: str, platform_hint: str = "") -> str:
+    platform = (platform_hint or "").lower().replace(" ", "_")
+    if platform in {"youtube", "youtube_shorts", "instagram", "tiktok", "twitter", "x", "linkedin", "reddit"}:
+        return platform
+
+    host = (urlparse(url or "").netloc or "").lower()
+    if "youtu" in host:
+        return "youtube"
+    if "instagram.com" in host:
+        return "instagram"
+    if "tiktok.com" in host:
+        return "tiktok"
+    if "twitter.com" in host or "x.com" in host:
+        return "twitter"
+    if "linkedin.com" in host:
+        return "linkedin"
+    if "reddit.com" in host:
+        return "reddit"
+    return platform
+
+
+def _transcript_lookup_keys(url: str, platform_hint: str = "") -> List[str]:
+    if not url:
+        return []
+
+    raw = str(url).strip()
+    if not raw:
+        return []
+
+    parsed = urlparse(raw)
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").rstrip("/")
+    platform = _get_platform_from_url(raw, platform_hint)
+
+    keys: List[str] = []
+    seen = set()
+
+    def add(value: str):
+        if not value or value in seen:
+            return
+        seen.add(value)
+        keys.append(value)
+
+    add(raw)
+    add(raw.rstrip("/"))
+    if host:
+        add(f"{host}{path}")
+        add(f"https://{host}{path}")
+        add(f"http://{host}{path}")
+
+    if platform in {"youtube", "youtube_shorts"}:
+        content_id = extract_content_id(raw, "youtube")
+        if content_id:
+            add(f"youtube:{content_id}")
+    elif platform == "instagram":
+        content_id = extract_content_id(raw, "instagram")
+        if content_id:
+            add(f"instagram:{content_id}")
+    elif platform == "tiktok":
+        content_id = extract_content_id(raw, "tiktok")
+        if content_id:
+            add(f"tiktok:{content_id}")
+    elif platform == "twitter":
+        content_id = extract_content_id(raw, "twitter")
+        if content_id:
+            add(f"twitter:{content_id}")
+    elif platform == "linkedin":
+        content_id = extract_content_id(raw, "linkedin")
+        if content_id:
+            add(f"linkedin:{content_id}")
+    elif platform == "reddit":
+        content_id = extract_content_id(raw, "reddit")
+        if content_id:
+            add(f"reddit:{content_id}")
+
+    return keys
+
+
+def _build_transcript_alias_map(video_urls: List[str], platform_hint: str = "") -> Dict[str, List[str]]:
+    alias_map: Dict[str, List[str]] = {}
+    for original_url in video_urls:
+        for alias in _transcript_lookup_keys(original_url, platform_hint):
+            alias_map.setdefault(alias, []).append(original_url)
+    return alias_map
+
+
+def _resolve_transcript_matches(
+    alias_map: Dict[str, List[str]],
+    candidate_urls: List[str],
+    platform_hint: str = "",
+) -> List[str]:
+    matches: List[str] = []
+    seen = set()
+    for candidate_url in candidate_urls:
+        for alias in _transcript_lookup_keys(candidate_url, platform_hint):
+            for original_url in alias_map.get(alias, []):
+                if original_url in seen:
+                    continue
+                seen.add(original_url)
+                matches.append(original_url)
+    return matches
+
 
 def _get_nested_value(data: Any, *path: Any) -> Any:
     current = data
@@ -386,7 +488,7 @@ def _time_filter_to_date_expr(time_filter: Optional[Dict[str, Any]]) -> Optional
     return None
 
 
-def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: str = "") -> Dict[str, str]:
+def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: str = "", platform_hint: str = "") -> Dict[str, str]:
     """
     Extract transcripts from multiple video URLs using invideoiq/video-transcript-scraper.
     Supports YouTube, TikTok, X/Twitter, Facebook, Instagram, Dailymotion, etc.
@@ -395,6 +497,8 @@ def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: 
     transcripts = {}
     if not video_urls:
         return transcripts
+
+    alias_map = _build_transcript_alias_map(video_urls, platform_hint)
 
     try:
         client = ApifyClient(token)
@@ -419,6 +523,17 @@ def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: 
                 result_item.get("videoUrl") or
                 ""
             )
+            candidate_urls = [
+                result_item.get("video_url"),
+                result_item.get("url"),
+                result_item.get("videoUrl"),
+                result_item.get("canonicalUrl"),
+                result_item.get("sourceUrl"),
+                result_item.get("inputUrl"),
+                result_item.get("originalUrl"),
+                result_item.get("requestedUrl"),
+            ]
+            candidate_urls = [str(value).strip() for value in candidate_urls if value]
 
             transcript = (
                 result_item.get("transcript") or
@@ -438,11 +553,17 @@ def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: 
 
             t_str = str(transcript).strip()
 
-            if vurl and t_str:
+            if t_str and candidate_urls:
+                log_url = vurl or candidate_urls[0]
                 if len(t_str) < 500 and ("sign in" in t_str.lower() or "confirm you're not a bot" in t_str.lower()):
-                    print(f"[TRANSCRIPT] Skipping bot-block message for {vurl}")
+                    print(f"[TRANSCRIPT] Skipping bot-block message for {log_url}")
                     continue
-                transcripts[vurl] = t_str
+                matches = _resolve_transcript_matches(alias_map, candidate_urls, platform_hint)
+                if matches:
+                    for matched_url in matches:
+                        transcripts[matched_url] = t_str
+                elif vurl:
+                    transcripts[vurl] = t_str
 
         print(f"[TRANSCRIPT] invideoiq extracted {len(transcripts)}/{len(video_urls)} transcripts")
     except Exception as e:
@@ -603,8 +724,8 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
     
     # 1. Collect all video URLs that need transcripts
     video_platforms = {"youtube", "youtube_shorts", "tiktok", "instagram"}
-    video_items = []
     all_video_urls = []
+    video_platform_by_url: Dict[str, str] = {}
     seen_urls = set()
     
     for it in items:
@@ -616,8 +737,8 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
         if plat_key in video_platforms:
             url = it.get("source_url", "")
             if url and it.get("transcript_status") != "present" and url not in seen_urls:
-                video_items.append(it)
                 all_video_urls.append(url)
+                video_platform_by_url[url] = plat_key
                 seen_urls.add(url)
     
     if not all_video_urls:
@@ -651,6 +772,24 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
             print(f"[BATCH-TRANSCRIPT] invideoiq failed: {e}")
     else:
         print("[BATCH-TRANSCRIPT] Native YouTube captions covered all pending videos")
+
+    social_platforms = {"instagram", "tiktok"}
+    for social_platform in social_platforms:
+        social_missing = [
+            url for url in all_video_urls
+            if url not in all_transcripts and video_platform_by_url.get(url) == social_platform
+        ]
+        if not social_missing:
+            continue
+        print(f"[BATCH-TRANSCRIPT] {social_platform} fallback for {len(social_missing)} URLs...")
+        try:
+            social_transcripts = _extract_social_transcripts(social_missing, token, platform=social_platform)
+            all_transcripts.update(social_transcripts)
+            recovered = sum(1 for url in social_missing if url in all_transcripts)
+            if recovered:
+                print(f"[BATCH-TRANSCRIPT] {social_platform} fallback recovered {recovered}/{len(social_missing)} transcripts")
+        except Exception as e:
+            print(f"[BATCH-TRANSCRIPT] {social_platform} fallback failed: {e}")
     
     # 3. YouTube-only fallback: karamelo for any still-missing YouTube URLs
     youtube_missing = [
@@ -743,7 +882,7 @@ def _extract_youtube_transcripts(video_urls: List[str], token: str) -> Dict[str,
     remaining_urls = [u for u in video_urls if get_vid(u) not in transcripts_by_id]
     if remaining_urls:
         try:
-            ivq = _extract_transcripts_invideoiq(remaining_urls, token)
+            ivq = _extract_transcripts_invideoiq(remaining_urls, token, platform_hint="youtube")
             for url in remaining_urls:
                 vid = get_vid(url)
                 if url in ivq and vid:
@@ -1341,7 +1480,7 @@ def _extract_social_transcripts(video_urls: List[str], token: str, platform: str
 
     # Primary: invideoiq/video-transcript-scraper (multi-platform)
     try:
-        transcripts = _extract_transcripts_invideoiq(video_urls, token)
+        transcripts = _extract_transcripts_invideoiq(video_urls, token, platform_hint=platform)
         if transcripts:
             print(f"[{platform.upper()}] invideoiq primary: {len(transcripts)}/{len(video_urls)} transcripts")
     except Exception as e:
@@ -1352,6 +1491,7 @@ def _extract_social_transcripts(video_urls: List[str], token: str, platform: str
     if remaining:
         try:
             client = ApifyClient(token)
+            alias_map = _build_transcript_alias_map(remaining, platform)
             run_input = {
                 "start_urls": "\n".join(remaining),
             }
@@ -1359,14 +1499,29 @@ def _extract_social_transcripts(video_urls: List[str], token: str, platform: str
             run = client.actor("tictechid/anoxvanzi-Transcriber").call(run_input=run_input, timeout_secs=180)
 
             for result_item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                video_url = result_item.get("videoUrl") or result_item.get("url") or ""
+                candidate_urls = [
+                    result_item.get("videoUrl"),
+                    result_item.get("url"),
+                    result_item.get("canonicalUrl"),
+                    result_item.get("sourceUrl"),
+                    result_item.get("inputUrl"),
+                    result_item.get("originalUrl"),
+                ]
+                candidate_urls = [str(value).strip() for value in candidate_urls if value]
+                video_url = candidate_urls[0] if candidate_urls else ""
                 transcript = _pick_richest_text([
                     result_item.get("transcript"),
                     result_item.get("text"),
                     result_item.get("subtitle"),
                     result_item.get("subtitles"),
                 ])
-                if video_url and transcript:
+                if not transcript:
+                    continue
+                matches = _resolve_transcript_matches(alias_map, candidate_urls, platform)
+                if matches:
+                    for matched_url in matches:
+                        transcripts[matched_url] = transcript
+                elif video_url:
                     transcripts[video_url] = transcript
             print(f"[{platform.upper()}] Total transcripts recovered: {len(transcripts)}/{len(video_urls)}")
         except Exception as e:
