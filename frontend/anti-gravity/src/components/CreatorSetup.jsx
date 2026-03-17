@@ -53,6 +53,7 @@ export function CreatorSetup({
   const [saveLoading, setSaveLoading] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [testStatus, setTestStatus] = useState({});
+  const [activePlatformKey, setActivePlatformKey] = useState(null);
 
   const isLinkValidated = useCallback((key) => {
     const status = String(testStatus[key] || "").toLowerCase();
@@ -68,6 +69,10 @@ export function CreatorSetup({
   const selectedPlatformDetails = useMemo(
     () => visiblePlatforms.filter((platform) => selected.has(platform.key)),
     [selected, visiblePlatforms]
+  );
+  const activePlatform = useMemo(
+    () => selectedPlatformDetails.find((platform) => platform.key === activePlatformKey) || selectedPlatformDetails[0] || null,
+    [activePlatformKey, selectedPlatformDetails]
   );
 
   const duplicateCreator = useMemo(() => {
@@ -227,6 +232,16 @@ export function CreatorSetup({
       })
       .catch(() => { });
   }, [platforms, savedCreatorId]);
+
+  useEffect(() => {
+    if (!selectedPlatformDetails.length) {
+      setActivePlatformKey(null);
+      return;
+    }
+    if (!selectedPlatformDetails.some((platform) => platform.key === activePlatformKey)) {
+      setActivePlatformKey(selectedPlatformDetails[0].key);
+    }
+  }, [activePlatformKey, selectedPlatformDetails]);
 
   const togglePlatform = (key) => {
     setSelected((prev) => {
@@ -450,7 +465,7 @@ export function CreatorSetup({
         <div>
           <div className="setup-kicker">Setup</div>
           <h2>Create a bot</h2>
-          <p className="subtitle">Set the creator identity, choose the sources worth monitoring, and save a clean crawl plan before you search.</p>
+          <p className="subtitle">Name. Sources. Search.</p>
         </div>
         <div className="setup-summary">
           <div className="setup-summary-metric">
@@ -505,7 +520,6 @@ export function CreatorSetup({
             <div>
               <div className="setup-section-kicker">Identity</div>
               <h3>Creator profile</h3>
-              <p>Use the public name that should appear throughout approval, persona, and chat.</p>
             </div>
           </div>
           <div className="setup-section-body">
@@ -588,7 +602,6 @@ export function CreatorSetup({
             <div>
               <div className="setup-section-kicker">Sources</div>
               <h3>Select platforms</h3>
-              <p>Pick the public channels you want to monitor. Focus on the platforms that best represent the creator&apos;s voice.</p>
             </div>
           </div>
           <div className="setup-section-body">
@@ -620,32 +633,44 @@ export function CreatorSetup({
           <div className="setup-section-head">
             <div>
               <div className="setup-section-kicker">Configuration</div>
-              <h3>Configure sources</h3>
-              <p>Add the exact public URLs, set the time range, and choose how much content to pull from each source.</p>
+              <h3>{activePlatform ? activePlatform.label : "Configure sources"}</h3>
             </div>
           </div>
           <div className="setup-section-body setup-platform-list">
             {selectedPlatformDetails.length === 0 ? (
               <div className="setup-empty-state">
-                Select at least one platform to configure source URLs and search rules.
+                Select a platform to continue.
               </div>
-            ) : selectedPlatformDetails.map((p) => (
-              <div key={p.key} className="platform-block">
-                <div className="platform-block-header">
-                  <div>
-                    <div className="platform-block-eyebrow">Source</div>
-                    <h3 className="platform-block-title">{p.label}</h3>
-                  </div>
-                  <span className={`badge badge-${p.key === "youtube_shorts" ? "youtube" : p.icon}`}>{p.label}</span>
+            ) : (
+              <>
+                <div className="platform-config-tabs" role="tablist" aria-label="Configured platform">
+                  {selectedPlatformDetails.map((platform) => (
+                    <button
+                      key={platform.key}
+                      type="button"
+                      className={`platform-config-tab ${activePlatform?.key === platform.key ? "active" : ""}`}
+                      onClick={() => setActivePlatformKey(platform.key)}
+                    >
+                      <span className={`badge badge-${platform.key === "youtube_shorts" ? "youtube" : platform.icon}`}>{platform.label}</span>
+                    </button>
+                  ))}
                 </div>
+                <div key={activePlatform.key} className="platform-block">
+                  <div className="platform-block-header">
+                    <div>
+                      <div className="platform-block-eyebrow">Source</div>
+                      <h3 className="platform-block-title">{activePlatform.label}</h3>
+                    </div>
+                    <span className={`badge badge-${activePlatform.key === "youtube_shorts" ? "youtube" : activePlatform.icon}`}>{activePlatform.label}</span>
+                  </div>
                 <div className="form-group">
-                  <label>{p.key === "custom" ? "Resource URLs (one per line)" : "Profile URL"}</label>
+                  <label>{activePlatform.key === "custom" ? "Resource URLs" : "Profile URL"}</label>
                   <div className="url-row">
-                    {p.key === "custom" ? (
+                    {activePlatform.key === "custom" ? (
                       <textarea
-                        value={config[p.key]?.url || ""}
-                        onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
-                        placeholder={p.placeholder}
+                        value={config[activePlatform.key]?.url || ""}
+                        onChange={(e) => updatePlatformConfig(activePlatform.key, { url: e.target.value })}
+                        placeholder={activePlatform.placeholder}
                         disabled={saveLoading}
                         rows={6}
                         style={{ width: "100%", fontFamily: "monospace", resize: "vertical" }}
@@ -653,30 +678,28 @@ export function CreatorSetup({
                     ) : (
                       <input
                         type="text"
-                        value={config[p.key]?.url || ""}
-                        onChange={(e) => updatePlatformConfig(p.key, { url: e.target.value })}
-                        placeholder={p.placeholder}
+                        value={config[activePlatform.key]?.url || ""}
+                        onChange={(e) => updatePlatformConfig(activePlatform.key, { url: e.target.value })}
+                        placeholder={activePlatform.placeholder}
                         disabled={saveLoading}
                       />
                     )}
-                    {p.key !== "custom" && (
+                    {activePlatform.key !== "custom" && (
                       <button
                         type="button"
                         className="secondary-button"
-                        onClick={() => handleTestLink(p.key)}
+                        onClick={() => handleTestLink(activePlatform.key)}
                         disabled={saveLoading}
                       >
-                        Test link
+                        Verify
                       </button>
                     )}
                   </div>
-                  {p.key === "tiktok" && (
-                    <div className="validation-hint">
-                      Paste the creator profile URL. If you paste a TikTok video link, we&apos;ll convert it to the profile automatically.
-                    </div>
+                  {activePlatform.key === "tiktok" && (
+                    <div className="validation-hint">Video links auto-convert to the creator profile.</div>
                   )}
-                  {p.key !== "custom" && testStatus[p.key] && (() => {
-                    const statusText = String(testStatus[p.key] || "").toLowerCase();
+                  {activePlatform.key !== "custom" && testStatus[activePlatform.key] && (() => {
+                    const statusText = String(testStatus[activePlatform.key] || "").toLowerCase();
                     const isVerified = statusText.startsWith("valid public link");
                     const isWarning = !isVerified && (
                       statusText.startsWith("valid format") ||
@@ -688,13 +711,13 @@ export function CreatorSetup({
                     const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
                     return (
                       <span className={`test-status ${statusClass}`}>
-                        {testStatus[p.key]}
+                        {testStatus[activePlatform.key]}
                       </span>
                     );
                   })()}
                 </div>
 
-                {p.key !== "custom" && (
+                {activePlatform.key !== "custom" && (
                   <div className="form-group">
                     <label>Search from</label>
                     <div className="time-mode-radios">
@@ -702,11 +725,11 @@ export function CreatorSetup({
                         <label key={m.value}>
                           <input
                             type="radio"
-                            name={`time-${p.key}`}
-                            checked={(config[p.key]?.timeFilter?.mode || "all") === m.value}
+                            name={`time-${activePlatform.key}`}
+                            checked={(config[activePlatform.key]?.timeFilter?.mode || "all") === m.value}
                             onChange={() =>
-                              updatePlatformConfig(p.key, {
-                                timeFilter: { ...(config[p.key]?.timeFilter || {}), mode: m.value },
+                              updatePlatformConfig(activePlatform.key, {
+                                timeFilter: { ...(config[activePlatform.key]?.timeFilter || {}), mode: m.value },
                               })
                             }
                             disabled={saveLoading}
@@ -717,16 +740,16 @@ export function CreatorSetup({
                     </div>
                   </div>
                 )}
-                {(config[p.key]?.timeFilter?.mode === "last_days" || config[p.key]?.timeFilter?.mode === "since") && (
+                {(config[activePlatform.key]?.timeFilter?.mode === "last_days" || config[activePlatform.key]?.timeFilter?.mode === "since") && (
                   <div className="form-group inline">
-                    {config[p.key]?.timeFilter?.mode === "last_days" && (
+                    {config[activePlatform.key]?.timeFilter?.mode === "last_days" && (
                       <>
                         <label>Days</label>
                         <select
-                          value={config[p.key]?.timeFilter?.days ?? 30}
+                          value={config[activePlatform.key]?.timeFilter?.days ?? 30}
                           onChange={(e) =>
-                            updatePlatformConfig(p.key, {
-                              timeFilter: { ...(config[p.key]?.timeFilter || {}), days: Number(e.target.value) },
+                            updatePlatformConfig(activePlatform.key, {
+                              timeFilter: { ...(config[activePlatform.key]?.timeFilter || {}), days: Number(e.target.value) },
                             })
                           }
                           disabled={saveLoading}
@@ -737,15 +760,15 @@ export function CreatorSetup({
                         </select>
                       </>
                     )}
-                    {config[p.key]?.timeFilter?.mode === "since" && (
+                    {config[activePlatform.key]?.timeFilter?.mode === "since" && (
                       <>
                         <label>Since</label>
                         <input
                           type="date"
-                          value={config[p.key]?.timeFilter?.since || ""}
+                          value={config[activePlatform.key]?.timeFilter?.since || ""}
                           onChange={(e) =>
-                            updatePlatformConfig(p.key, {
-                              timeFilter: { ...(config[p.key]?.timeFilter || {}), since: e.target.value },
+                            updatePlatformConfig(activePlatform.key, {
+                              timeFilter: { ...(config[activePlatform.key]?.timeFilter || {}), since: e.target.value },
                             })
                           }
                           disabled={saveLoading}
@@ -755,25 +778,23 @@ export function CreatorSetup({
                   </div>
                 )}
                 <div className="form-group">
-                  <label>Max items (default {p.default_max_items})</label>
+                  <label>Max items</label>
                   <input
                     type="number"
                     min={1}
                     max={50}
-                    value={config[p.key]?.maxItems ?? p.default_max_items ?? 10}
-                    onChange={(e) => updatePlatformConfig(p.key, { maxItems: e.target.value })}
+                    value={config[activePlatform.key]?.maxItems ?? activePlatform.default_max_items ?? 10}
+                    onChange={(e) => updatePlatformConfig(activePlatform.key, { maxItems: e.target.value })}
                     disabled={saveLoading}
                   />
                 </div>
-              </div>
-            ))}
+                </div>
+              </>
+            )}
           </div>
         </section>
 
         <div className="setup-footer">
-          <div className="setup-footer-copy">
-            Save the configuration first, then search once every selected source is fully validated.
-          </div>
           <div className="button-row">
             <button
               type="button"
