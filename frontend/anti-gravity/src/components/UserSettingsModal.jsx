@@ -1,190 +1,255 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./UserSettingsModal.css";
 import { resizeImage } from "../utils/image";
 
 const RESPONSE_STYLES = [
-    "Simple English",
-    "Concise answers",
-    "Step-by-step explanations",
-    "Friendly and conversational",
-    "Professional and direct",
-    "Examples-first explanations"
+  {
+    label: "Simple English",
+    description: "Keep the creator clear and easy to follow without losing their voice.",
+  },
+  {
+    label: "Concise answers",
+    description: "Lead with the point and trim extra setup.",
+  },
+  {
+    label: "Step-by-step explanations",
+    description: "Break advice into a sequence when the topic needs structure.",
+  },
+  {
+    label: "Friendly and conversational",
+    description: "More warmth and day-to-day language.",
+  },
+  {
+    label: "Professional and direct",
+    description: "Tighter, sharper, and more consultative.",
+  },
+  {
+    label: "Examples-first explanations",
+    description: "Open with a concrete example before the principle.",
+  },
 ];
 
+const CUSTOM_PREF_LIMIT = 500;
+
 export function UserSettingsModal({
-    isOpen,
-    onClose,
-    userSettings,
-    onUpdateUserSettings
+  isOpen,
+  onClose,
+  userSettings,
+  onUpdateUserSettings,
 }) {
-    const [displayName, setDisplayName] = useState(userSettings?.display_name || "");
-    const [avatarUrl, setAvatarUrl] = useState(userSettings?.profile_picture_url || "");
-    const [presets, setPresets] = useState(userSettings?.response_preferences?.presets || []);
-    const [customPref, setCustomPref] = useState(userSettings?.response_preferences?.custom || "");
-    const [saving, setSaving] = useState(false);
+  const [displayName, setDisplayName] = useState(userSettings?.display_name || "");
+  const [avatarUrl, setAvatarUrl] = useState(userSettings?.profile_picture_url || "");
+  const [presets, setPresets] = useState(userSettings?.response_preferences?.presets || []);
+  const [customPref, setCustomPref] = useState(userSettings?.response_preferences?.custom || "");
+  const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef(null);
 
-    // Sync state if userSettings changes while open
-    useEffect(() => {
-        if (isOpen && userSettings) {
-            setDisplayName(userSettings.display_name || "");
-            setAvatarUrl(userSettings.profile_picture_url || "");
-            setPresets(userSettings.response_preferences?.presets || []);
-            setCustomPref(userSettings.response_preferences?.custom || "");
-        }
-    }, [isOpen, userSettings]);
+  useEffect(() => {
+    if (isOpen && userSettings) {
+      setDisplayName(userSettings.display_name || "");
+      setAvatarUrl(userSettings.profile_picture_url || "");
+      setPresets(userSettings.response_preferences?.presets || []);
+      setCustomPref(userSettings.response_preferences?.custom || "");
+    }
+  }, [isOpen, userSettings]);
 
-    const fileInputRef = useRef(null);
+  if (!isOpen) return null;
 
-    // Early return AFTER all hooks to avoid conditional hook ordering
-    if (!isOpen) return null;
+  const handleAvatarUpload = async (event) => {
+    if (event.target.files && event.target.files[0]) {
+      try {
+        const base64 = await resizeImage(event.target.files[0]);
+        setAvatarUrl(base64);
+      } catch (err) {
+        console.error("Avatar upload failed:", err);
+        alert("Failed to upload image");
+      }
+    }
+  };
 
-    const handleAvatarUpload = async (e) => {
-        if (e.target.files && e.target.files[0]) {
-            try {
-                const base64 = await resizeImage(e.target.files[0]);
-                setAvatarUrl(base64);
-            } catch (err) {
-                console.error("Avatar upload failed:", err);
-                alert("Failed to upload image");
-            }
-        }
-    };
-
-    const togglePreset = (style) => {
-        setPresets(prev =>
-            prev.includes(style)
-                ? prev.filter(p => p !== style)
-                : [...prev, style]
-        );
-    };
-
-    const handleSave = async () => {
-        setSaving(true);
-        try {
-            await onUpdateUserSettings({
-                display_name: displayName,
-                profile_picture_url: avatarUrl,
-                response_preferences: {
-                    presets,
-                    custom: customPref
-                }
-            });
-            onClose();
-        } catch (err) {
-            console.error("Failed to save user settings:", err);
-            alert("Failed to save: " + err.message);
-        } finally {
-            setSaving(false);
-        }
-    };
-
-    return (
-        <div className="user-settings-overlay" onClick={onClose}>
-            <div className="user-settings-modal" onClick={e => e.stopPropagation()}>
-                <div className="modal-header">
-                    <h2>User Settings</h2>
-                    <button className="close-btn" onClick={onClose}>&times;</button>
-                </div>
-
-                <div className="settings-scroll-area">
-                    {/* User Profile Section */}
-                    <div className="settings-section">
-                        <h3>Profile</h3>
-                        <div className="profile-row">
-                            <div className="avatar-container">
-                                <div
-                                    className="avatar-wrapper"
-                                    onClick={() => fileInputRef.current?.click()}
-                                    title="Click to change photo"
-                                >
-                                    {avatarUrl ? (
-                                        <img src={avatarUrl} alt="User Avatar" />
-                                    ) : (
-                                        <div className="avatar-placeholder plus" title="Add photo">
-                                            +
-                                        </div>
-                                    )}
-                                    {/* Use a subtle overlay hint on hover only */}
-                                    {avatarUrl && <div className="avatar-edit-hint">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                        </svg>
-                                    </div>}
-                                </div>
-                                {avatarUrl && (
-                                    <button
-                                        className="remove-avatar-btn"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (window.confirm("Remove profile picture?")) {
-                                                setAvatarUrl("");
-                                            }
-                                        }}
-                                        title="Remove photo"
-                                    >
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                )}
-                                <input
-                                    type="file"
-                                    ref={fileInputRef}
-                                    style={{ display: 'none' }}
-                                    accept="image/*"
-                                    onChange={handleAvatarUpload}
-                                />
-                            </div>
-                            <div className="name-input-wrapper">
-                                <label>Display Name</label>
-                                <input
-                                    type="text"
-                                    value={displayName}
-                                    onChange={e => setDisplayName(e.target.value)}
-                                    placeholder="Your Name"
-                                />
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Response Preferences Section */}
-                    <div className="settings-section">
-                        <h3>Bot Response Preferences</h3>
-                        <p className="section-desc">Personalize how every creator talks to you. The more you share, the more personal your experience feels.</p>
-
-                        <div className="presets-grid">
-                            {RESPONSE_STYLES.map(style => (
-                                <button
-                                    key={style}
-                                    className={`preset-chip ${presets.includes(style) ? 'selected' : ''}`}
-                                    onClick={() => togglePreset(style)}
-                                >
-                                    {style}
-                                </button>
-                            ))}
-                        </div>
-
-                        <div className="custom-pref-wrapper">
-                            <label>Custom Instructions</label>
-                            <textarea
-                                value={customPref}
-                                onChange={e => setCustomPref(e.target.value)}
-                                placeholder={"Tell creators about yourself so they can personalize responses for you.\n\nExamples:\n• \"I'm into basketball — use sports analogies\"\n• \"I'm a complete beginner, explain from scratch\"\n• \"Challenge my thinking, don't just agree\"\n• \"I run a small agency with 5 employees\""}
-                                rows={4}
-                            />
-                        </div>
-                    </div>
-                </div>
-
-                <div className="modal-footer">
-                    <button className="cancel-btn" onClick={onClose}>Cancel</button>
-                    <button className="save-btn" onClick={handleSave} disabled={saving}>
-                        {saving ? "Saving..." : "Save Settings"}
-                    </button>
-                </div>
-            </div>
-        </div>
+  const togglePreset = (style) => {
+    setPresets((prev) =>
+      prev.includes(style)
+        ? prev.filter((item) => item !== style)
+        : [...prev, style]
     );
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await onUpdateUserSettings({
+        display_name: displayName,
+        profile_picture_url: avatarUrl,
+        response_preferences: {
+          presets,
+          custom: customPref.slice(0, CUSTOM_PREF_LIMIT),
+        },
+      });
+      onClose();
+    } catch (err) {
+      console.error("Failed to save user settings:", err);
+      alert(`Failed to save: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="user-settings-overlay" onClick={onClose}>
+      <div
+        className="user-settings-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="user-settings-title"
+      >
+        <div className="user-settings-header">
+          <div>
+            <div className="user-settings-kicker">Personalization</div>
+            <h2 id="user-settings-title">User Settings</h2>
+            <p>
+              Shape delivery without breaking the creator&apos;s persona. These
+              settings help responses feel more personal, not more robotic.
+            </p>
+          </div>
+          <button type="button" className="user-settings-close" onClick={onClose} aria-label="Close settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="user-settings-scroll">
+          <section className="user-settings-section">
+            <div className="user-settings-section-head">
+              <div className="user-settings-section-kicker">Profile</div>
+              <h3>How creators should address you</h3>
+            </div>
+
+            <div className="user-settings-profile-grid">
+              <div className="user-avatar-panel">
+                <button
+                  type="button"
+                  className="user-avatar-button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Upload profile photo"
+                >
+                  {avatarUrl ? (
+                    <img src={avatarUrl} alt="User avatar" />
+                  ) : (
+                    <div className="user-avatar-placeholder">+</div>
+                  )}
+                  <span className="user-avatar-overlay">Change</span>
+                </button>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={handleAvatarUpload}
+                />
+
+                {avatarUrl ? (
+                  <button
+                    type="button"
+                    className="user-avatar-remove"
+                    onClick={() => setAvatarUrl("")}
+                  >
+                    Remove photo
+                  </button>
+                ) : (
+                  <div className="user-avatar-note">Optional profile photo</div>
+                )}
+              </div>
+
+              <div className="user-settings-form">
+                <label htmlFor="display-name-input">Display Name</label>
+                <input
+                  id="display-name-input"
+                  type="text"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  placeholder="What should creators call you?"
+                />
+                <p className="user-settings-help">
+                  Used naturally in chat when it fits. Never forced into every reply.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section className="user-settings-section">
+            <div className="user-settings-section-head">
+              <div className="user-settings-section-kicker">Delivery</div>
+              <h3>Response preferences</h3>
+              <p>
+                Pick the delivery patterns you want most often. The creator still
+                sounds like themselves.
+              </p>
+            </div>
+
+            <div className="user-settings-presets">
+              {RESPONSE_STYLES.map((style) => {
+                const selected = presets.includes(style.label);
+                return (
+                  <button
+                    key={style.label}
+                    type="button"
+                    className={`user-settings-preset ${selected ? "selected" : ""}`}
+                    onClick={() => togglePreset(style.label)}
+                  >
+                    <span className="user-settings-preset-title">{style.label}</span>
+                    <span className="user-settings-preset-desc">{style.description}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="user-settings-section">
+            <div className="user-settings-section-head">
+              <div className="user-settings-section-kicker">Context</div>
+              <h3>Custom instructions</h3>
+              <p>
+                Give creators user context they can weave in naturally, such as
+                your goals, background, level, constraints, or the kinds of
+                examples that click for you.
+              </p>
+            </div>
+
+            <div className="user-settings-form">
+              <label htmlFor="custom-instructions-input">Tell creators about you</label>
+              <textarea
+                id="custom-instructions-input"
+                value={customPref}
+                onChange={(event) => setCustomPref(event.target.value.slice(0, CUSTOM_PREF_LIMIT))}
+                placeholder={
+                  "Examples:\nI run a small agency with five employees.\nI am a beginner, so explain from first principles.\nChallenge my thinking instead of agreeing too quickly.\nSports examples usually click faster for me."
+                }
+                rows={6}
+              />
+              <div className="user-settings-custom-meta">
+                <span>
+                  These instructions personalize delivery. Unsafe meta-instructions are filtered server-side.
+                </span>
+                <span>{customPref.length}/{CUSTOM_PREF_LIMIT}</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div className="user-settings-footer">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="primary-button" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving..." : "Save Settings"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

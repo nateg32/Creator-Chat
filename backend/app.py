@@ -53,6 +53,8 @@ from backend.utils.name_formatter import normalize_creator_name
 from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_sentence_hyphens
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
+from backend.services.prompt_injection_guard import normalize_user_preferences
+from backend.core.interaction_engine import RESPONSE_PRESETS
 
 logger = logging.getLogger(__name__)
 
@@ -1737,6 +1739,7 @@ async def get_user_settings():
         prefs = dict(prefs) if prefs else {}
     else:
         prefs = json.loads(prefs) if isinstance(prefs, str) else {}
+    prefs = normalize_user_preferences(prefs, RESPONSE_PRESETS.keys())
 
     return UserSettings(
         display_name=row.get("display_name"),
@@ -1759,7 +1762,7 @@ async def update_user_settings(request: UpdateUserSettingsRequest):
         
     if request.response_preferences is not None:
         updates.append("response_preferences = %s")
-        params.append(json.dumps(request.response_preferences))
+        params.append(json.dumps(normalize_user_preferences(request.response_preferences, RESPONSE_PRESETS.keys())))
         
     if not updates:
         return await get_user_settings()
@@ -1820,6 +1823,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     try: user_prefs = json.loads(up)
                     except: pass
                 elif isinstance(up, dict): user_prefs = up
+            user_prefs = normalize_user_preferences(user_prefs, RESPONSE_PRESETS.keys())
             return user_prefs, user_name
 
         # 3. Thread Logic & History (Async)
@@ -2020,6 +2024,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
                  except: pass
              elif isinstance(up, dict):
                  user_prefs = up
+        user_prefs = normalize_user_preferences(user_prefs, RESPONSE_PRESETS.keys())
         
         # Thread Logic (Session Persistence)
         conversation_history = request.messages
