@@ -491,8 +491,6 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
 class InteractionEngine:
     def __init__(self):
         self._turn_log_available: Optional[bool] = None
-
-    def __init__(self):
         try:
             self.memory = MemoryIntegration()
         except:
@@ -1722,6 +1720,9 @@ Output the cleaned text only."""
         used_sources: bool,
         source_count: int
     ):
+        if not hasattr(self, "_turn_log_available"):
+            self._turn_log_available = None
+
         if self._turn_log_available is False:
             return
 
