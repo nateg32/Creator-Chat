@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { ask, askStream } from "../api/client";
 import { resizeImage, compressChatImage } from "../utils/image";
 import { formatCreatorName, formatMessageText } from "../utils/format";
@@ -125,6 +126,10 @@ function stripInlineLinksFromMessageText(text = "") {
     .trim();
 }
 
+const MIN_IMAGE_ZOOM = 0.75;
+const MAX_IMAGE_ZOOM = 3;
+const IMAGE_ZOOM_STEP = 0.25;
+
 export function ChatPanel({
   creatorId,
   threadId, // New prop
@@ -164,6 +169,7 @@ export function ChatPanel({
   const chatImageInputRef = useRef(null);
   const [activeAvatarEdit, setActiveAvatarEdit] = useState(null);
   const [activeImage, setActiveImage] = useState(null);
+  const [imageZoom, setImageZoom] = useState(1);
   const [attachmentError, setAttachmentError] = useState(null);
   const errorTimeoutRef = useRef(null);
 
@@ -283,18 +289,55 @@ export function ChatPanel({
 
   useEffect(() => {
     if (!activeImage) return undefined;
+
+    setImageZoom(1);
+    const originalOverflow = document.body.style.overflow;
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         setActiveImage(null);
+        return;
+      }
+      if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        setImageZoom((current) => Math.min(MAX_IMAGE_ZOOM, current + IMAGE_ZOOM_STEP));
+        return;
+      }
+      if (event.key === "-") {
+        event.preventDefault();
+        setImageZoom((current) => Math.max(MIN_IMAGE_ZOOM, current - IMAGE_ZOOM_STEP));
+        return;
+      }
+      if (event.key === "0") {
+        event.preventDefault();
+        setImageZoom(1);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = "";
+      document.body.style.overflow = originalOverflow;
     };
   }, [activeImage]);
+
+  const closeImagePreview = () => {
+    setActiveImage(null);
+    setImageZoom(1);
+  };
+
+  const openImagePreview = (src) => {
+    setActiveImage(src);
+    setImageZoom(1);
+  };
+
+  const adjustImageZoom = (delta) => {
+    setImageZoom((current) => Math.min(MAX_IMAGE_ZOOM, Math.max(MIN_IMAGE_ZOOM, current + delta)));
+  };
+
+  const openImageInNewTab = () => {
+    if (!activeImage || typeof window === "undefined") return;
+    window.open(activeImage, "_blank", "noopener,noreferrer");
+  };
 
   async function send() {
     const q = input.trim();
@@ -507,7 +550,7 @@ export function ChatPanel({
                               className="msg-image-content clickable"
                               title="Click to expand"
                               loading="lazy"
-                              onClick={() => setActiveImage(img.data_url || img.url)}
+                              onClick={() => openImagePreview(img.data_url || img.url)}
                               onError={(e) => {
                                 e.target.style.display = 'none';
                                 e.target.nextSibling.style.display = 'block';
@@ -899,22 +942,66 @@ export function ChatPanel({
         />
 
         {/* Image Modal Overlay */}
-        {activeImage && (
-          <div className="image-modal-overlay" onClick={() => setActiveImage(null)}>
+        {activeImage && typeof document !== "undefined" && createPortal(
+          <div className="image-modal-overlay" onClick={closeImagePreview}>
             <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
               <div className="image-modal-topbar">
-                <span>Image preview</span>
-                <button className="image-modal-close" onClick={() => setActiveImage(null)} type="button" aria-label="Close image preview">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
+                <div className="image-modal-meta">
+                  <span>Image preview</span>
+                  <span>{Math.round(imageZoom * 100)}%</span>
+                </div>
+                <div className="image-modal-actions">
+                  <button
+                    className="image-modal-control"
+                    onClick={() => adjustImageZoom(-IMAGE_ZOOM_STEP)}
+                    type="button"
+                    aria-label="Zoom out"
+                    disabled={imageZoom <= MIN_IMAGE_ZOOM}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <path d="M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                  <button className="image-modal-control image-modal-reset" onClick={() => setImageZoom(1)} type="button">
+                    Fit
+                  </button>
+                  <button
+                    className="image-modal-control"
+                    onClick={() => adjustImageZoom(IMAGE_ZOOM_STEP)}
+                    type="button"
+                    aria-label="Zoom in"
+                    disabled={imageZoom >= MAX_IMAGE_ZOOM}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                  <button className="image-modal-control image-modal-open" onClick={openImageInNewTab} type="button">
+                    Open
+                  </button>
+                  <button className="image-modal-close" onClick={closeImagePreview} type="button" aria-label="Close image preview">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div className="image-modal-frame">
-                <img src={activeImage} alt="Expanded attachment" />
+                <div className="image-modal-stage">
+                  <img
+                    src={activeImage}
+                    alt="Expanded attachment"
+                    style={{
+                      width: imageZoom > 1 ? `${imageZoom * 100}%` : "auto",
+                      maxWidth: imageZoom > 1 ? "none" : "100%",
+                      maxHeight: imageZoom > 1 ? "none" : "calc(min(92vh, 980px) - 96px)",
+                    }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body
         )}
         {/* Hidden file input for chat images */}
         <input
