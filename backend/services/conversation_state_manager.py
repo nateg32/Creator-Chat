@@ -14,25 +14,10 @@ class ConversationStateManager:
         self.user_id = user_id
         self.creator_id = creator_id
         self.thread_id = thread_id
+        self.available = self._ensure_schema()
         self.state = self._load_state()
 
-    def _load_state(self) -> Dict[str, Any]:
-        row = db.execute_one(
-            "SELECT known_slots, last_question, last_intent, verbosity_pref, last_asked_slot, last_asked_question_variant, last_opener_filler, last_used_pause_marker, memory_loop FROM conversation_state WHERE user_id = %s AND creator_id = %s AND thread_id = %s",
-            (self.user_id, self.creator_id, self.thread_id)
-        )
-        if row:
-            return {
-                "known_slots": row["known_slots"] if isinstance(row["known_slots"], dict) else json.loads(row["known_slots"] or '{}'),
-                "last_question": row["last_question"] if isinstance(row["last_question"], dict) else json.loads(row["last_question"] or '{}'),
-                "last_intent": row["last_intent"],
-                "verbosity_pref": row["verbosity_pref"] or 'short',
-                "last_asked_slot": row["last_asked_slot"],
-                "last_asked_question_variant": row["last_asked_question_variant"],
-                "last_opener_filler": row["last_opener_filler"],
-                "last_used_pause_marker": row["last_used_pause_marker"],
-                "memory_loop": row["memory_loop"] if isinstance(row["memory_loop"], dict) else json.loads(row["memory_loop"] or '{}')
-            }
+    def _default_state(self) -> Dict[str, Any]:
         return {
             "known_slots": {},
             "last_question": {},
@@ -56,38 +41,118 @@ class ConversationStateManager:
             }
         }
 
-    def save_state(self):
-        db.execute_update(
+    def _ensure_schema(self) -> bool:
+        queries = [
             """
-            INSERT INTO conversation_state (user_id, creator_id, thread_id, known_slots, last_question, last_intent, verbosity_pref, last_asked_slot, last_asked_question_variant, last_opener_filler, last_used_pause_marker, memory_loop, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (user_id, creator_id, thread_id) DO UPDATE SET
-                known_slots = EXCLUDED.known_slots,
-                last_question = EXCLUDED.last_question,
-                last_intent = EXCLUDED.last_intent,
-                verbosity_pref = EXCLUDED.verbosity_pref,
-                last_asked_slot = EXCLUDED.last_asked_slot,
-                last_asked_question_variant = EXCLUDED.last_asked_question_variant,
-                last_opener_filler = EXCLUDED.last_opener_filler,
-                last_used_pause_marker = EXCLUDED.last_used_pause_marker,
-                memory_loop = EXCLUDED.memory_loop,
-                updated_at = EXCLUDED.updated_at
-            """,
-            (
-                self.user_id,
-                self.creator_id,
-                self.thread_id,
-                json.dumps(self.state["known_slots"]),
-                json.dumps(self.state["last_question"]),
-                self.state["last_intent"],
-                self.state["verbosity_pref"],
-                self.state["last_asked_slot"],
-                self.state["last_asked_question_variant"],
-                self.state["last_opener_filler"],
-                self.state["last_used_pause_marker"],
-                json.dumps(self.state["memory_loop"])
+            CREATE TABLE IF NOT EXISTS conversation_state (
+                user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                creator_id BIGINT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+                thread_id TEXT NOT NULL,
+                known_slots JSONB DEFAULT '{}'::jsonb,
+                last_question JSONB DEFAULT '{}'::jsonb,
+                last_intent TEXT,
+                verbosity_pref TEXT DEFAULT 'short',
+                last_asked_slot TEXT,
+                last_asked_question_variant TEXT,
+                last_opener_filler TEXT,
+                last_used_pause_marker TEXT,
+                memory_loop JSONB DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, creator_id, thread_id)
             )
-        )
+            """,
+            """
+            ALTER TABLE conversation_state
+            ADD COLUMN IF NOT EXISTS thread_id TEXT DEFAULT 'default',
+            ADD COLUMN IF NOT EXISTS known_slots JSONB DEFAULT '{}'::jsonb,
+            ADD COLUMN IF NOT EXISTS last_question JSONB DEFAULT '{}'::jsonb,
+            ADD COLUMN IF NOT EXISTS last_intent TEXT,
+            ADD COLUMN IF NOT EXISTS verbosity_pref TEXT DEFAULT 'short',
+            ADD COLUMN IF NOT EXISTS last_asked_slot TEXT,
+            ADD COLUMN IF NOT EXISTS last_asked_question_variant TEXT,
+            ADD COLUMN IF NOT EXISTS last_opener_filler TEXT,
+            ADD COLUMN IF NOT EXISTS last_used_pause_marker TEXT,
+            ADD COLUMN IF NOT EXISTS memory_loop JSONB DEFAULT '{}'::jsonb,
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS conversation_state_user_creator_thread_idx
+            ON conversation_state (user_id, creator_id, thread_id)
+            """,
+        ]
+        try:
+            for query in queries:
+                db.execute_update(query)
+            return True
+        except Exception as exc:
+            logger.warning("ConversationStateManager schema bootstrap failed: %s", exc)
+            return False
+
+    def _load_state(self) -> Dict[str, Any]:
+        if not self.available:
+            return self._default_state()
+        try:
+            row = db.execute_one(
+                "SELECT known_slots, last_question, last_intent, verbosity_pref, last_asked_slot, last_asked_question_variant, last_opener_filler, last_used_pause_marker, memory_loop FROM conversation_state WHERE user_id = %s AND creator_id = %s AND thread_id = %s",
+                (self.user_id, self.creator_id, self.thread_id)
+            )
+        except Exception as exc:
+            logger.warning("ConversationStateManager load failed, using in-memory defaults: %s", exc)
+            self.available = False
+            return self._default_state()
+
+        if row:
+            return {
+                "known_slots": row["known_slots"] if isinstance(row["known_slots"], dict) else json.loads(row["known_slots"] or '{}'),
+                "last_question": row["last_question"] if isinstance(row["last_question"], dict) else json.loads(row["last_question"] or '{}'),
+                "last_intent": row["last_intent"],
+                "verbosity_pref": row["verbosity_pref"] or 'short',
+                "last_asked_slot": row["last_asked_slot"],
+                "last_asked_question_variant": row["last_asked_question_variant"],
+                "last_opener_filler": row["last_opener_filler"],
+                "last_used_pause_marker": row["last_used_pause_marker"],
+                "memory_loop": row["memory_loop"] if isinstance(row["memory_loop"], dict) else json.loads(row["memory_loop"] or '{}')
+            }
+        return self._default_state()
+
+    def save_state(self):
+        if not self.available:
+            return
+        try:
+            db.execute_update(
+                """
+                INSERT INTO conversation_state (user_id, creator_id, thread_id, known_slots, last_question, last_intent, verbosity_pref, last_asked_slot, last_asked_question_variant, last_opener_filler, last_used_pause_marker, memory_loop, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, creator_id, thread_id) DO UPDATE SET
+                    known_slots = EXCLUDED.known_slots,
+                    last_question = EXCLUDED.last_question,
+                    last_intent = EXCLUDED.last_intent,
+                    verbosity_pref = EXCLUDED.verbosity_pref,
+                    last_asked_slot = EXCLUDED.last_asked_slot,
+                    last_asked_question_variant = EXCLUDED.last_asked_question_variant,
+                    last_opener_filler = EXCLUDED.last_opener_filler,
+                    last_used_pause_marker = EXCLUDED.last_used_pause_marker,
+                    memory_loop = EXCLUDED.memory_loop,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (
+                    self.user_id,
+                    self.creator_id,
+                    self.thread_id,
+                    json.dumps(self.state["known_slots"]),
+                    json.dumps(self.state["last_question"]),
+                    self.state["last_intent"],
+                    self.state["verbosity_pref"],
+                    self.state["last_asked_slot"],
+                    self.state["last_asked_question_variant"],
+                    self.state["last_opener_filler"],
+                    self.state["last_used_pause_marker"],
+                    json.dumps(self.state["memory_loop"])
+                )
+            )
+        except Exception as exc:
+            logger.warning("ConversationStateManager save failed, disabling persistence for this session: %s", exc)
+            self.available = False
 
     def update_from_message(self, message: str, intent: str):
         """Extract slots from message and update known_slots."""
