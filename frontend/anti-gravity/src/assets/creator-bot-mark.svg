@@ -1,42 +1,42 @@
-<svg width="4096" height="4096" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
+<svg width="4096" height="4096" viewBox="8 6 84 88" fill="none" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
   <path
-    d="M60 13L51.8 9.3C46 6.7 39.3 7 33.8 10L23.2 16C16.9 19.6 13 26.2 13 33.5V59.8C13 67.2 17.1 74 23.8 77.4L32.8 82C38.2 84.8 44.7 84.9 50.2 82.1L59.5 77.4"
+    d="M58 12L48.8 8.2C43 5.8 36.4 6.2 31 9.2L20.8 14.9C15 18.1 11.4 24.2 11.4 30.8V58.8C11.4 65.6 15.2 71.8 21.1 75L30 79.8C35.4 82.7 41.8 82.9 47.4 80.4L56.8 76.1"
     stroke="#171417"
-    stroke-width="6.5"
+    stroke-width="8.8"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M34.5 26.5V49.8C34.5 58.8 41.2 66 49.6 66H54.2"
+    d="M33 22.8V46.2C33 54.6 39 61.4 47.1 61.4H50.8"
     stroke="#171417"
-    stroke-width="6.5"
+    stroke-width="8.8"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M49.2 25.3L63.1 17.3C69.2 13.8 76.8 13.7 83 17C88.8 20.1 92.4 26.1 92.4 32.7V39.2C92.4 44.3 90.2 49.1 86.3 52.4"
+    d="M46.8 27.6L60.2 19.8C66.2 16.4 73.5 16.3 79.4 19.5C85.1 22.5 88.6 28.3 88.6 34.6V40.4C88.6 44.7 87.1 48.8 84.4 52.1"
     stroke="#171417"
-    stroke-width="6.5"
+    stroke-width="8.8"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M58 36.5H71.2C76.8 36.5 81.4 41 81.4 46.6C81.4 50.4 79.3 53.8 76 55.6C80.6 57.4 83.9 61.8 83.9 66.9C83.9 73.6 78.5 79 71.8 79H58V36.5Z"
+    d="M55.5 34.7H67.9C73.4 34.7 77.8 39.1 77.8 44.6C77.8 48 76 51 73.1 52.7C77.1 54.5 79.8 58.3 79.8 62.9C79.8 68.8 75 73.6 69.1 73.6H55.5V34.7Z"
     stroke="#171417"
-    stroke-width="6.5"
+    stroke-width="8.8"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M58 57.7H69.1"
+    d="M55.5 52.8H66"
     stroke="#171417"
-    stroke-width="6.5"
+    stroke-width="8.8"
     stroke-linecap="round"
   />
   <path
-    d="M28.8 81.7L39 87.8C45.1 91.5 52.7 91.7 59 88.3L71.7 81.4"
+    d="M27 79.6L36.5 85.2C42.4 88.7 49.6 88.8 55.6 85.6L67.6 79"
     stroke="#171417"
-    stroke-width="6.5"
+    stroke-width="8.8"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
