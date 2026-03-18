@@ -490,6 +490,9 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
 
 class InteractionEngine:
     def __init__(self):
+        self._turn_log_available: Optional[bool] = None
+
+    def __init__(self):
         try:
             self.memory = MemoryIntegration()
         except:
@@ -1719,6 +1722,14 @@ Output the cleaned text only."""
         used_sources: bool,
         source_count: int
     ):
+        if self._turn_log_available is False:
+            return
+
+        if self._turn_log_available is None:
+            self._turn_log_available = self._ensure_turn_log_schema()
+            if self._turn_log_available is False:
+                return
+
         query = """
             INSERT INTO conversation_turns (
                 creator_id, user_id, thread_id, role, content,
@@ -1730,6 +1741,41 @@ Output the cleaned text only."""
             plan.mode, plan.stage, json.dumps(plan.dict()),
             used_sources, source_count
         )
-        db.execute_update(query, params)
+        try:
+            db.execute_update(query, params)
+        except Exception as exc:
+            logger.warning("InteractionEngine turn logging disabled: %s", exc)
+            self._turn_log_available = False
+
+    def _ensure_turn_log_schema(self) -> bool:
+        queries = [
+            """
+            CREATE TABLE IF NOT EXISTS conversation_turns (
+                id BIGSERIAL PRIMARY KEY,
+                creator_id BIGINT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+                user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                thread_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                mode TEXT,
+                stage TEXT,
+                plan_json JSONB DEFAULT '{}'::jsonb,
+                used_sources BOOLEAN DEFAULT FALSE,
+                source_count INTEGER DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS conversation_turns_thread_created_idx
+            ON conversation_turns (thread_id, created_at DESC)
+            """,
+        ]
+        try:
+            for query in queries:
+                db.execute_update(query)
+            return True
+        except Exception as exc:
+            logger.warning("InteractionEngine could not bootstrap conversation_turns: %s", exc)
+            return False
 
 interaction_engine = InteractionEngine()
