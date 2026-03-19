@@ -329,9 +329,10 @@ class GeminiResearchProvider(ResearchProvider):
     def __init__(self):
         self.enabled = bool(settings.GOOGLE_API_KEY)
         self.api_key = settings.GOOGLE_API_KEY
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        self.model_name = settings.GEMINI_GROUNDING_MODEL
+        self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent"
 
-    def _call_gemini_rest(self, prompt: str, search_enabled: bool = True) -> Optional[str]:
+    def _call_gemini_rest(self, prompt: str, search_enabled: bool = True) -> Optional[Dict[str, Any]]:
         if not self.enabled: return None
         
         url = f"{self.base_url}?key={self.api_key}"
@@ -354,19 +355,7 @@ class GeminiResearchProvider(ResearchProvider):
                     logger.error(f"GeminiResearch REST Error {response.status_code}: {response.text}")
                     return None
                 
-                data = response.json()
-                if "candidates" in data and data["candidates"]:
-                    parts = data["candidates"][0].get("content", {}).get("parts", [])
-                    
-                    # Combine all text parts
-                    full_text = ""
-                    for p in parts:
-                        if "text" in p:
-                            full_text += p["text"]
-                    
-                    if full_text:
-                        return full_text
-                return None
+                return response.json()
             except Exception as e:
                 logger.error(f"GeminiResearch REST Exception: {e}")
                 if attempt < 2:
@@ -374,6 +363,59 @@ class GeminiResearchProvider(ResearchProvider):
                     continue
                 return None
         return None
+
+    def _extract_text_from_response(self, data: Optional[Dict[str, Any]]) -> str:
+        if not data:
+            return ""
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return ""
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        full_text = ""
+        for part in parts:
+            if part.get("text"):
+                full_text += part["text"]
+        return full_text
+
+    def _extract_grounded_results(self, data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not data:
+            return []
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return []
+        grounding = candidates[0].get("groundingMetadata") or {}
+        chunks = grounding.get("groundingChunks") or []
+        supports = grounding.get("groundingSupports") or []
+        support_map: Dict[int, List[str]] = {}
+        for support in supports:
+            segment = support.get("segment") or {}
+            text = (segment.get("text") or "").strip()
+            for idx in support.get("groundingChunkIndices") or []:
+                support_map.setdefault(int(idx), [])
+                if text:
+                    support_map[int(idx)].append(text)
+
+        results: List[Dict[str, Any]] = []
+        seen_urls = set()
+        for idx, chunk in enumerate(chunks):
+            web = chunk.get("web") or {}
+            url = (web.get("uri") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            snippets = support_map.get(idx) or []
+            title = (web.get("title") or "Grounded Web Result").strip()
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": " ".join(snippets[:2]).strip(),
+                "resource_type": "video" if self._is_direct_video_url(url) else "web",
+                "platform": self._infer_platform_from_url(url),
+                "confidence": 0.82,
+                "relation": "PUBLIC_FACTS",
+                "is_public_info": True,
+            })
+        return results
 
     def search(
         self, 
@@ -458,11 +500,21 @@ Output a JSON array of objects:
 Respond with JSON ONLY.
 """
         
-        text = self._call_gemini_rest(prompt, search_enabled=True)
+        raw = self._call_gemini_rest(prompt, search_enabled=True)
+        text = self._extract_text_from_response(raw)
+        grounded_candidates = self._extract_grounded_results(raw)
         if not text:
-            return []
+            candidates = grounded_candidates
+        else:
+            candidates = self._parse_json(text)
+            if not candidates or not isinstance(candidates, list):
+                candidates = []
+            if grounded_candidates:
+                existing_urls = {c.get("url") for c in candidates if isinstance(c, dict)}
+                for grounded in grounded_candidates:
+                    if grounded.get("url") not in existing_urls:
+                        candidates.append(grounded)
             
-        candidates = self._parse_json(text)
         if not candidates or not isinstance(candidates, list):
             return []
             
@@ -534,11 +586,18 @@ Respond ONLY with the JSON array. Do not add intro or outro.
   }}
 ]
 """
-        text = self._call_gemini_rest(prompt, search_enabled=True)
-        if not text: return []
-
-        results = self._parse_json(text)
+        raw = self._call_gemini_rest(prompt, search_enabled=True)
+        text = self._extract_text_from_response(raw)
+        grounded_results = self._extract_grounded_results(raw)
+        results = self._parse_json(text) if text else []
         if not results or not isinstance(results, list):
+            results = []
+        if grounded_results:
+            existing_urls = {r.get("url") for r in results if isinstance(r, dict)}
+            for grounded in grounded_results:
+                if grounded.get("url") not in existing_urls:
+                    results.append(grounded)
+        if not results:
             return []
 
         self._save_cache(creator_id, query, "gemini_general", results)
@@ -597,7 +656,8 @@ Respond ONLY with the JSON array. Do not add intro or outro.
         }}
         """
         
-        text = self._call_gemini_rest(prompt, search_enabled=True)
+        raw = self._call_gemini_rest(prompt, search_enabled=True)
+        text = self._extract_text_from_response(raw)
         if not text:
             return {}
 
@@ -668,7 +728,8 @@ Respond ONLY with the JSON array. Do not add intro or outro.
         }}
         """
         
-        text = self._call_gemini_rest(prompt, search_enabled=True)
+        raw = self._call_gemini_rest(prompt, search_enabled=True)
+        text = self._extract_text_from_response(raw)
         if not text:
             logger.warning(f"GeminiResearch: Dossier returned NO TEXT for {creator_name}")
             return {}
@@ -1696,8 +1757,17 @@ class OpenAIResearchProvider(ResearchProvider):
 
 def get_research_provider() -> ResearchProvider:
     """Factory to return the appropriate research provider based on settings."""
-    # Priority: OpenAI (if specifically requested by user via new default) -> SerpApi -> Gemini
-    # We'll default to OpenAIResearchProvider now as requested.
+    preferred = (settings.LIVE_SEARCH_PROVIDER or "auto").lower()
+
+    if preferred == "gemini" and settings.GOOGLE_API_KEY:
+        return GeminiResearchProvider()
+    if preferred == "openai" and settings.OPENAI_API_KEY:
+        return OpenAIResearchProvider()
+    if preferred in {"serpapi", "search_api"} and settings.SEARCH_API_KEY:
+        return SerpApiResearchProvider()
+
+    if settings.GOOGLE_API_KEY:
+        return GeminiResearchProvider()
     if settings.OPENAI_API_KEY:
         return OpenAIResearchProvider()
     if settings.SEARCH_API_KEY:

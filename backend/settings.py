@@ -22,12 +22,20 @@ class Settings:
 
     # Google / Gemini
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+    GEMINI_GROUNDING_MODEL: str = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
     
     # Apify
     APIFY_TOKEN: Optional[str] = os.getenv("APIFY_TOKEN", None)
     
     # Search API (e.g. Brave Search, Google, Serper)
     SEARCH_API_KEY: Optional[str] = os.getenv("SEARCH_API_KEY", os.getenv("SERPAPI_API_KEY"))
+    LIVE_SEARCH_PROVIDER: str = os.getenv("LIVE_SEARCH_PROVIDER", "auto").lower()
+
+    # Auth / JWT
+    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "change-me-before-prod")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "43200"))
+    COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").lower() == "true"
     
     # Transcription
     TRANSCRIBE_ON_INGEST: bool = os.getenv("TRANSCRIBE_ON_INGEST", "false").lower() == "true"

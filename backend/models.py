@@ -176,6 +176,8 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     session_id: str
     user_id: int
+    access_token: Optional[str] = None
+    token_type: Optional[str] = "bearer"
 
 class SessionResponse(BaseModel):
     user_id: int

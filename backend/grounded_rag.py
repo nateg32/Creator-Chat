@@ -2909,6 +2909,9 @@ Message: {answer_text[:500]}"""
         search_mode = creator_row.get("search_mode") or "hybrid"
             
         no_online_fallback = None
+        if images and not wants_link:
+            needs_fallback = False
+
         if needs_fallback and search_mode == "hybrid":
             logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
             from backend.services.research_provider import get_research_provider
@@ -3064,7 +3067,8 @@ Message: {answer_text[:500]}"""
 
     # --- Step 9: Video Recommendation (ONE ONLY) ---
     card = []
-    if plan_obj.grounding.video_policy in ["one_if_helpful", "forced"]:
+    image_turn_active = bool(images or (image_result and image_result.get("support_chunk")))
+    if plan_obj.grounding.video_policy in ["one_if_helpful", "forced"] and not image_turn_active:
         card = _build_response_cards(
             rec_result,
             support_set,

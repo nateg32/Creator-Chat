@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 _IDENTITY_PATTERNS = [
     r"\bwho('?s| is)\s+(this|that|her|him|the person)\b",
+    r"\bwho('?s| is)\s+(this|that)\s+(girl|guy|chick|woman|man|lady|dude|person)\b",
+    r"\bwho('?s| is)\s+(she|he|her|him)\b",
     r"\bidentify\s+(this|that)\b",
     r"\bis\s+(this|that)\s+[a-z]",
     r"\bdo you know who (this|that) is\b",
@@ -35,6 +37,8 @@ def looks_like_image_identity_question(question: str) -> bool:
     if not text:
         return False
     if any(re.search(pattern, text) for pattern in _IDENTITY_PATTERNS):
+        return True
+    if "who" in text and any(token in text for token in ["photo", "picture", "image", "pic", "girl", "guy", "chick", "woman", "man", "lady", "dude", "person", "she", "he", "her", "him"]):
         return True
     return bool(extract_relation_hints(text))
 
@@ -237,6 +241,7 @@ Keep it factual and visual only.
             if descriptor:
                 features.append(descriptor)
         content_lines = [
+            "CURRENT MESSAGE INCLUDED IMAGE ATTACHMENT(S). You do have visual context for this turn.",
             f"Visual summary: {observation.get('summary') or 'Image attached by the user.'}",
             f"Primary subject: {observation.get('primary_subject') or 'unknown'}",
             f"People visible: {observation.get('person_count') or 0}",

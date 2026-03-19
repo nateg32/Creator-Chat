@@ -26,6 +26,7 @@ looks_like_image_identity_question = image_identity_service_module.looks_like_im
 class ImageIdentityServiceTests(unittest.TestCase):
     def test_detects_direct_identity_question(self):
         self.assertTrue(looks_like_image_identity_question("Who's this in the photo?"))
+        self.assertTrue(looks_like_image_identity_question("whos this chick"))
 
     def test_detects_relation_hints_even_without_who_phrase(self):
         self.assertTrue(looks_like_image_identity_question("Is this your wife?"))

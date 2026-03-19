@@ -1047,6 +1047,7 @@ Output ONLY your response."""
             source_context = "\n".join(chunks_text) if chunks_text else "No specific content retrieved."
         else:
             source_context = "No specific content retrieved. Answer from your general domain expertise."
+        has_image_context = any(c.get("is_image_context") for c in (rag_chunks or []))
 
         persona_anchor = creator_profile.get("soul_md") or persona or ""
         persona_section = f"\nWHO YOU ARE (Persona Anchor):\n{persona_anchor[:2000]}\n" if persona_anchor else ""
@@ -1438,6 +1439,14 @@ Output only the response."""
             routing_instruction = f"""\nIMPORTANT: This question is outside your specialty ({creator_category}).\nAcknowledge it honestly in one sentence, then offer something useful from YOUR domain instead.\nDo not pretend to be an expert in something you're not.\nEnd with one optional question to redirect the conversation to your expertise."""
         elif plan.routing == "BRIDGE":
             routing_instruction = f"""\nThis topic connects to your expertise in {creator_category}.\nAnswer it through the lens of what you know. Stay anchored to your world."""
+        if has_image_context:
+            routing_instruction += """
+CURRENT TURN HAS IMAGE CONTEXT:
+- You do have visual context from the user's uploaded image.
+- Do not say the image is missing or unavailable.
+- If the user is asking about the image, answer from that image context first.
+- Do not recommend unrelated videos or links unless the user explicitly asks for them.
+"""
 
         name_instruction = "\nThis is a one to one DM. Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.\n"
         if user_name:

@@ -1,5 +1,8 @@
 import logging
-from fastapi import FastAPI, HTTPException, Cookie, Depends, Response
+import base64
+import hmac
+import hashlib
+from fastapi import FastAPI, HTTPException, Cookie, Depends, Response, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import os
@@ -332,6 +335,53 @@ def create_session(user_id: int) -> str:
     db.execute_update(query, (session_id, user_id, expires_at))
     return session_id
 
+def _jwt_b64encode(payload: bytes) -> str:
+    return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+def _jwt_b64decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+def create_access_token(user_id: int, email: str) -> str:
+    now = datetime.utcnow()
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)).timestamp()),
+    }
+    header = {"alg": settings.JWT_ALGORITHM, "typ": "JWT"}
+    signing_input = f"{_jwt_b64encode(json.dumps(header, separators=(',', ':')).encode())}.{_jwt_b64encode(json.dumps(payload, separators=(',', ':')).encode())}"
+    signature = hmac.new(
+        settings.JWT_SECRET_KEY.encode("utf-8"),
+        signing_input.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"{signing_input}.{_jwt_b64encode(signature)}"
+
+def get_user_from_bearer(authorization: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        header_b64, payload_b64, signature_b64 = token.split(".")
+        signing_input = f"{header_b64}.{payload_b64}"
+        expected_sig = hmac.new(
+            settings.JWT_SECRET_KEY.encode("utf-8"),
+            signing_input.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(expected_sig, _jwt_b64decode(signature_b64)):
+            return None
+        payload = json.loads(_jwt_b64decode(payload_b64).decode("utf-8"))
+        if int(payload.get("exp", 0)) <= int(datetime.utcnow().timestamp()):
+            return None
+        user_id = int(payload.get("sub"))
+    except Exception:
+        return None
+
+    return db.execute_one("SELECT id, email FROM users WHERE id = %s", (user_id,))
+
 def get_user_from_session(session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Get user from session ID"""
     if not session_id:
@@ -346,17 +396,68 @@ def get_user_from_session(session_id: Optional[str] = None) -> Optional[Dict[str
     result = db.execute_one(query, (session_id,))
     return result
 
-def require_auth(session_id: Optional[str] = Cookie(None)) -> Dict[str, Any]:
+def require_auth(
+    session_id: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
     """Dependency to require authentication"""
-    user = get_user_from_session(session_id)
+    user = get_user_from_bearer(authorization) or get_user_from_session(session_id)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
+
+def ensure_creator_access(creator_id: int, user_id: int) -> None:
+    row = db.execute_one("SELECT id FROM creators WHERE id = %s AND user_id = %s", (creator_id, user_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Creator not found")
+
+def question_refers_to_recent_image(question: str) -> bool:
+    text = (question or "").strip().lower()
+    if not text:
+        return False
+    image_tokens = ["image", "photo", "picture", "pic", "screenshot", "this", "that", "she", "he", "her", "him", "girl", "guy", "chick", "woman", "man", "person"]
+    return any(token in text for token in image_tokens)
+
+def get_latest_thread_images(thread_id: Optional[str], user_id: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
+    if not thread_id:
+        return None
+    if user_id is not None:
+        thread = db.execute_one(
+            "SELECT id FROM chat_threads WHERE id = %s AND user_id = %s",
+            (thread_id, user_id),
+        )
+        if not thread:
+            return None
+    row = db.execute_one(
+        """
+        SELECT metadata
+        FROM chat_messages
+        WHERE thread_id = %s
+          AND role = 'user'
+          AND metadata IS NOT NULL
+          AND metadata ? 'images'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (thread_id,),
+    )
+    if not row:
+        return None
+    metadata = row.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    images = metadata.get("images")
+    return images if isinstance(images, list) and images else None
 
 @app.on_event("startup")
 async def startup():
     """Initialize database connection"""
     try:
+        if settings.JWT_SECRET_KEY == "change-me-before-prod":
+            print("[AUTH] WARNING: JWT_SECRET_KEY is using the default development value", flush=True)
         db.execute_query("SELECT 1")
         print("[STARTUP] DB connection OK")
     except Exception as e:
@@ -968,10 +1069,16 @@ async def login(request: LoginRequest, response: Response):
             value=session_id,
             max_age=30 * 24 * 60 * 60,
             httponly=True,
-            samesite="lax"
+            samesite="lax",
+            secure=settings.COOKIE_SECURE,
         )
         
-        return LoginResponse(session_id=session_id, user_id=user["id"])
+        return LoginResponse(
+            session_id=session_id,
+            user_id=user["id"],
+            access_token=create_access_token(user["id"], request.email),
+            token_type="bearer",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -997,19 +1104,25 @@ async def register(request: LoginRequest, response: Response):
             value=session_id,
             max_age=30 * 24 * 60 * 60,
             httponly=True,
-            samesite="lax"
+            samesite="lax",
+            secure=settings.COOKIE_SECURE,
         )
         
-        return LoginResponse(session_id=session_id, user_id=user_id)
+        return LoginResponse(
+            session_id=session_id,
+            user_id=user_id,
+            access_token=create_access_token(user_id, request.email),
+            token_type="bearer",
+        )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/auth/session", response_model=SessionResponse)
-async def get_session(session_id: Optional[str] = Cookie(None)):
+async def get_session(session_id: Optional[str] = Cookie(None), authorization: Optional[str] = Header(None)):
     """Get current session info"""
-    user = get_user_from_session(session_id)
+    user = get_user_from_bearer(authorization) or get_user_from_session(session_id)
     if not user:
         return SessionResponse(user_id=0, email="", valid=False)
     return SessionResponse(user_id=user["id"], email=user["email"], valid=True)
@@ -1106,7 +1219,7 @@ def validate_platform_url(key: str, url: str = ""):
 # ============================================================================
 
 @app.get("/creators", response_model=CreatorsListResponse)
-async def list_creators():
+async def list_creators(current_user: Dict[str, Any] = Depends(require_auth)):
     """List all creators"""
     try:
         dcol = _creator_display_column()
@@ -1115,9 +1228,10 @@ async def list_creators():
                    c.search_mode,
                    (SELECT COUNT(*) FROM scrape_queue q WHERE q.creator_id = c.id AND q.status = 'ingested') as item_count
             FROM creators c
+            WHERE c.user_id = %s
             ORDER BY c.created_at DESC
         """
-        results = db.execute_query(query, ())
+        results = db.execute_query(query, (current_user["id"],))
         
         creators = []
         for row in results:
@@ -1141,7 +1255,7 @@ async def list_creators():
         return CreatorsListResponse(creators=[])
 
 @app.post("/creators", response_model=Creator)
-async def create_creator(request: CreateCreatorRequest):
+async def create_creator(request: CreateCreatorRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Create a new creator (not used in simplified UI)"""
     try:
         # Name validation and normalization
@@ -1154,10 +1268,10 @@ async def create_creator(request: CreateCreatorRequest):
         platforms_json = json.dumps(request.platforms or [])
         query = """
             INSERT INTO creators (user_id, name, handle, platforms)
-            VALUES (1, %s, %s, %s)
+            VALUES (%s, %s, %s, %s)
             RETURNING id, name, handle, platforms, created_at
         """
-        result = db.execute_query(query, (name, request.handle, platforms_json))
+        result = db.execute_query(query, (current_user["id"], name, request.handle, platforms_json))
         
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create creator")
@@ -1320,7 +1434,7 @@ def _slugify_creator_name(name: str) -> Optional[str]:
 
 
 @app.post("/creators/config", response_model=CreatorWithConfigResponse)
-async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
+async def create_creator_with_config(request: CreateCreatorWithConfigRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Create creator with platform_configs. Validate & normalize URLs, then save."""
     try:
         configs = _validate_and_normalize_platform_configs(request.platform_configs)
@@ -1345,8 +1459,7 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
         if not handle:
             raise HTTPException(status_code=400, detail="Could not derive a stable creator id from the selected URLs or name.")
 
-        user_row = db.execute_one("SELECT id FROM users ORDER BY id LIMIT 1", ())
-        user_id = user_row["id"] if user_row and user_row.get("id") else 1
+        user_id = current_user["id"]
 
         has_pc = _creator_has_column("platform_configs")
         has_name_col = _creator_has_column("name")
@@ -1375,8 +1488,10 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
             return params
 
         # If creator already exists for this handle, update config instead of failing on unique constraint.
-        existing = db.execute_one("SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1", (handle,))
+        existing = db.execute_one("SELECT id, platform_configs, user_id FROM creators WHERE handle = %s LIMIT 1", (handle,))
         if existing and existing.get("id"):
+            if existing.get("user_id") != user_id:
+                raise HTTPException(status_code=409, detail="A creator with that handle already exists for another account.")
             creator_id = existing["id"]
             updates = _creator_name_updates()
             params = _creator_name_params()
@@ -1434,8 +1549,10 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
                 # Handle races / uniqueness: if handle already exists, update it instead.
                 msg = str(e)
                 if "duplicate key value" in msg and "handle" in msg:
-                    existing = db.execute_one("SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1", (handle,))
+                    existing = db.execute_one("SELECT id, platform_configs, user_id FROM creators WHERE handle = %s LIMIT 1", (handle,))
                     if existing and existing.get("id"):
+                        if existing.get("user_id") != user_id:
+                            raise HTTPException(status_code=409, detail="A creator with that handle already exists for another account.")
                         creator_id = existing["id"]
                         updates = _creator_name_updates()
                         params = _creator_name_params()
@@ -1499,11 +1616,11 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest):
 
 
 @app.put("/creators/{creator_id}", response_model=CreatorWithConfigResponse)
-async def update_creator(creator_id: int, request: UpdateCreatorRequest):
+async def update_creator(creator_id: int, request: UpdateCreatorRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Update creator name, handle, and/or platform_configs."""
     try:
         dcol = _creator_display_column()
-        existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, style_fingerprint, visual_config, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode FROM creators WHERE id = %s", (creator_id,))
+        existing = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, style_fingerprint, visual_config, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user['id']))
         if not existing:
             raise HTTPException(status_code=404, detail="Creator not found.")
 
@@ -1629,11 +1746,12 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
             updates.append("config_version = config_version + 1")
         
         params.append(creator_id)
+        params.append(current_user["id"])
         db.execute_update(
-            f"UPDATE creators SET {', '.join(updates)} WHERE id = %s",
+            f"UPDATE creators SET {', '.join(updates)} WHERE id = %s AND user_id = %s",
             tuple(params),
         )
-        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode FROM creators WHERE id = %s", (creator_id,))
+        row = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user['id']))
         pc = row.get("platform_configs") or {}
         if hasattr(pc, "copy"):
             pc = dict(pc) if pc else {}
@@ -1680,11 +1798,11 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest):
 
 
 @app.delete("/creators/{creator_id}")
-async def delete_creator(creator_id: int):
+async def delete_creator(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Delete a creator and all associated data."""
     try:
         # Check if creator exists (simple check)
-        existing = db.execute_one("SELECT id FROM creators WHERE id = %s", (creator_id,))
+        existing = db.execute_one("SELECT id FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user["id"]))
         if not existing:
             # If not found, create a dummy response or error
             # But maybe the user clicked delete twice. Let's return 404.
@@ -1716,7 +1834,7 @@ async def delete_creator(creator_id: int):
         safe_delete("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
         
         # 4. Finally, delete the creator
-        count = db.execute_update("DELETE FROM creators WHERE id = %s", (creator_id,))
+        count = db.execute_update("DELETE FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user["id"]))
         if count == 0:
              raise HTTPException(status_code=404, detail="Creator not found during delete")
 
@@ -1730,12 +1848,12 @@ async def delete_creator(creator_id: int):
 
 
 @app.get("/creators/{creator_id}/config", response_model=CreatorWithConfigResponse)
-async def get_creator_config(creator_id: int):
+async def get_creator_config(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get creator with platform_configs."""
     dcol = _creator_display_column()
     row = db.execute_one(
-        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode, created_at FROM creators WHERE id = %s",
-        (creator_id,),
+        f"SELECT id, handle, {dcol} AS display_name, profile_picture_url, platform_configs, visual_config, style_fingerprint, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls, search_mode, created_at FROM creators WHERE id = %s AND user_id = %s",
+        (creator_id, current_user["id"]),
     )
     if not row:
         raise HTTPException(status_code=404, detail="Creator not found.")
@@ -1779,11 +1897,11 @@ async def get_creator_config(creator_id: int):
 
 
 @app.get("/creators/{creator_id}/stats", response_model=CreatorStats)
-async def get_creator_stats(creator_id: int):
+async def get_creator_stats(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get stats for a creator"""
     try:
-        query = "SELECT id, name, handle, platforms FROM creators WHERE id = %s"
-        creator = db.execute_one(query, (creator_id,))
+        query = "SELECT id, name, handle, platforms FROM creators WHERE id = %s AND user_id = %s"
+        creator = db.execute_one(query, (creator_id, current_user["id"]))
         if not creator:
             raise HTTPException(status_code=404, detail="Creator not found")
         
@@ -1835,9 +1953,10 @@ async def get_creator_stats(creator_id: int):
 # ============================================================================
 
 @app.get("/user/settings", response_model=UserSettings)
-async def get_user_settings():
+async def get_user_settings(current_user: Dict[str, Any] = Depends(require_auth)):
     row = db.execute_one(
-        "SELECT display_name, profile_picture_url, response_preferences FROM users WHERE id = 1"
+        "SELECT display_name, profile_picture_url, response_preferences FROM users WHERE id = %s",
+        (current_user["id"],),
     )
     if not row:
         return UserSettings()
@@ -1856,7 +1975,7 @@ async def get_user_settings():
     )
 
 @app.put("/user/settings", response_model=UserSettings)
-async def update_user_settings(request: UpdateUserSettingsRequest):
+async def update_user_settings(request: UpdateUserSettingsRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     updates = []
     params = []
     
@@ -1873,15 +1992,15 @@ async def update_user_settings(request: UpdateUserSettingsRequest):
         params.append(json.dumps(normalize_user_preferences(request.response_preferences, RESPONSE_PRESETS.keys())))
         
     if not updates:
-        return await get_user_settings()
+        return await get_user_settings(current_user)
         
-    params.append(1) # user_id
+    params.append(current_user["id"])
     
     db.execute_update(
         f"UPDATE users SET {', '.join(updates)} WHERE id = %s",
         tuple(params)
     )
-    return await get_user_settings()
+    return await get_user_settings(current_user)
 
 @app.get("/health")
 async def health():
@@ -1896,12 +2015,13 @@ async def health():
         raise
 
 @app.post("/ask-stream")
-async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
+async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Streaming version of /ask. 
     Bypasses deep classification/planning for immediate time-to-first-token.
     """
     try:
+        ensure_creator_access(request.creator_id, current_user["id"])
         status_obj = get_creator_status(request.creator_id)
         if not status_obj["ready_to_chat"]:
             raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
@@ -1921,7 +2041,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
             
         # 2. Fetch user prefs & history (Async)
         def _get_user_meta():
-            user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
+            user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = %s", (current_user["id"],))
             user_prefs = None
             user_name = None
             if user_row:
@@ -1944,16 +2064,20 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     # Auto-initialize thread if missing
                     db.execute_update("""
                         INSERT INTO chat_threads (id, user_id, creator_id, title)
-                        VALUES (%s, 1, %s, 'New conversation')
+                        VALUES (%s, %s, %s, 'New conversation')
                         ON CONFLICT (id) DO NOTHING
-                    """, (request.thread_id, request.creator_id))
+                    """, (request.thread_id, current_user["id"], request.creator_id))
 
                     msgs_rows = db.execute_query("""
                         SELECT role, content FROM chat_messages 
-                        WHERE thread_id = %s 
+                        WHERE thread_id = %s
+                          AND EXISTS (
+                              SELECT 1 FROM chat_threads t
+                              WHERE t.id = %s AND t.user_id = %s
+                          )
                         ORDER BY created_at DESC 
                         LIMIT 30
-                    """, (request.thread_id,))
+                    """, (request.thread_id, request.thread_id, current_user["id"]))
                     if msgs_rows:
                         msgs_rows.reverse()
                         conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
@@ -1972,6 +2096,10 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
         if request.images and len(request.images) > 0:
             images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in request.images[:4]]
             user_image_metadata["images"] = images_payload
+        elif question_refers_to_recent_image(request.question):
+            recent_images = get_latest_thread_images(request.thread_id, current_user["id"])
+            if recent_images:
+                images_payload = recent_images[:4]
 
         # 3. Generator Wrapper to capture full answer
         async def stream_wrapper():
@@ -2008,7 +2136,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         user_name=user_name,
                         creator_name=creator_name,
                         images=images_payload,
-                        user_id=1,
+                        user_id=current_user["id"],
                     )
                     full_answer = strip_mid_sentence_hyphens(result.get("answer") or "")
                     cards = merge_preview_cards(result.get("cards") or [], enrich_titles=True)
@@ -2023,6 +2151,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                             full_answer,
                             cards=cards,
                             user_metadata=user_image_metadata,
+                            user_id=current_user["id"],
                         )
                         thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
                         if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
@@ -2042,7 +2171,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     conversation_history=safe_history,
                     user_preferences=user_prefs,
                     user_name=user_name,
-                    user_id=1 # Default user
+                    user_id=current_user["id"]
                 ):
                     if chunk == " ":
                         # Early TTFB heartbeat
@@ -2081,6 +2210,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         full_answer,
                         cards=cards,
                         user_metadata=user_image_metadata,
+                        user_id=current_user["id"],
                     )
                     # Check for title update
                     thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
@@ -2112,7 +2242,7 @@ def _extract_stream_cards(answer: str):
     return extract_preview_cards(answer, enrich_titles=True)
 
 
-def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, user_metadata=None):
+def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, user_metadata=None, user_id: int = 1):
     """Save the final interaction to DB after stream completion."""
     try:
         answer = strip_mid_sentence_hyphens(answer)
@@ -2143,7 +2273,7 @@ def finalize_stream_interaction(thread_id: str, question: str, answer: str, card
         
         # Sync memory in background
         from db import interaction_engine
-        interaction_engine.store_interaction("1", "1", thread_id, question, answer)
+        interaction_engine.store_interaction(str(user_id), str(user_id), thread_id, question, answer)
     except Exception as e:
         import traceback
         import logging
@@ -2156,12 +2286,16 @@ def finalize_stream_interaction(thread_id: str, question: str, answer: str, card
             logger.debug(traceback.format_exc())
 
 @app.post("/creators/{creator_id}/fingerprint/generate")
-async def generate_fingerprint_endpoint(creator_id: int):
+async def generate_fingerprint_endpoint(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Manually trigger or regenerate a creator fingerprint via background worker queue.
     """
     try:
-        creator_row = db.execute_one("SELECT id FROM creators WHERE id = %s", (creator_id,))
+        ensure_creator_access(creator_id, current_user["id"])
+        creator_row = db.execute_one(
+            "SELECT id FROM creators WHERE id = %s AND user_id = %s",
+            (creator_id, current_user["id"]),
+        )
         if not creator_row:
             raise HTTPException(status_code=404, detail="Creator not found")
 
@@ -2178,8 +2312,9 @@ async def generate_fingerprint_endpoint(creator_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ask", response_model=AskResponse)
-async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
+async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     # Pre-chat check: Ensure soul assets exist
+    ensure_creator_access(request.creator_id, current_user["id"])
     creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
     if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
         print(f"[ASK] Missing soul for creator {request.creator_id}, enqueueing FINGERPRINT job...")
@@ -2199,7 +2334,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
             
         # Get user preferences
-        user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = 1")
+        user_row = db.execute_one("SELECT response_preferences, display_name FROM users WHERE id = %s", (current_user["id"],))
         user_prefs = None
         user_name = None
         if user_row:
@@ -2225,12 +2360,12 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
                  # Auto-initialize thread if missing
                  db.execute_update("""
                      INSERT INTO chat_threads (id, user_id, creator_id, title)
-                     VALUES (%s, 1, %s, 'New conversation')
+                     VALUES (%s, %s, %s, 'New conversation')
                      ON CONFLICT (id) DO NOTHING
-                 """, (request.thread_id, request.creator_id))
+                 """, (request.thread_id, current_user["id"], request.creator_id))
                  
                  # Verify thread exists
-                 thread = db.execute_one("SELECT id, user_id, title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                 thread = db.execute_one("SELECT id, user_id, title, title_locked FROM chat_threads WHERE id = %s AND user_id = %s", (request.thread_id, current_user["id"]))
              except ValueError:
                  print(f"[WARN] Invalid UUID received for thread_id: {request.thread_id}. Treating as new thread.")
                  request.thread_id = None
@@ -2243,7 +2378,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
                     VALUES (%s, %s, %s)
                     ON CONFLICT (user_id, creator_id) 
                     DO UPDATE SET last_active_thread_id = EXCLUDED.last_active_thread_id, updated_at = NOW()
-                 """, (1, request.creator_id, request.thread_id))
+                 """, (current_user["id"], request.creator_id, request.thread_id))
                  
                  # Save user message with images (persisted in metadata)
                  user_metadata = {}
@@ -2301,6 +2436,10 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
         if request.images and len(request.images) > 0:
             images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in request.images[:4]]
             print(f"[ASK] {len(images_payload)} image(s) attached, using vision model")
+        elif question_refers_to_recent_image(request.question):
+            recent_images = get_latest_thread_images(request.thread_id, current_user["id"])
+            if recent_images:
+                images_payload = recent_images[:4]
         
         # Auto-inject default question for image-only messages
         question = request.question
@@ -2319,7 +2458,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks):
             user_name=user_name,
             creator_name=creator_name,
             images=images_payload,
-            user_id=thread.get("user_id", 1) if thread else 1,
+            user_id=thread.get("user_id", current_user["id"]) if thread else current_user["id"],
             thread_id=request.thread_id
         )
         
@@ -2966,11 +3105,12 @@ async def approve_ingest(request: ApproveIngestRequestNew):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/approvals/{creator_id}/commit")
-async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestRequestV2):
+async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestRequestV2, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Approve items from search_items staging table and enqueue INGEST job.
     """
     try:
+        ensure_creator_access(creator_id, current_user["id"])
         # Separate approved and denied, handling doc_ prefixes
         approved_item_ids = []
         denied_item_ids = []
@@ -3074,7 +3214,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
 
 
 @app.get("/jobs/{job_id}/progress")
-async def get_job_progress(job_id: str):
+async def get_job_progress(job_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Universal polling endpoint for all system_jobs. Return status, progress, and error logs.
     """
@@ -3085,6 +3225,7 @@ async def get_job_progress(job_id: str):
         )
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
+        ensure_creator_access(int(job["creator_id"]), current_user["id"])
             
         return {
             "job_id": str(job["id"]),
@@ -3100,12 +3241,13 @@ async def get_job_progress(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/approve_ingest_v2/stream")
-async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks):
+async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Streaming version of approve_ingest_v2 with real-time progress updates via SSE.
     Returns Server-Sent Events with progress information.
     """
     import asyncio
+    ensure_creator_access(request.creator_id, current_user["id"])
     async def event_generator():
         try:
             # Separate approved and denied, handling doc_ prefixes
@@ -3443,8 +3585,9 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
 # ============================================================================
 
 @app.get("/creator/{creator_id}/persona", response_model=PersonaResponse)
-async def get_persona_endpoint(creator_id: int):
+async def get_persona_endpoint(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get persona document for a creator"""
+    ensure_creator_access(creator_id, current_user["id"])
     persona_content = get_persona(creator_id)
     return PersonaResponse(
         creator_id=creator_id,
@@ -3453,9 +3596,10 @@ async def get_persona_endpoint(creator_id: int):
     )
 
 @app.post("/creator/{creator_id}/persona", response_model=PersonaResponse)
-async def save_persona_endpoint(creator_id: int, request: PersonaRequest):
+async def save_persona_endpoint(creator_id: int, request: PersonaRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Save persona document for a creator"""
     try:
+        ensure_creator_access(creator_id, current_user["id"])
         persona_text = request.persona
         if not persona_text:
             raise HTTPException(status_code=400, detail="Persona text is required")
@@ -3498,9 +3642,10 @@ async def save_persona_endpoint(creator_id: int, request: PersonaRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/creator/{creator_id}/queue")
-async def get_queue_items(creator_id: int):
+async def get_queue_items(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get all queue items for a creator. Merges legacy scrape_queue and actual documents."""
     try:
+        ensure_creator_access(creator_id, current_user["id"])
         # 1. Legacy scrape_queue items
         query_legacy = """
             SELECT 
@@ -3641,13 +3786,13 @@ def retry_transcript(item_id: str, background_tasks: BackgroundTasks):
 # --- Thread Management Endpoints ---
 
 @app.post("/threads", response_model=ThreadResponse)
-def create_thread_endpoint(req: CreateThreadRequest):
+def create_thread_endpoint(req: CreateThreadRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     status_obj = get_creator_status(req.creator_id)
     if not status_obj["ready_to_chat"]:
         raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
 
-    # Assume default user_id = 1 for now
-    user_id = 1
+    ensure_creator_access(req.creator_id, current_user["id"])
+    user_id = current_user["id"]
     
     # Insert new thread
     row = db.execute_one("""
@@ -3675,8 +3820,8 @@ def create_thread_endpoint(req: CreateThreadRequest):
     )
 
 @app.put("/threads/{thread_id}", response_model=ThreadResponse)
-def update_thread_endpoint(thread_id: str, req: UpdateThreadRequest):
-    user_id = 1
+def update_thread_endpoint(thread_id: str, req: UpdateThreadRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+    user_id = current_user["id"]
     updates = []
     params = []
     
@@ -3713,8 +3858,9 @@ def update_thread_endpoint(thread_id: str, req: UpdateThreadRequest):
     )
 
 @app.get("/creators/{creator_id}/threads", response_model=List[ThreadResponse])
-def list_threads_endpoint(creator_id: int, archived: bool = False):
-    user_id = 1
+def list_threads_endpoint(creator_id: int, archived: bool = False, current_user: Dict[str, Any] = Depends(require_auth)):
+    ensure_creator_access(creator_id, current_user["id"])
+    user_id = current_user["id"]
     # Filter by archived status. handling NULL as false.
     archived_clause = "is_archived = true" if archived else "(is_archived = false OR is_archived IS NULL)"
     
@@ -3739,9 +3885,10 @@ def list_threads_endpoint(creator_id: int, archived: bool = False):
     ]
 
 @app.get("/threads/{thread_id}/messages", response_model=List[MessageResponse])
-def list_thread_messages_endpoint(thread_id: str):
-    # Verify ownership (optional but good practice)
-    user_id = 1
+def list_thread_messages_endpoint(thread_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
+    thread = db.execute_one("SELECT id FROM chat_threads WHERE id = %s AND user_id = %s", (thread_id, current_user["id"]))
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
     
     rows = db.execute_query("""
         SELECT id, role, content, created_at, metadata
@@ -3771,8 +3918,8 @@ def list_thread_messages_endpoint(thread_id: str):
     return results
 
 @app.delete("/threads/{thread_id}")
-def delete_thread_endpoint(thread_id: str):
-    user_id = 1
+def delete_thread_endpoint(thread_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
+    user_id = current_user["id"]
     # Hard delete (Permanent removal as requested)
     # First verify ownership
     thread = db.execute_one("SELECT id FROM chat_threads WHERE id = %s AND user_id = %s", (thread_id, user_id))
@@ -3783,7 +3930,10 @@ def delete_thread_endpoint(thread_id: str):
     db.execute_update("DELETE FROM chat_messages WHERE thread_id = %s", (thread_id,))
     
     # Nullify preferences to avoid foreign key constraints
-    db.execute_update("UPDATE user_creator_preferences SET last_active_thread_id = NULL WHERE last_active_thread_id = %s", (thread_id,))
+    db.execute_update(
+        "UPDATE user_creator_preferences SET last_active_thread_id = NULL WHERE user_id = %s AND last_active_thread_id = %s",
+        (user_id, thread_id),
+    )
     
     # Delete thread
     db.execute_update("DELETE FROM chat_threads WHERE id = %s", (thread_id,))
@@ -3793,8 +3943,9 @@ def delete_thread_endpoint(thread_id: str):
 
 
 @app.get("/creators/{creator_id}/last_active_thread")
-def get_last_active_thread(creator_id: int):
-    user_id = 1
+def get_last_active_thread(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
+    ensure_creator_access(creator_id, current_user["id"])
+    user_id = current_user["id"]
     row = db.execute_one("""
         SELECT last_active_thread_id 
         FROM user_creator_preferences
@@ -3894,7 +4045,7 @@ def _update_thread_title_background(thread_id: str):
     except Exception as e:
         print(f"Error updating thread title: {e}")
 @app.delete("/creators/{creator_id}", status_code=204)
-async def delete_creator_endpoint(creator_id: int):
+async def delete_creator_endpoint(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Delete a creator and ALL their associated data:
     - Creator profile
@@ -3904,8 +4055,9 @@ async def delete_creator_endpoint(creator_id: int):
     - Vector embeddings (implied by chunks deletion)
     """
     try:
+        ensure_creator_access(creator_id, current_user["id"])
         # Verify creator exists
-        exists = db.execute_one("SELECT id FROM creators WHERE id = %s", (creator_id,))
+        exists = db.execute_one("SELECT id FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user["id"]))
         if not exists:
             # If not found, perhaps already deleted? 204 is fine.
             return
@@ -3963,7 +4115,7 @@ async def delete_creator_endpoint(creator_id: int):
              pass
 
         # 6. Delete Creator Profile
-        db.execute_update("DELETE FROM creators WHERE id = %s", (creator_id,))
+        db.execute_update("DELETE FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user["id"]))
 
         return 
     except HTTPException:
@@ -3986,15 +4138,16 @@ class ScrapeRunRequest(BaseModel):
     force_full: bool = False
 
 @app.post("/scrape/run")
-async def run_scrape(request: ScrapeRunRequest, background_tasks: BackgroundTasks):
+async def run_scrape(request: ScrapeRunRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Trigger an incremental scrape for a creator.
     """
     try:
+        ensure_creator_access(request.creator_id, current_user["id"])
         # Verify creator
         creator = db.execute_one(
-            "SELECT id, platform_configs FROM creators WHERE id = %s", 
-            (request.creator_id,)
+            "SELECT id, platform_configs FROM creators WHERE id = %s AND user_id = %s", 
+            (request.creator_id, current_user["id"])
         )
         if not creator:
             raise HTTPException(status_code=404, detail="Creator not found")
@@ -4034,9 +4187,10 @@ async def run_scrape(request: ScrapeRunRequest, background_tasks: BackgroundTask
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/scrape/runs")
-async def get_scrape_runs(creator_id: int, limit: int = 10):
+async def get_scrape_runs(creator_id: int, limit: int = 10, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get recent scrape runs for observability."""
     try:
+        ensure_creator_access(creator_id, current_user["id"])
         runs = db.execute_query(
             """
             SELECT * FROM scrape_runs 
@@ -4051,9 +4205,10 @@ async def get_scrape_runs(creator_id: int, limit: int = 10):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ingest/jobs")
-async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: int = 50):
+async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: int = 50, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get ingestion job queue status."""
     try:
+        ensure_creator_access(creator_id, current_user["id"])
         query = "SELECT * FROM ingest_jobs WHERE creator_id = %s"
         params = [creator_id]
         
@@ -4070,11 +4225,12 @@ async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: 
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/creators/{creator_id}/fingerprint/status")
-async def get_fingerprint_status(creator_id: int):
+async def get_fingerprint_status(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get the current fingerprinting status and timestamps."""
+    ensure_creator_access(creator_id, current_user["id"])
     row = db.execute_one(
-        "SELECT fingerprint_status, fingerprint_progress, fingerprint_updated_at, style_fingerprint, identity_fingerprint FROM creators WHERE id = %s",
-        (creator_id,)
+        "SELECT fingerprint_status, fingerprint_progress, fingerprint_updated_at, style_fingerprint, identity_fingerprint FROM creators WHERE id = %s AND user_id = %s",
+        (creator_id, current_user["id"])
     )
     if not row:
         raise HTTPException(status_code=404, detail="Creator not found")
@@ -4119,8 +4275,9 @@ async def get_fingerprint_status(creator_id: int):
     }
 
 @app.post("/creators/{creator_id}/fingerprint/generate")
-async def trigger_fingerprint_generation(creator_id: int, background_tasks: BackgroundTasks):
+async def trigger_fingerprint_generation(creator_id: int, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """Manually trigger or force refresh the Style Fingerprint."""
+    ensure_creator_access(creator_id, current_user["id"])
     from backend.services.fingerprint_service import fingerprint_service
     background_tasks.add_task(fingerprint_service.generate_fingerprint_async, creator_id)
     return {"message": "Fingerprint generation started"}
