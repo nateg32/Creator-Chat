@@ -138,7 +138,6 @@ export function UserSettingsModal({
                   ) : (
                     <div className="user-avatar-placeholder">+</div>
                   )}
-                  <span className="user-avatar-overlay">Change</span>
                 </button>
 
                 <input
@@ -149,17 +148,26 @@ export function UserSettingsModal({
                   onChange={handleAvatarUpload}
                 />
 
-                {avatarUrl ? (
+                <div className="user-avatar-actions">
                   <button
                     type="button"
-                    className="user-avatar-remove"
-                    onClick={() => setAvatarUrl("")}
+                    className="user-avatar-link"
+                    onClick={() => fileInputRef.current?.click()}
                   >
-                    Remove photo
+                    {avatarUrl ? "Change photo" : "Add photo"}
                   </button>
-                ) : (
-                  <div className="user-avatar-note">Optional profile photo</div>
-                )}
+                  {avatarUrl ? (
+                    <button
+                      type="button"
+                      className="user-avatar-link user-avatar-link-danger"
+                      onClick={() => setAvatarUrl("")}
+                    >
+                      Remove
+                    </button>
+                  ) : (
+                    <div className="user-avatar-note">Optional</div>
+                  )}
+                </div>
               </div>
 
               <div className="user-settings-form">
@@ -190,9 +198,9 @@ export function UserSettingsModal({
                     type="button"
                     className={`user-settings-preset ${selected ? "selected" : ""}`}
                     onClick={() => togglePreset(style.label)}
+                    aria-pressed={selected}
                   >
                     <span className="user-settings-preset-title">{style.label}</span>
-                    <span className="user-settings-preset-desc">{style.description}</span>
                   </button>
                 );
               })}
@@ -212,9 +220,9 @@ export function UserSettingsModal({
                 value={customPref}
                 onChange={(event) => setCustomPref(event.target.value.slice(0, CUSTOM_PREF_LIMIT))}
                 placeholder={
-                  "Examples:\nI run a small agency with five employees.\nI am a beginner, so explain from first principles.\nChallenge my thinking instead of agreeing too quickly.\nSports examples usually click faster for me."
+                  "Example:\nBeginner to marketing.\nPrefer direct feedback.\nUse practical examples."
                 }
-                rows={6}
+                rows={4}
               />
               <div className="user-settings-custom-meta">
                 <span>Filtered server-side.</span>
