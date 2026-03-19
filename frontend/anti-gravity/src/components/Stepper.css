@@ -26,7 +26,7 @@
 
 .app-branding-mark {
   display: block;
-  width: clamp(28px, 2.1vw, 33px);
+  width: clamp(29px, 2.15vw, 34px);
   height: auto;
 }
 

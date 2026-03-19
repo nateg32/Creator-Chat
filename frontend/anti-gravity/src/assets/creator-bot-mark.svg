@@ -1,42 +1,42 @@
-<svg width="4096" height="4096" viewBox="8 6 84 88" fill="none" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
+<svg width="4096" height="4096" viewBox="10 8 80 84" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path
-    d="M58 12L48.8 8.2C43 5.8 36.4 6.2 31 9.2L20.8 14.9C15 18.1 11.4 24.2 11.4 30.8V58.8C11.4 65.6 15.2 71.8 21.1 75L30 79.8C35.4 82.7 41.8 82.9 47.4 80.4L56.8 76.1"
-    stroke="#171417"
-    stroke-width="8.8"
+    d="M58.2 13.6L50.1 9.8C44.2 7 37.2 7.3 31.5 10.5L21.7 16.1C16 19.4 12.5 25.5 12.5 32V58.1C12.5 64.8 16.2 70.9 22 74.1L30.6 78.9C36.3 82.1 43.2 82.3 49 79.5L57.8 75.2"
+    stroke="#141316"
+    stroke-width="8.2"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M33 22.8V46.2C33 54.6 39 61.4 47.1 61.4H50.8"
-    stroke="#171417"
-    stroke-width="8.8"
+    d="M35 23.8V45.7C35 53.8 40.8 60.2 48.5 60.2H52.2"
+    stroke="#141316"
+    stroke-width="8.2"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M46.8 27.6L60.2 19.8C66.2 16.4 73.5 16.3 79.4 19.5C85.1 22.5 88.6 28.3 88.6 34.6V40.4C88.6 44.7 87.1 48.8 84.4 52.1"
-    stroke="#171417"
-    stroke-width="8.8"
+    d="M47.6 27.5L60.1 20.2C65.9 16.8 73 16.7 78.8 19.8C84 22.7 87.5 28.1 87.5 34V39C87.5 43.3 85.9 47.2 83 50.2"
+    stroke="#141316"
+    stroke-width="8.2"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M55.5 34.7H67.9C73.4 34.7 77.8 39.1 77.8 44.6C77.8 48 76 51 73.1 52.7C77.1 54.5 79.8 58.3 79.8 62.9C79.8 68.8 75 73.6 69.1 73.6H55.5V34.7Z"
-    stroke="#171417"
-    stroke-width="8.8"
+    d="M55.2 35.2H67.1C72.2 35.2 76.4 39.3 76.4 44.4C76.4 47.8 74.6 50.8 71.8 52.5C75.4 54.3 77.9 57.9 77.9 62.2C77.9 67.6 73.5 72 68.1 72H55.2V35.2Z"
+    stroke="#141316"
+    stroke-width="8.2"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
   <path
-    d="M55.5 52.8H66"
-    stroke="#171417"
-    stroke-width="8.8"
+    d="M55.2 52.4H65.7"
+    stroke="#141316"
+    stroke-width="8.2"
     stroke-linecap="round"
   />
   <path
-    d="M27 79.6L36.5 85.2C42.4 88.7 49.6 88.8 55.6 85.6L67.6 79"
-    stroke="#171417"
-    stroke-width="8.8"
+    d="M29.3 79.2L38.1 84.4C43.8 87.7 50.8 87.8 56.6 84.6L67.7 78.4"
+    stroke="#141316"
+    stroke-width="8.2"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
