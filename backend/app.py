@@ -399,9 +399,14 @@ def get_user_from_session(session_id: Optional[str] = None) -> Optional[Dict[str
 def require_auth(
     session_id: Optional[str] = Cookie(None),
     authorization: Optional[str] = Header(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
 ) -> Dict[str, Any]:
     """Dependency to require authentication"""
-    user = get_user_from_bearer(authorization) or get_user_from_session(session_id)
+    user = (
+        get_user_from_bearer(authorization)
+        or get_user_from_session(session_id)
+        or get_user_from_session(x_session_id)
+    )
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
@@ -1120,19 +1125,32 @@ async def register(request: LoginRequest, response: Response):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/auth/session", response_model=SessionResponse)
-async def get_session(session_id: Optional[str] = Cookie(None), authorization: Optional[str] = Header(None)):
+async def get_session(
+    session_id: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+):
     """Get current session info"""
-    user = get_user_from_bearer(authorization) or get_user_from_session(session_id)
+    user = (
+        get_user_from_bearer(authorization)
+        or get_user_from_session(session_id)
+        or get_user_from_session(x_session_id)
+    )
     if not user:
         return SessionResponse(user_id=0, email="", valid=False)
     return SessionResponse(user_id=user["id"], email=user["email"], valid=True)
 
 @app.post("/auth/logout")
-async def logout(response: Response, session_id: Optional[str] = Cookie(None)):
+async def logout(
+    response: Response,
+    session_id: Optional[str] = Cookie(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+):
     """Logout and delete session"""
-    if session_id:
+    sid = session_id or x_session_id
+    if sid:
         query = "DELETE FROM sessions WHERE id = %s"
-        db.execute_update(query, (session_id,))
+        db.execute_update(query, (sid,))
     response.delete_cookie(key="session_id")
     return {"ok": True}
 

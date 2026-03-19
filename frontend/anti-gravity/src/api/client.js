@@ -5,10 +5,19 @@ import {
 } from "../config";
 
 const ACCESS_TOKEN_KEY = "access_token";
+const SESSION_ID_KEY = "session_id";
 
 function getAccessToken() {
   try {
     return localStorage.getItem(ACCESS_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function getSessionId() {
+  try {
+    return localStorage.getItem(SESSION_ID_KEY) || "";
   } catch {
     return "";
   }
@@ -28,7 +37,15 @@ function setAccessToken(token) {
 
 function buildHeaders(headers = {}) {
   const token = getAccessToken();
-  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+  const sessionId = getSessionId();
+  const nextHeaders = { ...headers };
+  if (token) {
+    nextHeaders.Authorization = `Bearer ${token}`;
+  }
+  if (sessionId) {
+    nextHeaders["X-Session-Id"] = sessionId;
+  }
+  return nextHeaders;
 }
 
 async function readErrorPayload(res) {
