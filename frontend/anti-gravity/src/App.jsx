@@ -9,6 +9,7 @@ import { SourcesPanel } from "./components/SourcesPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { NewChatModal } from "./components/NewChatModal";
 import { UserSettingsModal } from "./components/UserSettingsModal";
+import { Login } from "./components/Login";
 import { API_BASE_URL, API_CONNECTION_HELP } from "./config";
 import {
   scrape,
@@ -23,6 +24,7 @@ import {
   updateCreator,
   getUserSettings,
   updateUserSettings,
+  getSession,
   createThread,
   listThreads,
   getThreadMessages,
@@ -223,8 +225,46 @@ function AppInner() {
 
   const [userSettings, setUserSettings] = useState(null);
   const [showUserSettings, setShowUserSettings] = useState(false);
+  const [authStatus, setAuthStatus] = useState("checking");
+  const isAuthenticated = authStatus === "authenticated";
 
   useEffect(() => {
+    const handleAuthRequired = () => {
+      setAuthStatus("unauthenticated");
+      setUserSettings(null);
+      setExistingCreators([]);
+      setThreadsByCreator({});
+      setArchivedThreadsByCreator({});
+      setChats([]);
+      setActiveChatId(null);
+    };
+
+    window.addEventListener("auth-required", handleAuthRequired);
+    return () => window.removeEventListener("auth-required", handleAuthRequired);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getSession()
+      .then((session) => {
+        if (cancelled) return;
+        setAuthStatus(session?.valid ? "authenticated" : "unauthenticated");
+      })
+      .catch((err) => {
+        console.error("Error checking session:", err);
+        if (!cancelled) {
+          setAuthStatus("unauthenticated");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
     getUserSettings()
       .then(settings => {
         setUserSettings(settings);
@@ -233,7 +273,7 @@ function AppInner() {
         }
       })
       .catch(err => console.error("Error loading user settings:", err));
-  }, []);
+  }, [isAuthenticated]);
 
   async function handleUpdateUserSettings(newSettings) {
     try {
@@ -611,12 +651,15 @@ function AppInner() {
   }
 
   useEffect(() => {
-    refreshCreators();
-
     health()
       .then(() => setBackendConnected(true))
       .catch(() => setBackendConnected(false));
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    refreshCreators();
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if ((state.currentStep === 3 || state.currentStep === 4) && state.creatorId) {
@@ -1451,6 +1494,18 @@ function AppInner() {
   }
 
   return (
+    authStatus === "checking" ? (
+      <div className="app-shell">
+        <div className="workflow-container" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+          <div style={{ textAlign: "center" }}>
+            <div className="progress-spinner" style={{ margin: "0 auto 12px" }}></div>
+            <p className="muted">Checking session...</p>
+          </div>
+        </div>
+      </div>
+    ) : !isAuthenticated ? (
+      <Login onLogin={() => setAuthStatus("authenticated")} />
+    ) : (
     <div className={`app-shell ${showChatInterface ? "fixed-height" : ""}`}>
       {/* Global Navigation - Always visible (requirement #1) */}
       <Stepper
@@ -1644,6 +1699,7 @@ function AppInner() {
         onUpdateUserSettings={handleUpdateUserSettings}
       />
     </div>
+    )
   );
 }
 

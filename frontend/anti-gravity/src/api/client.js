@@ -6,6 +6,7 @@ import {
 
 const ACCESS_TOKEN_KEY = "access_token";
 const SESSION_ID_KEY = "session_id";
+const USER_ID_KEY = "user_id";
 
 function getAccessToken() {
   try {
@@ -32,6 +33,29 @@ function setAccessToken(token) {
     }
   } catch {
     // Ignore storage failures and continue with cookie auth.
+  }
+}
+
+function clearStoredAuth() {
+  try {
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(SESSION_ID_KEY);
+    localStorage.removeItem(USER_ID_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function emitAuthRequired() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("auth-required"));
+  }
+}
+
+function handleUnauthorizedResponse(res) {
+  if (res?.status === 401) {
+    clearStoredAuth();
+    emitAuthRequired();
   }
 }
 
@@ -91,6 +115,7 @@ async function postJson(path, body) {
   }
 
   if (!res.ok) {
+    handleUnauthorizedResponse(res);
     const details = await readErrorPayload(res);
     const msg = details ? `Request failed (${res.status}): ${details}` : `Request failed (${res.status})`;
     throw new Error(msg);
@@ -123,6 +148,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   });
 
   if (!response.ok) {
+    handleUnauthorizedResponse(response);
     const details = await readErrorPayload(response);
     const msg = details ? `Request failed (${response.status}): ${details}` : `Request failed (${response.status})`;
     throw new Error(msg);
@@ -225,6 +251,7 @@ export async function updateCreator(creatorId, { name, handle, profile_picture_u
     credentials: "include",
   });
   if (!res.ok) {
+    handleUnauthorizedResponse(res);
     const d = await res.json().catch(() => ({}));
     console.error("Update failed detail:", d);
     const msg = typeof d.detail === 'object' ? JSON.stringify(d.detail) : (d.detail || "Update failed");
@@ -246,6 +273,7 @@ export async function updateUserSettings({ display_name, profile_picture_url, re
   });
 
   if (!res.ok) {
+    handleUnauthorizedResponse(res);
     // Reuse readErrorPayload if accessible, or just text
     let msg = "Update failed";
     try {
@@ -292,6 +320,7 @@ export async function approveIngestV2Stream({ scrape_id, decisions, creator_id, 
   });
 
   if (!response.ok) {
+    handleUnauthorizedResponse(response);
     const text = await response.text();
     throw new Error(text || `Request failed (${response.status})`);
   }
@@ -348,6 +377,7 @@ export async function approveIngest({ creator_id, queue_ids }) {
   });
 
   if (!res.ok) {
+    handleUnauthorizedResponse(res);
     const text = await res.text();
     throw new Error(text);
   }
@@ -392,6 +422,7 @@ async function getJson(path) {
   }
 
   if (!res.ok) {
+    handleUnauthorizedResponse(res);
     const details = await readErrorPayload(res);
     const msg = details ? `Request failed (${res.status}): ${details}` : `Request failed (${res.status})`;
     throw new Error(msg);
@@ -474,7 +505,7 @@ export async function getSession() {
 
 export async function logout() {
   const result = await postJson("/auth/logout", {});
-  setAccessToken("");
+  clearStoredAuth();
   return result;
 }
 
@@ -497,6 +528,7 @@ export async function deleteCreator(creator_id) {
     credentials: "include",
   });
   if (!res.ok) {
+    handleUnauthorizedResponse(res);
     const text = await res.text();
     throw new Error(text || "Failed to delete creator");
   }
@@ -528,6 +560,7 @@ export function updateThread(threadId, { title, is_archived }) {
     credentials: "include",
   }).then(async res => {
     if (!res.ok) {
+      handleUnauthorizedResponse(res);
       const txt = await res.text();
       throw new Error(txt || "Failed to update thread");
     }
@@ -541,7 +574,10 @@ export function deleteThread(thread_id) {
     headers: buildHeaders(),
     credentials: "include",
   }).then(res => {
-    if (!res.ok) throw new Error("Failed to delete thread");
+    if (!res.ok) {
+      handleUnauthorizedResponse(res);
+      throw new Error("Failed to delete thread");
+    }
     return res.json();
   });
 }
