@@ -4,6 +4,33 @@ import {
   formatBackendTimeoutError,
 } from "../config";
 
+const ACCESS_TOKEN_KEY = "access_token";
+
+function getAccessToken() {
+  try {
+    return localStorage.getItem(ACCESS_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setAccessToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(ACCESS_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(ACCESS_TOKEN_KEY);
+    }
+  } catch {
+    // Ignore storage failures and continue with cookie auth.
+  }
+}
+
+function buildHeaders(headers = {}) {
+  const token = getAccessToken();
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+}
+
 async function readErrorPayload(res) {
   // Try JSON first, fall back to text.
   try {
@@ -33,7 +60,7 @@ async function postJson(path, body) {
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       credentials: "include", // Include cookies
     });
@@ -73,7 +100,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
 
   const response = await fetch(`${API_BASE_URL}/ask-stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     credentials: "include",
   });
@@ -176,7 +203,7 @@ export async function updateCreator(creatorId, { name, handle, profile_picture_u
   if (visual_config != null) body.visual_config = visual_config;
   const res = await fetch(`${API_BASE_URL}/creators/${creatorId}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     credentials: "include",
   });
@@ -196,7 +223,7 @@ export async function getUserSettings() {
 export async function updateUserSettings({ display_name, profile_picture_url, response_preferences }) {
   const res = await fetch(`${API_BASE_URL}/user/settings`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ display_name, profile_picture_url, response_preferences }),
     credentials: "include"
   });
@@ -242,7 +269,7 @@ export async function approveIngestV2({ scrape_id, decisions, creator_id }) {
 export async function approveIngestV2Stream({ scrape_id, decisions, creator_id, onProgress }) {
   const response = await fetch(`${API_BASE_URL}/approve_ingest_v2/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ scrape_id, decisions, creator_id }),
     credentials: "include",
   });
@@ -298,7 +325,7 @@ export async function approveIngestV2Stream({ scrape_id, decisions, creator_id, 
 export async function approveIngest({ creator_id, queue_ids }) {
   const res = await fetch(`${API_BASE_URL}/approve_ingest`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ creator_id, queue_ids }),
     credentials: "include", // Include cookies
   });
@@ -330,7 +357,7 @@ async function getJson(path) {
     const separator = path.includes('?') ? '&' : '?';
     res = await fetch(`${API_BASE_URL}${path}${separator}_t=${Date.now()}`, {
       method: "GET",
-      headers: { "Content-Type": "application/json" },
+      headers: buildHeaders({ "Content-Type": "application/json" }),
       credentials: "include", // Include cookies
       signal: controller.signal,
     });
@@ -413,11 +440,15 @@ export function getScrapeProgress(scrape_id) {
 
 // Auth functions
 export async function login(email, password) {
-  return postJson("/auth/login", { email, password });
+  const result = await postJson("/auth/login", { email, password });
+  setAccessToken(result?.access_token || "");
+  return result;
 }
 
 export async function register(email, password) {
-  return postJson("/auth/register", { email, password });
+  const result = await postJson("/auth/register", { email, password });
+  setAccessToken(result?.access_token || "");
+  return result;
 }
 
 export async function getSession() {
@@ -425,7 +456,9 @@ export async function getSession() {
 }
 
 export async function logout() {
-  return postJson("/auth/logout", {});
+  const result = await postJson("/auth/logout", {});
+  setAccessToken("");
+  return result;
 }
 
 // Creator functions
@@ -443,6 +476,7 @@ export async function getCreatorStats(creator_id) {
 export async function deleteCreator(creator_id) {
   const res = await fetch(`${API_BASE_URL}/creators/${creator_id}`, {
     method: "DELETE",
+    headers: buildHeaders(),
     credentials: "include",
   });
   if (!res.ok) {
@@ -472,7 +506,7 @@ export function updateThread(threadId, { title, is_archived }) {
 
   return fetch(`${API_BASE_URL}/threads/${threadId}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     credentials: "include",
   }).then(async res => {
@@ -487,6 +521,7 @@ export function updateThread(threadId, { title, is_archived }) {
 export function deleteThread(thread_id) {
   return fetch(`${API_BASE_URL}/threads/${thread_id}`, {
     method: "DELETE",
+    headers: buildHeaders(),
     credentials: "include",
   }).then(res => {
     if (!res.ok) throw new Error("Failed to delete thread");

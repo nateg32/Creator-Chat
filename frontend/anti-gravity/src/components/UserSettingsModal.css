@@ -312,6 +312,12 @@
   box-shadow: none;
 }
 
+.user-settings-footer .secondary-button:hover:not(:disabled),
+.user-settings-footer .primary-button:hover:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
 @media (max-width: 760px) {
   .user-settings-overlay {
     padding: 12px;
