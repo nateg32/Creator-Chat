@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./CreatorSettingsModal.css";
 import { resizeImage } from "../utils/image";
 
@@ -103,7 +104,7 @@ export function CreatorSettingsModal({
     }
   };
 
-  return (
+  const modalContent = (
     <div className="creator-settings-overlay" onClick={onClose}>
       <div
         className="creator-settings-modal"
@@ -280,4 +281,10 @@ export function CreatorSettingsModal({
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") {
+    return modalContent;
+  }
+
+  return createPortal(modalContent, document.body);
 }
