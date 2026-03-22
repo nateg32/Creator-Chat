@@ -419,10 +419,11 @@ def handle_fingerprint(job_id: str, payload: dict):
     update_job_progress(job_id, 10, "processing", "Analyzing personality traits...")
     creator_id = payload["creator_id"]
     refresh = bool(payload.get("refresh"))
+    mode = payload.get("mode") or "full"
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(fingerprint_service.generate_fingerprint_async(creator_id, refresh=refresh))
+        loop.run_until_complete(fingerprint_service.generate_fingerprint_async(creator_id, refresh=refresh, mode=mode))
         status_row = db.execute_one(
             "SELECT fingerprint_status FROM creators WHERE id = %s",
             (creator_id,),

@@ -81,7 +81,7 @@ class IngestWorker:
             # Trigger Fingerprint Evolution if new knowledge was added
             if job_type == 'EMBED':
                 from backend.services.fingerprint_service import fingerprint_service
-                await fingerprint_service.generate_fingerprint_async(job['creator_id'])
+                await fingerprint_service.generate_fingerprint_async(job['creator_id'], mode="incremental")
 
         except Exception as e:
             # Handle Failure & Retry

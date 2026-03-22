@@ -190,6 +190,58 @@ def _load_cached_research_summary(creator_id: int) -> Dict[str, Any]:
     return summary if isinstance(summary, dict) else {}
 
 
+def _load_jsonish(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _merge_incremental_value(base: Any, delta: Any) -> Any:
+    if isinstance(base, dict) or isinstance(delta, dict):
+        merged: Dict[str, Any] = {}
+        base = base if isinstance(base, dict) else {}
+        delta = delta if isinstance(delta, dict) else {}
+        for key in set(base.keys()) | set(delta.keys()):
+            merged[key] = _merge_incremental_value(base.get(key), delta.get(key))
+        return merged
+
+    if isinstance(base, list) or isinstance(delta, list):
+        base_list = base if isinstance(base, list) else []
+        delta_list = delta if isinstance(delta, list) else []
+        merged_list: List[Any] = []
+        seen = set()
+        for item in delta_list + base_list:
+            key = json.dumps(item, sort_keys=True, default=str) if isinstance(item, (dict, list)) else str(item).strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged_list.append(item)
+        return merged_list
+
+    if isinstance(base, (int, float)) or isinstance(delta, (int, float)):
+        if isinstance(base, (int, float)) and isinstance(delta, (int, float)):
+            return max(base, delta)
+        return delta if isinstance(delta, (int, float)) else base
+
+    if isinstance(delta, str) and delta.strip():
+        if not isinstance(base, str) or not base.strip():
+            return delta
+        return base
+
+    return base if base is not None else delta
+
+
+def _merge_incremental_fingerprint(existing: Dict[str, Any], delta: Dict[str, Any]) -> Dict[str, Any]:
+    merged = _merge_incremental_value(existing or {}, delta or {})
+    return merged if isinstance(merged, dict) else (existing or delta or {})
+
+
 
 def _normalize_search_hits(results: List[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
     normalized = []
@@ -325,7 +377,7 @@ class FingerprintService:
         self.researcher = GeminiResearchProvider() if settings.GOOGLE_API_KEY else get_research_provider()
         self.analyzer = PersonalityAnalyzer()
 
-    async def generate_fingerprint_async(self, creator_id: int, refresh: bool = False):
+    async def generate_fingerprint_async(self, creator_id: int, refresh: bool = False, mode: str = "full"):
         """
         Main orchestration logic (Deep Research Upgrade).
         Phases: Link-First, Content Mining, Google Expansion, Synthesis.
@@ -341,7 +393,12 @@ class FingerprintService:
 
             # 2. Get Creator Info & Setup Links
             creator = db.execute_one(
-                "SELECT name, handle, platform_configs, official_domains, research_summary FROM creators WHERE id = %s",
+                """
+                SELECT name, handle, platform_configs, official_domains, research_summary,
+                       style_fingerprint, identity_fingerprint, soul_md, fingerprint_updated_at
+                FROM creators
+                WHERE id = %s
+                """,
                 (creator_id,)
             )
             if not creator:
@@ -349,6 +406,11 @@ class FingerprintService:
                 return
 
             name = creator.get("name") or creator.get("handle") or "The Creator"
+            incremental_mode = str(mode or "full").lower() == "incremental" and not refresh
+            existing_style_fingerprint = _load_jsonish(creator.get("style_fingerprint"))
+            existing_identity_fingerprint = _load_jsonish(creator.get("identity_fingerprint"))
+            existing_soul_md = creator.get("soul_md") or ""
+            fingerprint_updated_at = creator.get("fingerprint_updated_at")
             
             # Gather all available links from config
             configs = creator.get("platform_configs") or {}
@@ -415,9 +477,25 @@ class FingerprintService:
                 message="Mining approved content for cadence, signature moves, values, and recurring beliefs.",
             )
             logger.info(f"FingerprintService Phase 2: Analyzing content truth...")
-            voice_fingerprint = self.analyzer.analyze_creator(creator_id)
-            if not isinstance(voice_fingerprint, dict):
-                voice_fingerprint = {
+            if incremental_mode and existing_style_fingerprint and fingerprint_updated_at:
+                delta_docs = self.analyzer._load_corpus(creator_id, limit=10, since=fingerprint_updated_at)
+                if delta_docs:
+                    delta_fingerprint = self.analyzer.analyze_creator(
+                        creator_id,
+                        limit=10,
+                        since=fingerprint_updated_at,
+                    )
+                    voice_fingerprint = _merge_incremental_fingerprint(existing_style_fingerprint, delta_fingerprint)
+                    research_quality = "incremental_cached"
+                else:
+                    logger.info(f"FingerprintService: No new content since last fingerprint for {name} ({creator_id}).")
+                    voice_fingerprint = existing_style_fingerprint
+                    research_quality = "incremental_cached"
+            else:
+                voice_fingerprint = self.analyzer.analyze_creator(creator_id)
+
+            if not isinstance(voice_fingerprint, dict) or not voice_fingerprint:
+                voice_fingerprint = existing_style_fingerprint or {
                     "traits": [],
                     "tone_intensity": "low",
                     "impact": "neutral",
@@ -432,7 +510,7 @@ class FingerprintService:
                 "content_milestones": voice_fingerprint.get("content_truth", {}),
                 "claims": creator_claims,
             }
-            if not reuse_cached_research:
+            if not reuse_cached_research and not incremental_mode:
                 _set_fingerprint_progress(
                     creator_id,
                     status="processing",
@@ -473,6 +551,8 @@ class FingerprintService:
                 if not _has_meaningful_dossier(investigative_dossier):
                     research_quality = "partial"
                     investigative_dossier = {}
+            elif incremental_mode and reuse_cached_research:
+                logger.info(f"FingerprintService: Incremental mode reusing cached dossier for {name} ({creator_id}).")
 
             # 4. Phase 4: Synthesis (Research Summary)
             _set_fingerprint_progress(
@@ -495,16 +575,28 @@ class FingerprintService:
 
             # 5. Build a richer identity layer from web + content.
             identity_fingerprint = _build_identity_fingerprint(name, link_identity, investigative_dossier, voice_fingerprint)
+            if incremental_mode and existing_identity_fingerprint:
+                identity_fingerprint = _merge_incremental_fingerprint(existing_identity_fingerprint, identity_fingerprint)
 
             # 6. Phase 5: Persona Narrative Alignment (soul.md)
-            _set_fingerprint_progress(
-                creator_id,
-                status="processing",
-                percent=93,
-                stage="finalizing",
-                message="Writing soul.md and locking the final fingerprint for runtime use.",
-            )
-            soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
+            if incremental_mode and existing_soul_md:
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="processing",
+                    percent=93,
+                    stage="finalizing",
+                    message="Refreshing runtime fingerprint without regenerating soul.md.",
+                )
+                soul_md = existing_soul_md
+            else:
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="processing",
+                    percent=93,
+                    stage="finalizing",
+                    message="Writing soul.md and locking the final fingerprint for runtime use.",
+                )
+                soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
 
             # 7. Final DB Update
             db.execute_update(

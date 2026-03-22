@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from backend.db import db
 from backend.rag import get_client
@@ -426,15 +427,25 @@ class PersonalityAnalyzer:
     """Extract a deeper style fingerprint from ingested creator content."""
 
     @staticmethod
-    def _load_corpus(creator_id: int):
+    def _load_corpus(creator_id: int, *, limit: int = 32, since: datetime | None = None):
         query = """
             SELECT content, metadata, source, source_id, title
             FROM documents
             WHERE creator_id = %s AND source != 'persona'
-            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-            LIMIT 32
         """
-        return db.execute_query(query, (creator_id,))
+        params = [creator_id]
+        if since is not None:
+            query += """
+            AND COALESCE(updated_at, created_at) > %s
+            """
+            params.append(since)
+
+        query += """
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+            LIMIT %s
+        """
+        params.append(limit)
+        return db.execute_query(query, tuple(params))
 
     @staticmethod
     def _build_corpus(docs):
@@ -463,9 +474,9 @@ class PersonalityAnalyzer:
         return "\n\n---\n\n".join(samples)
 
     @staticmethod
-    def analyze_creator(creator_id: int):
+    def analyze_creator(creator_id: int, *, limit: int = 32, since: datetime | None = None):
         print(f"[IDENTITY] Re-analyzing fingerprint for creator {creator_id}...")
-        docs = PersonalityAnalyzer._load_corpus(creator_id)
+        docs = PersonalityAnalyzer._load_corpus(creator_id, limit=limit, since=since)
         if not docs:
             print(f"[IDENTITY] No content found (outside persona) for creator {creator_id}. Cannot analyze.")
             return _default_fingerprint()
