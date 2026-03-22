@@ -34,6 +34,12 @@ class TextSanitizerTests(unittest.TestCase):
             "- Keep going",
         )
 
+    def test_preserves_multiline_bullets_after_colon(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens('Examples that sell:\n- "We book 20 calls."\n- "We revive old leads."'),
+            'Examples that sell:\n- "We book 20 calls."\n- "We revive old leads."',
+        )
+
     def test_replaces_tight_em_dash_clauses(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("If prompt engineering does not work in every case—as models can be unpredictable—you can post process it."),
@@ -104,6 +110,18 @@ class TextSanitizerTests(unittest.TestCase):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("Watch How to disappoint your dad in your20s."),
             "Watch How to disappoint your dad in your 20s.",
+        )
+
+    def test_repairs_split_word_fragments(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Buyer: Yo u tur n long videos into clips."),
+            "Buyer: You turn long videos into clips.",
+        )
+
+    def test_repairs_line_start_split_word_fragments(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Perfect.\nB uyer: agencies and coaches"),
+            "Perfect.\nBuyer: agencies and coaches",
         )
 
 

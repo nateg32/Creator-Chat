@@ -10,7 +10,7 @@ CLAUSE_BREAK_DASH_CLASS = re.escape(CLAUSE_BREAK_DASH_CHARS)
 MOJIBAKE_DASHES = ("\u00e2\u20ac\u201d", "\u00e2\u20ac\u201c")
 PROTECTED_SPAN_RE = re.compile(r"\[[^\]]+\]\(https?://[^\s)]+\)|https?://[^\s)]+")
 CLAUSE_DASH_RE = re.compile(
-    rf"(?<=\S)(?:\s+(?:--+|[{DASH_CLASS}]+)\s*|\s*(?:--+|[{DASH_CLASS}]+)\s+)(?=\S)"
+    rf"(?<=\S)(?:[ \t]+(?:--+|[{DASH_CLASS}]+)[ \t]*|[ \t]*(?:--+|[{DASH_CLASS}]+)[ \t]+)(?=\S)"
 )
 WORD_BREAK_DASH_RE = re.compile(rf"(?<=\w)(?:[{WORD_BREAK_DASH_CLASS}])(?=\w)")
 WORD_CLAUSE_DASH_RE = re.compile(rf"(?<=\w)(?:--+|[{CLAUSE_BREAK_DASH_CLASS}]+)(?=\w)")
@@ -29,6 +29,17 @@ WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE = re.compile(
 NUMBER_TO_WORD_BOUNDARY_RE = re.compile(r"(?<=\d)(?=[A-Za-z]{2,}(?=(?:\s|[,;:!?)]|$)))")
 DOMAIN_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=(?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:/[^\s]*)?)")
 STREAM_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+|\n")
+SPLIT_HEAD_RE = re.compile(r"(^|[\n([{\"'])([A-Za-z])\s+([a-z]{3,})(?=\b)", re.MULTILINE)
+SPLIT_MIDDLE_RE = re.compile(
+    r"\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)",
+    re.IGNORECASE,
+)
+SPLIT_TAIL_RE = re.compile(r"\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b", re.IGNORECASE)
+COMMON_SHORT_WORDS = {
+    "a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    "for", "and", "but", "not", "the", "you", "your",
+}
 
 
 def _protect_spans(text: str) -> Tuple[str, Dict[str, str]]:
@@ -49,6 +60,31 @@ def _restore_spans(text: str, protected: Dict[str, str]) -> str:
     return restored
 
 
+def _repair_split_word_fragments(text: str) -> str:
+    repaired = text
+
+    repaired = SPLIT_HEAD_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}", repaired)
+
+    while True:
+        next_repaired = SPLIT_MIDDLE_RE.sub(
+            lambda m: f"{m.group(1)}{m.group(2)}"
+            if m.group(1).lower() not in COMMON_SHORT_WORDS
+            else m.group(0),
+            repaired,
+        )
+        next_repaired = SPLIT_TAIL_RE.sub(
+            lambda m: f"{m.group(1)}{m.group(2)}"
+            if m.group(1).lower() not in COMMON_SHORT_WORDS
+            else m.group(0),
+            next_repaired,
+        )
+        if next_repaired == repaired:
+            break
+        repaired = next_repaired
+
+    return repaired
+
+
 def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned, protected = _protect_spans(text)
     for token in MOJIBAKE_DASHES:
@@ -67,6 +103,7 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = NUMBER_TO_WORD_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = DOMAIN_BOUNDARY_RE.sub(" ", cleaned)
+    cleaned = _repair_split_word_fragments(cleaned)
     cleaned = MULTISPACE_RE.sub(" ", cleaned)
 
     if trim_line_edges:

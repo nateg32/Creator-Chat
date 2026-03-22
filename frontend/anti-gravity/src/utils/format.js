@@ -45,6 +45,31 @@ function restoreSpans(text, protectedSpans) {
     return protectedSpans.reduce((output, span) => output.replace(span.token, span.value), text);
 }
 
+const splitHeadRe = /(^|[\n([{"'])([A-Za-z])\s+([a-z]{3,})(?=\b)/gm;
+const splitMiddleRe = /\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)/gi;
+const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
+const commonShortWords = new Set([
+    "a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    "for", "and", "but", "not", "the", "you", "your",
+]);
+
+function repairSplitWordFragments(text) {
+    let repaired = text.replace(splitHeadRe, (_, prefix, head, tail) => `${prefix}${head}${tail}`);
+
+    while (true) {
+        const next = repaired
+            .replace(splitMiddleRe, (match, word, tail) => {
+                return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
+            })
+            .replace(splitTailRe, (match, word, tail) => {
+                return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
+            });
+        if (next === repaired) return repaired;
+        repaired = next;
+    }
+}
+
 export function repairDisplaySpacing(text) {
     if (!text) return text;
 
@@ -52,10 +77,14 @@ export function repairDisplaySpacing(text) {
     const repaired = tokenized
         .replace(/^(\s*\d+[.)])(?=\S)/gm, '$1 ')
         .replace(/([A-Za-z])(?=([1-3]?\d{1,3}:\d{1,3}(?:-\d{1,3})?))/g, '$1 ')
+        .replace(/(?<=[A-Za-z])(?=\d{1,4}(?=(?:\s|[,.;:!?)]|$)))/g, ' ')
+        .replace(/(?<=[A-Za-z])(?=\d{1,4}(?:s|x|st|nd|rd|th)(?=(?:\s|[,.;:!?)]|$)))/gi, ' ')
+        .replace(/(?<=\d)(?=[A-Za-z]{2,}(?=(?:\s|[,;:!?)]|$)))/g, ' ')
         .replace(/([A-Za-z])(?=((?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:\/[^\s]*)?))/g, '$1 ')
+        .replace(/[ \t]+([,.;:!?])/g, '$1')
         .replace(/[ \t]{2,}/g, ' ');
 
-    return restoreSpans(repaired, protectedSpans);
+    return restoreSpans(repairSplitWordFragments(repaired), protectedSpans);
 }
 
 /**
