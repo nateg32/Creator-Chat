@@ -740,6 +740,38 @@ def _is_followup_resource_request(question: str, last_bot_msg: str) -> bool:
     media = {"video", "videos", "reel", "reels", "post", "posts", "link", "links", "source", "sources", "clip", "clips", "watch"}
     return any(word in referential for word in words) and any(word in media for word in words)
 
+
+def _should_block_on_web_fallback(
+    question: str,
+    history: Optional[List[Dict[str, str]]],
+    *,
+    wants_link: bool,
+    is_video_request: bool,
+    support_set: List[Dict[str, Any]],
+    has_recommendable_ingested_resource: bool,
+    search_mode: str,
+    images: bool = False,
+) -> bool:
+    """
+    Keep live web search off the critical chat path unless the user explicitly
+    needs fresh/public info or a source/link. This preserves quality where the
+    web matters, while avoiding multi-second speculative searches for normal chat.
+    """
+    if search_mode != "hybrid":
+        return False
+
+    if images and not wants_link:
+        return False
+
+    needs_fresh_info = needs_fresh_public_web_search(question, history)
+    if not wants_link and not needs_fresh_info:
+        return False
+
+    if is_video_request and has_recommendable_ingested_resource:
+        return False
+
+    return True
+
 def evaluate_context_sufficiency(
     question: str,
     support_set: List[Dict[str, Any]],
@@ -2894,26 +2926,21 @@ Message: {answer_text[:500]}"""
             preferred_platforms=preferred_platforms,
         )
         
-        needs_fallback = False
-        if not support_set:
-            needs_fallback = True
-        elif is_video_request and has_recommendable_ingested_resource:
-            needs_fallback = False
-        else:
-            # SMART EVALUATOR: Instead of keywords, ask LLM if we have enough info
-            sufficiency = evaluate_context_sufficiency(question, support_set, history=conversation_history)
-            logger.info(f"Context Sufficiency: {sufficiency}")
-            if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
-                needs_fallback = True
-            
         search_mode = creator_row.get("search_mode") or "hybrid"
-            
         no_online_fallback = None
-        if images and not wants_link:
-            needs_fallback = False
+        needs_fallback = _should_block_on_web_fallback(
+            question,
+            conversation_history,
+            wants_link=wants_link,
+            is_video_request=is_video_request,
+            support_set=support_set,
+            has_recommendable_ingested_resource=has_recommendable_ingested_resource,
+            search_mode=search_mode,
+            images=bool(images),
+        )
 
-        if needs_fallback and search_mode == "hybrid":
-            logger.info(f"RAG judged {sufficiency if support_set else 'EMPTY'}. Triggering Live Web Search Fallback (Hybrid Mode)...")
+        if needs_fallback:
+            logger.info("Triggering live web search fallback for explicit live/source request.")
             from backend.services.research_provider import get_research_provider
             import concurrent.futures
 
@@ -2928,7 +2955,8 @@ Message: {answer_text[:500]}"""
             )
             intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
             
-            # If no support set, we skip sufficiency check and run web search directly
+            # Explicit live/source requests can block on web results because the
+            # user asked for current facts or trustworthy links.
             if not support_set:
                 try:
                     web_results = rp.search(
@@ -2940,9 +2968,7 @@ Message: {answer_text[:500]}"""
                 except Exception as e:
                     logger.error(f"Sync web search failed: {e}")
             else:
-                # If we have a small support set, we can run them in parallel
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    suff_future = executor.submit(evaluate_context_sufficiency, question, support_set, conversation_history)
                     search_future = executor.submit(
                         rp.search,
                         web_query,
@@ -2952,15 +2978,9 @@ Message: {answer_text[:500]}"""
                     )
                     
                     try:
-                        sufficiency = suff_future.result(timeout=2.5)
-                        logger.info(f"Context Sufficiency (Parallel): {sufficiency}")
-                        if sufficiency in ["PARTIAL", "INSUFFICIENT"]:
-                            try:
-                                web_results = search_future.result(timeout=10)
-                            except concurrent.futures.TimeoutError:
-                                logger.warning("Parallel web search timed out.")
+                        web_results = search_future.result(timeout=10)
                     except concurrent.futures.TimeoutError:
-                        logger.warning("Parallel sufficiency check timed out, proceeding with existing RAG results.")
+                        logger.warning("Blocking web search timed out, proceeding with existing RAG results.")
             
             web_results = _filter_live_web_results(
                 web_results,
@@ -3393,7 +3413,30 @@ async def grounded_rag_stream(
         )
         intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
         
-        if search_mode == "hybrid":
+        needs_fallback = _should_block_on_web_fallback(
+            question,
+            conversation_history,
+            wants_link=wants_link,
+            is_video_request=is_video_request,
+            support_set=support_set,
+            has_recommendable_ingested_resource=has_recommendable_ingested_resource,
+            search_mode=search_mode,
+        )
+
+        if needs_fallback:
+            logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
+            from backend.services.research_provider import get_research_provider
+            rp = get_research_provider()
+            web_results = await asyncio.to_thread(
+                rp.search,
+                web_query,
+                creator_row,
+                conversation_history=conversation_history,
+                intent_metadata=intent_metadata,
+            )
+        elif search_mode == "hybrid":
+            logger.info("[LATENCY] Skipping blocking web fallback for normal chat.")
+            """
             if not support_set:
                 # No RAG results, so run web search immediately in hybrid mode.
                 needs_fallback = True
@@ -3440,7 +3483,8 @@ async def grounded_rag_stream(
                             conversation_history=conversation_history,
                             intent_metadata=intent_metadata
                         )
-        
+            """
+
         _t_search_end = _time.time()
         logger.info(f"[LATENCY] Search fallback phase: {_t_search_end - _t_search_start:.2f}s (fallback={needs_fallback}, results={len(web_results)})")
         
