@@ -53,7 +53,7 @@ from backend.settings import settings
 from backend.personality_analyzer import PersonalityAnalyzer
 from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
-from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_sentence_hyphens
+from backend.services.text_sanitizer import StreamingTextSanitizer, append_stream_text, strip_mid_sentence_hyphens
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
@@ -2214,7 +2214,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                             logger.warning("Failed to parse streamed cards payload.")
                         continue
                         
-                    raw_answer += chunk
+                    raw_answer = append_stream_text(raw_answer, chunk)
                     cleaned_chunk = stream_sanitizer.feed(chunk)
                     if cleaned_chunk:
                         yield f"data: {json.dumps({'content': cleaned_chunk})}\n\n"

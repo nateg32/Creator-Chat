@@ -124,6 +124,25 @@ class TextSanitizerTests(unittest.TestCase):
             "Perfect.\nBuyer: agencies and coaches",
         )
 
+    def test_repairs_merged_common_word_pairs(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Are you asking because you want to decide whatyou believe?"),
+            "Are you asking because you want to decide what you believe?",
+        )
+
+    def test_streaming_sanitizer_inserts_missing_boundary_space(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer(tail_size=12)
+        parts = [
+            sanitizer.feed("Are you asking because you want to decide what"),
+            sanitizer.feed("you believe, or because you're"),
+            sanitizer.feed(" wrestling with something right now?"),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "Are you asking because you want to decide what you believe, or because you're wrestling with something right now?",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

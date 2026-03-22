@@ -286,7 +286,9 @@
 }
 
 .user-settings-footer {
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 172px;
   justify-content: end;
   align-items: stretch;
   gap: 12px;
@@ -352,7 +354,8 @@
   }
 
   .user-settings-footer {
-    flex-direction: column-reverse;
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
   }
 
   .user-settings-footer .secondary-button,

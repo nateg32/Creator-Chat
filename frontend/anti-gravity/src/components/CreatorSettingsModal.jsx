@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./CreatorSettingsModal.css";
 import { resizeImage } from "../utils/image";
 
@@ -23,8 +23,6 @@ export function CreatorSettingsModal({
   searchMode = "hybrid",
   onUpdateSearchMode,
 }) {
-  if (!isOpen) return null;
-
   const [localCreatorColor, setLocalCreatorColor] = useState(
     visualConfig?.creatorNameColor || "#4285F4"
   );
@@ -32,36 +30,76 @@ export function CreatorSettingsModal({
     visualConfig?.userNameColor || "#3C4043"
   );
   const [localSearchMode, setLocalSearchMode] = useState(searchMode);
+  const [localAvatarUrl, setLocalAvatarUrl] = useState(creatorAvatarUrl || "");
+  const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
 
-  const handleColorChange = async (type, color) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    setLocalCreatorColor(visualConfig?.creatorNameColor || "#4285F4");
+    setLocalUserColor(visualConfig?.userNameColor || "#3C4043");
+    setLocalSearchMode(searchMode || "hybrid");
+    setLocalAvatarUrl(creatorAvatarUrl || "");
+    setSaving(false);
+  }, [isOpen, visualConfig, searchMode, creatorAvatarUrl]);
+
+  if (!isOpen) return null;
+
+  const handleColorChange = (type, color) => {
     if (type === "creator") {
       setLocalCreatorColor(color);
-      await onUpdateVisualConfig({ creatorNameColor: color });
       return;
     }
 
     setLocalUserColor(color);
-    await onUpdateVisualConfig({ userNameColor: color });
   };
 
-  const handleSearchModeChange = async (mode) => {
+  const handleSearchModeChange = (mode) => {
     setLocalSearchMode(mode);
-    if (onUpdateSearchMode) {
-      await onUpdateSearchMode(mode);
-    }
   };
 
   const handleAvatarUpload = async (event) => {
     if (event.target.files && event.target.files[0]) {
       try {
         const base64 = await resizeImage(event.target.files[0]);
-        await onUpdateCreatorAvatar(base64);
+        setLocalAvatarUrl(base64);
       } catch (err) {
         console.error("Avatar upload failed:", err);
         alert("Failed to upload image");
       }
       event.target.value = "";
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const nextVisualConfig = {
+        creatorNameColor: localCreatorColor,
+        userNameColor: localUserColor,
+      };
+
+      if (
+        nextVisualConfig.creatorNameColor !== (visualConfig?.creatorNameColor || "#4285F4") ||
+        nextVisualConfig.userNameColor !== (visualConfig?.userNameColor || "#3C4043")
+      ) {
+        await onUpdateVisualConfig(nextVisualConfig);
+      }
+
+      if ((searchMode || "hybrid") !== localSearchMode && onUpdateSearchMode) {
+        await onUpdateSearchMode(localSearchMode);
+      }
+
+      if ((creatorAvatarUrl || "") !== localAvatarUrl) {
+        await onUpdateCreatorAvatar(localAvatarUrl || "");
+      }
+
+      onClose();
+    } catch (err) {
+      console.error("Failed to save creator settings:", err);
+      alert(`Failed to save: ${err.message}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -76,8 +114,9 @@ export function CreatorSettingsModal({
       >
         <div className="creator-settings-header">
           <div>
-            <div className="creator-settings-kicker">Appearance</div>
-            <h3 id="creator-settings-title">{creatorName} Settings</h3>
+            <div className="creator-settings-kicker">Personalization</div>
+            <h2 id="creator-settings-title">Creator Settings</h2>
+            <p>Tune creator appearance and retrieval behavior.</p>
           </div>
           <button type="button" className="creator-settings-close" onClick={onClose} aria-label="Close settings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -89,34 +128,76 @@ export function CreatorSettingsModal({
 
         <div className="creator-settings-scroll">
           <section className="creator-settings-section">
-            <div className="creator-settings-section-kicker">Photo</div>
-            <div className="creator-avatar-row">
-              <div className="creator-avatar">
-                {creatorAvatarUrl ? (
-                  <img src={creatorAvatarUrl} alt="Creator" />
-                ) : (
-                  <div className="creator-avatar-placeholder">{creatorName[0]}</div>
-                )}
+            <div className="creator-settings-section-head">
+              <div className="creator-settings-section-kicker">Profile</div>
+              <h3>Profile</h3>
+            </div>
+
+            <div className="creator-settings-profile-grid">
+              <div className="creator-avatar-panel">
+                <button
+                  type="button"
+                  className="creator-avatar-button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Upload creator photo"
+                >
+                  {localAvatarUrl ? (
+                    <img src={localAvatarUrl} alt="Creator" />
+                  ) : (
+                    <div className="creator-avatar-placeholder">
+                      {(creatorName || "C").trim().charAt(0).toUpperCase() || "C"}
+                    </div>
+                  )}
+                </button>
+
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  style={{ display: "none" }}
+                  accept="image/*"
+                  onChange={handleAvatarUpload}
+                />
+
+                <div className="creator-avatar-actions">
+                  <button
+                    type="button"
+                    className="creator-avatar-link"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    {localAvatarUrl ? "Change photo" : "Add photo"}
+                  </button>
+                  {localAvatarUrl ? (
+                    <button
+                      type="button"
+                      className="creator-avatar-link creator-avatar-link-danger"
+                      onClick={() => setLocalAvatarUrl("")}
+                    >
+                      Remove
+                    </button>
+                  ) : (
+                    <div className="creator-avatar-note">Optional</div>
+                  )}
+                </div>
               </div>
-              <button
-                type="button"
-                className="creator-settings-pill"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                Change Photo
-              </button>
-              <input
-                type="file"
-                ref={fileInputRef}
-                style={{ display: "none" }}
-                accept="image/*"
-                onChange={handleAvatarUpload}
-              />
+
+              <div className="creator-settings-form">
+                <label htmlFor="creator-name-input">Creator</label>
+                <input
+                  id="creator-name-input"
+                  type="text"
+                  value={creatorName || ""}
+                  readOnly
+                />
+              </div>
             </div>
           </section>
 
           <section className="creator-settings-section">
-            <div className="creator-settings-section-kicker">Search</div>
+            <div className="creator-settings-section-head">
+              <div className="creator-settings-section-kicker">Search</div>
+              <h3>Retrieval</h3>
+            </div>
+
             <div className="creator-mode-list">
               <button
                 type="button"
@@ -149,7 +230,11 @@ export function CreatorSettingsModal({
           </section>
 
           <section className="creator-settings-section">
-            <div className="creator-settings-section-kicker">Colours</div>
+            <div className="creator-settings-section-head">
+              <div className="creator-settings-section-kicker">Appearance</div>
+              <h3>Colours</h3>
+            </div>
+
             <div className="creator-color-group">
               <div className="creator-color-label">Creator</div>
               <div className="creator-color-row">
@@ -185,8 +270,11 @@ export function CreatorSettingsModal({
         </div>
 
         <div className="creator-settings-footer">
-          <button type="button" className="primary-button" onClick={onClose}>
-            Done
+          <button type="button" className="secondary-button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button type="button" className="primary-button" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving..." : "Save Settings"}
           </button>
         </div>
       </div>

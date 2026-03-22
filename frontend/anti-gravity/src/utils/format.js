@@ -48,10 +48,21 @@ function restoreSpans(text, protectedSpans) {
 const splitHeadRe = /(^|[\n([{"'])([A-Za-z])\s+([a-z]{3,})(?=\b)/gm;
 const splitMiddleRe = /\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)/gi;
 const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
+const mergedCommonTokenRe = /\b[A-Za-z]{4,24}\b/g;
 const commonShortWords = new Set([
     "a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
     "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
     "for", "and", "but", "not", "the", "you", "your",
+]);
+const mergeableCommonWords = new Set([
+    ...commonShortWords,
+    "are", "been", "before", "being", "because", "between", "can", "could", "did",
+    "does", "every", "from", "have", "here", "how", "into", "just", "more", "much",
+    "must", "never", "now", "onto", "only", "over", "right", "should", "since",
+    "still", "than", "that", "their", "them", "then", "there", "these", "they",
+    "this", "those", "through", "under", "until", "very", "was", "were", "what",
+    "when", "where", "which", "while", "who", "why", "will", "with", "without",
+    "would",
 ]);
 
 function repairSplitWordFragments(text) {
@@ -70,6 +81,23 @@ function repairSplitWordFragments(text) {
     }
 }
 
+function repairMergedCommonWordPairs(text) {
+    return text.replace(mergedCommonTokenRe, (token) => {
+        const lower = token.toLowerCase();
+        if (mergeableCommonWords.has(lower)) return token;
+
+        for (let index = 2; index < token.length - 1; index += 1) {
+            const left = lower.slice(0, index);
+            const right = lower.slice(index);
+            if (mergeableCommonWords.has(left) && mergeableCommonWords.has(right)) {
+                return `${token.slice(0, index)} ${token.slice(index)}`;
+            }
+        }
+
+        return token;
+    });
+}
+
 export function repairDisplaySpacing(text) {
     if (!text) return text;
 
@@ -84,7 +112,7 @@ export function repairDisplaySpacing(text) {
         .replace(/[ \t]+([,.;:!?])/g, '$1')
         .replace(/[ \t]{2,}/g, ' ');
 
-    return restoreSpans(repairSplitWordFragments(repaired), protectedSpans);
+    return restoreSpans(repairMergedCommonWordPairs(repairSplitWordFragments(repaired)), protectedSpans);
 }
 
 /**

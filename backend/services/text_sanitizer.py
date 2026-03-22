@@ -35,10 +35,22 @@ SPLIT_MIDDLE_RE = re.compile(
     re.IGNORECASE,
 )
 SPLIT_TAIL_RE = re.compile(r"\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b", re.IGNORECASE)
+TRAILING_ALPHA_RE = re.compile(r"([A-Za-z]+)$")
+LEADING_ALPHA_RE = re.compile(r"^([A-Za-z]+)")
+MERGED_COMMON_TOKEN_RE = re.compile(r"\b[A-Za-z]{4,24}\b")
 COMMON_SHORT_WORDS = {
     "a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
     "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
     "for", "and", "but", "not", "the", "you", "your",
+}
+MERGEABLE_COMMON_WORDS = COMMON_SHORT_WORDS | {
+    "are", "been", "before", "being", "because", "between", "can", "could", "did",
+    "does", "every", "from", "have", "here", "how", "into", "just", "more", "much",
+    "must", "never", "now", "onto", "only", "over", "right", "should", "since",
+    "still", "than", "that", "their", "them", "then", "there", "these", "they",
+    "this", "those", "through", "under", "until", "very", "was", "were", "what",
+    "when", "where", "which", "while", "who", "why", "will", "with", "without",
+    "would",
 }
 
 
@@ -85,6 +97,56 @@ def _repair_split_word_fragments(text: str) -> str:
     return repaired
 
 
+def _repair_merged_common_word_pairs(text: str) -> str:
+    def _split_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        lower = token.lower()
+        if lower in MERGEABLE_COMMON_WORDS:
+            return token
+
+        for index in range(2, len(token) - 1):
+            left = lower[:index]
+            right = lower[index:]
+            if left in MERGEABLE_COMMON_WORDS and right in MERGEABLE_COMMON_WORDS:
+                return f"{token[:index]} {token[index:]}"
+        return token
+
+    return MERGED_COMMON_TOKEN_RE.sub(_split_token, text)
+
+
+def _should_insert_boundary_space(left: str, right: str) -> bool:
+    if not left or not right or left[-1].isspace() or right[0].isspace():
+        return False
+    if not left[-1].isalnum() or not right[0].isalnum():
+        return False
+
+    left_match = TRAILING_ALPHA_RE.search(left)
+    right_match = LEADING_ALPHA_RE.search(right)
+    if not left_match or not right_match:
+        return False
+
+    left_word = left_match.group(1)
+    right_word = right_match.group(1)
+    if not left_word or not right_word:
+        return False
+
+    if left_word.lower() in MERGEABLE_COMMON_WORDS and right_word.lower() in MERGEABLE_COMMON_WORDS:
+        return True
+    if left_word[-1].islower() and right_word[0].isupper():
+        return True
+    return False
+
+
+def append_stream_text(existing: str, chunk: str) -> str:
+    if not existing:
+        return chunk
+    if not chunk:
+        return existing
+    if _should_insert_boundary_space(existing, chunk):
+        return f"{existing} {chunk}"
+    return existing + chunk
+
+
 def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned, protected = _protect_spans(text)
     for token in MOJIBAKE_DASHES:
@@ -104,6 +166,7 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = NUMBER_TO_WORD_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = DOMAIN_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = _repair_split_word_fragments(cleaned)
+    cleaned = _repair_merged_common_word_pairs(cleaned)
     cleaned = MULTISPACE_RE.sub(" ", cleaned)
 
     if trim_line_edges:
@@ -151,7 +214,7 @@ class StreamingTextSanitizer:
         if not text:
             return ""
 
-        self._buffer += text
+        self._buffer = append_stream_text(self._buffer, text)
         emit_upto = self._find_emit_boundary()
         if emit_upto <= 0:
             return ""
