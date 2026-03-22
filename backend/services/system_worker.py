@@ -21,6 +21,14 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from backend.db import db
+from backend.settings import settings
+from backend.services.corpus_state import (
+    compute_item_ingest_checksum,
+    delete_document_chunks_and_embeddings,
+    find_existing_document,
+    get_document_ingest_checksum,
+    refresh_creator_corpus_state,
+)
 from backend.services.search_persistence import (
     persist_search_items,
     merge_platform_statuses_with_checkpoints,
@@ -298,6 +306,13 @@ def handle_transcript(job_id: str, payload: dict):
 
 def handle_ingest(job_id: str, payload: dict):
     from backend.ingest import chunk_text_structured, embed_chunks
+    from backend.apify_service import extract_content_id, extract_title_from_metadata
+
+    try:
+        from backend.lib.transcription import transcribe_video
+    except ImportError:
+        def transcribe_video(url: str):
+            return None
 
     update_job_progress(job_id, 10, "processing", "Starting ingestion...")
     decisions = payload.get("decisions", [])
@@ -322,39 +337,170 @@ def handle_ingest(job_id: str, payload: dict):
     items = db.execute_query(fetch_query, (approved_item_ids, search_id))
 
     total_items = len(items)
+    if total_items == 0:
+        db.execute_update("UPDATE creators SET last_approved_version = config_version WHERE id = %s", (creator_id,))
+        mark_job_completed(job_id, "No approved items found to ingest.")
+        return
+
     ingested_ok = 0
     failed_count = 0
-    all_chunk_ids = []
-    approved_item_ids_to_mark = []
+    changed_item_count = 0
+    skipped_item_count = 0
+
     for idx, item in enumerate(items):
         item_id = item["id"]
         current_percent = 10 + int((idx / total_items) * 80)
         update_job_progress(job_id, current_percent, "processing", f"Ingesting item {idx+1}/{total_items}...")
 
         try:
-            text_content = _compose_ingest_text(item.get("caption"), item.get("transcript"))
+            source_url = item["source_url"]
+            meta = item.get("metadata") or {}
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+
+            platform = meta.get("platform", "unknown")
+            if not platform or platform == "unknown":
+                if "instagram.com" in source_url:
+                    platform = "instagram"
+                elif "youtube.com" in source_url or "youtu.be" in source_url:
+                    platform = "youtube"
+                elif "twitter.com" in source_url or "x.com" in source_url:
+                    platform = "twitter"
+                elif "tiktok.com" in source_url:
+                    platform = "tiktok"
+                elif "linkedin.com" in source_url:
+                    platform = "linkedin"
+                elif "facebook.com" in source_url:
+                    platform = "facebook"
+                elif "reddit.com" in source_url:
+                    platform = "reddit"
+                else:
+                    platform = "unknown"
+
+            content_id = meta.get("content_id") or extract_content_id(source_url, platform) or f"item_{item_id}"
+            title = meta.get("title") or extract_title_from_metadata(meta, platform, source_url) or source_url or "Untitled"
+            source_id = str(content_id)
+            transcript = item.get("transcript") or ""
+            transcript_status = item.get("transcript_status") or "missing"
+            text_content = _compose_ingest_text(item.get("caption"), transcript)
+
+            existing_doc = find_existing_document(
+                creator_id,
+                source=str(platform),
+                source_id=source_id,
+                source_url=source_url,
+            )
+
+            current_checksum = ""
+            if text_content:
+                current_checksum = compute_item_ingest_checksum(
+                    platform=str(platform),
+                    source_url=source_url,
+                    source_id=source_id,
+                    title=title,
+                    text_content=text_content,
+                    transcript_status=transcript_status,
+                    published_at=item.get("published_at"),
+                )
+
+            if existing_doc and current_checksum and get_document_ingest_checksum(existing_doc.get("metadata")) == current_checksum:
+                db.execute_update(
+                    "UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = %s::uuid",
+                    (str(item_id),),
+                )
+                skipped_item_count += 1
+                ingested_ok += 1
+                continue
+
+            if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
+                video_url = meta.get("video_url") or meta.get("videoUrl") or meta.get("video") or ""
+                if not video_url:
+                    vid = meta.get("videoId") or meta.get("id")
+                    if platform == "youtube" and vid:
+                        video_url = f"https://www.youtube.com/watch?v={vid}"
+                if not video_url:
+                    video_url = source_url or ""
+
+                if video_url:
+                    try:
+                        transcript = transcribe_video(video_url)
+                        if transcript:
+                            transcript_status = "present"
+                            db.execute_update(
+                                """
+                                UPDATE scrape_items
+                                SET transcript = %s, transcript_status = 'present'
+                                WHERE id = %s::uuid
+                                """,
+                                (str(transcript), str(item_id)),
+                            )
+                        else:
+                            transcript_status = "error"
+                    except Exception as e:
+                        logger.warning(f"Transcription failed for item {item_id}: {e}")
+                        transcript_status = "error"
+
+            text_content = _compose_ingest_text(item.get("caption"), transcript)
             if not text_content:
                 failed_count += 1
                 continue
 
-            source_url = item["source_url"]
-            meta = item.get("metadata") or {}
-            platform = meta.get("platform", "unknown")
-            content_id = meta.get("content_id", f"item_{item_id}")
-            title = meta.get("title", source_url)
+            ingest_checksum = compute_item_ingest_checksum(
+                platform=str(platform),
+                source_url=source_url,
+                source_id=source_id,
+                title=title,
+                text_content=text_content,
+                transcript_status=transcript_status,
+                published_at=item.get("published_at"),
+            )
 
-            doc_metadata = {"type": "content", "platform": platform, "source_url": source_url, "content_id": content_id}
+            if existing_doc and get_document_ingest_checksum(existing_doc.get("metadata")) == ingest_checksum:
+                db.execute_update(
+                    "UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = %s::uuid",
+                    (str(item_id),),
+                )
+                skipped_item_count += 1
+                ingested_ok += 1
+                continue
+
+            doc_metadata = {
+                "type": "content",
+                "platform": platform,
+                "content_type": item.get("content_type", "unknown"),
+                "creator_handle": item.get("creator_handle"),
+                "source_url": source_url,
+                "content_id": content_id,
+                "canonical_url": source_url,
+                "search_run_id": search_id,
+                "transcript_status": transcript_status,
+                "published_at": item.get("published_at"),
+                "ingest_checksum": ingest_checksum,
+            }
+            for key, value in meta.items():
+                if key not in ("platform", "content_id", "canonical_url", "title"):
+                    doc_metadata[key] = value
 
             doc_query = """
                 INSERT INTO documents (creator_id, title, content, source, source_id, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (source, source_id) DO UPDATE SET
-                    creator_id = EXCLUDED.creator_id, title = EXCLUDED.title, content = EXCLUDED.content
+                    creator_id = EXCLUDED.creator_id,
+                    title = EXCLUDED.title,
+                    content = EXCLUDED.content,
+                    metadata = EXCLUDED.metadata
                 RETURNING id
             """
+
+            if existing_doc:
+                delete_document_chunks_and_embeddings([int(existing_doc["id"])])
+
             document_id = db.execute_insert(
                 doc_query,
-                (creator_id, title, text_content, platform, str(content_id), json.dumps(doc_metadata))
+                (creator_id, title, text_content, str(platform), source_id, json.dumps(doc_metadata, default=str))
             )
 
             db.execute_update(
@@ -366,30 +512,63 @@ def handle_ingest(job_id: str, payload: dict):
             chunk_ids = []
             for chunk in chunks:
                 c_id = db.execute_insert(
-                    "INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text) VALUES (%s, %s, %s, %s) ON CONFLICT (document_id, chunk_index) DO NOTHING RETURNING id",
-                    (creator_id, document_id, chunk["index"], chunk["text"])
+                    """
+                    INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
+                    VALUES (%s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (document_id, chunk_index) DO UPDATE SET
+                        chunk_text = EXCLUDED.chunk_text,
+                        metadata = EXCLUDED.metadata,
+                        creator_id = EXCLUDED.creator_id
+                    RETURNING id
+                    """,
+                    (
+                        creator_id,
+                        document_id,
+                        chunk["index"],
+                        chunk["text"],
+                        json.dumps(
+                            {
+                                "platform": platform,
+                                "type": item.get("content_type", "unknown"),
+                                "creator_handle": item.get("creator_handle"),
+                                "source_url": source_url,
+                                "content_id": content_id,
+                                "canonical_url": source_url,
+                                "title": title,
+                                "search_run_id": search_id,
+                                "transcript_status": transcript_status,
+                                "published_at": item.get("published_at"),
+                                "source_ref": {
+                                    "platform": platform,
+                                    "content_id": content_id,
+                                    "canonical_url": source_url,
+                                    "title": title,
+                                    "published_at": item.get("published_at"),
+                                    "content_type": item.get("content_type", "unknown"),
+                                },
+                            },
+                            default=str,
+                        ),
+                    ),
                 )
                 if c_id:
                     chunk_ids.append(c_id)
 
-            all_chunk_ids.extend(chunk_ids)
-            approved_item_ids_to_mark.append(str(item_id))
+            if chunk_ids:
+                batch_size = max(1, int(os.getenv("EMBED_BATCH_SIZE", "128")))
+                for start in range(0, len(chunk_ids), batch_size):
+                    embed_chunks(chunk_ids[start:start + batch_size])
+
+            db.execute_update(
+                "UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = %s::uuid",
+                (str(item_id),),
+            )
+
             ingested_ok += 1
+            changed_item_count += 1
         except Exception as e:
             failed_count += 1
             logger.error(f"Error ingesting item {item_id}: {e}")
-
-    if all_chunk_ids:
-        update_job_progress(job_id, 90, "processing", f"Embedding {len(all_chunk_ids)} chunks...")
-        batch_size = max(1, int(os.getenv("EMBED_BATCH_SIZE", "128")))
-        for start in range(0, len(all_chunk_ids), batch_size):
-            embed_chunks(all_chunk_ids[start:start + batch_size])
-
-    if approved_item_ids_to_mark:
-        db.execute_update(
-            "UPDATE scrape_items SET review_status = 'approved', status = 'completed' WHERE id = ANY(%s::uuid[])",
-            (approved_item_ids_to_mark,),
-        )
 
     if total_items > 0 and ingested_ok == 0:
         mark_job_failed(job_id, f"No items ingested successfully. failed={failed_count}/{total_items}")
@@ -397,21 +576,25 @@ def handle_ingest(job_id: str, payload: dict):
 
     update_job_progress(job_id, 95, "processing", "Updating creator state...")
     db.execute_update("UPDATE creators SET last_approved_version = config_version WHERE id = %s", (creator_id,))
+    refresh_creator_corpus_state(creator_id, sync_fingerprint=(changed_item_count == 0))
 
-    # Queue fingerprint rebuild so Persona step has analyzed content after ingest.
-    try:
-        db.execute_insert(
-            """
-            INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
-            VALUES (%s, 'FINGERPRINT', %s::jsonb, 'queued', 0, 'Fingerprint job enqueued after ingest')
-            RETURNING id
-            """,
-            (creator_id, json.dumps({"creator_id": creator_id, "refresh": False, "mode": "incremental"}))
-        )
-    except Exception as e:
-        logger.warning(f"Could not enqueue fingerprint job after ingest: {e}")
+    if changed_item_count > 0:
+        try:
+            db.execute_insert(
+                """
+                INSERT INTO system_jobs (creator_id, job_type, payload, status, progress_percent, message)
+                VALUES (%s, 'FINGERPRINT', %s::jsonb, 'queued', 0, 'Fingerprint job enqueued after ingest')
+                RETURNING id
+                """,
+                (creator_id, json.dumps({"creator_id": creator_id, "refresh": False, "mode": "incremental"}))
+            )
+        except Exception as e:
+            logger.warning(f"Could not enqueue fingerprint job after ingest: {e}")
 
-    mark_job_completed(job_id, f"Ingested {ingested_ok} items ({failed_count} failed)")
+    mark_job_completed(
+        job_id,
+        f"Ingested {ingested_ok} items ({changed_item_count} changed, {skipped_item_count} unchanged, {failed_count} failed)",
+    )
 
 
 def handle_fingerprint(job_id: str, payload: dict):

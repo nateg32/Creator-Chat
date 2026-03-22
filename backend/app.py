@@ -57,6 +57,14 @@ from backend.services.text_sanitizer import StreamingTextSanitizer, strip_mid_se
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
+from backend.services.corpus_state import (
+    compute_item_ingest_checksum,
+    delete_document_corpus,
+    delete_document_chunks_and_embeddings,
+    find_existing_document,
+    get_document_ingest_checksum,
+    refresh_creator_corpus_state,
+)
 from backend.core.interaction_engine import RESPONSE_PRESETS
 
 logger = logging.getLogger(__name__)
@@ -477,6 +485,8 @@ async def startup():
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_status TEXT DEFAULT 'idle'")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_progress JSONB DEFAULT '{}'::jsonb")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS content_corpus_checksum TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_corpus_checksum TEXT")
     except Exception as e:
         print(f"[STARTUP] Migration warning: {e}")
 
@@ -3158,11 +3168,12 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
                 elif decision == "deny":
                     denied_item_ids.append(raw_id)
 
+        changed_existing_docs = False
+
         # Delete existing documents synchronously since it's fast
         if doc_ids_to_delete:
-            db.execute_update("DELETE FROM chunks WHERE document_id = ANY(%s)", (doc_ids_to_delete,))
-            db.execute_update("DELETE FROM documents WHERE id = ANY(%s)", (doc_ids_to_delete,))
-            # DB cascades will clean up creator_documents
+            delete_document_corpus(doc_ids_to_delete)
+            changed_existing_docs = True
         
         sid = request.search_id or request.scrape_id
         if denied_item_ids:
@@ -3179,17 +3190,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
                     "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
                     (creator_id,)
                 )
-            # If nothing to ingest but things were deleted, we might want to regenerate fingerprint
-            if doc_ids_to_delete:
-                job_id = db.execute_insert(
-                    """
-                    INSERT INTO system_jobs (creator_id, job_type, payload, message)
-                    VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Regenerating fingerprint after deletions')
-                    RETURNING id
-                    """,
-                    (creator_id, json.dumps({"creator_id": creator_id, "refresh": False, "mode": "incremental"}))
-                )
-                return {"job_id": job_id, "approved": len(confirmed_doc_ids)}
+                refresh_creator_corpus_state(creator_id, sync_fingerprint=True)
             return {"job_id": None, "approved": len(confirmed_doc_ids)}
 
         already_approved = db.execute_one(
@@ -3203,10 +3204,28 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             (approved_item_ids, sid)
         )
         already_approved_count = int((already_approved or {}).get("count", 0) or 0)
-        if already_approved_count == len(approved_item_ids) and not denied_item_ids and not doc_ids_to_delete:
+        pending_approved_item_ids = approved_item_ids
+        if already_approved_count:
+            rows = db.execute_query(
+                """
+                SELECT id
+                FROM scrape_items
+                WHERE id = ANY(%s::uuid[])
+                  AND scrape_run_id = %s
+                  AND COALESCE(review_status, 'pending_review') != 'approved'
+                """,
+                (approved_item_ids, sid),
+            )
+            pending_approved_item_ids = [str(row["id"]) for row in rows]
+
+        if not pending_approved_item_ids:
             db.execute_update(
                 "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
                 (creator_id,)
+            )
+            refresh_creator_corpus_state(
+                creator_id,
+                sync_fingerprint=bool(denied_item_ids or changed_existing_docs),
             )
             return {"job_id": None, "approved": len(approved_item_ids)}
         
@@ -3214,7 +3233,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
         job_payload = {
             "creator_id": creator_id,
             "search_id": sid,
-            "approved_item_ids": approved_item_ids
+            "approved_item_ids": pending_approved_item_ids
         }
         
         job_id = db.execute_insert(
@@ -3226,7 +3245,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             (creator_id, json.dumps(job_payload))
         )
             
-        return {"job_id": job_id, "approved": len(approved_item_ids)}
+        return {"job_id": job_id, "approved": len(pending_approved_item_ids)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3293,8 +3312,7 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
             # Delete existing documents if requested
             if doc_ids_to_delete:
                 yield f"data: {json.dumps({'stage': 'deleting', 'current': 0, 'total': len(doc_ids_to_delete), 'message': f'Deleting {len(doc_ids_to_delete)} existing documents...'})}\n\n"
-                db.execute_update("DELETE FROM chunks WHERE document_id = ANY(%s)", (doc_ids_to_delete,))
-                db.execute_update("DELETE FROM documents WHERE id = ANY(%s)", (doc_ids_to_delete,))
+                delete_document_corpus(doc_ids_to_delete)
             
             total_items = len(approved_item_ids)
             
@@ -3313,6 +3331,12 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                 db.execute_update(deny_query, (denied_item_ids, sid))
             
             if not approved_item_ids:
+                if denied_item_ids or doc_ids_to_delete:
+                    db.execute_update(
+                        "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
+                        (request.creator_id,)
+                    )
+                    refresh_creator_corpus_state(request.creator_id, sync_fingerprint=True)
                 yield f"data: {json.dumps({'stage': 'complete', 'current': 0, 'total': 0, 'message': 'No items to approve'})}\n\n"
                 return
             
@@ -3333,6 +3357,8 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
             
             creator_id = request.creator_id
             ingested = []
+            changed_item_count = 0
+            skipped_item_count = 0
             from backend.ingest import chunk_text_structured, embed_chunks
             try:
                 from backend.lib.transcription import transcribe_video
@@ -3348,51 +3374,6 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                 yield f"data: {json.dumps({'stage': 'processing', 'current': current_item, 'total': total_items, 'current_item': item_index, 'message': f'Processing item {current_item}/{total_items}...'})}\n\n"
                 
                 try:
-                    # Handle transcript fallback if needed
-                    transcript = item.get("transcript") or ""
-                    transcript_status = item.get("transcript_status", "missing")
-                    
-                    if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
-                        yield f"data: {json.dumps({'stage': 'transcribing', 'current': current_item, 'total': total_items, 'message': f'Transcribing item {current_item}...'})}\n\n"
-                        
-                        metadata = item.get("metadata") or {}
-                        if isinstance(metadata, str):
-                            metadata = json.loads(metadata) if metadata else {}
-                        
-                        video_url = metadata.get("video_url") or metadata.get("videoUrl") or metadata.get("video") or ""
-                        
-                        if not video_url:
-                            vid = metadata.get("videoId") or metadata.get("id")
-                            if metadata.get("platform") == "youtube" and vid:
-                                video_url = f"https://www.youtube.com/watch?v={vid}"
-                        
-                        if not video_url:
-                            video_url = item.get("source_url") or ""
-                        
-                        if video_url:
-                            try:
-                                transcript = transcribe_video(video_url)
-                                if transcript:
-                                    transcript_status = "present"
-                                    update_query = """
-                                        UPDATE scrape_items
-                                        SET transcript = %s, transcript_status = 'present'
-                                        WHERE id = %s::uuid
-                                    """
-                                    db.execute_update(update_query, (str(transcript), str(item_id)))
-                                else:
-                                    transcript_status = "error"
-                            except Exception as e:
-                                print(f"Transcription failed for {item_id}: {e}")
-                                transcript_status = "error"
-                    
-                    text_content = _compose_ingest_text(item.get("caption"), transcript)
-                    
-                    if not text_content:
-                        print(f"Skipping item {item_id}: no transcript, caption, or post text")
-                        continue
-                    
-                    # Extract source metadata
                     source_url = item["source_url"]
                     item_meta = item.get("metadata") or {}
                     if isinstance(item_meta, str):
@@ -3428,7 +3409,108 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                         content_id = extract_content_id(source_url, platform)
                     if not title_from_meta:
                         from backend.apify_service import extract_title_from_metadata
-                        title_from_meta = extract_title_from_metadata({}, platform, source_url)
+                        title_from_meta = extract_title_from_metadata(item_meta, platform, source_url)
+
+                    title = str(title_from_meta) if title_from_meta else "Untitled"
+                    source_id = str(content_id) if content_id else f"search_item_{item_id}"
+                    source_platform = str(platform) if platform else "unknown"
+
+                    transcript = item.get("transcript") or ""
+                    transcript_status = item.get("transcript_status", "missing")
+                    text_content = _compose_ingest_text(item.get("caption"), transcript)
+                    existing_doc = find_existing_document(
+                        creator_id,
+                        source=source_platform,
+                        source_id=str(source_id),
+                        source_url=source_url,
+                    )
+                    current_checksum = ""
+                    if text_content:
+                        current_checksum = compute_item_ingest_checksum(
+                            platform=source_platform,
+                            source_url=source_url,
+                            source_id=str(source_id),
+                            title=title,
+                            text_content=text_content,
+                            transcript_status=transcript_status,
+                            published_at=item.get("published_at"),
+                        )
+
+                    if existing_doc and current_checksum and get_document_ingest_checksum(existing_doc.get("metadata")) == current_checksum:
+                        db.execute_update(
+                            "UPDATE scrape_items SET review_status = 'approved' WHERE id = %s::uuid",
+                            (str(item_id),),
+                        )
+                        skipped_item_count += 1
+                        ingested.append(
+                            ApproveIngestItem(
+                                queue_id=str(item_id),
+                                document_id=existing_doc["id"],
+                                chunks_inserted=0
+                            )
+                        )
+                        continue
+
+                    if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
+                        yield f"data: {json.dumps({'stage': 'transcribing', 'current': current_item, 'total': total_items, 'message': f'Transcribing item {current_item}...'})}\n\n"
+
+                        video_url = item_meta.get("video_url") or item_meta.get("videoUrl") or item_meta.get("video") or ""
+
+                        if not video_url:
+                            vid = item_meta.get("videoId") or item_meta.get("id")
+                            if item_meta.get("platform") == "youtube" and vid:
+                                video_url = f"https://www.youtube.com/watch?v={vid}"
+
+                        if not video_url:
+                            video_url = item.get("source_url") or ""
+
+                        if video_url:
+                            try:
+                                transcript = transcribe_video(video_url)
+                                if transcript:
+                                    transcript_status = "present"
+                                    update_query = """
+                                        UPDATE scrape_items
+                                        SET transcript = %s, transcript_status = 'present'
+                                        WHERE id = %s::uuid
+                                    """
+                                    db.execute_update(update_query, (str(transcript), str(item_id)))
+                                else:
+                                    transcript_status = "error"
+                            except Exception as e:
+                                print(f"Transcription failed for {item_id}: {e}")
+                                transcript_status = "error"
+
+                    text_content = _compose_ingest_text(item.get("caption"), transcript)
+
+                    if not text_content:
+                        print(f"Skipping item {item_id}: no transcript, caption, or post text")
+                        continue
+
+                    ingest_checksum = compute_item_ingest_checksum(
+                        platform=source_platform,
+                        source_url=source_url,
+                        source_id=str(source_id),
+                        title=title,
+                        text_content=text_content,
+                        transcript_status=transcript_status,
+                        published_at=item.get("published_at"),
+                    )
+
+                    if existing_doc and get_document_ingest_checksum(existing_doc.get("metadata")) == ingest_checksum:
+                        db.execute_update(
+                            "UPDATE scrape_items SET review_status = 'approved' WHERE id = %s::uuid",
+                            (str(item_id),),
+                        )
+                        skipped_item_count += 1
+                        ingested.append(
+                            ApproveIngestItem(
+                                queue_id=str(item_id),
+                                document_id=existing_doc["id"],
+                                chunks_inserted=0
+                            )
+                        )
+                        continue
                     
                     # Create document
                     yield f"data: {json.dumps({'stage': 'creating_doc', 'current': current_item, 'total': total_items, 'message': f'Creating document for item {current_item}...'})}\n\n"
@@ -3444,6 +3526,7 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                         "search_run_id": sid,
                         "transcript_status": transcript_status,
                         "published_at": item.get("published_at"),
+                        "ingest_checksum": ingest_checksum,
                     }
                     for k, v in item_meta.items():
                         if k not in ("platform", "content_id", "canonical_url", "title"):
@@ -3459,10 +3542,9 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                             metadata = EXCLUDED.metadata
                         RETURNING id
                     """
-                    title = str(title_from_meta) if title_from_meta else "Untitled"
-                    source_id = str(content_id) if content_id else f"search_item_{item_id}"
-                    source_platform = str(platform) if platform else "unknown"
-                    
+                    if existing_doc:
+                        delete_document_chunks_and_embeddings([int(existing_doc["id"])])
+
                     document_id = db.execute_insert(
                         doc_query,
                         (creator_id, title, text_content, source_platform, str(source_id), json.dumps(doc_metadata, default=str))
@@ -3470,6 +3552,11 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                     
                     if not document_id:
                         continue
+
+                    db.execute_update(
+                        "INSERT INTO creator_documents (creator_id, document_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (creator_id, document_id)
+                    )
                     
                     # Chunk the document
                     yield f"data: {json.dumps({'stage': 'chunking', 'current': current_item, 'total': total_items, 'message': f'Breaking item {current_item} into chunks...'})}\n\n"
@@ -3548,11 +3635,7 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                         WHERE id = %s::uuid
                     """
                     db.execute_update(update_status_query, (str(item_id),))
-                    
-                    db.execute_update(
-                        "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
-                        (creator_id,)
-                    )
+                    changed_item_count += 1
                     
                     ingested.append(
                         ApproveIngestItem(
@@ -3574,20 +3657,29 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                     continue
             
             # Send completion event
+            if ingested or denied_item_ids or doc_ids_to_delete:
+                db.execute_update(
+                    "UPDATE creators SET last_approved_version = config_version WHERE id = %s",
+                    (creator_id,)
+                )
+                refresh_creator_corpus_state(creator_id, sync_fingerprint=(changed_item_count == 0))
+
             result = {
                 'stage': 'complete',
                 'current': total_items,
                 'total': total_items,
-                'message': f'Successfully ingested {len(ingested)} items!',
+                'message': f'Successfully processed {len(ingested)} items ({changed_item_count} changed, {skipped_item_count} unchanged)!',
                 'result': {
                     'approved': len(approved_item_ids),
+                    'changed': changed_item_count,
+                    'unchanged': skipped_item_count,
                     'ingested': [{'queue_id': i.queue_id, 'document_id': i.document_id, 'chunks_inserted': i.chunks_inserted} for i in ingested]
                 }
             }
-            if ingested or doc_ids_to_delete:
+            if changed_item_count > 0:
                 from backend.services.fingerprint_service import fingerprint_service
                 # Use asyncio.create_task since BackgroundTasks inside a generator won't execute after StreamingResponse
-                asyncio.create_task(fingerprint_service.generate_fingerprint_async(request.creator_id))
+                asyncio.create_task(fingerprint_service.generate_fingerprint_async(request.creator_id, mode="incremental"))
             
             yield f"data: {json.dumps(result)}\n\n"
             

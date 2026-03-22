@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 from backend.db import db
 from backend.personality_analyzer import PersonalityAnalyzer
 from backend.services.research_provider import GeminiResearchProvider
+from backend.services.corpus_state import compute_creator_corpus_checksum
 from backend.settings import settings
 from backend.rag import get_client
 
@@ -395,7 +396,8 @@ class FingerprintService:
             creator = db.execute_one(
                 """
                 SELECT name, handle, platform_configs, official_domains, research_summary,
-                       style_fingerprint, identity_fingerprint, soul_md, fingerprint_updated_at
+                       style_fingerprint, identity_fingerprint, soul_md, fingerprint_updated_at,
+                       content_corpus_checksum, fingerprint_corpus_checksum
                 FROM creators
                 WHERE id = %s
                 """,
@@ -411,6 +413,19 @@ class FingerprintService:
             existing_identity_fingerprint = _load_jsonish(creator.get("identity_fingerprint"))
             existing_soul_md = creator.get("soul_md") or ""
             fingerprint_updated_at = creator.get("fingerprint_updated_at")
+            content_corpus_checksum = str(creator.get("content_corpus_checksum") or "").strip()
+            fingerprint_corpus_checksum = str(creator.get("fingerprint_corpus_checksum") or "").strip()
+
+            if incremental_mode and existing_style_fingerprint and content_corpus_checksum and content_corpus_checksum == fingerprint_corpus_checksum:
+                logger.info(f"FingerprintService: Corpus checksum unchanged for {name} ({creator_id}); skipping incremental rebuild.")
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="idle",
+                    percent=100,
+                    stage="complete",
+                    message="Fingerprint already matches the current approved corpus.",
+                )
+                return
             
             # Gather all available links from config
             configs = creator.get("platform_configs") or {}
@@ -599,6 +614,7 @@ class FingerprintService:
                 soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
 
             # 7. Final DB Update
+            current_corpus_checksum = content_corpus_checksum or compute_creator_corpus_checksum(creator_id)
             db.execute_update(
                 """
                 UPDATE creators 
@@ -606,6 +622,8 @@ class FingerprintService:
                     style_fingerprint = %s,
                     research_summary = %s,
                     soul_md = %s,
+                    content_corpus_checksum = %s,
+                    fingerprint_corpus_checksum = %s,
                     fingerprint_status = 'idle',
                     fingerprint_progress = %s,
                     fingerprint_updated_at = %s
@@ -616,6 +634,8 @@ class FingerprintService:
                     json.dumps(voice_fingerprint),
                     json.dumps(research_summary),
                     soul_md,
+                    current_corpus_checksum,
+                    current_corpus_checksum,
                     json.dumps({
                         "status": "idle",
                         "percent": 100,
