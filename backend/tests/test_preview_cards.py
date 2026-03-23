@@ -110,6 +110,19 @@ class PreviewCardTests(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]['title'], 'Laziest Way to Make Money With AI')
 
+    def test_merge_falls_back_to_domain_when_generic_video_title_cannot_be_enriched(self):
+        original = preview_cards._lookup_remote_title
+        try:
+            preview_cards._lookup_remote_title = lambda url: ''
+            cards = preview_cards.merge_preview_cards(
+                [{'url': 'https://youtu.be/AAxiW9hMbb1', 'title': 'W9h M', 'thumbnail_url': ''}],
+                enrich_titles=True,
+            )
+        finally:
+            preview_cards._lookup_remote_title = original
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]['title'], 'youtube.com')
+
     def test_merge_deduplicates_youtube_hosts_by_video_id(self):
         merged = preview_cards.merge_preview_cards(
             [{'url': 'https://www.youtube.com/watch?v=abc123XYZ', 'title': 'Real Title', 'thumbnail_url': ''}],

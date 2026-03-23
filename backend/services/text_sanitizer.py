@@ -357,16 +357,49 @@ def strip_card_attachment_artifacts(text: str, cards) -> str:
             if line_key and line_key in normalized_ids:
                 drop_indexes.add(idx)
                 continue
+            stripped = (line or "").strip()
+            if (
+                line_key
+                and len(line_key) >= 4
+                and len(stripped) <= 24
+                and re.fullmatch(r"[A-Za-z0-9 ]+", stripped)
+                and any(ch.isdigit() for ch in stripped)
+                and any(line_key in normalized_id for normalized_id in normalized_ids)
+            ):
+                drop_indexes.add(idx)
+                continue
             if idx + 1 < len(lines):
                 pair_key = _alnum_lower(f"{line}{lines[idx + 1]}")
                 if pair_key and pair_key in normalized_ids:
                     drop_indexes.add(idx)
                     drop_indexes.add(idx + 1)
+                    continue
+                if (
+                    pair_key
+                    and len(pair_key) >= 4
+                    and any(pair_key in normalized_id for normalized_id in normalized_ids)
+                ):
+                    left = (line or "").strip()
+                    right = (lines[idx + 1] or "").strip()
+                    if (
+                        len(left) <= 24
+                        and len(right) <= 24
+                        and re.fullmatch(r"[A-Za-z0-9 ]*", left)
+                        and re.fullmatch(r"[A-Za-z0-9 ]*", right)
+                        and (any(ch.isdigit() for ch in left) or any(ch.isdigit() for ch in right))
+                    ):
+                        drop_indexes.add(idx)
+                        drop_indexes.add(idx + 1)
         if drop_indexes:
             cleaned = "\n".join(
                 line for idx, line in enumerate(lines)
                 if idx not in drop_indexes
             )
+
+    if len(cards or []) == 1:
+        cleaned = re.sub(r"(?i)\battached both below\b", "attached it below", cleaned)
+        cleaned = re.sub(r"(?i)\bhere they are, attached below\b", "Here it is, attached below", cleaned)
+        cleaned = re.sub(r"(?i)\bboth below\b", "it below", cleaned)
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)

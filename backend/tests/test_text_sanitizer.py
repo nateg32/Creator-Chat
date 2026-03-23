@@ -195,7 +195,7 @@ class TextSanitizerTests(unittest.TestCase):
                 "I attached both below.\nnp YUmc\nns RU",
                 [{"url": "https://youtu.be/npYUmcnsRU"}],
             ),
-            "I attached both below.",
+            "I attached it below.",
         )
 
     def test_strips_single_line_youtube_id_fragments_when_card_exists(self):
@@ -205,6 +205,24 @@ class TextSanitizerTests(unittest.TestCase):
                 [{"url": "https://youtu.be/AYfwX4bkY"}],
             ),
             "Iattached it below.",
+        )
+
+    def test_strips_partial_youtube_id_fragments_when_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "Here it is, attached below\nxi W9h M",
+                [{"url": "https://youtu.be/AAxiW9hMbb1"}],
+            ),
+            "Here it is, attached below",
+        )
+
+    def test_rewrites_plural_attachment_language_when_only_one_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "I attached both below.",
+                [{"url": "https://youtu.be/AAxiW9hMbb1"}],
+            ),
+            "I attached it below.",
         )
 
     def test_finalize_generated_text_accepts_generic_model_spacing_fix(self):

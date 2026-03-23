@@ -560,12 +560,18 @@ class InteractionEngine:
             return ""
 
         title, _ = linked_resources[0]
-        if not title:
-            return ""
+        if title:
+            return (
+                f'13. SINGLE RESOURCE LOCK. You have exactly one selected creator resource in context: "{title}". '
+                "If you recommend a resource, mention only that title and no other video, post, reel, or link. "
+                "Ignore any previously mentioned or remembered titles from chat history or memory. "
+                "Use singular language like 'it' or 'this one', never 'both' or 'these'. "
+                "The attached card must match the title you say."
+            )
         return (
-            f'13. SINGLE RESOURCE LOCK. You have exactly one selected creator resource in context: "{title}". '
-            "If you recommend a resource, mention only that title and no other video, post, reel, or link. "
-            "The attached card must match the title you say."
+            "13. SINGLE RESOURCE LOCK. You have exactly one selected creator resource in context. "
+            "Do not invent or guess any other title from chat history or memory. "
+            "If you share the resource, refer to it in the singular and let the attached card carry the link."
         )
 
     # ──────────────────────────────────────────────────────────
@@ -1233,7 +1239,6 @@ Output ONLY your response."""
             max_chars=context_limits["history_chars"],
         )
         resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
-        resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
 
         memory_section = ""
         if pre_fetched_memories:
@@ -1615,6 +1620,7 @@ Output only the response."""
             limit=context_limits["history_limit"],
             max_chars=context_limits["history_chars"],
         )
+        resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
 
         # Retrieve Persistent Memories
         memory_section = ""

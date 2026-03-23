@@ -173,7 +173,7 @@ def _normalize_title(value: str, url: str = '') -> str:
 
 def _looks_like_video_id_title(title: str, url: str = '') -> bool:
     cleaned = re.sub(r'[^A-Za-z0-9]+', '', (title or '')).strip()
-    if len(cleaned) < 8 or len(cleaned) > 16:
+    if len(cleaned) < 4 or len(cleaned) > 16:
         return False
     if not re.fullmatch(r'[A-Za-z0-9_-]+', cleaned):
         return False
@@ -243,12 +243,20 @@ def _enrich_card_title(card: Dict[str, str], prefer_remote: bool = False) -> Dic
     if not card:
         return card
     current_title = card.get('title', '')
-    if not prefer_remote and not _is_generic_title(current_title, card.get('url', '')):
+    is_generic_current = _is_generic_title(current_title, card.get('url', ''))
+    if not prefer_remote and not is_generic_current:
         return card
     remote_title = _normalize_title(_lookup_remote_title(card.get('url', '')), card.get('url', ''))
     if not remote_title:
-        return card
-    if _is_generic_title(remote_title, card.get('url', '')) and not _is_generic_title(current_title, card.get('url', '')):
+        if not is_generic_current:
+            return card
+        enriched = dict(card)
+        fallback_domain = (urlparse(card.get('url', '') or '').netloc or '').replace('www.', '')
+        if fallback_domain == 'youtu.be':
+            fallback_domain = 'youtube.com'
+        enriched['title'] = fallback_domain or 'External Resource'
+        return enriched
+    if _is_generic_title(remote_title, card.get('url', '')) and not is_generic_current:
         return card
     enriched = dict(card)
     enriched['title'] = remote_title[:140]
