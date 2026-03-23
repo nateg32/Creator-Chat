@@ -121,13 +121,16 @@
 
 .creator-avatar-button {
   position: relative;
-  width: 94px;
-  height: 94px;
-  border: 1px solid rgba(220, 227, 238, 0.95);
-  border-radius: 30px;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: 1px solid rgba(225, 231, 241, 0.95);
+  border-radius: 28px;
+  background: #f7f9fc;
   overflow: hidden;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
@@ -136,22 +139,25 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
   pointer-events: none;
 }
 
 .creator-avatar-button:hover {
   border-color: var(--border-strong);
-  background: linear-gradient(180deg, #ffffff 0%, #f5f8fc 100%);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+  background: #f9fbff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
 }
 
 .creator-avatar-button img {
+  display: block;
   width: 100%;
   height: 100%;
+  border-radius: inherit;
   object-fit: cover;
-  transform: scale(1.01);
+  object-position: center 22%;
+  transform: none;
 }
 
 .creator-avatar-placeholder {
