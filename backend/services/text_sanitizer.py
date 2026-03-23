@@ -45,6 +45,10 @@ SPLIT_SUFFIX_RE = re.compile(
     r"ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b",
     re.IGNORECASE,
 )
+SPLIT_SHORT_SUFFIX_RE = re.compile(
+    r"\b([A-Za-z]{2,4})\s+(ing|ings|ed|er|ers|est|ly)\b(?=\s+[A-Za-z]{2,})",
+    re.IGNORECASE,
+)
 MERGED_SINGLE_HEAD_RE = re.compile(r"\b([AI])([a-z]{3,})\b")
 MERGED_COMMON_HEAD_RE = re.compile(r"\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b")
 MERGED_TRAILING_COMMON_RE = re.compile(
@@ -135,6 +139,10 @@ def _repair_split_word_fragments(text: str) -> str:
             lambda m: f"{m.group(1)}{m.group(2)}"
             if m.group(1).lower() not in COMMON_SHORT_WORDS
             else m.group(0),
+            next_repaired,
+        )
+        next_repaired = SPLIT_SHORT_SUFFIX_RE.sub(
+            lambda m: f"{m.group(1)}{m.group(2)}",
             next_repaired,
         )
         if next_repaired == repaired:
@@ -403,7 +411,7 @@ def strip_card_attachment_artifacts(text: str, cards) -> str:
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
+    return strip_mid_sentence_hyphens(cleaned)
 
 
 def _has_suspicious_formatting(text: str) -> bool:
@@ -413,7 +421,13 @@ def _has_suspicious_formatting(text: str) -> bool:
         return True
     if CONTRACTION_BOUNDARY_RE.search(text):
         return True
-    if SPLIT_HEAD_RE.search(text) or SPLIT_MIDDLE_RE.search(text) or SPLIT_TAIL_RE.search(text) or SPLIT_SUFFIX_RE.search(text):
+    if (
+        SPLIT_HEAD_RE.search(text)
+        or SPLIT_MIDDLE_RE.search(text)
+        or SPLIT_TAIL_RE.search(text)
+        or SPLIT_SUFFIX_RE.search(text)
+        or SPLIT_SHORT_SUFFIX_RE.search(text)
+    ):
         return True
     if MERGED_SINGLE_HEAD_RE.search(text) or MERGED_COMMON_HEAD_RE.search(text) or MERGED_TRAILING_COMMON_RE.search(text):
         return True

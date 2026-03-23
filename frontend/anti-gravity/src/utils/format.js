@@ -50,6 +50,7 @@ const splitHeadRe = /(^|[\n([{"])([A-Za-z])\s+([a-z]{3,})(?=\b)/gm;
 const splitMiddleRe = /\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)/gi;
 const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
 const splitSuffixRe = /\b([A-Za-z]{3,})\s+(ify|ifies|ified|ifying|ise|ises|ised|ising|ize|izes|ized|izing|ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b/gi;
+const splitShortSuffixRe = /\b([A-Za-z]{2,4})\s+(ing|ings|ed|er|ers|est|ly)\b(?=\s+[A-Za-z]{2,})/gi;
 const mergedSingleHeadRe = /\b([AI])([a-z]{3,})\b/g;
 const mergedCommonHeadRe = /\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b/g;
 const contractionBoundaryRe = /((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)/gi;
@@ -88,6 +89,9 @@ function repairSplitWordFragments(text) {
             })
             .replace(splitSuffixRe, (match, word, tail) => {
                 return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
+            })
+            .replace(splitShortSuffixRe, (_, word, tail) => {
+                return `${word}${tail}`;
             });
         if (next === repaired) return repaired;
         repaired = next;

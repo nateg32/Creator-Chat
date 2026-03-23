@@ -161,6 +161,14 @@ class TextSanitizerTests(unittest.TestCase):
             "That justifies 2 to 10x pricing.",
         )
 
+    def test_repairs_short_split_suffix_fragment(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "It is the cleanest step by step blueprint and us ing simple automation tools."
+            ),
+            "It is the cleanest step by step blueprint and using simple automation tools.",
+        )
+
     def test_repairs_merged_single_letter_heads(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("I'm Dan Martell. Ibuild and Icoach founders."),
@@ -204,7 +212,7 @@ class TextSanitizerTests(unittest.TestCase):
                 "Iattached it below.\nAYfwX 4 bkY",
                 [{"url": "https://youtu.be/AYfwX4bkY"}],
             ),
-            "Iattached it below.",
+            "I attached it below.",
         )
 
     def test_strips_partial_youtube_id_fragments_when_card_exists(self):
