@@ -97,6 +97,19 @@ class PreviewCardTests(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]['title'], 'How to Start a Gym Business')
 
+    def test_merge_treats_video_id_like_titles_as_generic(self):
+        original = preview_cards._lookup_remote_title
+        try:
+            preview_cards._lookup_remote_title = lambda url: 'Laziest Way to Make Money With AI'
+            cards = preview_cards.merge_preview_cards(
+                [{'url': 'https://youtu.be/AYfwX4bkY', 'title': 'AYfw X4 bkY', 'thumbnail_url': ''}],
+                enrich_titles=True,
+            )
+        finally:
+            preview_cards._lookup_remote_title = original
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]['title'], 'Laziest Way to Make Money With AI')
+
     def test_merge_deduplicates_youtube_hosts_by_video_id(self):
         merged = preview_cards.merge_preview_cards(
             [{'url': 'https://www.youtube.com/watch?v=abc123XYZ', 'title': 'Real Title', 'thumbnail_url': ''}],

@@ -171,6 +171,18 @@ def _normalize_title(value: str, url: str = '') -> str:
     return cleaned
 
 
+def _looks_like_video_id_title(title: str, url: str = '') -> bool:
+    cleaned = re.sub(r'[^A-Za-z0-9]+', '', (title or '')).strip()
+    if len(cleaned) < 8 or len(cleaned) > 16:
+        return False
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', cleaned):
+        return False
+    if not re.search(r'\d', cleaned):
+        return False
+    lowered_url = (url or '').lower()
+    return any(host in lowered_url for host in ('youtube.com', 'youtu.be', 'tiktok.com'))
+
+
 def _extract_remote_title(body: str, url: str) -> str:
     if not body:
         return ''
@@ -248,6 +260,8 @@ def _is_generic_title(title: str, url: str = '') -> bool:
     if lowered in {'', 'external resource'} or lowered in GENERIC_TITLES or lowered in GENERIC_CARD_TITLES:
         return True
     if any(pattern.match(lowered) for pattern in GENERIC_TITLE_PATTERNS):
+        return True
+    if _looks_like_video_id_title(title, url):
         return True
     domain = _domain_key(url)
     return bool(domain and lowered == domain)

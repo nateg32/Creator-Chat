@@ -137,6 +137,15 @@ def _resource_title_quality(title: str, url: str = "") -> float:
     if len(words) <= 2:
         score -= 0.15
 
+    compact = re.sub(r"[^a-z0-9]+", "", lowered)
+    if (
+        8 <= len(compact) <= 16
+        and re.fullmatch(r"[a-z0-9]+", compact)
+        and re.search(r"\d", compact)
+        and any(host in (url or "").lower() for host in ("youtube.com", "youtu.be", "tiktok.com"))
+    ):
+        score -= 0.7
+
     if url:
         host = re.sub(r"^www\.", "", (re.sub(r"^https?://", "", url.lower())).split("/", 1)[0])
         if host and host in lowered and len(words) <= 4:
@@ -267,8 +276,10 @@ def _thumbnail_for_url(url: str) -> str:
 def _preview_card_from_resource(title: str, url: str) -> Optional[Dict[str, str]]:
     title = (title or "").strip()
     url = (url or "").strip()
-    if not title or not url:
+    if not url:
         return None
+    if _resource_title_quality(title, url) < 0.45:
+        title = ""
     return {
         "type": "preview_card",
         "title": title,
@@ -824,6 +835,21 @@ def _should_run_exact_text_match(
     ]):
         return True
     return len(q.split()) <= 6
+
+
+def _should_speculate_live_search(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    *,
+    explicit_link_request: bool = False,
+    context_needs_video: bool = False,
+    should_run_recommender: bool = False,
+) -> bool:
+    if needs_fresh_public_web_search(question, history):
+        return True
+    if (explicit_link_request or context_needs_video) and not should_run_recommender:
+        return True
+    return False
 
 
 def _should_block_on_web_fallback(
@@ -2552,6 +2578,29 @@ def calculate_gate_confidence(candidates: List[Dict[str, Any]], temperature: flo
         return conf
     except OverflowError:
         return 1.0 if gap > 0 else 0.0
+
+
+def _can_skip_llm_rerank(
+    candidates: List[Dict[str, Any]],
+    resource_intent: Dict[str, Any],
+    preferred_platforms: Optional[List[str]] = None,
+) -> bool:
+    if not candidates:
+        return False
+    top = candidates[0]
+    top_score = float(top.get("rerank_score", 0.0) or 0.0)
+    runner_up = float(candidates[1].get("rerank_score", 0.0) or 0.0) if len(candidates) > 1 else 0.0
+    gap = top_score - runner_up
+    title_quality = float(top.get("title_quality", _resource_title_quality(_candidate_title(top), _candidate_url(top))))
+    if preferred_platforms:
+        preferred = {platform.lower() for platform in preferred_platforms if platform}
+        if preferred and _candidate_platform(top) not in preferred:
+            return False
+    if resource_intent.get("needs_resource") and title_quality >= 0.65 and top_score >= 0.55 and gap >= 0.12:
+        return True
+    if resource_intent.get("request_type") in {"video", "resource"} and title_quality >= 0.6 and top_score >= 0.5 and gap >= 0.1:
+        return True
+    return False
         
 def recommend_one_content(
     user_id: int, 
@@ -2610,8 +2659,11 @@ def recommend_one_content(
     # (Incorporated into rerank_candidates)
     candidates = rerank_candidates(candidates, q_search, resource_intent, preferred_platforms=preferred_platforms)
     
-    # Stage 4: Helpfulness rerank (LLM)
-    candidates = llm_rerank(candidates, resource_intent)
+    # Stage 4: Helpfulness rerank (LLM) only when the heuristic top pick is ambiguous.
+    if _can_skip_llm_rerank(candidates, resource_intent, preferred_platforms=preferred_platforms):
+        logger.info("Recommender: Skipping LLM rerank for strong top candidate.")
+    else:
+        candidates = llm_rerank(candidates, resource_intent)
     
     # Stage 5: ONE-PICK decision policy (Confidence Gate)
     confidence = calculate_gate_confidence(candidates)
@@ -3450,6 +3502,37 @@ async def grounded_rag_stream(
         context_needs_video = _is_followup_resource_request(question, last_bot_msg)
         should_run_recommender = _should_run_resource_recommender(question, conversation_history, last_bot_msg)
         preferred_platforms = extract_requested_platforms(question, conversation_history)
+        search_mode = creator_row.get("search_mode") or "hybrid"
+        wants_link = explicit_link_request or context_needs_video
+        video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
+        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        web_query = build_live_search_query(
+            question,
+            conversation_history,
+            creator_name=creator_row.get("name") or creator_row.get("handle"),
+            preferred_platforms=preferred_platforms,
+            require_video=is_video_request,
+        )
+        intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
+        speculative_web_task = None
+        if search_mode == "hybrid" and _should_speculate_live_search(
+            question,
+            conversation_history,
+            explicit_link_request=explicit_link_request,
+            context_needs_video=context_needs_video,
+            should_run_recommender=should_run_recommender,
+        ):
+            from backend.services.research_provider import get_research_provider
+            rp = get_research_provider()
+            speculative_web_task = asyncio.create_task(
+                asyncio.to_thread(
+                    rp.search,
+                    web_query,
+                    creator_row,
+                    conversation_history=conversation_history,
+                    intent_metadata=intent_metadata,
+                )
+            )
 
         # Launch Search Tasks (Parallel)
         mems_task = interaction_engine.memory.search_with_embedding_async(
@@ -3503,14 +3586,7 @@ async def grounded_rag_stream(
         # --- Optimized Real-Time Web Search Fallback ---
         import time as _time
         _t_search_start = _time.time()
-        
-        search_mode = creator_row.get("search_mode") or "hybrid"
-        
-        wants_link = explicit_link_request or context_needs_video
-        
-        # Explicit video intent detection
-        video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
-        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+
         has_recommendable_ingested_resource = _has_recommendable_resource(
             rec_result,
             preferred_platforms=preferred_platforms,
@@ -3520,15 +3596,6 @@ async def grounded_rag_stream(
         # IN PARALLEL with sufficiency check to save ~1.5s
         needs_fallback = False
         web_results = []
-        web_query = build_live_search_query(
-            question,
-            conversation_history,
-            creator_name=creator_row.get("name") or creator_row.get("handle"),
-            preferred_platforms=preferred_platforms,
-            require_video=is_video_request,
-        )
-        intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
-        
         needs_fallback = _should_block_on_web_fallback(
             question,
             conversation_history,
@@ -3541,16 +3608,25 @@ async def grounded_rag_stream(
 
         if needs_fallback:
             logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
-            from backend.services.research_provider import get_research_provider
-            rp = get_research_provider()
-            web_results = await asyncio.to_thread(
-                rp.search,
-                web_query,
-                creator_row,
-                conversation_history=conversation_history,
-                intent_metadata=intent_metadata,
-            )
+            if speculative_web_task:
+                try:
+                    web_results = await speculative_web_task
+                except Exception as exc:
+                    logger.warning("[LATENCY] Speculative web search failed: %s", exc)
+                    web_results = []
+            if not web_results:
+                from backend.services.research_provider import get_research_provider
+                rp = get_research_provider()
+                web_results = await asyncio.to_thread(
+                    rp.search,
+                    web_query,
+                    creator_row,
+                    conversation_history=conversation_history,
+                    intent_metadata=intent_metadata,
+                )
         elif search_mode == "hybrid":
+            if speculative_web_task:
+                speculative_web_task.cancel()
             logger.info("[LATENCY] Skipping blocking web fallback for normal chat.")
             """
             if not support_set:

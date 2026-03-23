@@ -297,6 +297,10 @@ def _youtube_video_id(url: str) -> str:
     return ""
 
 
+def _alnum_lower(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", text or "").lower()
+
+
 def strip_card_attachment_artifacts(text: str, cards) -> str:
     """
     Remove raw link/video-id fragments from prose when the same resources already
@@ -306,6 +310,7 @@ def strip_card_attachment_artifacts(text: str, cards) -> str:
         return text
 
     cleaned = text
+    card_video_ids = []
     for card in cards or []:
         url = (card or {}).get("url") or ""
         if not url:
@@ -323,9 +328,30 @@ def strip_card_attachment_artifacts(text: str, cards) -> str:
 
         video_id = _youtube_video_id(url)
         if video_id and len(video_id) >= 8:
+            card_video_ids.append(video_id)
             spaced_pattern = r"\b" + r"\s*".join(map(re.escape, video_id)) + r"\b"
             cleaned = re.sub(spaced_pattern, "", cleaned)
             cleaned = re.sub(rf"\b{re.escape(video_id)}\b", "", cleaned)
+
+    if card_video_ids:
+        lines = cleaned.splitlines()
+        drop_indexes = set()
+        normalized_ids = {_alnum_lower(video_id) for video_id in card_video_ids if video_id}
+        for idx, line in enumerate(lines):
+            line_key = _alnum_lower(line)
+            if line_key and line_key in normalized_ids:
+                drop_indexes.add(idx)
+                continue
+            if idx + 1 < len(lines):
+                pair_key = _alnum_lower(f"{line}{lines[idx + 1]}")
+                if pair_key and pair_key in normalized_ids:
+                    drop_indexes.add(idx)
+                    drop_indexes.add(idx + 1)
+        if drop_indexes:
+            cleaned = "\n".join(
+                line for idx, line in enumerate(lines)
+                if idx not in drop_indexes
+            )
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
