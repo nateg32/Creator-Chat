@@ -74,6 +74,7 @@ MERGED_TOKEN_BLOCKLIST = {
     "island", "remand", "remands", "strand", "strands",
 }
 FINAL_CLEANUP_MAX_CHARS = 2400
+ALWAYS_MODEL_CLEANUP_MAX_CHARS = 1200
 FRAGMENT_LINE_RE = re.compile(r"(?m)^[A-Za-z]{1,4}(?:\s+[A-Za-z]{1,4}){1,3}$")
 GENERIC_SPLIT_FRAGMENT_RE = re.compile(r"\b([A-Za-z]{4,})\s+([a-z]{4,})\b")
 SUSPICIOUS_FRAGMENT_STARTS = (
@@ -400,7 +401,7 @@ def finalize_generated_text(text: str, allow_model_cleanup: bool = True) -> str:
         return base
 
     raw = (text or "").strip()
-    if raw == base and not _has_suspicious_formatting(base):
+    if raw == base and len(base) > ALWAYS_MODEL_CLEANUP_MAX_CHARS and not _has_suspicious_formatting(base):
         return base
 
     candidate = _run_final_spacing_cleanup_model(base)

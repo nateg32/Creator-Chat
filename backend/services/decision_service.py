@@ -13,6 +13,7 @@ class DecisionService:
 
     DEFAULT_POLICY = {
         "privacy_boundary": {
+            "general": "public_ok",
             "relationship": "private",
             "family": "private",
             "age": "public_ok",
@@ -99,6 +100,8 @@ class DecisionService:
             topic = "income_networth"
         elif any(word in q for word in ["politics", "religion", "religious", "god", "vote", "party", "republican", "democrat", "christian", "muslim", "jewish", "atheist", "agnostic", "nihilist", "pagan", "worldview", "belief", "beliefs"]):
             topic = "politics_religion"
+        elif any(word in q for word in ["book", "published", "publication", "write your book", "wrote your book", "your company", "your business", "your career", "your background", "your story"]):
+            topic = "general"
             
         # 2. Type Identification
         q_type = "domain_advice"
@@ -157,7 +160,8 @@ class DecisionService:
 
         # C. Personal Bio Questions
         if question_type == "personal_bio" or intent == "personal_bio_question":
-            boundary = policy.get("privacy_boundary", {}).get(topic, "private")
+            default_boundary = "public_ok" if topic == "general" else "private"
+            boundary = policy.get("privacy_boundary", {}).get(topic, default_boundary)
             
             if boundary == "private":
                 return "DECLINE_PRIVATE"
@@ -177,7 +181,10 @@ class DecisionService:
             
             if confidence == "MEDIUM":
                 return "ANSWER_WITH_QUALIFIER"
-                
+            
+            if topic == "general" and sufficiency >= 1:
+                return "ANSWER_WITH_QUALIFIER"
+
             return "DECLINE_PRIVATE"
 
         # D. Domain Advice / Knowledge (how to, strategy, etc.)

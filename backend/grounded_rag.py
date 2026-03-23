@@ -714,7 +714,9 @@ def needs_links(user_msg: str) -> bool:
     triggers = [
         "link", "source", "url", "proof", "prove it", "are you sure",
         "reference", "references", "cite", "citation", "give me the links",
-        "links for", "links to those", "links to both"
+        "links for", "links to those", "links to both",
+        "where do you talk about", "where do you cover", "where in your videos",
+        "where in your content", "have you talked about", "do you have a video on",
     ]
     return any(x in t for x in triggers)
 
@@ -770,6 +772,13 @@ def _should_run_resource_recommender(
         "what should i read",
         "where do i start",
         "where should i start",
+        "where do you talk about",
+        "where do you cover",
+        "where in your videos",
+        "where in your content",
+        "have you talked about",
+        "do you have a video on",
+        "do you have a post on",
         "watch first",
         "read first",
         "send me",
@@ -824,6 +833,8 @@ def _should_run_exact_text_match(
     if any(phrase in q for phrase in [
         "where did you say",
         "where did you talk",
+        "where do you talk",
+        "where do you cover",
         "what did you say",
         "did you mention",
         "exact words",
@@ -1031,7 +1042,8 @@ _INTENT_PATTERNS = [
         "your background", "your education", "where did you go to school", "your degree", "your story",
         "who are you really", "tell me about yourself", "personal question", "are you religious", "why are you not religious",
         "are you atheist", "are you agnostic", "are you a nihilist", "are you nihilist", "what do you believe",
-        "what are your beliefs", "your worldview", "are you pagan", "what religion are you"
+        "what are your beliefs", "your worldview", "are you pagan", "what religion are you",
+        "when did you write your book", "when was your book published", "when did you publish your book"
     ], "personal_bio_question"),
     ([
         "what's your name", "what is your name", "who are you", "what do you do", "your name",
@@ -1041,7 +1053,7 @@ _INTENT_PATTERNS = [
     (["start a business", "start business", "starting a business", "want to start", "want to start a business", "i want to start"], "start_business"),
     (["how do i", "how to", "how can i", "steps to", "guide to", "tutorial"], "how_to"),
     (["strategy", "strategies", "framework", "breakdown", "explain ", "deep dive"], "deep_strategy"),
-    (["link", "source", "which post", "which video", "show me", "send me", "url", "proof", "best video", "best reel", "best post", "video link", "post link", "whats the video", "that video", "that reel", "that post", "any other videos", "more videos", "other videos", "any more videos", "what else can i watch", "what else to watch", "any other video", "give me the links", "links for", "tools", "recommend"], "request_sources"),
+    (["link", "source", "which post", "which video", "show me", "send me", "url", "proof", "best video", "best reel", "best post", "video link", "post link", "whats the video", "that video", "that reel", "that post", "any other videos", "more videos", "other videos", "any more videos", "what else can i watch", "what else to watch", "any other video", "give me the links", "links for", "tools", "recommend", "where do you talk about", "where do you cover", "where in your videos", "where in your content", "have you talked about", "do you have a video on"], "request_sources"),
 ]
 
 
