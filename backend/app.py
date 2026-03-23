@@ -57,6 +57,7 @@ from backend.services.text_sanitizer import (
     StreamingTextSanitizer,
     append_stream_text,
     finalize_generated_text,
+    strip_card_attachment_artifacts,
     strip_mid_sentence_hyphens,
 )
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
@@ -2232,13 +2233,14 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 # After the stream is exhausted, we do the background work
                 streamed_answer = strip_mid_sentence_hyphens(raw_answer)
                 full_answer = finalize_generated_text(raw_answer)
-                if full_answer != streamed_answer:
-                    yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
                     else merge_preview_cards(_extract_stream_cards(full_answer), enrich_titles=True)
                 )
+                full_answer = finalize_generated_text(strip_card_attachment_artifacts(full_answer, cards))
+                if full_answer != streamed_answer:
+                    yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 if request.thread_id:
                     finalize_stream_interaction(
                         request.thread_id,
@@ -2510,6 +2512,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                  if explicit_cards
                  else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
              )
+             answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
              if cards:
                  assistant_metadata["cards"] = cards
 
@@ -2537,6 +2540,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             if explicit_cards
             else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
         )
+        answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
 
         return {
             "answer": answer_text,

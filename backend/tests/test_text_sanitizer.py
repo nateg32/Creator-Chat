@@ -179,6 +179,15 @@ class TextSanitizerTests(unittest.TestCase):
             "1 Offer. 1 customer type. 1 acquisition channel.",
         )
 
+    def test_strips_youtube_id_fragments_when_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "I attached both below.\nnp YUmc\nns RU",
+                [{"url": "https://youtu.be/npYUmcnsRU"}],
+            ),
+            "I attached both below.",
+        )
+
     def test_finalize_generated_text_accepts_generic_model_spacing_fix(self):
         original = text_sanitizer._run_final_spacing_cleanup_model
         text_sanitizer._run_final_spacing_cleanup_model = lambda text: "That feels conversational and natural."

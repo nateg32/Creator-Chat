@@ -2,6 +2,7 @@ import difflib
 import logging
 import re
 from typing import Dict, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 DASH_CHARS = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
 WORD_BREAK_DASH_CHARS = "-\u2010\u2011\u2012\u2212"
@@ -270,6 +271,57 @@ def _run_final_spacing_cleanup_model(text: str) -> Optional[str]:
     except Exception as exc:
         logger.warning("Final spacing cleanup model pass failed: %s", exc)
         return None
+
+
+def _youtube_video_id(url: str) -> str:
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    if "youtu.be" in host:
+        return (parsed.path or "").strip("/").split("/")[0]
+    if "youtube.com" in host:
+        query_id = parse_qs(parsed.query or "").get("v", [""])[0]
+        if query_id:
+            return query_id
+        path = (parsed.path or "").strip("/")
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0].lower() == "shorts":
+            return parts[1]
+    return ""
+
+
+def strip_card_attachment_artifacts(text: str, cards) -> str:
+    """
+    Remove raw link/video-id fragments from prose when the same resources already
+    exist as preview cards below the message.
+    """
+    if not text or not cards:
+        return text
+
+    cleaned = text
+    for card in cards or []:
+        url = (card or {}).get("url") or ""
+        if not url:
+            continue
+
+        exact_variants = {
+            url,
+            url.rstrip("/"),
+            url.replace("https://", ""),
+            url.replace("http://", ""),
+        }
+        for variant in exact_variants:
+            if variant:
+                cleaned = cleaned.replace(variant, "")
+
+        video_id = _youtube_video_id(url)
+        if video_id and len(video_id) >= 8:
+            spaced_pattern = r"\b" + r"\s*".join(map(re.escape, video_id)) + r"\b"
+            cleaned = re.sub(spaced_pattern, "", cleaned)
+            cleaned = re.sub(rf"\b{re.escape(video_id)}\b", "", cleaned)
+
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def finalize_generated_text(text: str, allow_model_cleanup: bool = True) -> str:
