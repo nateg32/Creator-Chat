@@ -173,6 +173,16 @@ class TextSanitizerTests(unittest.TestCase):
             "My first real business taught me a lot. You keep going.",
         )
 
+    def test_repairs_merged_trailing_common_words(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("What kind of businessare you trying to start?"),
+            "What kind of business are you trying to start?",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("A free trialwill just create support load."),
+            "A free trial will just create support load.",
+        )
+
     def test_inserts_missing_space_after_sentence_punctuation(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("1 Offer.1 customer type.1 acquisition channel."),

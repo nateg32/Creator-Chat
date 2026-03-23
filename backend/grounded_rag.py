@@ -863,6 +863,25 @@ def _should_speculate_live_search(
     return False
 
 
+def _wants_multiple_resources(question: str) -> bool:
+    q = (question or "").lower()
+    return any(token in q for token in [
+        "videos", "links", "resources", "posts", "reels", "clips", "sources",
+        "both", "few", "some", "couple", "list", "best ones", "top ",
+    ])
+
+
+def _should_lock_single_resource(
+    question: str,
+    rec_result: Optional[Dict[str, Any]],
+    preferred_platforms: Optional[List[str]] = None,
+) -> bool:
+    return (
+        not _wants_multiple_resources(question)
+        and _has_recommendable_resource(rec_result, preferred_platforms=preferred_platforms)
+    )
+
+
 def _should_block_on_web_fallback(
     question: str,
     history: Optional[List[Dict[str, str]]],
@@ -3047,13 +3066,20 @@ Message: {answer_text[:500]}"""
                 "confidence": 0.0,
                 "resource_intent": {"preferred_platforms": preferred_platforms},
             }
+        resource_locked = should_run_recommender and _should_lock_single_resource(
+            question,
+            rec_result,
+            preferred_platforms=preferred_platforms,
+        )
     
     # Synthesis (Compact Support Pack)
     if intent in ["greeting", "greeting_only", "small_talk"]:
         support_set = []
     else:
         support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3] if should_run_recommender else []
-        if not support_set:
+        if resource_locked:
+            support_set = support_set or []
+        elif not support_set:
             # Fallback to standard RAG if no recommendation
             q_emb = rec_result.get("q_emb")
             if not q_emb:
@@ -3064,8 +3090,10 @@ Message: {answer_text[:500]}"""
                     logger.error(f"Fallback embedding build failed: {e}")
                     q_emb = [0.0] * 1536
             support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
+        else:
+            support_set = merge_support_sets(support_set, retrieve_candidates(creator_id, rec_result.get("q_emb"), 3, enabled_platforms=enabled_platforms), limit=4)
 
-        if _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
+        if not resource_locked and _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
             exact_text_matches = retrieve_exact_text_matches(
                 creator_id,
                 question,
@@ -3580,11 +3608,19 @@ async def grounded_rag_stream(
             }
             mems, direct_support = await asyncio.gather(mems_task, direct_support_task)
 
+        resource_locked = should_run_recommender and _should_lock_single_resource(
+            question,
+            rec_result,
+            preferred_platforms=preferred_platforms,
+        )
         support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3] if should_run_recommender else []
-        support_set = merge_support_sets(support_set, direct_support, limit=4) if support_set else (direct_support or [])
+        if resource_locked:
+            support_set = support_set or []
+        else:
+            support_set = merge_support_sets(support_set, direct_support, limit=4) if support_set else (direct_support or [])
         if not support_set:
             support_set = await asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
-        if _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
+        if not resource_locked and _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
             exact_text_matches = await asyncio.to_thread(
                 retrieve_exact_text_matches,
                 creator_id,

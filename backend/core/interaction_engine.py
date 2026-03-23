@@ -536,6 +536,38 @@ class InteractionEngine:
             "history_chars": 120,
         }
 
+    def _resource_lock_instruction(self, rag_chunks: List[Dict[str, Any]], user_msg: str) -> str:
+        if not rag_chunks:
+            return ""
+        query = (user_msg or "").lower()
+        if any(token in query for token in ["videos", "links", "resources", "posts", "reels", "clips", "both", "few", "some", "couple", "list"]):
+            return ""
+
+        linked_resources = []
+        seen = set()
+        for chunk in rag_chunks:
+            url = chunk.get("url") or (chunk.get("source_ref") or {}).get("canonical_url") or ""
+            title = chunk.get("title") or (chunk.get("source_ref") or {}).get("title") or ""
+            if not url:
+                continue
+            key = (url.strip().lower(), title.strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            linked_resources.append((title.strip(), url.strip()))
+
+        if len(linked_resources) != 1:
+            return ""
+
+        title, _ = linked_resources[0]
+        if not title:
+            return ""
+        return (
+            f'13. SINGLE RESOURCE LOCK. You have exactly one selected creator resource in context: "{title}". '
+            "If you recommend a resource, mention only that title and no other video, post, reel, or link. "
+            "The attached card must match the title you say."
+        )
+
     # ──────────────────────────────────────────────────────────
     # STEP 1 — DETERMINISTIC INTENT CLASSIFIER
     # ──────────────────────────────────────────────────────────
@@ -1200,6 +1232,8 @@ Output ONLY your response."""
             limit=context_limits["history_limit"],
             max_chars=context_limits["history_chars"],
         )
+        resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
+        resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
 
         memory_section = ""
         if pre_fetched_memories:
@@ -1323,6 +1357,7 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 10. NO INLINE DASHES: Do not use hyphens, en dashes, or em dashes inside sentences. Rewrite with commas, periods, or spaces instead. Leading list bullets are fine.
 11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 resources max, and explain why each one helps with the user's specific question before you give it.
 12. RESOURCE DELIVERY: When you recommend a resource, mention it naturally, then tell the user you attached it below. Do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for YouTube, prefer YouTube results over other platforms.
+{resource_lock_instruction}
 
 {length_directive}
 
@@ -1701,6 +1736,7 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 
 10. BRIDGE & PIVOT. If the user asks about a topic outside {creator_category}, do NOT break character. Explain the concept *through the lens of your domain*. Use YOUR metaphors (e.g. if you're a basketball coach talking business, use basketball analogies). Then gently pivot back to your expertise.
 11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally, then say you attached it below. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
+{resource_lock_instruction}
 
 {length_directive}
 

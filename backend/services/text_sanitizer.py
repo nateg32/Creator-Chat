@@ -47,6 +47,11 @@ SPLIT_SUFFIX_RE = re.compile(
 )
 MERGED_SINGLE_HEAD_RE = re.compile(r"\b([AI])([a-z]{3,})\b")
 MERGED_COMMON_HEAD_RE = re.compile(r"\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b")
+MERGED_TRAILING_COMMON_RE = re.compile(
+    r"\b([A-Za-z]{5,})(are|will|were|with|your|this|that|what|when|where|which|have|them|they)\b"
+    r"(?=\s+(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why|and|or|but|just|to|for|if|because|so|then)\b)",
+    re.IGNORECASE,
+)
 CONTRACTION_BOUNDARY_RE = re.compile(
     r"((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)",
     re.IGNORECASE,
@@ -72,6 +77,9 @@ MERGEABLE_CONNECTOR_SUFFIXES = ("and",)
 MERGED_TOKEN_BLOCKLIST = {
     "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
     "island", "remand", "remands", "strand", "strands",
+}
+MERGED_TRAILING_BLOCKLIST = {
+    "software", "hardware", "aware", "beware", "elsewhere", "somewhere", "anywhere", "nowhere",
 }
 FINAL_CLEANUP_MAX_CHARS = 2400
 ALWAYS_MODEL_CLEANUP_MAX_CHARS = 1200
@@ -139,6 +147,12 @@ def _repair_split_word_fragments(text: str) -> str:
 def _repair_merged_common_word_pairs(text: str) -> str:
     repaired = MERGED_SINGLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", text)
     repaired = MERGED_COMMON_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
+    repaired = MERGED_TRAILING_COMMON_RE.sub(
+        lambda m: m.group(0)
+        if m.group(0).lower() in MERGED_TRAILING_BLOCKLIST
+        else f"{m.group(1)} {m.group(2)}",
+        repaired,
+    )
 
     def _split_token(match: re.Match[str]) -> str:
         token = match.group(0)
@@ -368,7 +382,7 @@ def _has_suspicious_formatting(text: str) -> bool:
         return True
     if SPLIT_HEAD_RE.search(text) or SPLIT_MIDDLE_RE.search(text) or SPLIT_TAIL_RE.search(text) or SPLIT_SUFFIX_RE.search(text):
         return True
-    if MERGED_SINGLE_HEAD_RE.search(text) or MERGED_COMMON_HEAD_RE.search(text):
+    if MERGED_SINGLE_HEAD_RE.search(text) or MERGED_COMMON_HEAD_RE.search(text) or MERGED_TRAILING_COMMON_RE.search(text):
         return True
     if WORD_TO_NUMBER_BOUNDARY_RE.search(text) or WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE.search(text) or NUMBER_TO_WORD_BOUNDARY_RE.search(text):
         return True
