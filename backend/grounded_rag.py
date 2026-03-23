@@ -26,6 +26,7 @@ from backend.services.persona_filter import apply_persona_surface_filter
 from backend.services.curiosity_service import curiosity_service
 from backend.services.rhythm_shaper import rhythm_shaper
 from backend.services.user_priority_service import user_priority_service
+from backend.services.decision_service import decision_service
 from backend.services.greeting_service import greeting_service
 from backend.services.memory_loop_service import memory_loop_service
 from backend.services.steering_service import steering_service
