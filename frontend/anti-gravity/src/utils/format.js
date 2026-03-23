@@ -51,9 +51,11 @@ const splitMiddleRe = /\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfg
 const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
 const splitSuffixRe = /\b([A-Za-z]{3,})\s+(ify|ifies|ified|ifying|ise|ises|ised|ising|ize|izes|ized|izing|ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b/gi;
 const splitShortSuffixRe = /\b([A-Za-z]{2,4})\s+(ing|ings|ed|er|ers|est|ly)\b(?=\s+[A-Za-z]{2,})/gi;
+const splitPrefixMergedSuffixRe = /(?<!')\b([A-Za-z]{2,4})\s+([a-z]{4,}(?:your|the))\b(?=(?:\s+[A-Za-z]{2,}\b|[,.!?;:]|$))/gi;
 const mergedSingleHeadRe = /\b([AI])([a-z]{3,})\b/g;
 const mergedCommonHeadRe = /\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b/g;
-const contractionBoundaryRe = /((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)/gi;
+const mergedFocusedSuffixRe = /\b([A-Za-z]{4,})(your|the)\b(?=(?:\s+[A-Za-z]{2,}\b|[,.!?;:]|$))/gi;
+const contractionBoundaryRe = /((?:'s|'re|'ve|'ll|'d|'m))(?=(?:[a-z]{4,}|you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)/gi;
 const mergedCommonTokenRe = /\b[A-Za-z]{4,24}\b/g;
 const commonShortWords = new Set([
     "a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
@@ -75,6 +77,11 @@ const mergedTokenBlocklist = new Set([
     "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
     "island", "remand", "remands", "strand", "strands",
 ]);
+const mergedTrailingBlocklist = new Set([
+    "software", "hardware", "aware", "beware", "elsewhere", "somewhere", "anywhere", "nowhere",
+    "everywhere", "somewhat", "lathe", "loathe", "clothe", "unclothe", "writhe",
+    "scythe", "soothe", "seethe", "bathe", "breathe", "blithe",
+]);
 
 function repairSplitWordFragments(text) {
     let repaired = text.replace(splitHeadRe, (_, prefix, head, tail) => `${prefix}${head}${tail}`);
@@ -92,6 +99,9 @@ function repairSplitWordFragments(text) {
             })
             .replace(splitShortSuffixRe, (_, word, tail) => {
                 return `${word}${tail}`;
+            })
+            .replace(splitPrefixMergedSuffixRe, (match, word, tail) => {
+                return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
             });
         if (next === repaired) return repaired;
         repaired = next;
@@ -102,6 +112,9 @@ function repairMergedCommonWordPairs(text) {
     return text
         .replace(mergedSingleHeadRe, (_, head, tail) => `${head} ${tail}`)
         .replace(mergedCommonHeadRe, (_, head, tail) => `${head} ${tail}`)
+        .replace(mergedFocusedSuffixRe, (match, left, right) => {
+            return mergedTrailingBlocklist.has(match.toLowerCase()) ? match : `${left} ${right}`;
+        })
         .replace(mergedCommonTokenRe, (token) => {
         const lower = token.toLowerCase();
         if (mergeableCommonWords.has(lower)) return token;

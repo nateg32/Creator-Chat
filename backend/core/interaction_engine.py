@@ -540,8 +540,7 @@ class InteractionEngine:
         if not rag_chunks:
             return ""
         query = (user_msg or "").lower()
-        if any(token in query for token in ["videos", "links", "resources", "posts", "reels", "clips", "both", "few", "some", "couple", "list"]):
-            return ""
+        wants_multiple = any(token in query for token in ["videos", "links", "resources", "posts", "reels", "clips", "both", "few", "some", "couple", "list"])
 
         linked_resources = []
         seen = set()
@@ -555,6 +554,35 @@ class InteractionEngine:
                 continue
             seen.add(key)
             linked_resources.append((title.strip(), url.strip()))
+
+        if wants_multiple:
+            if not linked_resources:
+                return ""
+            if len(linked_resources) == 1:
+                title, _ = linked_resources[0]
+                if title:
+                    return (
+                        f'13. RESOURCE LOCK. You have exactly one selected creator resource in context: "{title}". '
+                        "Do not mention any second or third title from chat history, memory, or guesswork. "
+                        "If the user asked for more options, give only this one as the next best pick. "
+                        "Do not say 'both' or 'attached below' for multiple items. "
+                        "The attached card must match the title you say."
+                    )
+                return (
+                    "13. RESOURCE LOCK. You have exactly one selected creator resource in context. "
+                    "Do not invent additional titles from chat history, memory, or guesswork. "
+                    "If the user asked for more options, give only this one and let the attached card carry the link."
+                )
+            titles = [title for title, _ in linked_resources[:3] if title]
+            if titles:
+                quoted_titles = ", ".join(f'"{title}"' for title in titles)
+                return (
+                    f"13. MULTI RESOURCE LOCK. You have exactly {len(titles)} selected creator resources in context: {quoted_titles}. "
+                    "If you recommend resources, mention only these titles and no others. "
+                    "Ignore previously mentioned or remembered titles from chat history or memory. "
+                    "Keep the number of resources you mention aligned with the attached cards."
+                )
+            return ""
 
         if len(linked_resources) != 1:
             return ""

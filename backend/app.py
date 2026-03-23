@@ -471,6 +471,31 @@ def get_latest_thread_images(thread_id: Optional[str], user_id: Optional[int] = 
     images = metadata.get("images")
     return images if isinstance(images, list) and images else None
 
+
+def _parse_message_metadata(raw_metadata: Any) -> Dict[str, Any]:
+    if isinstance(raw_metadata, dict):
+        return raw_metadata
+    if isinstance(raw_metadata, str):
+        try:
+            parsed = json.loads(raw_metadata)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _history_message_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    message = {
+        "role": row.get("role"),
+        "content": row.get("content") or "",
+    }
+    metadata = _parse_message_metadata(row.get("metadata"))
+    cards = metadata.get("cards")
+    if isinstance(cards, list) and cards:
+        message["cards"] = cards
+    return message
+
 @app.on_event("startup")
 async def startup():
     """Initialize database connection"""
@@ -2103,7 +2128,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     """, (request.thread_id, current_user["id"], request.creator_id))
 
                     msgs_rows = db.execute_query("""
-                        SELECT role, content FROM chat_messages 
+                        SELECT role, content, metadata FROM chat_messages 
                         WHERE thread_id = %s
                           AND EXISTS (
                               SELECT 1 FROM chat_threads t
@@ -2114,7 +2139,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     """, (request.thread_id, request.thread_id, current_user["id"]))
                     if msgs_rows:
                         msgs_rows.reverse()
-                        conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
+                        conversation_history = [_history_message_from_row(m) for m in msgs_rows]
                 except ValueError:
                     request.thread_id = None
             return conversation_history
@@ -2437,7 +2462,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                  # We want the messages BEFORE the one we just inserted.
                  # So we fetch limit 21 desc, and look at them.
                  msgs_rows = db.execute_query("""
-                    SELECT role, content FROM chat_messages 
+                    SELECT role, content, metadata FROM chat_messages 
                     WHERE thread_id = %s 
                     ORDER BY created_at DESC 
                     LIMIT 21
@@ -2453,7 +2478,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                      if msgs_rows[-1]['role'] == 'user' and msgs_rows[-1]['content'] == request.question:
                           msgs_rows.pop() 
                      
-                     conversation_history = [{"role": m["role"], "content": m["content"]} for m in msgs_rows]
+                     conversation_history = [_history_message_from_row(m) for m in msgs_rows]
         
         # Get creator name
         creator_name = "Creator"

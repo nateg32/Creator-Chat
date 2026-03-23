@@ -190,6 +190,26 @@ class TextSanitizerTests(unittest.TestCase):
             text_sanitizer.strip_mid_sentence_hyphens("A free trialwill just create support load."),
             "A free trial will just create support load.",
         )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "Designingyour weeks around your highest leverage activities matters."
+            ),
+            "Designing your weeks around your highest leverage activities matters.",
+        )
+
+    def test_repairs_split_prefix_with_merged_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "If you tell me what you do right now, I'll tra nslatethe main framework into a plan."
+            ),
+            "If you tell me what you do right now, I'll translate the main framework into a plan.",
+        )
+
+    def test_repairs_contraction_boundary_with_merged_word(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I'lltranslate that into a plan."),
+            "I'll translate that into a plan.",
+        )
 
     def test_inserts_missing_space_after_sentence_punctuation(self):
         self.assertEqual(

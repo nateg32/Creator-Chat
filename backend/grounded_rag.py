@@ -297,10 +297,26 @@ def _build_response_cards(
     cards: List[Dict[str, str]] = []
 
     if _has_recommendable_resource(rec_result, preferred_platforms=preferred_platforms):
-        best = (rec_result or {}).get("best_candidate") or {}
-        card = _preview_card_from_resource(_candidate_title(best), _candidate_url(best))
-        if card:
+        desired_count = max(1, int((rec_result or {}).get("card_limit") or 1))
+        recommended_candidates = [
+            (rec_result or {}).get("best_candidate")
+        ] + list((rec_result or {}).get("alternate_candidates") or [])
+        seen_urls: Set[str] = set()
+        for candidate in recommended_candidates:
+            if not candidate:
+                continue
+            if preferred_platforms:
+                preferred = {p.lower() for p in preferred_platforms if p}
+                if preferred and _candidate_platform(candidate) not in preferred:
+                    continue
+            card = _preview_card_from_resource(_candidate_title(candidate), _candidate_url(candidate))
+            if not card or card["url"] in seen_urls:
+                continue
             cards.append(card)
+            seen_urls.add(card["url"])
+            if len(cards) >= desired_count:
+                return cards
+        if cards:
             return cards
 
     for chunk in support_set or []:
@@ -319,6 +335,68 @@ def _build_response_cards(
         break
 
     return cards
+
+
+def _selected_recommendation_chunks(
+    rec_result: Optional[Dict[str, Any]],
+    preferred_platforms: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    if not rec_result:
+        return []
+
+    desired_count = max(1, int((rec_result or {}).get("card_limit") or 1))
+    selected_candidates = [
+        (rec_result or {}).get("best_candidate")
+    ] + list((rec_result or {}).get("alternate_candidates") or [])
+
+    filtered_candidates = []
+    seen_urls: Set[str] = set()
+    preferred = {p.lower() for p in (preferred_platforms or []) if p}
+    for candidate in selected_candidates:
+        if not candidate:
+            continue
+        if preferred and _candidate_platform(candidate) not in preferred:
+            continue
+        url = (_candidate_url(candidate) or "").strip().lower()
+        title = (_candidate_title(candidate) or "").strip()
+        if not url or not title or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        filtered_candidates.append(candidate)
+        if len(filtered_candidates) >= desired_count:
+            break
+
+    if not filtered_candidates:
+        return []
+
+    if len(filtered_candidates) == 1:
+        return list((filtered_candidates[0].get("chunks") or [])[:3])
+
+    selected_chunks: List[Dict[str, Any]] = []
+    seen_chunk_keys: Set[str] = set()
+    for candidate in filtered_candidates:
+        candidate_chunks = candidate.get("chunks") or []
+        if not candidate_chunks:
+            continue
+        for chunk in candidate_chunks:
+            chunk_url = (
+                chunk.get("url")
+                or (chunk.get("source_ref") or {}).get("canonical_url")
+                or _candidate_url(candidate)
+            )
+            chunk_title = (
+                chunk.get("title")
+                or (chunk.get("source_ref") or {}).get("title")
+                or _candidate_title(candidate)
+            )
+            chunk_key = f"{(chunk_url or '').strip().lower()}::{_normalize_resource_title(chunk_title or '')}"
+            if chunk_key in seen_chunk_keys:
+                continue
+            seen_chunk_keys.add(chunk_key)
+            selected_chunks.append(chunk)
+            break
+
+    return selected_chunks[:desired_count]
 
 
 def _unwrap_structured_answer(answer: str) -> str:
@@ -422,14 +500,25 @@ def build_search_query(question: str, history: Optional[List[Dict[str, str]]] = 
                 text = m.get("content") or m.get("text") or ""
                 quoted = re.findall(r'"([^"]+)"', text)
                 seen_recent.extend(quoted)
+                for card in m.get("cards") or []:
+                    title = (card.get("title") or "").strip()
+                    if title:
+                        seen_recent.append(title)
         
         if seen_recent:
-            # Broaden the query but exclude the exact titles
-            query_parts.append(f"content about trading psychology and strategy excluding {', '.join(seen_recent[:2])}")
-            # Add a bit of noise to break cache/bias
-            import random
-            noise = random.choice(["fresh perspectives", "deep dives", "masterclasses", "untouched topics"])
-            query_parts.append(noise)
+            prior_topic = ""
+            for msg in reversed(history[-10:]):
+                if (msg.get("role") or "").lower() != "user":
+                    continue
+                user_text = (msg.get("content") or msg.get("text") or "").strip()
+                if not user_text:
+                    continue
+                if any(trigger in user_text.lower() for trigger in more_triggers):
+                    continue
+                prior_topic = user_text
+                break
+            topic_seed = prior_topic or "related creator content"
+            query_parts.append(f"{topic_seed} excluding {', '.join(seen_recent[:2])}")
         else:
             recent_text = " ".join([msg.get("content", "") for msg in history[-3:] if msg.get("role") == "user"])
             query_parts.append(recent_text)
@@ -2484,6 +2573,16 @@ def _get_suggested_resources(history: Optional[List[Dict[str, str]]]) -> Dict[st
         matches = re.findall(r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([\w-]+)", content)
         for vid_id in matches:
             seen["ids"].add(vid_id)
+
+        for card in m.get("cards") or []:
+            card_url = (card.get("url") or "").strip()
+            if card_url:
+                youtube_match = re.search(r"(?:v=|youtu\.be/|/shorts/)([\w-]+)", card_url, re.IGNORECASE)
+                if youtube_match:
+                    seen["ids"].add(youtube_match.group(1))
+            card_title = _normalize_resource_title(card.get("title") or "")
+            if len(card_title) > 5:
+                seen["titles"].add(card_title)
             
         # 2. Match titles in quotes and patterns
         quoted_titles = re.findall(r'"([^"]+)"', content)
@@ -2653,6 +2752,7 @@ def recommend_one_content(
     preferred_platforms = extract_requested_platforms(user_message, conversation_history)
     resource_intent["preferred_platforms"] = preferred_platforms
     seen_resources = _get_suggested_resources(conversation_history)
+    wants_multiple = _wants_multiple_resources(user_message)
     
     # Early Exit for Small Talk or non-resource turns
     if not resource_intent.get("needs_resource") and resource_intent.get("request_type") == "none":
@@ -2715,6 +2815,13 @@ def recommend_one_content(
     
     # HIGH CONFIDENCE: Pick top 1
     best_one = candidates[0]
+    alternate_candidates = []
+    if wants_multiple:
+        for candidate in candidates[1:]:
+            if _candidate_url(candidate) and _candidate_title(candidate):
+                alternate_candidates.append(candidate)
+            if len(alternate_candidates) >= 2:
+                break
     best_title = _candidate_title(best_one)
     best_url = _candidate_url(best_one)
     best_one["title_quality"] = _resource_title_quality(best_title, best_url)
@@ -2730,6 +2837,8 @@ def recommend_one_content(
             "clarify_question": cl_question,
             "best_candidate": best_one,
             "candidates": candidates[:1],
+            "alternate_candidates": alternate_candidates,
+            "card_limit": 1 if not wants_multiple else min(3, 1 + len(alternate_candidates)),
             "resource_intent": resource_intent,
             "q_emb": q_emb,
         }
@@ -2745,6 +2854,8 @@ def recommend_one_content(
         "confidence": confidence,
         "clarify_question": None,
         "best_candidate": best_one,
+        "alternate_candidates": alternate_candidates,
+        "card_limit": 1 if not wants_multiple else min(3, 1 + len(alternate_candidates)),
         "resource_intent": resource_intent,
         "q_emb": q_emb
     }
@@ -3082,7 +3193,12 @@ Message: {answer_text[:500]}"""
     if intent in ["greeting", "greeting_only", "small_talk"]:
         support_set = []
     else:
-        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3] if should_run_recommender else []
+        support_set = (
+            _selected_recommendation_chunks(rec_result, preferred_platforms=preferred_platforms)
+            if should_run_recommender
+            else []
+        )
+        selected_resource_count = max(1, int((rec_result or {}).get("card_limit") or 1)) if should_run_recommender else 0
         if resource_locked:
             support_set = support_set or []
         elif not support_set:
@@ -3096,6 +3212,8 @@ Message: {answer_text[:500]}"""
                     logger.error(f"Fallback embedding build failed: {e}")
                     q_emb = [0.0] * 1536
             support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
+        elif selected_resource_count > 1:
+            support_set = support_set[:selected_resource_count]
         else:
             support_set = merge_support_sets(support_set, retrieve_candidates(creator_id, rec_result.get("q_emb"), 3, enabled_platforms=enabled_platforms), limit=4)
 
@@ -3625,9 +3743,16 @@ async def grounded_rag_stream(
             rec_result,
             preferred_platforms=preferred_platforms,
         )
-        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3] if should_run_recommender else []
+        support_set = (
+            _selected_recommendation_chunks(rec_result, preferred_platforms=preferred_platforms)
+            if should_run_recommender
+            else []
+        )
+        selected_resource_count = max(1, int((rec_result or {}).get("card_limit") or 1)) if should_run_recommender else 0
         if resource_locked:
             support_set = support_set or []
+        elif selected_resource_count > 1:
+            support_set = support_set[:selected_resource_count]
         else:
             support_set = merge_support_sets(support_set, direct_support, limit=4) if support_set else (direct_support or [])
         if not support_set:
