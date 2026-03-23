@@ -1,5 +1,7 @@
+import difflib
+import logging
 import re
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 DASH_CHARS = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
 WORD_BREAK_DASH_CHARS = "-\u2010\u2011\u2012\u2212"
@@ -29,12 +31,22 @@ WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE = re.compile(
 NUMBER_TO_WORD_BOUNDARY_RE = re.compile(r"(?<=\d)(?=[A-Za-z]{2,}(?=(?:\s|[,;:!?)]|$)))")
 DOMAIN_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=(?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:/[^\s]*)?)")
 STREAM_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+|\n")
-SPLIT_HEAD_RE = re.compile(r"(^|[\n([{\"'])([A-Za-z])\s+([a-z]{3,})(?=\b)", re.MULTILINE)
+SPLIT_HEAD_RE = re.compile(r"(^|[\n([{\"])([A-Za-z])\s+([a-z]{3,})(?=\b)", re.MULTILINE)
 SPLIT_MIDDLE_RE = re.compile(
     r"\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)",
     re.IGNORECASE,
 )
 SPLIT_TAIL_RE = re.compile(r"\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b", re.IGNORECASE)
+SPLIT_SUFFIX_RE = re.compile(
+    r"\b([A-Za-z]{3,})\s+"
+    r"(ify|ifies|ified|ifying|ise|ises|ised|ising|ize|izes|ized|izing|"
+    r"ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b",
+    re.IGNORECASE,
+)
+CONTRACTION_BOUNDARY_RE = re.compile(
+    r"((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)",
+    re.IGNORECASE,
+)
 TRAILING_ALPHA_RE = re.compile(r"([A-Za-z]+)$")
 LEADING_ALPHA_RE = re.compile(r"^([A-Za-z]+)")
 MERGED_COMMON_TOKEN_RE = re.compile(r"\b[A-Za-z]{4,24}\b")
@@ -52,6 +64,14 @@ MERGEABLE_COMMON_WORDS = COMMON_SHORT_WORDS | {
     "when", "where", "which", "while", "who", "why", "will", "with", "without",
     "would",
 }
+MERGEABLE_CONNECTOR_SUFFIXES = ("and",)
+MERGED_TOKEN_BLOCKLIST = {
+    "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
+    "island", "remand", "remands", "strand", "strands",
+}
+FINAL_CLEANUP_MAX_CHARS = 2400
+
+logger = logging.getLogger(__name__)
 
 
 def _protect_spans(text: str) -> Tuple[str, Dict[str, str]]:
@@ -90,6 +110,12 @@ def _repair_split_word_fragments(text: str) -> str:
             else m.group(0),
             next_repaired,
         )
+        next_repaired = SPLIT_SUFFIX_RE.sub(
+            lambda m: f"{m.group(1)}{m.group(2)}"
+            if m.group(1).lower() not in COMMON_SHORT_WORDS
+            else m.group(0),
+            next_repaired,
+        )
         if next_repaired == repaired:
             break
         repaired = next_repaired
@@ -109,6 +135,13 @@ def _repair_merged_common_word_pairs(text: str) -> str:
             right = lower[index:]
             if left in MERGEABLE_COMMON_WORDS and right in MERGEABLE_COMMON_WORDS:
                 return f"{token[:index]} {token[index:]}"
+
+        if lower not in MERGED_TOKEN_BLOCKLIST:
+            for suffix in MERGEABLE_CONNECTOR_SUFFIXES:
+                if lower.endswith(suffix):
+                    left = lower[: -len(suffix)]
+                    if len(left) >= 4 and re.search(r"[aeiou]", left, re.IGNORECASE):
+                        return f"{token[:len(left)]} {token[len(left):]}"
         return token
 
     return MERGED_COMMON_TOKEN_RE.sub(_split_token, text)
@@ -165,6 +198,7 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = NUMBER_TO_WORD_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = DOMAIN_BOUNDARY_RE.sub(" ", cleaned)
+    cleaned = CONTRACTION_BOUNDARY_RE.sub(r"\1 ", cleaned)
     cleaned = _repair_split_word_fragments(cleaned)
     cleaned = _repair_merged_common_word_pairs(cleaned)
     cleaned = MULTISPACE_RE.sub(" ", cleaned)
@@ -181,6 +215,75 @@ def strip_mid_sentence_hyphens(text: str) -> str:
     if not text:
         return text
     return _sanitize_core(text, trim_line_edges=True).strip()
+
+
+def _alnum_skeleton(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", text or "").lower()
+
+
+def _is_safe_cleanup_candidate(original: str, candidate: str) -> bool:
+    if not candidate or not candidate.strip():
+        return False
+
+    original_skeleton = _alnum_skeleton(original)
+    candidate_skeleton = _alnum_skeleton(candidate)
+    if not original_skeleton or not candidate_skeleton:
+        return False
+
+    similarity = difflib.SequenceMatcher(None, original_skeleton, candidate_skeleton).ratio()
+    if similarity < 0.995:
+        return False
+
+    allowed_delta = max(24, int(len(original) * 0.2))
+    return abs(len(candidate) - len(original)) <= allowed_delta
+
+
+def _run_final_spacing_cleanup_model(text: str) -> Optional[str]:
+    try:
+        from backend.rag import generate_chat_completion
+        from backend.settings import settings
+
+        prompt = (
+            "Fix only whitespace, token-boundary, and spacing corruption in this message. "
+            "Do not rewrite, summarize, add, remove, or change wording. "
+            "Preserve the exact tone, paragraph breaks, numbering, and punctuation unless a spacing fix requires a tiny punctuation adjustment. "
+            "Return only the corrected message."
+        )
+
+        return generate_chat_completion(
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text},
+            ],
+            model=settings.MODEL_FALLBACK_FAST,
+            temperature=0.0,
+            max_tokens=min(600, max(120, len(text) // 2)),
+        ).strip()
+    except Exception as exc:
+        logger.warning("Final spacing cleanup model pass failed: %s", exc)
+        return None
+
+
+def finalize_generated_text(text: str, allow_model_cleanup: bool = True) -> str:
+    """
+    Final answer normalization for user-visible model output.
+    Runs deterministic cleanup first, then a cheap guarded model pass so arbitrary
+    split/merged words can be corrected without hard-coding specific tokens.
+    """
+    base = strip_mid_sentence_hyphens(text)
+    if not base or not allow_model_cleanup:
+        return base
+    if len(base) > FINAL_CLEANUP_MAX_CHARS:
+        return base
+
+    candidate = _run_final_spacing_cleanup_model(base)
+    if not candidate:
+        return base
+
+    candidate = strip_mid_sentence_hyphens(candidate)
+    if not _is_safe_cleanup_candidate(base, candidate):
+        return base
+    return candidate
 
 
 def sanitize_stream_fragment(text: str) -> str:

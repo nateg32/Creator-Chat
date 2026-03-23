@@ -159,6 +159,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   let buffer = "";
   let fullAnswer = "";
   let finalCards = null;
+  let finalContent = null;
 
   try {
     while (true) {
@@ -173,8 +174,9 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
         if (part.startsWith("data: ")) {
           const dataStr = part.slice(6);
           if (dataStr === "[DONE]") {
-            if (onComplete) onComplete(fullAnswer, { cards: finalCards || [] });
-            return { answer: fullAnswer, cards: finalCards || [] };
+            const completedAnswer = finalContent || fullAnswer;
+            if (onComplete) onComplete(completedAnswer, { cards: finalCards || [], finalContent });
+            return { answer: completedAnswer, cards: finalCards || [] };
           }
           let data;
           try {
@@ -190,6 +192,11 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
 
           if (Array.isArray(data.cards)) {
             finalCards = data.cards;
+          }
+
+          if (typeof data.final_content === "string") {
+            finalContent = data.final_content;
+            fullAnswer = data.final_content;
           }
 
           if (data.content) {

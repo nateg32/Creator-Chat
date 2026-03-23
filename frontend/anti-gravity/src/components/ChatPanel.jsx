@@ -426,15 +426,23 @@ export function ChatPanel({
           );
         },
         onComplete: (fullAnswer, meta = {}) => {
-          if (meta.cards?.length) {
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === assistantMessageId
-                  ? { ...msg, cards: meta.cards }
-                  : msg
-              )
-            );
-          }
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id !== assistantMessageId) return msg;
+              const nextMessage = { ...msg };
+              if (typeof meta.finalContent === "string" && meta.finalContent.length > 0) {
+                nextMessage.content = meta.finalContent;
+                nextMessage.text = meta.finalContent;
+              } else {
+                nextMessage.content = fullAnswer;
+                nextMessage.text = fullAnswer;
+              }
+              if (meta.cards?.length) {
+                nextMessage.cards = meta.cards;
+              }
+              return nextMessage;
+            })
+          );
           if (onInteraction) onInteraction();
         },
         onError: (e) => {

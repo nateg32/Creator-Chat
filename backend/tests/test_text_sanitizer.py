@@ -143,6 +143,46 @@ class TextSanitizerTests(unittest.TestCase):
             "Are you asking because you want to decide what you believe, or because you're wrestling with something right now?",
         )
 
+    def test_repairs_merged_connector_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("What do you selland what's your current price?"),
+            "What do you sell and what's your current price?",
+        )
+
+    def test_preserves_real_words_that_end_with_and(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("The command line matters."),
+            "The command line matters.",
+        )
+
+    def test_repairs_split_suffix_fragment(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("That just ifies 2 to 10x pricing."),
+            "That justifies 2 to 10x pricing.",
+        )
+
+    def test_finalize_generated_text_accepts_generic_model_spacing_fix(self):
+        original = text_sanitizer._run_final_spacing_cleanup_model
+        text_sanitizer._run_final_spacing_cleanup_model = lambda text: "That feels conversational and natural."
+        try:
+            self.assertEqual(
+                text_sanitizer.finalize_generated_text("That feels convers ational and natural."),
+                "That feels conversational and natural.",
+            )
+        finally:
+            text_sanitizer._run_final_spacing_cleanup_model = original
+
+    def test_finalize_generated_text_rejects_rewrite(self):
+        original = text_sanitizer._run_final_spacing_cleanup_model
+        text_sanitizer._run_final_spacing_cleanup_model = lambda text: "This is a total rewrite with different words."
+        try:
+            self.assertEqual(
+                text_sanitizer.finalize_generated_text("That feels convers ational and natural."),
+                "That feels convers ational and natural.",
+            )
+        finally:
+            text_sanitizer._run_final_spacing_cleanup_model = original
+
 
 if __name__ == "__main__":
     unittest.main()

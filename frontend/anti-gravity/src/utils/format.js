@@ -45,9 +45,11 @@ function restoreSpans(text, protectedSpans) {
     return protectedSpans.reduce((output, span) => output.replace(span.token, span.value), text);
 }
 
-const splitHeadRe = /(^|[\n([{"'])([A-Za-z])\s+([a-z]{3,})(?=\b)/gm;
+const splitHeadRe = /(^|[\n([{"])([A-Za-z])\s+([a-z]{3,})(?=\b)/gm;
 const splitMiddleRe = /\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)/gi;
 const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
+const splitSuffixRe = /\b([A-Za-z]{3,})\s+(ify|ifies|ified|ifying|ise|ises|ised|ising|ize|izes|ized|izing|ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b/gi;
+const contractionBoundaryRe = /((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)/gi;
 const mergedCommonTokenRe = /\b[A-Za-z]{4,24}\b/g;
 const commonShortWords = new Set([
     "a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
@@ -64,6 +66,11 @@ const mergeableCommonWords = new Set([
     "when", "where", "which", "while", "who", "why", "will", "with", "without",
     "would",
 ]);
+const mergeableConnectorSuffixes = ["and"];
+const mergedTokenBlocklist = new Set([
+    "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
+    "island", "remand", "remands", "strand", "strands",
+]);
 
 function repairSplitWordFragments(text) {
     let repaired = text.replace(splitHeadRe, (_, prefix, head, tail) => `${prefix}${head}${tail}`);
@@ -74,6 +81,9 @@ function repairSplitWordFragments(text) {
                 return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
             })
             .replace(splitTailRe, (match, word, tail) => {
+                return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
+            })
+            .replace(splitSuffixRe, (match, word, tail) => {
                 return commonShortWords.has(word.toLowerCase()) ? match : `${word}${tail}`;
             });
         if (next === repaired) return repaired;
@@ -94,6 +104,17 @@ function repairMergedCommonWordPairs(text) {
             }
         }
 
+        if (!mergedTokenBlocklist.has(lower)) {
+            for (const suffix of mergeableConnectorSuffixes) {
+                if (lower.endsWith(suffix)) {
+                    const left = lower.slice(0, -suffix.length);
+                    if (left.length >= 4 && /[aeiou]/i.test(left)) {
+                        return `${token.slice(0, left.length)} ${token.slice(left.length)}`;
+                    }
+                }
+            }
+        }
+
         return token;
     });
 }
@@ -109,6 +130,7 @@ export function repairDisplaySpacing(text) {
         .replace(/(?<=[A-Za-z])(?=\d{1,4}(?:s|x|st|nd|rd|th)(?=(?:\s|[,.;:!?)]|$)))/gi, ' ')
         .replace(/(?<=\d)(?=[A-Za-z]{2,}(?=(?:\s|[,;:!?)]|$)))/g, ' ')
         .replace(/([A-Za-z])(?=((?:www\.)?(?:\d|[A-Z])[A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+(?:\/[^\s]*)?))/g, '$1 ')
+        .replace(contractionBoundaryRe, '$1 ')
         .replace(/[ \t]+([,.;:!?])/g, '$1')
         .replace(/[ \t]{2,}/g, ' ');
 
