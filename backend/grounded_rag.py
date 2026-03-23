@@ -2762,6 +2762,11 @@ def grounded_rag_ask(
     images: Optional[List[Dict[str, Any]]] = None,
     user_id: int = 1,
 ) -> Dict[str, Any]:
+    conversation_history = conversation_history or []
+    resolved_question = decision_service.resolve_followup_question(question, conversation_history)
+    if resolved_question != question:
+        logger.info("Resolved short follow-up '%s' to '%s'", question, resolved_question)
+        question = resolved_question
     
     def apply_final_polish(result_dict: Dict[str, Any], profile: Dict[str, Any], state_mgr: Any, mvc_score: int = 0, plan: Optional[InteractionPlan] = None) -> Dict[str, Any]:
         if "answer" in result_dict:
@@ -3344,9 +3349,15 @@ async def grounded_rag_stream(
     """
     from backend.db import db
     import asyncio
+
+    conversation_history = conversation_history or []
+    resolved_question = decision_service.resolve_followup_question(question, conversation_history)
+    if resolved_question != question:
+        logger.info("Resolved short follow-up '%s' to '%s'", question, resolved_question)
+        question = resolved_question
     
     # 1. Deterministic Routing (Instant) - MUST BE FIRST
-    route = interaction_engine.classify_route(question, conversation_history or [])
+    route = interaction_engine.classify_route(question, conversation_history)
     
     # Early heartbeat yield to drop TTFB to <100ms
     yield " "

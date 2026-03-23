@@ -46,6 +46,28 @@ class DecisionServiceTests(unittest.TestCase):
         self.assertEqual(q_type, "personal_bio")
         self.assertEqual(topic, "general")
 
+    def test_resolves_affirmative_book_followup_from_clarification(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "yes",
+            [
+                {"role": "user", "content": "when was your book launch"},
+                {"role": "assistant", "content": "If you tell me which book you mean, I can help. Which one, Buy Back Your Time?"},
+            ],
+        )
+        self.assertEqual(resolved, "When was Buy Back Your Time launched?")
+
+    def test_does_not_rewrite_affirmation_without_book_context(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "yes",
+            [
+                {"role": "user", "content": "can you help me with pricing"},
+                {"role": "assistant", "content": "Do you want me to break down pricing for software?"},
+            ],
+        )
+        self.assertEqual(resolved, "yes")
+
 
 if __name__ == "__main__":
     unittest.main()

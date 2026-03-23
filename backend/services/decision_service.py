@@ -1,9 +1,26 @@
 
 import logging
 import json
+import re
 from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+AFFIRMATIVE_FOLLOWUPS = {
+    "yes", "yeah", "yep", "yup", "correct", "exactly", "that one", "this one",
+    "yes please", "yep yes",
+}
+
+BOOK_CONTEXT_TERMS = (
+    "book", "launch", "launched", "publish", "published", "publication",
+    "release", "released", "release date", "come out", "write", "wrote", "writing",
+)
+
+CLARIFICATION_TITLE_PATTERNS = (
+    re.compile(r'(?i)\bwhich one[,:-]?\s*[\"“]?([^?\"\n]+?)[\"”]?\??\s*$'),
+    re.compile(r'(?i)\bdo you mean[,:-]?\s*[\"“]?([^?\"\n]+?)[\"”]?\??\s*$'),
+    re.compile(r'(?i)\bare you asking about[,:-]?\s*[\"“]?([^?\"\n]+?)[\"”]?\??\s*$'),
+)
 
 class DecisionService:
     """
@@ -77,6 +94,65 @@ class DecisionService:
             score += 1
             
         return score
+
+    def resolve_followup_question(self, question: str, history: Optional[List[Dict[str, str]]] = None) -> str:
+        q = (question or "").strip()
+        if not q or not history:
+            return question
+
+        normalized = re.sub(r"\s+", " ", q.lower()).strip(" .!?")
+        if normalized not in AFFIRMATIVE_FOLLOWUPS:
+            return question
+
+        last_assistant_index = None
+        for idx in range(len(history) - 1, -1, -1):
+            if (history[idx].get("role") or "").lower() == "assistant":
+                last_assistant_index = idx
+                break
+        if last_assistant_index is None:
+            return question
+
+        last_assistant = (history[last_assistant_index].get("content") or history[last_assistant_index].get("text") or "").strip()
+        previous_user = ""
+        for idx in range(last_assistant_index - 1, -1, -1):
+            if (history[idx].get("role") or "").lower() == "user":
+                previous_user = (history[idx].get("content") or history[idx].get("text") or "").strip()
+                break
+        if not previous_user:
+            return question
+
+        title = self._extract_clarified_title(last_assistant)
+        if not title:
+            return question
+
+        previous_lower = previous_user.lower()
+        if not any(term in previous_lower for term in BOOK_CONTEXT_TERMS):
+            return question
+
+        return self._rewrite_book_followup(previous_user, title)
+
+    def _extract_clarified_title(self, assistant_text: str) -> str:
+        text = (assistant_text or "").strip()
+        if not text:
+            return ""
+        for pattern in CLARIFICATION_TITLE_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                candidate = re.sub(r"\s+", " ", match.group(1)).strip(" \"“”'.,:;!?")
+                if 1 <= len(candidate) <= 160:
+                    return candidate
+        return ""
+
+    def _rewrite_book_followup(self, previous_user: str, title: str) -> str:
+        lower = (previous_user or "").lower()
+        clean_title = re.sub(r"\s+", " ", (title or "")).strip()
+        if any(token in lower for token in ["launch", "launched", "release", "released", "come out", "release date"]):
+            return f"When was {clean_title} launched?"
+        if any(token in lower for token in ["publish", "published", "publication"]):
+            return f"When was {clean_title} published?"
+        if any(token in lower for token in ["write", "wrote", "writing", "written"]):
+            return f"When did you write {clean_title}?"
+        return f"When was {clean_title} published?"
 
     def classify_question(self, question: str, intent: str, history: Optional[List[Dict[str, str]]] = None) -> Tuple[str, str, int]:
         """
