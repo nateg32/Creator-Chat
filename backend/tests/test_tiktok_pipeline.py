@@ -54,6 +54,15 @@ class TikTokPlatformTests(unittest.TestCase):
         handle = platforms.extract_handle("https://www.tiktok.com/@ahormozi", "tiktok")
         self.assertEqual(handle, "ahormozi")
 
+    def test_linkedin_regional_profile_url_is_valid(self):
+        url = platforms.normalize_url("https://ca.linkedin.com/in/dmartell?trk=public_profile", "linkedin")
+        self.assertEqual(url, "https://ca.linkedin.com/in/dmartell")
+        self.assertEqual(platforms.validate_url(url, "linkedin"), (True, None))
+
+    def test_linkedin_company_url_is_valid(self):
+        url = platforms.normalize_url("https://www.linkedin.com/company/acme-inc/", "linkedin")
+        self.assertEqual(platforms.validate_url(url, "linkedin"), (True, None))
+
 
 class TikTokRouterTests(unittest.TestCase):
     def test_tiktok_route_applies_time_filter(self):

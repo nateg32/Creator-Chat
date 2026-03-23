@@ -18,6 +18,7 @@ WORD_BREAK_DASH_RE = re.compile(rf"(?<=\w)(?:[{WORD_BREAK_DASH_CLASS}])(?=\w)")
 WORD_CLAUSE_DASH_RE = re.compile(rf"(?<=\w)(?:--+|[{CLAUSE_BREAK_DASH_CLASS}]+)(?=\w)")
 INLINE_TIGHT_DASH_RE = re.compile(rf"(?<=\S)(?:--+|[{DASH_CLASS}]+)(?=\S)")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?])")
+LETTER_END_PUNCT_BOUNDARY_RE = re.compile(r"([A-Za-z][.!?])(?=[A-Z0-9])")
 REPEATED_COMMA_RE = re.compile(r",\s*,+")
 COMMA_BEFORE_END_PUNCT_RE = re.compile(r",\s*([.!?])")
 MULTISPACE_RE = re.compile(r"[ \t]{2,}")
@@ -43,6 +44,8 @@ SPLIT_SUFFIX_RE = re.compile(
     r"ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b",
     re.IGNORECASE,
 )
+MERGED_SINGLE_HEAD_RE = re.compile(r"\b([AI])([a-z]{3,})\b")
+MERGED_COMMON_HEAD_RE = re.compile(r"\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b")
 CONTRACTION_BOUNDARY_RE = re.compile(
     r"((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)",
     re.IGNORECASE,
@@ -124,6 +127,9 @@ def _repair_split_word_fragments(text: str) -> str:
 
 
 def _repair_merged_common_word_pairs(text: str) -> str:
+    repaired = MERGED_SINGLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", text)
+    repaired = MERGED_COMMON_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
+
     def _split_token(match: re.Match[str]) -> str:
         token = match.group(0)
         lower = token.lower()
@@ -144,7 +150,7 @@ def _repair_merged_common_word_pairs(text: str) -> str:
                         return f"{token[:len(left)]} {token[len(left):]}"
         return token
 
-    return MERGED_COMMON_TOKEN_RE.sub(_split_token, text)
+    return MERGED_COMMON_TOKEN_RE.sub(_split_token, repaired)
 
 
 def _should_insert_boundary_space(left: str, right: str) -> bool:
@@ -192,6 +198,7 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = REPEATED_COMMA_RE.sub(", ", cleaned)
     cleaned = COMMA_BEFORE_END_PUNCT_RE.sub(r"\1", cleaned)
     cleaned = SPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
+    cleaned = LETTER_END_PUNCT_BOUNDARY_RE.sub(r"\1 ", cleaned)
     cleaned = LIST_NUMBER_SPACE_RE.sub(r"\1 ", cleaned)
     cleaned = BIBLE_VERSE_BOUNDARY_RE.sub(" ", cleaned)
     cleaned = WORD_TO_NUMBER_BOUNDARY_RE.sub(" ", cleaned)
@@ -244,9 +251,10 @@ def _run_final_spacing_cleanup_model(text: str) -> Optional[str]:
         from backend.settings import settings
 
         prompt = (
-            "Fix only whitespace, token-boundary, and spacing corruption in this message. "
+            "Fix only formatting corruption in this message. "
+            "This includes merged words, split words, missing spaces after punctuation, broken numbered lists, and paragraph spacing. "
             "Do not rewrite, summarize, add, remove, or change wording. "
-            "Preserve the exact tone, paragraph breaks, numbering, and punctuation unless a spacing fix requires a tiny punctuation adjustment. "
+            "Preserve the exact tone, sentence order, paragraph breaks, numbering, and punctuation unless a spacing fix requires a tiny punctuation adjustment. "
             "Return only the corrected message."
         )
 
@@ -255,7 +263,7 @@ def _run_final_spacing_cleanup_model(text: str) -> Optional[str]:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": text},
             ],
-            model=settings.MODEL_FALLBACK_FAST,
+            model=settings.MODEL_FALLBACK_SMART,
             temperature=0.0,
             max_tokens=min(600, max(120, len(text) // 2)),
         ).strip()

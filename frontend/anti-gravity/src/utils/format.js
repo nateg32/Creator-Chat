@@ -45,10 +45,13 @@ function restoreSpans(text, protectedSpans) {
     return protectedSpans.reduce((output, span) => output.replace(span.token, span.value), text);
 }
 
+const letterEndPunctBoundaryRe = /([A-Za-z][.!?])(?=[A-Z0-9])/g;
 const splitHeadRe = /(^|[\n([{"])([A-Za-z])\s+([a-z]{3,})(?=\b)/gm;
 const splitMiddleRe = /\b([A-Za-z]{2,})\s+([aeiou])\b(?=\s+[A-Za-z]{2,}\s+[bcdfghjklmnpqrstvwxyz]\b)/gi;
 const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
 const splitSuffixRe = /\b([A-Za-z]{3,})\s+(ify|ifies|ified|ifying|ise|ises|ised|ising|ize|izes|ized|izing|ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b/gi;
+const mergedSingleHeadRe = /\b([AI])([a-z]{3,})\b/g;
+const mergedCommonHeadRe = /\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b/g;
 const contractionBoundaryRe = /((?:'s|'re|'ve|'ll|'d|'m))(?=(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)/gi;
 const mergedCommonTokenRe = /\b[A-Za-z]{4,24}\b/g;
 const commonShortWords = new Set([
@@ -92,7 +95,10 @@ function repairSplitWordFragments(text) {
 }
 
 function repairMergedCommonWordPairs(text) {
-    return text.replace(mergedCommonTokenRe, (token) => {
+    return text
+        .replace(mergedSingleHeadRe, (_, head, tail) => `${head} ${tail}`)
+        .replace(mergedCommonHeadRe, (_, head, tail) => `${head} ${tail}`)
+        .replace(mergedCommonTokenRe, (token) => {
         const lower = token.toLowerCase();
         if (mergeableCommonWords.has(lower)) return token;
 
@@ -125,6 +131,7 @@ export function repairDisplaySpacing(text) {
     const { tokenized, protectedSpans } = protectSpans(text);
     const repaired = tokenized
         .replace(/^(\s*\d+[.)])(?=\S)/gm, '$1 ')
+        .replace(letterEndPunctBoundaryRe, '$1 ')
         .replace(/([A-Za-z])(?=([1-3]?\d{1,3}:\d{1,3}(?:-\d{1,3})?))/g, '$1 ')
         .replace(/(?<=[A-Za-z])(?=\d{1,4}(?=(?:\s|[,.;:!?)]|$)))/g, ' ')
         .replace(/(?<=[A-Za-z])(?=\d{1,4}(?:s|x|st|nd|rd|th)(?=(?:\s|[,.;:!?)]|$)))/gi, ' ')

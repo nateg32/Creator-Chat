@@ -161,6 +161,24 @@ class TextSanitizerTests(unittest.TestCase):
             "That justifies 2 to 10x pricing.",
         )
 
+    def test_repairs_merged_single_letter_heads(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I'm Dan Martell. Ibuild and Icoach founders."),
+            "I'm Dan Martell. I build and I coach founders.",
+        )
+
+    def test_repairs_merged_common_heads(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Myfirst real business taught me a lot. Youkeep going."),
+            "My first real business taught me a lot. You keep going.",
+        )
+
+    def test_inserts_missing_space_after_sentence_punctuation(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("1 Offer.1 customer type.1 acquisition channel."),
+            "1 Offer. 1 customer type. 1 acquisition channel.",
+        )
+
     def test_finalize_generated_text_accepts_generic_model_spacing_fix(self):
         original = text_sanitizer._run_final_spacing_cleanup_model
         text_sanitizer._run_final_spacing_cleanup_model = lambda text: "That feels conversational and natural."
