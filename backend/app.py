@@ -2232,13 +2232,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
                 streamed_answer = strip_mid_sentence_hyphens(raw_answer)
-                full_answer = finalize_generated_text(raw_answer)
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
-                    else merge_preview_cards(_extract_stream_cards(full_answer), enrich_titles=True)
+                    else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=True)
                 )
-                full_answer = finalize_generated_text(strip_card_attachment_artifacts(full_answer, cards))
+                final_input = strip_card_attachment_artifacts(streamed_answer, cards)
+                full_answer = finalize_generated_text(final_input)
                 if full_answer != streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 if request.thread_id:
@@ -2500,19 +2500,19 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             thread_id=request.thread_id
         )
         
-        answer_text = finalize_generated_text(result["answer"])
-        
+        answer_text = strip_mid_sentence_hyphens(result["answer"])
+        explicit_cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
+        cards = (
+            merge_preview_cards(explicit_cards, enrich_titles=True)
+            if explicit_cards
+            else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
+        )
+        answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
+
         # Post-Processing: Save Assistant Message & Update Thread
         if request.thread_id and thread:
              # Save assistant message with cards in metadata
              assistant_metadata = {}
-             explicit_cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
-             cards = (
-                 merge_preview_cards(explicit_cards, enrich_titles=True)
-                 if explicit_cards
-                 else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
-             )
-             answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
              if cards:
                  assistant_metadata["cards"] = cards
 
@@ -2534,14 +2534,6 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                   background_tasks.add_task(_update_thread_title_background, request.thread_id)
 
         # Ensure response matches AskResponse format
-        explicit_cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
-        cards = (
-            merge_preview_cards(explicit_cards, enrich_titles=True)
-            if explicit_cards
-            else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
-        )
-        answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
-
         return {
             "answer": answer_text,
             "retrieved": result.get("retrieved", []),

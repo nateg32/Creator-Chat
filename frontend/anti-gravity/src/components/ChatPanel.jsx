@@ -414,9 +414,7 @@ export function ChatPanel({
         messages: history,
         images: imagesPayload.length > 0 ? imagesPayload : undefined,
         onToken: (token) => {
-          if (token.trim() !== "") {
-            setLocalLoading(false); // Stop "Thinking" indicator as soon as actual content arrives
-          }
+          setLocalLoading(false); // Stop "Thinking" indicator as soon as the server starts streaming
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId

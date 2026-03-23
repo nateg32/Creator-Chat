@@ -514,6 +514,28 @@ class InteractionEngine:
             self.memory.add_user_message(str(creator_id), str(user_id), str(thread_id), user_msg)
             # self.memory.add_bot_message(str(user_id), bot_msg)
 
+    def _reply_model_for_route(self, route: Optional[str]) -> str:
+        if route in {"ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK"}:
+            return settings.MODEL_SYNTHESIS
+        return settings.MODEL_MAIN_REPLY
+
+    def _prompt_context_limits(self, route: Optional[str]) -> Dict[str, int]:
+        if route in {"ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK"}:
+            return {
+                "source_items": 0,
+                "source_chars": 0,
+                "persona_chars": 700,
+                "history_limit": 4,
+                "history_chars": 90,
+            }
+        return {
+            "source_items": 3,
+            "source_chars": 280,
+            "persona_chars": 1200,
+            "history_limit": 8,
+            "history_chars": 120,
+        }
+
     # ──────────────────────────────────────────────────────────
     # STEP 1 — DETERMINISTIC INTENT CLASSIFIER
     # ──────────────────────────────────────────────────────────
@@ -1022,7 +1044,7 @@ Generate InteractionPlan JSON."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
             ],
-            model=settings.MODEL_MAIN_REPLY,
+            model=self._reply_model_for_route(route),
             temperature=0.7,
             stream=True,
             max_tokens=int(reply_budget["max_tokens"]),
@@ -1059,7 +1081,7 @@ Generate InteractionPlan JSON."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
             ],
-            model=settings.MODEL_MAIN_REPLY,
+            model=self._reply_model_for_route(route),
             temperature=0.7,
             stream=True,
             max_tokens=int(reply_budget["max_tokens"]),
@@ -1113,6 +1135,7 @@ Generate InteractionPlan JSON."""
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
         allow_lists = self._should_allow_lists(normalized_prefs)
+        context_limits = self._prompt_context_limits(route)
         reply_budget = self._resolve_reply_budget(route or "ROUTE_2_TASK", user_msg, normalized_prefs, allow_lists=allow_lists)
         length_directive = self._build_length_directive(reply_budget, allow_lists=allow_lists)
         safety_block = build_prompt_safety_block(history=history, custom_preferences=normalized_prefs.get("custom", ""))
@@ -1138,7 +1161,7 @@ Output ONLY your response."""
         source_context = ""
         if rag_chunks:
             chunks_text = []
-            for i, c in enumerate(rag_chunks[:4]):
+            for i, c in enumerate(rag_chunks[:context_limits["source_items"]]):
                 content = c.get("content", "")
                 
                 # Check top-level first, then nested source_ref
@@ -1158,7 +1181,7 @@ Output ONLY your response."""
                         if snippet:
                             item_text += f" | Why it matches: {snippet}"
                     else:
-                        item_text = f"From your content: \"{content[:400]}\""
+                        item_text = f"From your content: \"{content[:context_limits['source_chars']]}\""
                     
                     if url:
                         item_text += f"\n(Video Title: {title} | Link: {url})"
@@ -1169,9 +1192,14 @@ Output ONLY your response."""
         has_image_context = any(c.get("is_image_context") for c in (rag_chunks or []))
 
         persona_anchor = creator_profile.get("soul_md") or persona or ""
-        persona_section = f"\nWHO YOU ARE (Persona Anchor):\n{persona_anchor[:2000]}\n" if persona_anchor else ""
+        persona_section = f"\nWHO YOU ARE (Persona Anchor):\n{persona_anchor[:context_limits['persona_chars']]}\n" if persona_anchor else ""
 
-        history_context = self._build_history_context(history, creator_name, limit=20, max_chars=220)
+        history_context = self._build_history_context(
+            history,
+            creator_name,
+            limit=context_limits["history_limit"],
+            max_chars=context_limits["history_chars"],
+        )
 
         memory_section = ""
         if pre_fetched_memories:
@@ -1369,7 +1397,7 @@ Output only the two sentences."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_msg}
                 ],
-                model=settings.MODEL_MAIN_REPLY,
+                model=self._reply_model_for_route(plan.route),
                 temperature=0.8,
                 max_tokens=64,
             )
@@ -1426,7 +1454,7 @@ Output only the response."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_msg}
                 ],
-                model=settings.MODEL_MAIN_REPLY,
+                model=self._reply_model_for_route(plan.route),
                 temperature=0.7,
                 max_tokens=80,
             )
@@ -1498,12 +1526,13 @@ Output only the response."""
             history=history,
             custom_preferences=normalized_prefs.get("custom", ""),
         )
+        context_limits = self._prompt_context_limits(plan.route)
 
         # Build context from RAG chunks — these are the creator's actual words
         source_context = ""
         if rag_chunks:
             chunks_text = []
-            for i, c in enumerate(rag_chunks[:4]):
+            for i, c in enumerate(rag_chunks[:context_limits["source_items"]]):
                 content = c.get("content", "")
                 url = c.get("url") or (c.get("source_ref") or {}).get("canonical_url")
                 title = c.get("title") or (c.get("source_ref") or {}).get("title")
@@ -1518,7 +1547,7 @@ Output only the response."""
                     chunks_text.append(item_text)
                 elif content:
                     prefix = f"From your video '{title}'" if title else "From your content"
-                    item_text = f"{prefix}: \"{content[:400]}\""
+                    item_text = f"{prefix}: \"{content[:context_limits['source_chars']]}\""
                     if url:
                         item_text += f" (Link: {url})"
                     chunks_text.append(item_text)
@@ -1531,7 +1560,7 @@ Output only the response."""
         persona_anchor = creator_profile.get("soul_md") or persona or ""
         persona_section = ""
         if persona_anchor:
-            persona_section = f"""\nWHO YOU ARE (Persona Anchor):\n{persona_anchor[:2000]}\n"""
+            persona_section = f"""\nWHO YOU ARE (Persona Anchor):\n{persona_anchor[:context_limits['persona_chars']]}\n"""
 
         # Build conversation history for context anchoring
         history_context = ""
@@ -1545,7 +1574,12 @@ Output only the response."""
             if history_lines:
                 history_context = f"""\nRECENT CONVERSATION (for context — stay anchored to any goals the user expressed):\n{chr(10).join(history_lines)}\n"""
 
-        history_context = self._build_history_context(history, creator_name, limit=10, max_chars=150)
+        history_context = self._build_history_context(
+            history,
+            creator_name,
+            limit=context_limits["history_limit"],
+            max_chars=context_limits["history_chars"],
+        )
 
         # Retrieve Persistent Memories
         memory_section = ""

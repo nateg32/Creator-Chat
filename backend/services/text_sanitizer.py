@@ -74,6 +74,14 @@ MERGED_TOKEN_BLOCKLIST = {
     "island", "remand", "remands", "strand", "strands",
 }
 FINAL_CLEANUP_MAX_CHARS = 2400
+FRAGMENT_LINE_RE = re.compile(r"(?m)^[A-Za-z]{1,4}(?:\s+[A-Za-z]{1,4}){1,3}$")
+GENERIC_SPLIT_FRAGMENT_RE = re.compile(r"\b([A-Za-z]{4,})\s+([a-z]{4,})\b")
+SUSPICIOUS_FRAGMENT_STARTS = (
+    "ation", "ational", "ations", "ative", "atively", "ality", "alities",
+    "ment", "ments", "ness", "lessly", "less", "able", "ably", "ible", "ibly",
+    "fully", "ously", "ology", "ologies", "tion", "tions", "sion", "sions",
+    "ician", "icians", "preneur", "preneurs", "preneurial", "preneurship",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +332,35 @@ def strip_card_attachment_artifacts(text: str, cards) -> str:
     return cleaned.strip()
 
 
+def _has_suspicious_formatting(text: str) -> bool:
+    if not text:
+        return False
+    if LETTER_END_PUNCT_BOUNDARY_RE.search(text):
+        return True
+    if CONTRACTION_BOUNDARY_RE.search(text):
+        return True
+    if SPLIT_HEAD_RE.search(text) or SPLIT_MIDDLE_RE.search(text) or SPLIT_TAIL_RE.search(text) or SPLIT_SUFFIX_RE.search(text):
+        return True
+    if MERGED_SINGLE_HEAD_RE.search(text) or MERGED_COMMON_HEAD_RE.search(text):
+        return True
+    if WORD_TO_NUMBER_BOUNDARY_RE.search(text) or WORD_TO_NUMBER_SUFFIX_BOUNDARY_RE.search(text) or NUMBER_TO_WORD_BOUNDARY_RE.search(text):
+        return True
+    if FRAGMENT_LINE_RE.search(text):
+        return True
+    for match in GENERIC_SPLIT_FRAGMENT_RE.finditer(text):
+        left = match.group(1).lower()
+        right = match.group(2).lower()
+        if left in COMMON_SHORT_WORDS or right in COMMON_SHORT_WORDS:
+            continue
+        if any(right.startswith(prefix) for prefix in SUSPICIOUS_FRAGMENT_STARTS):
+            return True
+    for match in MERGED_COMMON_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if _repair_merged_common_word_pairs(token) != token:
+            return True
+    return False
+
+
 def finalize_generated_text(text: str, allow_model_cleanup: bool = True) -> str:
     """
     Final answer normalization for user-visible model output.
@@ -334,6 +371,10 @@ def finalize_generated_text(text: str, allow_model_cleanup: bool = True) -> str:
     if not base or not allow_model_cleanup:
         return base
     if len(base) > FINAL_CLEANUP_MAX_CHARS:
+        return base
+
+    raw = (text or "").strip()
+    if raw == base and not _has_suspicious_formatting(base):
         return base
 
     candidate = _run_final_spacing_cleanup_model(base)

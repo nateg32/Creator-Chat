@@ -741,6 +741,91 @@ def _is_followup_resource_request(question: str, last_bot_msg: str) -> bool:
     return any(word in referential for word in words) and any(word in media for word in words)
 
 
+def _should_run_resource_recommender(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    last_bot_msg: str = "",
+) -> bool:
+    q = (question or "").lower().strip()
+    if not q:
+        return False
+    if needs_links(question) or _is_followup_resource_request(question, last_bot_msg):
+        return True
+    if classify_intent(question) == "request_sources":
+        return True
+
+    explicit_phrases = [
+        "what should i watch",
+        "what should i read",
+        "where do i start",
+        "where should i start",
+        "watch first",
+        "read first",
+        "send me",
+        "show me",
+        "recommend a video",
+        "recommend me a video",
+        "recommend a post",
+        "recommend a reel",
+        "best video",
+        "best post",
+        "best reel",
+        "any resources",
+        "good resources",
+        "course lesson",
+        "course module",
+        "which lesson",
+        "which module",
+        "which video",
+        "which post",
+        "which reel",
+        "where did you talk about",
+        "did you talk about",
+        "where did you say",
+    ]
+    if any(phrase in q for phrase in explicit_phrases):
+        return True
+
+    words = set(re.findall(r"[a-z0-9']+", q))
+    media_words = {
+        "video", "videos", "watch", "reel", "reels", "clip", "clips", "post", "posts",
+        "link", "links", "source", "sources", "resource", "resources", "article",
+        "articles", "lesson", "lessons", "module", "modules", "course", "courses",
+        "episode", "episodes", "read",
+    }
+    action_words = {"show", "send", "recommend", "reccomend", "which", "what", "where", "best", "good", "watch", "read", "find"}
+    return bool(words & media_words and words & action_words)
+
+
+def _should_run_exact_text_match(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    *,
+    wants_resource: bool = False,
+) -> bool:
+    q = (question or "").lower().strip()
+    if not q:
+        return False
+    if wants_resource or needs_links(question):
+        return True
+    if any(token in q for token in ['"', "“", "”"]):
+        return True
+    if any(phrase in q for phrase in [
+        "where did you say",
+        "where did you talk",
+        "what did you say",
+        "did you mention",
+        "exact words",
+        "quote",
+        "title",
+        "called",
+        "proof",
+        "source",
+    ]):
+        return True
+    return len(q.split()) <= 6
+
+
 def _should_block_on_web_fallback(
     question: str,
     history: Optional[List[Dict[str, str]]],
@@ -2872,19 +2957,38 @@ Message: {answer_text[:500]}"""
         logger.info("Bypassing Retrieval/Recommendation for greeting mode.")
         rec_result = {"best_candidate": None, "q_emb": [0.0]*1536}
     else:
-        rec_result = recommend_one_content(
-            user_id=user_id,
-            creator_id=creator_id,
-            user_message=question,
-            conversation_history=conversation_history,
-            creator_row=creator_row
-        )
+        last_bot_msg = ""
+        if conversation_history:
+            for m in reversed(conversation_history):
+                if m.get("role") == "assistant":
+                    last_bot_msg = (m.get("content") or "").lower()
+                    break
+        explicit_link_request = needs_links(question)
+        context_needs_video = _is_followup_resource_request(question, last_bot_msg)
+        should_run_recommender = _should_run_resource_recommender(question, conversation_history, last_bot_msg)
+        preferred_platforms = extract_requested_platforms(question, conversation_history)
+        if should_run_recommender:
+            rec_result = recommend_one_content(
+                user_id=user_id,
+                creator_id=creator_id,
+                user_message=question,
+                conversation_history=conversation_history,
+                creator_row=creator_row
+            )
+            preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or preferred_platforms
+        else:
+            rec_result = {
+                "best_candidate": None,
+                "q_emb": None,
+                "confidence": 0.0,
+                "resource_intent": {"preferred_platforms": preferred_platforms},
+            }
     
     # Synthesis (Compact Support Pack)
     if intent in ["greeting", "greeting_only", "small_talk"]:
         support_set = []
     else:
-        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3]
+        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3] if should_run_recommender else []
         if not support_set:
             # Fallback to standard RAG if no recommendation
             q_emb = rec_result.get("q_emb")
@@ -2897,30 +3001,21 @@ Message: {answer_text[:500]}"""
                     q_emb = [0.0] * 1536
             support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
 
-        exact_text_matches = retrieve_exact_text_matches(
-            creator_id,
-            question,
-            limit=4,
-            enabled_platforms=enabled_platforms,
-        )
-        if exact_text_matches:
-            support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
+        if _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
+            exact_text_matches = retrieve_exact_text_matches(
+                creator_id,
+                question,
+                limit=4,
+                enabled_platforms=enabled_platforms,
+            )
+            if exact_text_matches:
+                support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
             
         # --- NEW: Real-Time Web Search Fallback (Sync) ---
         # Check context: Did the bot just talk about a video/link?
-        last_bot_msg = ""
-        if conversation_history:
-            for m in reversed(conversation_history):
-                if m.get("role") == "assistant":
-                    last_bot_msg = (m.get("content") or "").lower()
-                    break
-        
-        explicit_link_request = needs_links(question)
-        context_needs_video = _is_followup_resource_request(question, last_bot_msg)
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
-        preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or extract_requested_platforms(question, conversation_history)
         has_recommendable_ingested_resource = _has_recommendable_resource(
             rec_result,
             preferred_platforms=preferred_platforms,
@@ -3343,35 +3438,67 @@ async def grounded_rag_stream(
         persona = creator_row.get("soul_md") or ""
         
         q_emb = embedding_resp.data[0].embedding
-        
+
+        last_bot_msg = ""
+        if conversation_history:
+            for m in reversed(conversation_history):
+                if m and m.get("role") == "assistant":
+                    last_bot_msg = (m.get("content") or "").lower()
+                    break
+
+        explicit_link_request = needs_links(question)
+        context_needs_video = _is_followup_resource_request(question, last_bot_msg)
+        should_run_recommender = _should_run_resource_recommender(question, conversation_history, last_bot_msg)
+        preferred_platforms = extract_requested_platforms(question, conversation_history)
+
         # Launch Search Tasks (Parallel)
         mems_task = interaction_engine.memory.search_with_embedding_async(
             str(creator_id), str(user_id), str(thread_id or "new"), q_emb
         )
-        rec_task = asyncio.to_thread(
-            recommend_one_content,
-            user_id,
+        direct_support_task = asyncio.to_thread(
+            retrieve_candidates,
             creator_id,
-            question,
-            conversation_history,
-            creator_row,
-            False,
             q_emb,
+            3,
+            1.15,
+            get_enabled_platforms_for_creator(creator_id),
         )
-        
-        rec_result, mems = await asyncio.gather(rec_task, mems_task)
-        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3]
+        if should_run_recommender:
+            rec_task = asyncio.to_thread(
+                recommend_one_content,
+                user_id,
+                creator_id,
+                question,
+                conversation_history,
+                creator_row,
+                False,
+                q_emb,
+            )
+            rec_result, mems, direct_support = await asyncio.gather(rec_task, mems_task, direct_support_task)
+            preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or preferred_platforms
+        else:
+            rec_result = {
+                "best_candidate": None,
+                "q_emb": q_emb,
+                "confidence": 0.0,
+                "resource_intent": {"preferred_platforms": preferred_platforms},
+            }
+            mems, direct_support = await asyncio.gather(mems_task, direct_support_task)
+
+        support_set = rec_result.get("best_candidate", {}).get("chunks", [])[:3] if should_run_recommender else []
+        support_set = merge_support_sets(support_set, direct_support, limit=4) if support_set else (direct_support or [])
         if not support_set:
             support_set = await asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
-        exact_text_matches = await asyncio.to_thread(
-            retrieve_exact_text_matches,
-            creator_id,
-            question,
-            4,
-            None,
-        )
-        if exact_text_matches:
-            support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
+        if _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
+            exact_text_matches = await asyncio.to_thread(
+                retrieve_exact_text_matches,
+                creator_id,
+                question,
+                4,
+                None,
+            )
+            if exact_text_matches:
+                support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
         
         # --- Optimized Real-Time Web Search Fallback ---
         import time as _time
@@ -3379,22 +3506,11 @@ async def grounded_rag_stream(
         
         search_mode = creator_row.get("search_mode") or "hybrid"
         
-        # Check if bot recently discussed video/link
-        last_bot_msg = ""
-        if conversation_history:
-            for m in reversed(conversation_history):
-                if m and m.get("role") == "assistant":
-                    last_bot_msg = (m.get("content") or "").lower()
-                    break
-        
-        explicit_link_request = needs_links(question)
-        context_needs_video = _is_followup_resource_request(question, last_bot_msg)
         wants_link = explicit_link_request or context_needs_video
         
         # Explicit video intent detection
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
-        preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or extract_requested_platforms(question, conversation_history)
         has_recommendable_ingested_resource = _has_recommendable_resource(
             rec_result,
             preferred_platforms=preferred_platforms,
