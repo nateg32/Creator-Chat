@@ -127,6 +127,11 @@ function stripInlineLinksFromMessageText(text = "") {
     .trim();
 }
 
+function hasVisibleMessageText(message) {
+  const text = message?.content ?? message?.text ?? "";
+  return String(text).trim().length > 0;
+}
+
 const MIN_IMAGE_ZOOM = 0.75;
 const MAX_IMAGE_ZOOM = 3;
 const IMAGE_ZOOM_STEP = 0.25;
@@ -395,6 +400,7 @@ export function ChatPanel({
         role: "assistant",
         content: "",
         text: "",
+        status: "typing",
         ts: new Date().toISOString(),
       },
     ]);
@@ -416,16 +422,41 @@ export function ChatPanel({
         messages: history,
         images: imagesPayload.length > 0 ? imagesPayload : undefined,
         onToken: (token) => {
-          setLocalLoading(false); // Stop "Thinking" indicator as soon as the server starts streaming
+          let receivedVisibleText = false;
           setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantMessageId
-                ? { ...msg, content: msg.content + token, text: msg.text + token }
-                : msg
-            )
+            prev.map((msg) => {
+              if (msg.id !== assistantMessageId) return msg;
+
+              const currentContent = msg.content ?? msg.text ?? "";
+              const incoming = typeof token === "string" ? token : "";
+              const hasVisibleCurrent = currentContent.trim().length > 0;
+              const hasVisibleIncoming = incoming.trim().length > 0;
+
+              // Ignore heartbeat whitespace so the typing bubble stays alive
+              // until real visible content begins.
+              if (!hasVisibleCurrent && !hasVisibleIncoming) {
+                return msg;
+              }
+
+              if (hasVisibleCurrent || hasVisibleIncoming) {
+                receivedVisibleText = true;
+              }
+
+              const nextContent = currentContent + incoming;
+              return {
+                ...msg,
+                content: nextContent,
+                text: nextContent,
+                status: "streaming",
+              };
+            })
           );
+          if (receivedVisibleText) {
+            setLocalLoading(false);
+          }
         },
         onComplete: (fullAnswer, meta = {}) => {
+          setLocalLoading(false);
           setMessages((prev) =>
             prev.map((msg) => {
               if (msg.id !== assistantMessageId) return msg;
@@ -437,6 +468,7 @@ export function ChatPanel({
                 nextMessage.content = fullAnswer;
                 nextMessage.text = fullAnswer;
               }
+              nextMessage.status = "done";
               if (meta.cards?.length) {
                 nextMessage.cards = meta.cards;
               }
@@ -453,10 +485,11 @@ export function ChatPanel({
             : `Sorry, something went wrong: ${rawMessage}`;
           setApprovalRequired(needsApproval);
           setError(friendlyMessage);
+          setLocalLoading(false);
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId
-                ? { ...msg, content: friendlyMessage, text: friendlyMessage }
+                ? { ...msg, content: friendlyMessage, text: friendlyMessage, status: "error" }
                 : msg
             )
           );
@@ -518,6 +551,8 @@ export function ChatPanel({
                   </div>
                 );
               }
+              const isTypingMessage = m.role === "assistant" && m.status === "typing" && !hasVisibleMessageText(m);
+              const hasMessageText = hasVisibleMessageText(m);
               return (
                 <div key={m.id ?? idx} className={`msg-row msg-${m.role}`}>
                   <div
@@ -536,15 +571,6 @@ export function ChatPanel({
                       <div className="msg-sender">
                         {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
                       </div>
-
-                      {/* Inline Thinking Indicator */}
-                      {m.role === "assistant" && loading && (!m.content && !m.text || (m.content || m.text).trim() === "") && (
-                        <div className="thinking-indicator inline-thinking">
-                          <div className="dot"></div>
-                          <div className="dot"></div>
-                          <div className="dot"></div>
-                        </div>
-                      )}
                     </div>
 
                     {/* Render Images Inside Bubble */}
@@ -571,7 +597,7 @@ export function ChatPanel({
                     )}
 
                     {/* Text Content / Thinking Indicator */}
-                    {((m.content || m.text) && (m.content || m.text).trim()) ? (
+                    {hasMessageText ? (
                       <div className="msg-text">
                         {(() => {
                           const text = formatMessageText(m.content ?? m.text, creatorDisplayName);
@@ -799,6 +825,14 @@ export function ChatPanel({
                             </div>
                           );
                         })()}
+                      </div>
+                    ) : isTypingMessage ? (
+                      <div className="typing-bubble-shell" role="status" aria-live="polite" aria-label={`${formatCreatorName(creatorDisplayName)} is typing`}>
+                        <div className="typing-bubble-core">
+                          <span className="typing-dot"></span>
+                          <span className="typing-dot"></span>
+                          <span className="typing-dot"></span>
+                        </div>
                       </div>
                     ) : null}
 
