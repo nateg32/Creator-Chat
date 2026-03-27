@@ -41,6 +41,7 @@ from backend.apify_service import search_all, search_instagram_reels
 from backend.lib.instagram_parser import parse_instagram_url
 from backend.config.platforms import (
     PLATFORMS,
+    choose_valid_normalized_url,
     get_platform,
     validate_url,
     normalize_url,
@@ -1261,7 +1262,7 @@ def validate_platform_url(key: str, url: str = ""):
     out = {
         "valid": True,
         "scrape_ready": scrape_ready,
-        "normalized": availability.get("resolved_url") or norm,
+        "normalized": choose_valid_normalized_url(key, norm, availability.get("resolved_url") or ""),
         "checked_via": checked_via,
     }
     if availability.get("warning"):

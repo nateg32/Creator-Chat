@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 # Time filter modes; exactly one active per platform.
 TIME_MODES = ("since", "last_days", "all")
@@ -119,6 +119,35 @@ def _strip_tracking(u: str) -> str:
         return u
 
 
+def _unwrap_instagram_redirect(u: str) -> str:
+    try:
+        parsed = urlparse(u if u.startswith("http") else "https://" + u)
+        host = (parsed.netloc or "").lower()
+        if "instagram.com" not in host:
+            return u
+
+        segments = [seg for seg in (parsed.path or "").split("/") if seg]
+        if len(segments) < 2 or segments[0].lower() != "accounts" or segments[1].lower() != "login":
+            return u
+
+        query = parse_qs(parsed.query or "")
+        next_target = next((str(value).strip() for value in query.get("next", []) if str(value).strip()), "")
+        if not next_target:
+            return u
+
+        if next_target.startswith("/"):
+            return f"https://{parsed.netloc}{next_target}"
+        if not re.match(r"^https?://", next_target, re.IGNORECASE):
+            next_target = f"https://{parsed.netloc}/{next_target.lstrip('/')}"
+
+        target_parsed = urlparse(next_target)
+        if "instagram.com" not in (target_parsed.netloc or "").lower():
+            return u
+        return next_target
+    except Exception:
+        return u
+
+
 def normalize_url(url: str, platform_key: str) -> str:
     """Normalize URL: strip tracking params, enforce https."""
     if not url or not isinstance(url, str):
@@ -142,6 +171,8 @@ def normalize_url(url: str, platform_key: str) -> str:
     if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
         h = u.lstrip("@")
         return f"https://instagram.com/{h}"
+    if platform_key == "instagram":
+        u = _unwrap_instagram_redirect(u)
     if platform_key == "tiktok":
         try:
             parsed = urlparse(u if u.startswith("http") else "https://" + u)
@@ -155,6 +186,20 @@ def normalize_url(url: str, platform_key: str) -> str:
     if not u.startswith("http"):
         u = "https://" + u
     return _strip_tracking(u)
+
+
+def choose_valid_normalized_url(platform_key: str, requested_url: str, resolved_url: str = "") -> str:
+    """
+    Prefer the resolved URL when it can be normalized into a valid profile URL,
+    otherwise keep the normalized requested URL.
+    """
+    normalized_requested = normalize_url(requested_url, platform_key)
+    normalized_resolved = normalize_url(resolved_url, platform_key) if resolved_url else ""
+    if normalized_resolved:
+        ok, _ = validate_url(normalized_resolved, platform_key)
+        if ok:
+            return normalized_resolved
+    return normalized_requested
 
 
 def _path_matches_platform(parsed, platform_key: str) -> bool:

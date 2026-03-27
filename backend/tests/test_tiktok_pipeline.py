@@ -41,6 +41,21 @@ tiktok_validator = _load_module("tiktok_validator", "services/tiktok_validator.p
 
 
 class TikTokPlatformTests(unittest.TestCase):
+    def test_instagram_login_redirect_normalizes_to_profile_url(self):
+        url = platforms.normalize_url(
+            "https://www.instagram.com/accounts/login/?next=https%3A%2F%2Fwww.instagram.com%2Fblakefakhoury%2F&is_from_rle=1",
+            "instagram",
+        )
+        self.assertEqual(url, "https://www.instagram.com/blakefakhoury/")
+
+    def test_resolved_instagram_login_redirect_does_not_replace_profile_url(self):
+        normalized = platforms.choose_valid_normalized_url(
+            "instagram",
+            "https://www.instagram.com/blakefakhoury/",
+            "https://www.instagram.com/accounts/login/",
+        )
+        self.assertEqual(normalized, "https://www.instagram.com/blakefakhoury/")
+
     def test_tiktok_profile_url_is_valid(self):
         url = platforms.normalize_url("https://www.tiktok.com/@ahormozi", "tiktok")
         self.assertEqual(platforms.validate_url(url, "tiktok"), (True, None))
