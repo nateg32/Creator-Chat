@@ -11,6 +11,7 @@ import { NewChatModal } from "./components/NewChatModal";
 import { UserSettingsModal } from "./components/UserSettingsModal";
 import { Login } from "./components/Login";
 import { API_BASE_URL, API_CONNECTION_HELP } from "./config";
+import { buildCreatorStarterMessage } from "./utils/creatorWelcome";
 import {
   scrape,
   approveIngestCommit,
@@ -464,6 +465,7 @@ function AppInner() {
         creatorName: creator ? (creator.name || creator.handle) : "Unknown",
         handle: creator ? creator.handle : "",
         creatorAvatarUrl: creator ? creator.profile_picture_url : "",
+        styleFingerprint: creator ? (creator.style_fingerprint || {}) : {},
         visualConfig: creator ? (creator.visual_config || {}) : {},
         searchMode: creator ? (creator.search_mode || "hybrid") : "hybrid",
         messages: messages.map(m => ({
@@ -790,18 +792,22 @@ function AppInner() {
     }
 
     // Create new chat (only for existing flow now)
+    const creatorStyleFingerprint = creatorId
+      ? ((existingCreators.find((creator) => creator.id === creatorId) || {}).style_fingerprint || {})
+      : {};
     const newChat = {
       id: generateChatId(),
       creatorId: creatorId,
       creatorName: creatorName,
       handle: handle,
+      styleFingerprint: creatorStyleFingerprint,
       creatorAvatarUrl: chatConfig.profile_picture_url || (chatConfig.type === "existing" ? chatConfig.profile_picture_url : ""),
       visualConfig: chatConfig.visual_config || {},
       messages: [
         {
           id: "welcome",
           role: "assistant",
-          text: `Hey! I'm ${creatorName}. Ask me anything!`,
+          text: buildCreatorStarterMessage(creatorName, creatorStyleFingerprint),
         },
       ],
       isTemporary: isTemporary,
@@ -1587,6 +1593,7 @@ function AppInner() {
                   creatorId={activeChat.creatorId || -1}
                   creatorDisplayName={activeChat.creatorName || activeChat.handle || "Creator"}
                   creatorHandle={activeChat.handle}
+                  creatorStyleFingerprint={activeChat.styleFingerprint || {}}
                   topK={topK}
                   maxDistance={maxDistance}
                   messages={activeChat.messages}

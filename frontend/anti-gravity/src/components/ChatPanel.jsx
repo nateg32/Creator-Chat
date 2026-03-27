@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ask, askStream } from "../api/client";
 import { resizeImage, compressChatImage } from "../utils/image";
 import { formatCreatorName, formatMessageText } from "../utils/format";
+import { buildCreatorWelcomeBody } from "../utils/creatorWelcome";
 import "./ChatPanel.css";
 import { CreatorSettingsModal } from "./CreatorSettingsModal";
 import { PreviewCard } from "./PreviewCard";
@@ -135,6 +136,7 @@ export function ChatPanel({
   threadId, // New prop
   creatorDisplayName = "Creator",
   creatorHandle = "",
+  creatorStyleFingerprint = {},
   topK,
   maxDistance,
   messages,
@@ -501,13 +503,13 @@ export function ChatPanel({
       {/* Content Area */}
       <div className="gemini-content">
         <div className="messages-stream">
-          {messages.length === 0 ? (
-            <div className="welcome-message">
-              <SparkleIcon />
-              <h1>I'm {formatCreatorName(creatorDisplayName)}</h1>
-              <p>I can help you understand my content, answer questions based on my videos and posts, or just chat about life and business.</p>
-            </div>
-          ) : (
+            {messages.length === 0 ? (
+              <div className="welcome-message">
+                <SparkleIcon />
+                <h1>I'm {formatCreatorName(creatorDisplayName)}</h1>
+                <p>{buildCreatorWelcomeBody(creatorStyleFingerprint, creatorDisplayName)}</p>
+              </div>
+            ) : (
             messages.map((m, idx) => {
               if (m.role === "system-notice") {
                 return (

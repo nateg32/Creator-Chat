@@ -97,14 +97,36 @@ class ResearchProvider(ABC):
         return "web"
 
     def _is_direct_video_url(self, url: str) -> bool:
-        url_lower = (url or "").lower()
-        return any(pattern in url_lower for pattern in [
-            "youtube.com/watch?v=", "youtube.com/shorts/", "youtu.be/",
-            "instagram.com/reel/", "instagram.com/reels/", "instagram.com/tv/", "instagram.com/p/",
-            "tiktok.com/",
-            "facebook.com/watch", "facebook.com/reel", "facebook.com/share/v/", "fb.watch/",
-            "x.com/", "twitter.com/",
-        ])
+        parsed = urlparse(url or "")
+        host = self._normalize_netloc(parsed.netloc)
+        path = (parsed.path or "").strip("/")
+        query = parse_qs(parsed.query or "")
+
+        if "youtube.com" in host:
+            if query.get("v"):
+                return True
+            return path.startswith("shorts/")
+        if "youtu.be" in host:
+            return bool(path)
+        if "instagram.com" in host:
+            first = path.split("/", 1)[0].lower() if path else ""
+            return first in {"reel", "reels", "p", "tv"}
+        if "tiktok.com" in host:
+            return "/video/" in f"/{path.lower()}/"
+        if "facebook.com" in host or "fb.watch" in host:
+            lowered = f"/{path.lower()}/"
+            return (
+                lowered.startswith("/watch/")
+                or "/watch/" in lowered
+                or lowered.startswith("/reel/")
+                or "/reel/" in lowered
+                or lowered.startswith("/share/v/")
+                or "videos/" in lowered
+            )
+        if "x.com" in host or "twitter.com" in host:
+            lowered = f"/{path.lower()}/"
+            return "/status/" in lowered
+        return False
 
     def _is_placeholder_url(self, url: str) -> bool:
         if not url:
@@ -1156,15 +1178,7 @@ class OpenAIResearchProvider(ResearchProvider):
         ), reverse=True)
         return selected
 
-    def _score_relevance(
-        self, results: List[Dict[str, Any]], topic_query: str, search_intent: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Score and sort results by how well their title matches the topic query.
-        """
-        import re
-
-        topic_lower = (topic_query or "").lower()
+    def _query_terms_for_relevance(self, topic_query: str, search_intent: str) -> List[str]:
         stop_words = {
             'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
             'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
@@ -1172,28 +1186,88 @@ class OpenAIResearchProvider(ResearchProvider):
             'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'i', 'me',
             'my', 'you', 'your', 'we', 'our', 'they', 'them', 'it', 'its', 'and',
             'or', 'but', 'not', 'no', 'what', 'which', 'who', 'how', 'when', 'where',
-            'that', 'this', 'these', 'those', 'video', 'videos', 'watch', 'link'
+            'that', 'this', 'these', 'those', 'link', 'links', 'resource', 'resources',
         }
-        topic_keywords = [w for w in re.split(r'\W+', topic_lower) if w and w not in stop_words and len(w) > 1]
+        if search_intent == 'VIDEO':
+            stop_words.update({
+                'video', 'videos', 'watch', 'watching', 'clip', 'clips', 'reel', 'reels',
+                'post', 'posts', 'first', 'start', 'starting', 'begin', 'best', 'good',
+                'recommend', 'recommended', 'reccomend', 'lesson', 'lessons', 'teach', 'learn',
+            })
+        return [
+            token for token in re.split(r'\W+', (topic_query or '').lower())
+            if token and token not in stop_words and len(token) > 1
+        ]
+
+    def _query_fidelity_score(self, result: Dict[str, Any], topic_keywords: List[str]) -> float:
         if not topic_keywords:
+            return 0.55
+
+        title_lower = (result.get('_real_title') or result.get('title') or '').lower()
+        snippet_lower = (result.get('snippet') or '').lower()
+        url_lower = (result.get('url') or '').lower()
+        title_hits = sum(1 for kw in topic_keywords if kw in title_lower)
+        snippet_hits = sum(1 for kw in topic_keywords if kw in snippet_lower)
+        url_hits = sum(1 for kw in topic_keywords if kw in url_lower)
+
+        coverage = (
+            (title_hits * 0.45)
+            + (snippet_hits * 0.22)
+            + (url_hits * 0.18)
+        ) / max(1.0, len(topic_keywords) * 0.45)
+
+        joined_terms = " ".join(topic_keywords[:5]).strip()
+        exact_phrase_bonus = 0.0
+        if joined_terms and (joined_terms in title_lower or joined_terms in snippet_lower):
+            exact_phrase_bonus = 0.2
+
+        return max(0.0, min(1.0, coverage + exact_phrase_bonus))
+
+    def _score_relevance(
+        self, results: List[Dict[str, Any]], topic_query: str, search_intent: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Score and sort results by how well their title matches the topic query.
+        """
+        topic_keywords = self._query_terms_for_relevance(topic_query, search_intent)
+        if not topic_keywords:
+            baseline = 0.58 if search_intent == 'VIDEO' else 0.5
+            for result in results:
+                result['_relevance_score'] = 1.0 if search_intent == 'VIDEO' else baseline
+                result['query_fidelity_score'] = baseline
+                domain = result.get('_domain', '')
+                trust = 1.0 if ('youtube.com' in domain or 'youtu.be' in domain) else 0.2
+                ownership = float(result.get('ownership_score', 0.0) or 0.0)
+                result['_evidence_score'] = (ownership * 2) + trust + baseline
+            results.sort(key=lambda x: (
+                x.get('relation') == 'SELF',
+                x.get('query_fidelity_score', 0),
+                x.get('_evidence_score', 0),
+                x.get('confidence', 0)
+            ), reverse=True)
             return results
 
         scored = []
         for result in results:
             title_lower = (result.get('_real_title') or result.get('title') or '').lower()
             snippet_lower = (result.get('snippet') or '').lower()
+            url_lower = (result.get('url') or '').lower()
             title_hits = sum(1 for kw in topic_keywords if kw in title_lower)
             snippet_hits = sum(1 for kw in topic_keywords if kw in snippet_lower)
-            relevance_score = (title_hits * 2) + snippet_hits
+            url_hits = sum(1 for kw in topic_keywords if kw in url_lower)
+            relevance_score = (title_hits * 2) + snippet_hits + url_hits
+            query_fidelity = self._query_fidelity_score(result, topic_keywords)
             result['_relevance_score'] = relevance_score
+            result['query_fidelity_score'] = query_fidelity
             domain = result.get('_domain', '')
             trust = 1.0 if ('youtube.com' in domain or 'youtu.be' in domain) else 0.2
             ownership = result.get('ownership_score', 0.0)
-            result['_evidence_score'] = (ownership * 2) + trust + min(2.0, relevance_score / 2.0)
+            result['_evidence_score'] = (ownership * 2) + trust + min(2.0, relevance_score / 2.0) + query_fidelity
             scored.append(result)
 
         scored.sort(key=lambda x: (
             x.get('relation') == 'SELF',
+            x.get('query_fidelity_score', 0),
             x.get('_evidence_score', 0),
             x.get('confidence', 0)
         ), reverse=True)
@@ -1381,9 +1455,10 @@ class OpenAIResearchProvider(ResearchProvider):
                 confidence = float(result.get('confidence') or 0.0)
                 relation = result.get('relation') or 'OTHER'
                 topic_score = float(result.get('_relevance_score') or 0.0)
-                if relation == 'SELF' and confidence >= 0.72 and topic_score >= 1:
+                query_fidelity = float(result.get('query_fidelity_score') or 0.0)
+                if relation == 'SELF' and confidence >= 0.72 and (topic_score >= 1 or query_fidelity >= 0.5):
                     strict_results.append(result)
-                elif relation == 'AFFILIATED' and confidence >= 0.8 and topic_score >= 1:
+                elif relation == 'AFFILIATED' and confidence >= 0.8 and (topic_score >= 1 or query_fidelity >= 0.55):
                     strict_results.append(result)
             results = strict_results
 

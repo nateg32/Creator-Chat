@@ -2265,6 +2265,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 )
                 final_input = strip_card_attachment_artifacts(streamed_answer, cards)
                 full_answer = finalize_generated_text(final_input)
+                full_answer = _apply_stream_creator_integrity(
+                    request.creator_id,
+                    current_user["id"],
+                    request.question,
+                    full_answer,
+                    cards=cards,
+                )
                 if full_answer != streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 if request.thread_id:
@@ -2304,6 +2311,51 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
 def _extract_stream_cards(answer: str):
     """Best-effort card extraction for streamed answers."""
     return extract_preview_cards(answer, enrich_titles=True)
+
+
+def _card_chunks_for_integrity(cards):
+    chunks = []
+    for card in cards or []:
+        title = (card or {}).get("title") or ""
+        url = (card or {}).get("url") or ""
+        if not title and not url:
+            continue
+        chunks.append(
+            {
+                "title": title,
+                "url": url,
+                "source_ref": {
+                    "title": title,
+                    "canonical_url": url,
+                },
+            }
+        )
+    return chunks
+
+
+def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None) -> str:
+    try:
+        creator_row = db.execute_one(
+            """
+            SELECT name, creator_category, voice_profile, style_fingerprint, identity_fingerprint, soul_md
+            FROM creators
+            WHERE id = %s AND user_id = %s
+            """,
+            (creator_id, user_id),
+        )
+        if not creator_row:
+            return answer
+        return interaction_engine._apply_creator_integrity_guard(
+            answer,
+            creator_row,
+            _card_chunks_for_integrity(cards),
+            question,
+            allow_links=False,
+            persona=creator_row.get("soul_md"),
+        )
+    except Exception as exc:
+        logger.error(f"Stream creator integrity pass failed: {exc}")
+        return answer
 
 
 def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, user_metadata=None, user_id: int = 1):

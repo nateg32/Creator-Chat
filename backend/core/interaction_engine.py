@@ -494,6 +494,241 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
     return "\n\n".join(parts)
 
 
+GENERIC_PERSONA_LEAKS = [
+    "based on the content",
+    "based on the information",
+    "according to the content",
+    "according to the information",
+    "from the context provided",
+    "i can help with that",
+    "let me know if you want more",
+    "hope this helps",
+    "here to help",
+]
+
+AI_IDENTITY_LEAKS = [
+    "as an ai",
+    "language model",
+    "chatgpt",
+    "assistant",
+    "i do not have access",
+    "i don't have access",
+]
+
+
+def _coerce_profile_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _normalize_marker_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _clean_marker_values(values: List[Any], limit: int = 8) -> List[str]:
+    cleaned: List[str] = []
+    seen = set()
+    for raw in values or []:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())
+        if not text or len(text) < 3:
+            continue
+        key = _normalize_marker_key(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _grounded_resource_titles(rag_chunks: Optional[List[Dict[str, Any]]], limit: int = 6) -> List[str]:
+    titles: List[str] = []
+    seen = set()
+    for chunk in rag_chunks or []:
+        title = (
+            chunk.get("title")
+            or (chunk.get("source_ref") or {}).get("title")
+            or ""
+        ).strip()
+        if not title:
+            continue
+        key = _normalize_marker_key(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        titles.append(title)
+        if len(titles) >= limit:
+            break
+    return titles
+
+
+def build_creator_genome(
+    creator_profile: Dict[str, Any],
+    rag_chunks: Optional[List[Dict[str, Any]]] = None,
+    persona: Optional[str] = None,
+) -> Dict[str, Any]:
+    creator_profile = creator_profile or {}
+    style_fp = _coerce_profile_dict(creator_profile.get("style_fingerprint") or creator_profile)
+    identity_fp = _coerce_profile_dict(creator_profile.get("identity_fingerprint"))
+    voice_profile = _coerce_profile_dict(creator_profile.get("voice_profile"))
+
+    lexical = style_fp.get("lexical_rules") or {}
+    worldview = style_fp.get("worldview") or {}
+    belief_graph = style_fp.get("belief_graph") or {}
+    anti = style_fp.get("anti_persona") or {}
+    contrastive = style_fp.get("contrastive_identity") or {}
+    disambiguation = style_fp.get("disambiguation_markers") or {}
+
+    signature_markers = _clean_marker_values(
+        list(voice_profile.get("signature_phrases") or [])
+        + list(lexical.get("signature_phrases") or [])
+        + list(disambiguation.get("must_show") or [])
+        + list(style_fp.get("signature_moves") or [])
+        + list(style_fp.get("signature_response_moves") or []),
+        limit=10,
+    )
+    worldview_markers = _clean_marker_values(
+        list(style_fp.get("value_hierarchy") or worldview.get("moral_hierarchy") or [])
+        + list(worldview.get("core_beliefs") or [])
+        + list(belief_graph.get("core_beliefs") or [])
+        + list(belief_graph.get("non_negotiables") or []),
+        limit=8,
+    )
+    response_moves = _clean_marker_values(
+        list(style_fp.get("signature_response_moves") or [])
+        + list(style_fp.get("signature_moves") or style_fp.get("rhetorical_moves") or []),
+        limit=8,
+    )
+    mutation_risks = _clean_marker_values(
+        list(disambiguation.get("must_avoid") or [])
+        + list(anti.get("forbidden_generic_coach_lines") or [])
+        + list(anti.get("forbidden_emotional_postures") or [])
+        + list(anti.get("sounds_like_someone_else_if") or [])
+        + list(contrastive.get("confusion_risks") or []),
+        limit=10,
+    )
+    stable_public_facts = _clean_marker_values(
+        [identity_fp.get("full_name"), identity_fp.get("bio")]
+        + list(identity_fp.get("job_titles") or [])
+        + list(identity_fp.get("verified_background") or identity_fp.get("achievements") or []),
+        limit=6,
+    )
+    grounded_titles = _grounded_resource_titles(rag_chunks, limit=6)
+
+    return {
+        "signature_markers": signature_markers,
+        "worldview_markers": worldview_markers,
+        "response_moves": response_moves,
+        "mutation_risks": mutation_risks,
+        "stable_public_facts": stable_public_facts,
+        "grounded_titles": grounded_titles,
+        "persona_anchor_present": bool((creator_profile.get("soul_md") or persona or "").strip()),
+    }
+
+
+def format_creator_genome_for_prompt(genome: Dict[str, Any]) -> str:
+    if not genome:
+        return ""
+
+    lines = []
+    if genome.get("signature_markers"):
+        lines.append(f"- Signature motifs: {json.dumps(genome['signature_markers'][:8])}")
+    if genome.get("worldview_markers"):
+        lines.append(f"- Core worldview markers: {json.dumps(genome['worldview_markers'][:6])}")
+    if genome.get("response_moves"):
+        lines.append(f"- Signature response moves: {json.dumps(genome['response_moves'][:6])}")
+    if genome.get("mutation_risks"):
+        lines.append(f"- Mutation risks to avoid: {json.dumps(genome['mutation_risks'][:8])}")
+    if genome.get("stable_public_facts"):
+        lines.append(f"- Stable public facts you may rely on: {json.dumps(genome['stable_public_facts'][:5])}")
+    if genome.get("grounded_titles"):
+        lines.append(f"- Exact grounded resource titles you may name: {json.dumps(genome['grounded_titles'][:5])}")
+
+    if not lines:
+        return ""
+
+    return "CREATOR GENOME (preserve these stable markers, do not spam them):\n" + "\n".join(lines)
+
+
+def evaluate_creator_integrity(
+    text: str,
+    creator_profile: Dict[str, Any],
+    rag_chunks: Optional[List[Dict[str, Any]]] = None,
+    allow_links: bool = False,
+    persona: Optional[str] = None,
+) -> Dict[str, Any]:
+    genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
+    lowered = (text or "").lower()
+    normalized_text = _normalize_marker_key(text)
+
+    ai_leaks = [phrase for phrase in AI_IDENTITY_LEAKS if phrase in lowered]
+    generic_leaks = [phrase for phrase in GENERIC_PERSONA_LEAKS if phrase in lowered]
+    generic_leaks.extend(
+        phrase for phrase in genome.get("mutation_risks", [])
+        if phrase and phrase.lower() in lowered
+    )
+    generic_leaks = _clean_marker_values(generic_leaks, limit=10)
+
+    raw_url_leak = bool(re.search(r"https?://", text or "")) and not allow_links
+
+    grounded_titles = {
+        _normalize_marker_key(title)
+        for title in genome.get("grounded_titles", [])
+        if title
+    }
+    invented_titles: List[str] = []
+    if grounded_titles and any(token in lowered for token in ["attached", "watch", "video", "resource", "reel", "post"]):
+        for quoted in re.findall(r'["“]([^"\n]{6,120})["”]', text or ""):
+            normalized = _normalize_marker_key(quoted)
+            if normalized and normalized not in grounded_titles:
+                invented_titles.append(quoted.strip())
+    invented_titles = _clean_marker_values(invented_titles, limit=4)
+
+    identity_markers = genome.get("signature_markers", []) + genome.get("worldview_markers", []) + genome.get("response_moves", [])
+    motif_hits = sum(
+        1 for marker in identity_markers
+        if marker and _normalize_marker_key(marker) in normalized_text
+    )
+    marker_gap = bool(
+        len((text or "").split()) >= 30
+        and identity_markers
+        and motif_hits == 0
+    )
+
+    findings = []
+    if ai_leaks:
+        findings.append("ai_identity_leak")
+    if raw_url_leak:
+        findings.append("raw_url_in_prose")
+    if invented_titles:
+        findings.append("invented_resource_title")
+    if generic_leaks:
+        findings.append("generic_persona_drift")
+    if marker_gap:
+        findings.append("missing_creator_markers")
+
+    return {
+        "genome": genome,
+        "ai_leaks": ai_leaks,
+        "generic_leaks": generic_leaks,
+        "invented_titles": invented_titles,
+        "raw_url_leak": raw_url_leak,
+        "marker_gap": marker_gap,
+        "motif_hits": motif_hits,
+        "findings": findings,
+        "issue_count": len(findings),
+        "needs_rewrite": bool(findings),
+    }
+
+
 # ══════════════════════════════════════════════════════════════
 # INTERACTION ENGINE
 # ══════════════════════════════════════════════════════════════
@@ -1067,14 +1302,37 @@ Generate InteractionPlan JSON."""
 
         if plan.route == "ROUTE_0_GREETING":
             raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences)
-            return strip_all_markdown(raw, allow_links=allow_links)
+            cleaned = strip_all_markdown(raw, allow_links=allow_links)
+            return self._apply_creator_integrity_guard(
+                cleaned,
+                creator_profile,
+                [],
+                user_msg,
+                allow_links=allow_links,
+                persona=persona,
+            )
 
         if plan.route == "ROUTE_1_SMALL_TALK":
             raw = self._render_small_talk(plan, creator_profile, user_msg, user_name, persona, user_preferences)
-            return strip_all_markdown(raw, allow_links=allow_links)
+            cleaned = strip_all_markdown(raw, allow_links=allow_links)
+            return self._apply_creator_integrity_guard(
+                cleaned,
+                creator_profile,
+                [],
+                user_msg,
+                allow_links=allow_links,
+                persona=persona,
+            )
 
         raw = self._render_task(plan, creator_profile, rag_chunks, creator_id, user_id, thread_id, user_name, user_msg, persona, history or [], user_preferences)
-        return raw
+        return self._apply_creator_integrity_guard(
+            raw,
+            creator_profile,
+            rag_chunks,
+            user_msg,
+            allow_links=allow_links,
+            persona=persona,
+        )
 
     def render_combined_pass_stream(
         self,
@@ -1223,6 +1481,9 @@ YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
 DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not know their name yet, ask what they want to be called. Do not jump into advice or a domain question yet.
 Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
+        creator_genome_block = format_creator_genome_for_prompt(
+            build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
+        )
 
         source_context = ""
         if rag_chunks:
@@ -1345,9 +1606,9 @@ STRICT IDENTITY LOCK:
         if rag_chunks:
             has_links = any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in rag_chunks)
             
-        anti_halluc_rule = "- FALLBACK: If a fact or link is NOT in Priority 1 or 2, say: \"Unfortunately, I don't have access to that information right now.\" DO NOT guess, speculate, or hallucinate."
+        anti_halluc_rule = "- FALLBACK: If a fact, title, or link is NOT in Priority 1 or 2, say naturally that you do not have it right now. DO NOT guess, speculate, rename a title, or hallucinate."
         if not has_links:
-            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent a title. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice. If the user did NOT ask for a link or video, do not mention missing links at all."
+            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent or rename a title. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice. If the user did NOT ask for a link or video, do not mention missing links at all."
         
         # If we have web search results, ensure the rule allows them
         has_video_links = any(
@@ -1376,6 +1637,7 @@ STRICT IDENTITY LOCK:
 {identity_guard.format(creator_name=creator_name, anti_halluc_rule=anti_halluc_rule)}
 YOUR VOICE:
 {voice_instructions}
+{creator_genome_block if creator_genome_block else ""}
 
 CORE DIRECTIVE: You are a high-speed interaction engine. 
 1. INTERNAL PLAN: Briefly (mentally) plan your route: EXECUTE if answering a question, COACH if giving guidance, or GREET if just saying hello.
@@ -1390,6 +1652,7 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 10. NO INLINE DASHES: Do not use hyphens, en dashes, or em dashes inside sentences. Rewrite with commas, periods, or spaces instead. Leading list bullets are fine.
 11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 resources max, and explain why each one helps with the user's specific question before you give it.
 12. RESOURCE DELIVERY: When you recommend a resource, mention it naturally, then tell the user you attached it below. Do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for YouTube, prefer YouTube results over other platforms.
+13. PERSONA HOMEOSTASIS: Keep your stable worldview, cadence, and response moves intact. Do not mutate into generic coach-talk just because the question is broad.
 {resource_lock_instruction}
 
 {length_directive}
@@ -1587,6 +1850,9 @@ Output only the response."""
 
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
+        creator_genome_block = format_creator_genome_for_prompt(
+            build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
+        )
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
         safety_block = build_prompt_safety_block(
@@ -1711,9 +1977,9 @@ CURRENT TURN HAS IMAGE CONTEXT:
         if rag_chunks:
             has_links = any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in rag_chunks)
             
-        anti_hallucination_rule = "7. DO NOT HALLUCINATE VIDEOS. If you recommend a video but there is NO specific video title or link mapped in the KNOWLEDGE FROM YOUR CONTENT section above, you MUST NOT invent or guess a video title. Instead, give them the advice directly or say you don't have a specific link handy right now."
+        anti_hallucination_rule = "7. DO NOT HALLUCINATE VIDEOS. If you recommend a video but there is NO specific video title or link mapped in the KNOWLEDGE FROM YOUR CONTENT section above, you MUST NOT invent, guess, or rename a video title. Instead, give them the advice directly or say you don't have a specific link handy right now."
         if not has_links:
-            anti_hallucination_rule = "7. CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS IN YOUR CONTEXT. Therefore, you MUST NOT recommend ANY specific video or resource by title, because you cannot provide the link. Do not invent a title. Just give the advice directly or tell the user you don't have a link for that right now."
+            anti_hallucination_rule = "7. CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS IN YOUR CONTEXT. Therefore, you MUST NOT recommend ANY specific video or resource by title, because you cannot provide the link. Do not invent or rename a title. Just give the advice directly or tell the user you don't have a link for that right now."
         
         # If we have web search results, ensure the rule allows them
         if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
@@ -1726,6 +1992,7 @@ You are {creator_name}.
 
 YOUR VOICE AND PERSONALITY:
 {voice_instructions}
+{creator_genome_block if creator_genome_block else ""}
 
 CONTEXT:
 {routing_instruction}
@@ -1770,6 +2037,7 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 
 10. BRIDGE & PIVOT. If the user asks about a topic outside {creator_category}, do NOT break character. Explain the concept *through the lens of your domain*. Use YOUR metaphors (e.g. if you're a basketball coach talking business, use basketball analogies). Then gently pivot back to your expertise.
 11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally, then say you attached it below. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
+12. PERSONA HOMEOSTASIS. Preserve your stable worldview, cadence, and response moves. Do not flatten into generic motivational or assistant language.
 {resource_lock_instruction}
 
 {length_directive}
@@ -1924,6 +2192,81 @@ Output the cleaned text only."""
     # ──────────────────────────────────────────────────────────
     # UTILITIES
     # ──────────────────────────────────────────────────────────
+
+    def _apply_creator_integrity_guard(
+        self,
+        text: str,
+        creator_profile: Dict[str, Any],
+        rag_chunks: List[Dict[str, Any]],
+        user_msg: str,
+        allow_links: bool = False,
+        persona: Optional[str] = None,
+    ) -> str:
+        cleaned = strip_mid_sentence_hyphens((text or "").strip())
+        report = evaluate_creator_integrity(
+            cleaned,
+            creator_profile,
+            rag_chunks=rag_chunks,
+            allow_links=allow_links,
+            persona=persona,
+        )
+        if not report.get("needs_rewrite"):
+            return cleaned
+
+        creator_name = (creator_profile.get("name") or "The Creator").strip() or "The Creator"
+        genome = report.get("genome") or {}
+        rewrite_model = getattr(settings, "REWRITE_MODEL", settings.MODEL_MAIN_REPLY)
+        findings = ", ".join(report.get("findings") or []) or "persona drift"
+        system_prompt = f"""You are the CREATOR INTEGRITY REPAIR LAYER for {creator_name}.
+
+Your job is to preserve the meaning of a draft while forcing it back into the creator's real voice and evidence boundaries.
+
+RULES:
+1. Keep the same answer and same overall length.
+2. Remove AI/system/meta phrasing completely.
+3. Remove raw URLs from the prose.
+4. If a resource title is not grounded, remove it or replace it with a truthful in-character boundary.
+5. Use at most one subtle creator marker if natural. Do not spam catchphrases.
+6. Do not add new facts, new resources, or new personal claims.
+7. Preserve paragraph or list structure when present.
+
+{format_creator_genome_for_prompt(genome) or "CREATOR GENOME: No extra genome markers available."}
+
+ISSUES TO REPAIR: {findings}
+
+OUTPUT ONLY THE REPAIRED MESSAGE.
+"""
+        user_prompt = f"""USER MESSAGE:
+{user_msg}
+
+CURRENT DRAFT:
+{cleaned}
+"""
+
+        try:
+            repaired = self._generate_completion_with_compat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=rewrite_model,
+                temperature=0.0,
+                max_tokens=max(120, min(700, len(cleaned) * 2)),
+            )
+            repaired = strip_mid_sentence_hyphens((repaired or "").strip().strip('"'))
+            repaired_report = evaluate_creator_integrity(
+                repaired,
+                creator_profile,
+                rag_chunks=rag_chunks,
+                allow_links=allow_links,
+                persona=persona,
+            )
+            if repaired_report.get("issue_count", 999) > report.get("issue_count", 0):
+                return cleaned
+            return repaired or cleaned
+        except Exception as exc:
+            logger.error(f"Creator integrity repair failed: {exc}")
+            return cleaned
 
     def _check_for_vague_loop(self, history: List[Dict[str, str]]) -> bool:
         """Check if user responded vaguely 2+ times in a row."""

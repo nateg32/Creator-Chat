@@ -11,6 +11,7 @@ import logging
 import math
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime, timezone, timedelta
+from urllib.parse import parse_qs, urlparse
 from backend.db import db
 from backend.settings import settings
 import backend.rag as rag
@@ -192,6 +193,131 @@ def _normalize_resource_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").lower()).strip()
 
 
+def _is_live_web_chunk(chunk: Optional[Dict[str, Any]]) -> bool:
+    if not chunk:
+        return False
+    return str(chunk.get("content") or "").startswith("[LIVE WEB SEARCH RESULT]")
+
+
+def _is_direct_video_resource_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").strip("/")
+    query = parse_qs(parsed.query or "")
+
+    if "youtube.com" in host:
+        if query.get("v"):
+            return True
+        return path.startswith("shorts/")
+    if "youtu.be" in host:
+        return bool(path)
+    if "instagram.com" in host:
+        first = path.split("/", 1)[0].lower() if path else ""
+        return first in {"reel", "reels", "p", "tv"}
+    if "tiktok.com" in host:
+        return "/video/" in f"/{path.lower()}/"
+    if "facebook.com" in host or "fb.watch" in host:
+        lowered = f"/{path.lower()}/"
+        return (
+            lowered.startswith("/watch/")
+            or "/watch/" in lowered
+            or lowered.startswith("/reel/")
+            or "/reel/" in lowered
+            or lowered.startswith("/share/v/")
+            or "videos/" in lowered
+        )
+    if "x.com" in host or "twitter.com" in host:
+        lowered = f"/{path.lower()}/"
+        return "/status/" in lowered
+    return False
+
+
+def _is_viable_resource_url(url: str, require_video: bool = False) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").strip("/")
+    if not host:
+        return False
+
+    if require_video:
+        return _is_direct_video_resource_url(url)
+
+    platform = _platform_from_url(url)
+    if platform in {"youtube", "instagram", "tiktok", "facebook", "twitter"}:
+        return _is_direct_video_resource_url(url)
+
+    lowered_path = path.lower()
+    if lowered_path in {"", "search", "explore", "results", "home", "login", "signup", "accounts"}:
+        return False
+    if any(token in lowered_path for token in ["accounts/login", "checkpoint", "authwall", "share", "redirect", "search"]):
+        return False
+    return True
+
+
+def _support_resource_card_candidates(
+    support_set: Optional[List[Dict[str, Any]]],
+    *,
+    preferred_platforms: Optional[List[str]] = None,
+    require_video: bool = False,
+    include_live_web: bool = False,
+) -> List[Dict[str, Any]]:
+    preferred = {platform.lower() for platform in (preferred_platforms or []) if platform}
+    selected: List[Dict[str, Any]] = []
+    seen_urls: Set[str] = set()
+
+    for chunk in support_set or []:
+        if not include_live_web and _is_live_web_chunk(chunk):
+            continue
+        if include_live_web and not _is_live_web_chunk(chunk):
+            continue
+
+        url = (
+            chunk.get("url")
+            or (chunk.get("source_ref") or {}).get("canonical_url")
+            or ""
+        ).strip()
+        title = (
+            chunk.get("title")
+            or (chunk.get("source_ref") or {}).get("title")
+            or ""
+        ).strip()
+        if not url or url.lower() in seen_urls:
+            continue
+        if preferred:
+            platform = _platform_from_url(url)
+            if platform not in preferred:
+                continue
+        if not _is_viable_resource_url(url, require_video=require_video):
+            continue
+        if _resource_title_quality(title, url) < 0.45:
+            continue
+
+        selected.append({
+            "title": title,
+            "url": url,
+            "platform": _platform_from_url(url),
+        })
+        seen_urls.add(url.lower())
+
+    return selected
+
+
+def _support_set_has_linkable_ingested_resource(
+    support_set: Optional[List[Dict[str, Any]]],
+    *,
+    preferred_platforms: Optional[List[str]] = None,
+    require_video: bool = False,
+) -> bool:
+    return bool(
+        _support_resource_card_candidates(
+            support_set,
+            preferred_platforms=preferred_platforms,
+            require_video=require_video,
+            include_live_web=False,
+        )
+    )
+
+
 def _is_recent_duplicate_candidate(
     candidate: Optional[Dict[str, Any]],
     seen_resources: Optional[Dict[str, Set[str]]] = None,
@@ -295,9 +421,11 @@ def _build_response_cards(
     preferred_platforms: Optional[List[str]] = None,
 ) -> List[Dict[str, str]]:
     cards: List[Dict[str, str]] = []
+    desired_count = max(1, int((rec_result or {}).get("card_limit") or 1))
+    resource_type = (((rec_result or {}).get("resource_intent") or {}).get("resource_type") or "video").lower()
+    require_direct_video = resource_type not in {"article", "course_lesson", "web", "website"}
 
     if _has_recommendable_resource(rec_result, preferred_platforms=preferred_platforms):
-        desired_count = max(1, int((rec_result or {}).get("card_limit") or 1))
         recommended_candidates = [
             (rec_result or {}).get("best_candidate")
         ] + list((rec_result or {}).get("alternate_candidates") or [])
@@ -319,20 +447,34 @@ def _build_response_cards(
         if cards:
             return cards
 
-    for chunk in support_set or []:
-        if not (chunk.get("content") or "").startswith("[LIVE WEB SEARCH RESULT]"):
+    ingested_candidates = _support_resource_card_candidates(
+        support_set,
+        preferred_platforms=preferred_platforms,
+        require_video=require_direct_video,
+        include_live_web=False,
+    )
+    for candidate in ingested_candidates[:desired_count]:
+        card = _preview_card_from_resource(candidate.get("title") or "", candidate.get("url") or "")
+        if not card:
             continue
+        cards.append(card)
+    if cards:
+        return cards
+
+    live_candidates = _support_resource_card_candidates(
+        support_set,
+        preferred_platforms=preferred_platforms,
+        require_video=require_direct_video,
+        include_live_web=True,
+    )
+    for candidate in live_candidates[:desired_count]:
         card = _preview_card_from_resource(
-            chunk.get("title") or (chunk.get("source_ref") or {}).get("title") or "",
-            chunk.get("url") or (chunk.get("source_ref") or {}).get("canonical_url") or "",
+            candidate.get("title") or "",
+            candidate.get("url") or "",
         )
         if not card:
             continue
-        platform = _platform_from_url(card["url"])
-        if preferred_platforms and platform not in {p.lower() for p in preferred_platforms if p}:
-            continue
         cards.append(card)
-        break
 
     return cards
 
@@ -713,7 +855,13 @@ def retrieve_candidates(
 
 def _normalize_search_terms(text: str) -> List[str]:
     words = re.findall(r"[a-z0-9]+", (text or "").lower())
-    stop = {"the", "and", "for", "with", "that", "this", "from", "what", "which", "where", "when", "your", "about", "into", "then", "them", "they", "have", "been", "would", "could", "should", "video", "videos", "link", "links", "watch", "show", "send", "online"}
+    stop = {
+        "the", "and", "for", "with", "that", "this", "from", "what", "which", "where", "when",
+        "your", "about", "into", "then", "them", "they", "have", "been", "would", "could",
+        "should", "video", "videos", "link", "links", "watch", "show", "send", "online",
+        "first", "start", "starting", "begin", "best", "good", "recommend", "recommended",
+        "reccomend", "watching", "learn",
+    }
     return [w for w in words if len(w) > 2 and w not in stop]
 
 
@@ -731,30 +879,50 @@ def _filter_live_web_results(results: List[Dict[str, Any]], question: str, requi
     for result in results or []:
         if not isinstance(result, dict) or not result.get("url"):
             continue
+        url = str(result.get("url") or "").strip()
+        title = str(result.get("title") or "").strip()
         confidence = float(result.get("confidence", 0.0) or 0.0)
         relation = (result.get("relation") or "").upper()
         platform = (result.get("platform") or "").lower()
         topic_score = _topic_match_score(result, question)
+        query_fidelity = float(result.get("query_fidelity_score", topic_score) or topic_score or 0.0)
+        title_quality = _resource_title_quality(title, url)
         result["topic_score"] = topic_score
+        result["query_fidelity_score"] = query_fidelity
+        result["title_quality"] = title_quality
+
+        if not _is_viable_resource_url(url, require_video=require_video):
+            continue
 
         if require_video:
             if platform and platform not in {"youtube", "instagram", "tiktok", "facebook", "twitter"}:
                 continue
             if relation not in {"SELF", "AFFILIATED"}:
                 continue
+            if title_quality < 0.45:
+                continue
             if relation == "SELF":
-                if confidence < 0.72 or topic_score < 0.35:
+                if confidence < 0.72 or query_fidelity < 0.35:
                     continue
             else:
-                if confidence < 0.80 or topic_score < 0.45:
+                if confidence < 0.80 or query_fidelity < 0.45:
                     continue
         else:
-            if confidence < 0.58 and topic_score < 0.45:
+            if title_quality < 0.35 and _platform_from_url(url) != "web":
+                continue
+            if confidence < 0.58 and query_fidelity < 0.45:
                 continue
 
         filtered.append(result)
 
-    filtered.sort(key=lambda r: (float(r.get("confidence", 0.0) or 0.0), float(r.get("topic_score", 0.0) or 0.0)), reverse=True)
+    filtered.sort(
+        key=lambda r: (
+            float(r.get("confidence", 0.0) or 0.0),
+            float(r.get("query_fidelity_score", 0.0) or 0.0),
+            float(r.get("topic_score", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
     return filtered
 
 
@@ -980,6 +1148,7 @@ def _should_block_on_web_fallback(
     is_video_request: bool,
     support_set: List[Dict[str, Any]],
     has_recommendable_ingested_resource: bool,
+    has_linkable_ingested_resource: bool,
     search_mode: str,
     images: bool = False,
 ) -> bool:
@@ -998,7 +1167,10 @@ def _should_block_on_web_fallback(
     if not wants_link and not needs_fresh_info:
         return False
 
-    if is_video_request and has_recommendable_ingested_resource:
+    if is_video_request and (has_recommendable_ingested_resource or has_linkable_ingested_resource):
+        return False
+
+    if wants_link and has_linkable_ingested_resource and not needs_fresh_info:
         return False
 
     return True
@@ -2044,7 +2216,12 @@ def generate_grounded_answer(
         logger.info("Fast Path: Using GreetingService for greeting.")
         try:
             # Deterministic greeting to prevent hallucinations
-            simple_greeting = greeting_service.generate_greeting(user_name, voice_profile or {})
+            simple_greeting = greeting_service.generate_greeting(
+                user_name,
+                voice_profile or {},
+                creator_name=(creator_profile or {}).get("name"),
+                creator_category=(creator_profile or {}).get("creator_category"),
+            )
             # We still might want the LLM to 'voice' it slightly if the DNA is complex,
             # but for now, returning the simple greeting is safer.
             # To maintain compatibility with the polish layer, we update the draft.
@@ -3236,6 +3413,11 @@ Message: {answer_text[:500]}"""
             rec_result,
             preferred_platforms=preferred_platforms,
         )
+        has_linkable_ingested_resource = _support_set_has_linkable_ingested_resource(
+            support_set,
+            preferred_platforms=preferred_platforms,
+            require_video=is_video_request,
+        )
         
         search_mode = creator_row.get("search_mode") or "hybrid"
         no_online_fallback = None
@@ -3246,6 +3428,7 @@ Message: {answer_text[:500]}"""
             is_video_request=is_video_request,
             support_set=support_set,
             has_recommendable_ingested_resource=has_recommendable_ingested_resource,
+            has_linkable_ingested_resource=has_linkable_ingested_resource,
             search_mode=search_mode,
             images=bool(images),
         )
@@ -3776,6 +3959,11 @@ async def grounded_rag_stream(
             rec_result,
             preferred_platforms=preferred_platforms,
         )
+        has_linkable_ingested_resource = _support_set_has_linkable_ingested_resource(
+            support_set,
+            preferred_platforms=preferred_platforms,
+            require_video=is_video_request,
+        )
         
         # OPTIMIZATION: If RAG returned no results or very few, launch web search
         # IN PARALLEL with sufficiency check to save ~1.5s
@@ -3788,6 +3976,7 @@ async def grounded_rag_stream(
             is_video_request=is_video_request,
             support_set=support_set,
             has_recommendable_ingested_resource=has_recommendable_ingested_resource,
+            has_linkable_ingested_resource=has_linkable_ingested_resource,
             search_mode=search_mode,
         )
 
