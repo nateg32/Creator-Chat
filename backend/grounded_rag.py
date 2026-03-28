@@ -35,8 +35,7 @@ from backend.services.classifiers import classifiers
 from backend.services.stronghold_guard import stronghold_guard
 from backend.core.interaction_engine import interaction_engine, InteractionPlan, strip_all_markdown
 from backend.services.web_verify import web_verify
-from backend.services.grammar_normalizer import grammar_normalizer
-from backend.services.text_sanitizer import strip_mid_sentence_hyphens
+from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 from backend.services.image_identity_service import image_identity_service
 from backend.services.live_search_rules import (
@@ -2702,7 +2701,10 @@ Rewrite the response to fix these violations.
         creator_name=creator_name or "The Creator",
         style_fingerprint=style_fingerprint,
     )
-    final_response = strip_mid_sentence_hyphens(final_response)
+    final_response = clean_response(
+        final_response, 
+        strip_hyphens=should_strip_hyphens(creator_profile)
+    )
 
     regurgitation_report = check_for_regurgitation(final_response, support_set)
     if not regurgitation_report.get("is_clean", True):

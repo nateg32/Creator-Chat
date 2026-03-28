@@ -54,13 +54,8 @@ from backend.settings import settings
 from backend.personality_analyzer import PersonalityAnalyzer
 from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
-from backend.services.text_sanitizer import (
-    StreamingTextSanitizer,
-    append_stream_text,
-    finalize_generated_text,
-    strip_card_attachment_artifacts,
-    strip_mid_sentence_hyphens,
-)
+from backend.services.formatting import clean_response, clean_for_stream_chunk, should_strip_hyphens
+from backend.services.rhythm_shaper import rhythm_shaper
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
@@ -79,6 +74,26 @@ from backend.core.interaction_engine import RESPONSE_PRESETS
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Creator Bot API")
+
+
+_CREATOR_COLUMN_CACHE: Dict[str, bool] = {}
+
+
+def _creator_column_exists(column_name: str) -> bool:
+    cached = _CREATOR_COLUMN_CACHE.get(column_name)
+    if cached is not None:
+        return cached
+    row = db.execute_one(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+        ("creators", column_name),
+    )
+    exists = bool(row)
+    _CREATOR_COLUMN_CACHE[column_name] = exists
+    return exists
+
+
+def _creator_select_expr(column_name: str) -> str:
+    return column_name if _creator_column_exists(column_name) else f"NULL AS {column_name}"
 
 
 @app.exception_handler(Exception)
@@ -2173,11 +2188,10 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
             explicit_cards = []
             explicit_citations = []
             explicit_support = []
-            stream_sanitizer = StreamingTextSanitizer()
+            assembled = []
             try:
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 if images_payload:
-                    yield f"data: {json.dumps({'content': ' '})}\n\n"
                     creator_name = "Creator"
                     try:
                         creator_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (request.creator_id,))
@@ -2280,17 +2294,14 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         continue
                         
                     raw_answer = append_stream_text(raw_answer, chunk)
-                    cleaned_chunk = stream_sanitizer.feed(chunk)
+                    cleaned_chunk = clean_for_stream_chunk(chunk)
                     if cleaned_chunk:
+                        assembled.append(cleaned_chunk)
                         yield f"data: {json.dumps({'content': cleaned_chunk})}\n\n"
-
-                final_chunk = stream_sanitizer.flush()
-                if final_chunk:
-                    yield f"data: {json.dumps({'content': final_chunk})}\n\n"
 
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
-                streamed_answer = strip_mid_sentence_hyphens(raw_answer)
+                streamed_answer = clean_response("".join(assembled), strip_hyphens=should_strip_hyphens(creator_profile))
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
@@ -2299,6 +2310,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 citations = explicit_citations if explicit_citations else []
                 final_input = strip_card_attachment_artifacts(streamed_answer, cards)
                 full_answer = finalize_generated_text(final_input)
+                
+                # P2.3: Apply rhythm shaper before creator integrity 
+                full_answer = rhythm_shaper.apply_rhythm(
+                    full_answer,
+                    profile=creator_profile,
+                )
+                
                 full_answer = _apply_stream_creator_integrity(
                     request.creator_id,
                     current_user["id"],
@@ -2420,9 +2438,15 @@ def _score_saved_answer_quality(
     answer: str,
     support_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    select_expr = ", ".join(
+        [
+            _creator_select_expr("style_fingerprint"),
+            _creator_select_expr("voice_profile"),
+        ]
+    )
     creator_row = db.execute_one(
-        """
-        SELECT style_fingerprint, voice_profile
+        f"""
+        SELECT {select_expr}
         FROM creators
         WHERE id = %s AND user_id = %s
         """,
@@ -2439,9 +2463,19 @@ def _score_saved_answer_quality(
 
 def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None, support_chunks=None) -> str:
     try:
+        select_expr = ", ".join(
+            [
+                "name",
+                "creator_category",
+                _creator_select_expr("voice_profile"),
+                _creator_select_expr("style_fingerprint"),
+                _creator_select_expr("identity_fingerprint"),
+                _creator_select_expr("soul_md"),
+            ]
+        )
         creator_row = db.execute_one(
-            """
-            SELECT name, creator_category, voice_profile, style_fingerprint, identity_fingerprint, soul_md
+            f"""
+            SELECT {select_expr}
             FROM creators
             WHERE id = %s AND user_id = %s
             """,

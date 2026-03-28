@@ -71,7 +71,7 @@ def _load_grounded_rag():
     )
     _stub_module("backend.services.web_verify", web_verify=types.SimpleNamespace())
     _stub_module("backend.services.grammar_normalizer", grammar_normalizer=types.SimpleNamespace())
-    _stub_module("backend.services.text_sanitizer", strip_mid_sentence_hyphens=lambda text: text)
+    _stub_module("backend.services.formatting", clean_response=lambda text, **kwargs: text, clean_for_stream_chunk=lambda text: text, should_strip_hyphens=lambda config: False)
     _stub_module("backend.services.assumption_blocker", assumption_blocker=types.SimpleNamespace())
     _stub_module("backend.services.image_identity_service", image_identity_service=types.SimpleNamespace())
     _stub_module(

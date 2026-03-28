@@ -3,7 +3,7 @@ import logging
 from typing import Any, Dict, Optional
 
 import backend.rag as rag
-from backend.services.text_sanitizer import strip_mid_sentence_hyphens
+from backend.services.formatting import clean_response
 from backend.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ def _enforce_distinctiveness(
     golden = style_fingerprint.get("golden_replies") or {}
 
     if not any([markers, anti, contrastive, golden]):
-        return strip_mid_sentence_hyphens(text)
+        return clean_response(text)
 
     system_prompt = f"""
 You are the CONTRASTIVE PERSONA JUDGE for {creator_name}.
@@ -73,10 +73,10 @@ If it is too generic, rewrite it so it feels more unmistakably like {creator_nam
         )
         parsed = json.loads(verdict) if isinstance(verdict, str) else verdict
         final_text = (parsed or {}).get("final_text") or text
-        return strip_mid_sentence_hyphens(final_text.strip().strip('"'))
+        return clean_response(final_text.strip().strip('"'))
     except Exception as e:
         logger.error(f"Distinctiveness enforcement failed: {e}")
-        return strip_mid_sentence_hyphens(text)
+        return clean_response(text)
 
 
 def apply_persona_surface_filter(
@@ -157,8 +157,8 @@ REWRITE IT SO IT SOUNDS LIKE {creator_name}, NOT A SYSTEM.
             model=settings.REWRITE_MODEL,
             temperature=0.0,
         )
-        filtered = strip_mid_sentence_hyphens(filtered.strip().strip('"'))
+        filtered = clean_response(filtered.strip().strip('"'))
         return _enforce_distinctiveness(filtered, creator_name, style_fingerprint=style_fingerprint)
     except Exception as e:
         logger.error(f"Persona Surface Filter failed: {e}")
-        return strip_mid_sentence_hyphens(text)
+        return clean_response(text)

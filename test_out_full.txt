@@ -1,0 +1,208 @@
+﻿python : .................
+.......FFFFF
+At line:1 char:1
++ python -m unittest backe
+nd.tests.test_transcript_r
+egurgitation backen ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (.  
+  .....................   
+ ..FFFFF:String) [], R    
+emoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+==========================
+==========================
+==================
+FAIL: test_clean_response_
+does_not_split_words (back
+end.tests.test_response_fo
+rmatting.ResponseFormattin
+gTests.test_clean_response
+_does_not_split_words)
+--------------------------
+--------------------------
+------------------
+Traceback (most recent 
+call last):
+  File "C:\Users\Nathan\Do
+cuments\Creator Bot\backen
+d\tests\test_response_form
+atting.py", line 18, in te
+st_clean_response_does_not
+_split_words
+    self.assertIn(cleaned_
+non_neg, [
+    ~~~~~~~~~~~~~^^^^^^^^^
+^^^^^^^^^^
+        "This is 
+nonnegotiable.",
+        
+^^^^^^^^^^^^^^^^^^^^^^^^^
+        "This is non 
+negotiable."
+        
+^^^^^^^^^^^^^^^^^^^^^^^^^
+    ])
+    ^^
+AssertionError: 'This is 
+non-negotiable.' not 
+found in ['This is 
+nonnegotiable.', 'This is 
+non negotiable.']
+
+==========================
+==========================
+==================
+FAIL: test_emoji_removal_d
+oes_not_corrupt_adjacent_t
+ext (backend.tests.test_re
+sponse_formatting.Response
+FormattingTests.test_emoji
+_removal_does_not_corrupt_
+adjacent_text)
+--------------------------
+--------------------------
+------------------
+Traceback (most recent 
+call last):
+  File "C:\Users\Nathan\Do
+cuments\Creator Bot\backen
+d\tests\test_response_form
+atting.py", line 113, in t
+est_emoji_removal_does_not
+_corrupt_adjacent_text
+    
+self.assertIn(cleaned1, [
+    
+~~~~~~~~~~~~~^^^^^^^^^^^^
+        "Here's the thing 
+you need to invest in 
+yourself",
+        ^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^
+        "Here's the thing 
+ you need to invest in 
+yourself"
+        ^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^
+    ])
+    ^^
+AssertionError: "Here's 
+the thing \U0001f525 you 
+need to invest in 
+yourself" not found in 
+["Here's the thing you 
+need to invest in 
+yourself", "Here's the 
+thing  you need to invest 
+in yourself"]
+
+==========================
+==========================
+==================
+FAIL: test_no_double_white
+space_in_response (backend
+.tests.test_response_forma
+tting.ResponseFormattingTe
+sts.test_no_double_whitesp
+ace_in_response)
+--------------------------
+--------------------------
+------------------
+Traceback (most recent 
+call last):
+  File "C:\Users\Nathan\Do
+cuments\Creator Bot\backen
+d\tests\test_response_form
+atting.py", line 62, in te
+st_no_double_whitespace_in
+_response
+    self.assertNotIn("  
+", cleaned)
+    ~~~~~~~~~~~~~~~~^^^^^^
+^^^^^^^^^
+AssertionError: '  ' 
+unexpectedly found in 
+'Here is the plan.  Do 
+it.'
+
+==========================
+==========================
+==================
+FAIL: test_no_orphaned_pun
+ctuation (backend.tests.te
+st_response_formatting.Res
+ponseFormattingTests.test_
+no_orphaned_punctuation)
+--------------------------
+--------------------------
+------------------
+Traceback (most recent 
+call last):
+  File "C:\Users\Nathan\Do
+cuments\Creator Bot\backen
+d\tests\test_response_form
+atting.py", line 83, in te
+st_no_orphaned_punctuation
+    self.assertIsNone(re.s
+earch(r'\.\s*,', 
+cleaned), f"Found period 
+then comma in: {cleaned}")
+    ~~~~~~~~~~~~~~~~~^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
+AssertionError: <re.Match 
+object; span=(13, 16), 
+match='. ,'> is not None 
+: Found period then comma 
+in: This is good . , bad.
+
+==========================
+==========================
+==================
+FAIL: test_no_transcript_a
+rtifacts_in_response (back
+end.tests.test_response_fo
+rmatting.ResponseFormattin
+gTests.test_no_transcript_
+artifacts_in_response)
+--------------------------
+--------------------------
+------------------
+Traceback (most recent 
+call last):
+  File "C:\Users\Nathan\Do
+cuments\Creator Bot\backen
+d\tests\test_response_form
+atting.py", line 101, in t
+est_no_transcript_artifact
+s_in_response
+    self.assertIsNone(re.s
+earch(r'\b\d{1,2}:\d{2}\b'
+, cleaned), f"Found 
+timestamp in: {cleaned}")
+    ~~~~~~~~~~~~~~~~~^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^
+AssertionError: <re.Match 
+object; span=(0, 4), 
+match='0:02'> is not None 
+: Found timestamp in: 
+0:02 Here is the answer.
+
+--------------------------
+--------------------------
+------------------
+Ran 29 tests in 0.040s
+
+FAILED (failures=5)
