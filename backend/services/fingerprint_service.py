@@ -269,6 +269,163 @@ def _normalize_search_hits(results: List[Dict[str, Any]], limit: int = 12) -> Li
     return normalized
 
 
+def _question_rate_from_label(label: str) -> float:
+    normalized = str(label or "").strip().lower()
+    if normalized == "high":
+        return 0.6
+    if normalized == "medium":
+        return 0.35
+    if normalized == "low":
+        return 0.15
+    return 0.25
+
+
+def _merge_voice_pattern_packet(voice_fingerprint: Dict[str, Any], packet: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(voice_fingerprint, dict):
+        voice_fingerprint = {}
+    if not isinstance(packet, dict) or not packet:
+        return voice_fingerprint
+
+    merged = _merge_incremental_fingerprint(voice_fingerprint, {"voice_patterns": packet})
+    lexical_rules = merged.get("lexical_rules") or {}
+    speech_mechanics = merged.get("speech_mechanics") or {}
+    cadence_rules = merged.get("cadence_rules") or {}
+    behavior = merged.get("behavioral_patterns") or {}
+    mode_matrix = merged.get("mode_matrix") or {}
+    greeting_mode = mode_matrix.get("greeting") or {}
+    anti_persona = merged.get("anti_persona") or {}
+    golden_examples = merged.get("golden_examples") or {}
+
+    sentence = packet.get("sentence_structure") or {}
+    rhythm = packet.get("rhythm") or {}
+    rhetorical = packet.get("rhetorical_moves") or {}
+    interaction = packet.get("interaction_style") or {}
+    lexical = packet.get("lexical_markers") or {}
+    behavioral = packet.get("behavioral_patterns") or {}
+    greeting = packet.get("greeting_signals") or {}
+
+    signature_phrases = _dedupe_keep_order(
+        list(merged.get("signature_phrases") or [])
+        + list(lexical_rules.get("signature_phrases") or [])
+        + list(lexical.get("signature_phrases") or [])
+        + list(greeting.get("opening_hooks") or []),
+        limit=12,
+    )
+    merged["signature_phrases"] = signature_phrases
+    lexical_rules["signature_phrases"] = signature_phrases
+    lexical_rules["high_signal_words"] = _dedupe_keep_order(
+        list(lexical_rules.get("high_signal_words") or [])
+        + list(lexical.get("high_signal_words") or []),
+        limit=18,
+    )
+    lexical_rules["banned_frames"] = _dedupe_keep_order(
+        list(lexical_rules.get("banned_frames") or [])
+        + list(lexical.get("banned_frames") or [])
+        + list(greeting.get("forbidden_generic_frames") or []),
+        limit=14,
+    )
+    merged["lexical_rules"] = lexical_rules
+
+    speech_mechanics["sentence_shape"] = speech_mechanics.get("sentence_shape") or sentence.get("sentence_shape") or rhythm.get("pacing") or ""
+    speech_mechanics["question_density"] = max(
+        float(speech_mechanics.get("question_density", 0.0) or 0.0),
+        _question_rate_from_label(sentence.get("question_frequency")),
+    )
+    speech_mechanics["signature_openings"] = _dedupe_keep_order(
+        list(speech_mechanics.get("signature_openings") or [])
+        + list(rhetorical.get("signature_openings") or [])
+        + list(greeting.get("opening_hooks") or []),
+        limit=10,
+    )
+    speech_mechanics["signature_landings"] = _dedupe_keep_order(
+        list(speech_mechanics.get("signature_landings") or [])
+        + list(rhetorical.get("signature_landings") or []),
+        limit=10,
+    )
+    speech_mechanics["cadence_markers"] = _dedupe_keep_order(
+        list(speech_mechanics.get("cadence_markers") or [])
+        + list(rhythm.get("pause_markers") or []),
+        limit=8,
+    )
+    speech_mechanics["punctuation_rules"] = _dedupe_keep_order(
+        list(speech_mechanics.get("punctuation_rules") or [])
+        + list(rhythm.get("punctuation_rules") or []),
+        limit=10,
+    )
+    merged["speech_mechanics"] = speech_mechanics
+
+    cadence_rules["sentence_shape"] = cadence_rules.get("sentence_shape") or sentence.get("sentence_shape") or rhythm.get("pacing") or "balanced"
+    cadence_rules["question_rate"] = max(
+        float(cadence_rules.get("question_rate", 0.0) or 0.0),
+        _question_rate_from_label(sentence.get("question_frequency")),
+    )
+    cadence_rules["pause_markers"] = _dedupe_keep_order(
+        list(cadence_rules.get("pause_markers") or [])
+        + list(rhythm.get("pause_markers") or []),
+        limit=6,
+    )
+    cadence_rules["story_vs_list"] = cadence_rules.get("story_vs_list") or rhetorical.get("story_vs_list") or "hybrid"
+    merged["cadence_rules"] = cadence_rules
+
+    behavior["confidence_level"] = behavior.get("confidence_level") or behavioral.get("confidence_level") or ""
+    behavior["decision_style"] = behavior.get("decision_style") or behavioral.get("decision_style") or ""
+    behavior["pushback_style"] = behavior.get("pushback_style") or behavioral.get("pushback_style") or interaction.get("disagreement_style") or ""
+    behavior["always_do"] = _dedupe_keep_order(
+        list(behavior.get("always_do") or [])
+        + list(behavioral.get("always_do") or []),
+        limit=10,
+    )
+    behavior["never_do"] = _dedupe_keep_order(
+        list(behavior.get("never_do") or [])
+        + list(behavioral.get("never_do") or []),
+        limit=10,
+    )
+    behavior["excitement_triggers"] = _dedupe_keep_order(
+        list(behavior.get("excitement_triggers") or [])
+        + list(behavioral.get("excitement_triggers") or []),
+        limit=10,
+    )
+    merged["behavioral_patterns"] = behavior
+
+    greeting_mode["opening_move"] = greeting_mode.get("opening_move") or next(iter(greeting.get("opening_hooks") or rhetorical.get("signature_openings") or []), "")
+    greeting_mode["question_style"] = greeting_mode.get("question_style") or next(iter(greeting.get("check_in_questions") or []), "")
+    greeting_mode["forbidden"] = _dedupe_keep_order(
+        list(greeting_mode.get("forbidden") or [])
+        + list(greeting.get("forbidden_generic_frames") or []),
+        limit=10,
+    )
+    mode_matrix["greeting"] = greeting_mode
+    merged["mode_matrix"] = mode_matrix
+
+    anti_persona["forbidden_generic_coach_lines"] = _dedupe_keep_order(
+        list(anti_persona.get("forbidden_generic_coach_lines") or [])
+        + list(greeting.get("forbidden_generic_frames") or []),
+        limit=12,
+    )
+    merged["anti_persona"] = anti_persona
+
+    golden_examples["greeting"] = _dedupe_keep_order(
+        list(golden_examples.get("greeting") or [])
+        + list(greeting.get("opening_hooks") or [])
+        + list(greeting.get("check_in_questions") or []),
+        limit=10,
+    )
+    merged["golden_examples"] = golden_examples
+    merged["signature_moves"] = _dedupe_keep_order(
+        list(merged.get("signature_moves") or [])
+        + list(rhetorical.get("emphasis_patterns") or [])
+        + list(behavioral.get("always_do") or []),
+        limit=12,
+    )
+    merged["signature_response_moves"] = _dedupe_keep_order(
+        list(merged.get("signature_response_moves") or [])
+        + list(rhetorical.get("storytelling_triggers") or [])
+        + list(behavioral.get("always_do") or []),
+        limit=12,
+    )
+    return merged
+
+
 def _fallback_openai_dossier(
     creator_id: int,
     creator_name: str,
@@ -442,6 +599,118 @@ class FingerprintService:
                 f"{sample.get('excerpt')}"
             )
         return "\n\n---\n\n".join(rendered) if rendered else "No approved content samples available."
+
+    @staticmethod
+    def _format_voice_pattern_samples(samples: List[Dict[str, Any]], *, limit: int = 8) -> str:
+        rendered: List[str] = []
+        for idx, sample in enumerate(samples[:limit], start=1):
+            rendered.append(
+                f"[Sample {idx}] {sample.get('title')} | platform={sample.get('platform')} | url={sample.get('url') or 'n/a'}\n"
+                f"{sample.get('content') or sample.get('excerpt')}"
+            )
+        return "\n\n---\n\n".join(rendered) if rendered else "No approved content samples available."
+
+    async def _extract_voice_pattern_packet(
+        self,
+        creator_name: str,
+        approved_content: List[Dict[str, Any]],
+        voice_fingerprint: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not settings.OPENAI_API_KEY or not approved_content:
+            return {}
+
+        prompt = f"""
+You are extracting a runtime voice pattern packet for creator {creator_name}.
+
+Use only the approved creator content and existing fingerprint context below.
+This packet will be merged into the creator's style fingerprint and used at runtime.
+Be concrete, creator-specific, and avoid generic coaching language.
+
+Return JSON only with this exact shape:
+{{
+  "sentence_structure": {{
+    "sentence_shape": "short_bursts|balanced|flowing",
+    "question_frequency": "low|medium|high",
+    "uses_fragments": true,
+    "pattern_description": "",
+    "evidence": []
+  }},
+  "rhythm": {{
+    "pacing": "fast|measured|slow",
+    "pause_markers": [],
+    "punctuation_rules": [],
+    "uses_dashes": true,
+    "uses_ellipsis": false
+  }},
+  "rhetorical_moves": {{
+    "signature_openings": [],
+    "signature_landings": [],
+    "emphasis_patterns": [],
+    "storytelling_triggers": [],
+    "story_vs_list": "story|list|hybrid"
+  }},
+  "interaction_style": {{
+    "audience_address": "",
+    "disagreement_style": "",
+    "uncertainty_style": ""
+  }},
+  "lexical_markers": {{
+    "signature_phrases": [],
+    "high_signal_words": [],
+    "banned_frames": [],
+    "words_they_avoid": []
+  }},
+  "behavioral_patterns": {{
+    "confidence_level": "",
+    "decision_style": "",
+    "pushback_style": "",
+    "excitement_triggers": [],
+    "always_do": [],
+    "never_do": []
+  }},
+  "greeting_signals": {{
+    "opening_hooks": [],
+    "check_in_questions": [],
+    "forbidden_generic_frames": []
+  }}
+}}
+
+EXISTING FINGERPRINT CONTEXT:
+{json.dumps({
+    "signature_phrases": voice_fingerprint.get("signature_phrases") or [],
+    "lexical_rules": voice_fingerprint.get("lexical_rules") or {},
+    "speech_mechanics": voice_fingerprint.get("speech_mechanics") or {},
+    "cadence_rules": voice_fingerprint.get("cadence_rules") or {},
+    "behavioral_patterns": voice_fingerprint.get("behavioral_patterns") or {},
+    "golden_examples": voice_fingerprint.get("golden_examples") or {},
+    "mode_matrix": voice_fingerprint.get("mode_matrix") or {},
+})}
+
+APPROVED CONTENT:
+{self._format_voice_pattern_samples(approved_content, limit=8)}
+"""
+
+        try:
+            response = await get_async_client().chat.completions.create(
+                model=settings.MODEL_CLASSIFICATION,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an evidence-bound linguistic analyst. "
+                            "Extract literal wording patterns, greeting signals, rhythm, and rhetorical moves. "
+                            "Return only valid JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.15,
+            )
+            return _load_jsonish(response.choices[0].message.content)
+        except Exception as exc:
+            logger.warning(f"FingerprintService: voice pattern extraction failed: {exc}")
+            return {}
 
     @staticmethod
     def _fingerprint_agent_tools() -> List[Dict[str, Any]]:
@@ -676,6 +945,7 @@ class FingerprintService:
                 "signature_phrases": voice.get("signature_phrases") or [],
                 "linguistic_dna": voice.get("linguistic_dna") or {},
                 "speech_mechanics": voice.get("speech_mechanics") or {},
+                "voice_patterns": voice.get("voice_patterns") or {},
                 "evidence_snippets": voice.get("evidence_snippets") or [],
             },
             "themes_and_topics": {
@@ -686,6 +956,7 @@ class FingerprintService:
             "communication_style": {
                 "teaching_style": voice.get("teaching_style") or [],
                 "signature_moves": voice.get("signature_moves") or [],
+                "behavioral_patterns": voice.get("behavioral_patterns") or {},
                 "reasoning_profile": voice.get("reasoning_profile") or {},
                 "mode_matrix": voice.get("mode_matrix") or {},
             },
@@ -1139,6 +1410,16 @@ Rules:
                     "lexicon": [],
                     "content_truth": {},
                 }
+
+            approved_content_samples = self._load_approved_content_samples(creator_id, limit=8)
+            if approved_content_samples:
+                voice_pattern_packet = await self._extract_voice_pattern_packet(
+                    name,
+                    approved_content_samples,
+                    voice_fingerprint,
+                )
+                if voice_pattern_packet:
+                    voice_fingerprint = _merge_voice_pattern_packet(voice_fingerprint, voice_pattern_packet)
 
             # PHASE 3: Targeted Google Expansion (Fill Gaps)
             agentic_bundle: Dict[str, Any] = {}

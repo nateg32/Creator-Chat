@@ -44,37 +44,69 @@ class GreetingServiceTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_distinct_creators_get_distinct_greetings(self):
-        high_energy_voice = {
+        shared_voice = {
             "energy": {"bucket": "HIGH"},
-            "greeting_high_energy": ["Lock in", "Let's move"],
+            "greeting_high_energy": ["Let's move", "Lock in"],
             "greeting_questions": ["What are we building?", "What's the move right now?"],
             "signature_phrases": ["Lock in"],
             "tone_traits": {"hype": 0.9, "supportive": 0.1, "blunt": 0.5},
         }
-        supportive_voice = {
-            "energy": {"bucket": "LOW"},
-            "greeting_short": ["Hey"],
-            "greeting_questions": ["What's been hard lately?", "What do you need help with today?"],
-            "signature_phrases": ["Take a breath"],
-            "tone_traits": {"hype": 0.1, "supportive": 0.95, "blunt": 0.2},
+        first_style = {
+            "speech_mechanics": {"signature_openings": ["Cut the fluff"]},
+            "domain_map": {"strong_topics": ["offers", "B2B outbound"]},
+            "golden_examples": {"greeting": ["Cut the fluff. Where is the offer leaking right now?"]},
+        }
+        second_style = {
+            "speech_mechanics": {"signature_openings": ["Take a breath"]},
+            "domain_map": {"strong_topics": ["recovery", "training blocks"]},
+            "golden_examples": {"greeting": ["Take a breath. What part of training feels off right now?"]},
         }
 
         first = greeting_service.generate_greeting(
             "Nathan",
-            high_energy_voice,
+            shared_voice,
             creator_name="Alex",
             creator_category="business",
+            style_fingerprint=first_style,
         )
         second = greeting_service.generate_greeting(
             "Nathan",
-            supportive_voice,
+            shared_voice,
             creator_name="Sarah",
             creator_category="fitness",
+            style_fingerprint=second_style,
         )
 
         self.assertNotEqual(first, second)
         self.assertIn("Nathan", first)
         self.assertIn("Nathan", second)
+
+    def test_style_fingerprint_replaces_generic_build_prompt(self):
+        voice_profile = {
+            "energy": {"bucket": "HIGH"},
+            "greeting_high_energy": ["Let's move"],
+            "greeting_questions": ["What are you building right now?"],
+            "signature_phrases": ["Lock in"],
+            "tone_traits": {"hype": 0.9, "supportive": 0.1, "blunt": 0.7},
+        }
+        style_fingerprint = {
+            "domain_map": {"strong_topics": ["offers", "outbound systems"]},
+            "speech_mechanics": {"signature_openings": ["Cut the fluff"]},
+            "golden_examples": {"greeting": ["Cut the fluff. Where is the offer leaking right now?"]},
+            "anti_persona": {"forbidden_generic_coach_lines": ["What are you building right now?"]},
+            "lexical_rules": {"banned_frames": ["What are you building right now?"]},
+        }
+
+        greeting = greeting_service.generate_greeting(
+            "Nathan",
+            voice_profile,
+            creator_name="Operator",
+            creator_category="business",
+            style_fingerprint=style_fingerprint,
+        )
+
+        self.assertNotIn("What are you building right now?", greeting)
+        self.assertTrue("offer" in greeting.lower() or "outbound" in greeting.lower())
 
     def test_unknown_name_question_stays_personal(self):
         voice_profile = {

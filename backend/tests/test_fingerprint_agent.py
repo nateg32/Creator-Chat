@@ -153,6 +153,50 @@ class FakeAsyncCompletions:
 
 
 class FingerprintAgentTests(unittest.TestCase):
+    def test_voice_pattern_packet_merges_into_runtime_fingerprint(self):
+        fake_async_client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=FakeAsyncCompletions([])))
+        module = load_fingerprint_service_module(fake_async_client)
+
+        merged = module._merge_voice_pattern_packet(
+            {
+                "signature_phrases": ["pre sell before you build"],
+                "lexical_rules": {"signature_phrases": ["pre sell before you build"]},
+                "speech_mechanics": {"signature_openings": ["listen"]},
+            },
+            {
+                "sentence_structure": {"sentence_shape": "short_bursts", "question_frequency": "high"},
+                "rhythm": {"pause_markers": ["..."], "punctuation_rules": ["keeps sentences punchy"]},
+                "rhetorical_moves": {
+                    "signature_openings": ["cut the fluff"],
+                    "signature_landings": ["that's the move"],
+                    "emphasis_patterns": ["contrast over fluff"],
+                    "storytelling_triggers": ["client proof"],
+                },
+                "interaction_style": {"disagreement_style": "direct but not theatrical"},
+                "lexical_markers": {
+                    "signature_phrases": ["cut the fluff"],
+                    "high_signal_words": ["offer", "buyer"],
+                    "banned_frames": ["what are you building right now"],
+                },
+                "behavioral_patterns": {
+                    "pushback_style": "calls out drift fast",
+                    "always_do": ["presses for the bottleneck"],
+                    "never_do": ["opens with vague motivation"],
+                },
+                "greeting_signals": {
+                    "opening_hooks": ["cut the fluff"],
+                    "check_in_questions": ["Where is the offer leaking right now?"],
+                    "forbidden_generic_frames": ["what are you building right now"],
+                },
+            },
+        )
+
+        self.assertIn("cut the fluff", merged["signature_phrases"])
+        self.assertIn("offer", merged["lexical_rules"]["high_signal_words"])
+        self.assertIn("Where is the offer leaking right now?", merged["golden_examples"]["greeting"])
+        self.assertIn("what are you building right now", merged["anti_persona"]["forbidden_generic_coach_lines"])
+        self.assertEqual(merged["mode_matrix"]["greeting"]["question_style"], "Where is the offer leaking right now?")
+
     def test_agent_waits_for_evidence_then_synthesizes_bundle(self):
         fake_chat = FakeAsyncCompletions(
             [

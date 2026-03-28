@@ -2307,6 +2307,7 @@ def generate_grounded_answer(
                 voice_profile or {},
                 creator_name=(creator_profile or {}).get("name"),
                 creator_category=(creator_profile or {}).get("creator_category"),
+                style_fingerprint=style_fingerprint or {},
             )
             # We still might want the LLM to 'voice' it slightly if the DNA is complex,
             # but for now, returning the simple greeting is safer.

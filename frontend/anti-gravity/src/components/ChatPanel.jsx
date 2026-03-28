@@ -6,7 +6,6 @@ import { formatCreatorName, formatMessageText } from "../utils/format";
 import { buildCreatorWelcomeBody } from "../utils/creatorWelcome";
 import "./ChatPanel.css";
 import { CreatorSettingsModal } from "./CreatorSettingsModal";
-import { PreviewCard } from "./PreviewCard";
 
 // ── Icons (Restored Colorful Aesthetic) ──────────────────────────────
 const SparkleIcon = () => (
@@ -155,28 +154,58 @@ function inferPlatformFromUrl(url = "") {
   return "web";
 }
 
-function normalizeCitationEntries(citations = [], cards = []) {
-  const cardUrls = new Set(
-    (cards || [])
-      .map((card) => String(card?.url || "").trim().toLowerCase())
-      .filter(Boolean)
-  );
+function cleanSourceSnippet(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeSourceEntries(citations = [], cards = []) {
   const seen = new Set();
-  return (citations || [])
-    .map((citation, idx) => {
-      const url = String(citation?.url || "").trim();
-      if (!url) return null;
-      const urlKey = url.toLowerCase();
-      if (cardUrls.has(urlKey) || seen.has(urlKey)) return null;
-      seen.add(urlKey);
-      const title = cleanCardTitle(citation?.title || citation?.text || "Source", url);
+  const normalized = [];
+
+  (citations || []).forEach((citation, idx) => {
+    const url = String(citation?.url || "").trim();
+    if (!url) return;
+    const urlKey = url.toLowerCase();
+    if (seen.has(urlKey)) return;
+    seen.add(urlKey);
+    const title = cleanCardTitle(citation?.title || citation?.text || "Source", url);
+    normalized.push({
+      id: citation?.id || `citation-${idx}`,
+      url,
+      title,
+      snippet: cleanSourceSnippet(citation?.snippet || citation?.text || ""),
+      domain: getDomainLabel(url),
+      platform: citation?.platform || inferPlatformFromUrl(url),
+      kind: "grounded",
+    });
+  });
+
+  (cards || []).forEach((card, idx) => {
+    const url = String(card?.url || "").trim();
+    if (!url) return;
+    const urlKey = url.toLowerCase();
+    if (seen.has(urlKey)) return;
+    seen.add(urlKey);
+    const title = cleanCardTitle(
+      card?.title || card?.short_snippet || card?.subtitle || "Source",
+      url
+    );
+    normalized.push({
+      id: card?.id || `card-${idx}`,
+      url,
+      title,
+      snippet: cleanSourceSnippet(card?.short_snippet || card?.subtitle || ""),
+      domain: getDomainLabel(url),
+      platform: card?.platform || inferPlatformFromUrl(url),
+      kind: "closest",
+    });
+  });
+
+  return normalized
+    .map((source, idx) => {
       return {
-        id: citation?.id || `citation-${idx}`,
-        url,
-        title,
-        snippet: String(citation?.snippet || citation?.text || "").trim(),
-        domain: getDomainLabel(url),
-        platform: citation?.platform || inferPlatformFromUrl(url),
+        ...source,
+        id: source.id || `source-${idx}`,
       };
     })
     .filter(Boolean);
@@ -867,86 +896,27 @@ export function ChatPanel({
                                 const key = (card.url || '').toLowerCase();
                                 return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
                               });
-                          const renderedCitations = normalizeCitationEntries(m.citations, renderedCards);
+                          const renderedSources = normalizeSourceEntries(m.citations, renderedCards);
 
                           return (
                             <div className="msg-content-wrapper">
                               <div className="msg-text-blocks">
                                 {textParts.length > 0 ? textParts : displayText}
                               </div>
-                              {renderedCitations.length > 0 && (
-                                <div className="msg-citation-row">
-                                  {renderedCitations.map((citation, idx) => (
+                              {renderedSources.length > 0 && (
+                                <div className="msg-source-row">
+                                  {renderedSources.map((source, idx) => (
                                     <a
-                                      key={`${citation.id}-${idx}`}
-                                      href={citation.url}
+                                      key={`${source.id}-${idx}`}
+                                      href={source.url}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="chat-source-chip"
-                                      title={citation.snippet || citation.title}
+                                      title={source.snippet || source.title}
                                     >
                                       <span className="chat-source-chip-index">{idx + 1}</span>
-                                      <span className="chat-source-chip-title">{citation.title}</span>
-                                      <span className="chat-source-chip-domain">{citation.domain || citation.platform}</span>
-                                    </a>
-                                  ))}
-                                </div>
-                              )}
-                              {renderedCards.length > 0 && (
-                                <div className="msg-preview-cards">
-                                  {renderedCards.map((card, idx) => (
-                                    <a key={`${card.id}-${idx}`} href={card.url} target="_blank" rel="noopener noreferrer" className="chat-link-card">
-                                      {card.platform === 'youtube' && card.videoId && (
-                                        <div className="chat-link-card-thumbnail">
-                                          <img src={`https://img.youtube.com/vi/${card.videoId}/mqdefault.jpg`} alt="thumbnail" />
-                                          <div className="play-overlay">
-                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
-                                              <path d="M8 5v14l11-7z" />
-                                            </svg>
-                                          </div>
-                                        </div>
-                                      )}
-                                      <div className="chat-link-card-content">
-                                        <div className="chat-link-card-domain">
-                                          {card.platform === 'youtube' ? (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#FF0000" xmlns="http://www.w3.org/2000/svg">
-                                              <path d="M21.582 6.186a2.693 2.693 0 0 0-1.895-1.908C17.989 3.8 12 3.8 12 3.8s-5.989 0-7.687.478A2.693 2.693 0 0 0 2.418 6.186C1.94 7.894 1.94 11.5 1.94 11.5s0 3.606.478 5.314a2.693 2.693 0 0 0 1.895 1.908c1.698.478 7.687.478 7.687.478s5.989 0 7.687-.478a2.693 2.693 0 0 0 1.895-1.908c.478-1.708.478-5.314.478-5.314s0-3.606-.478-5.314zM9.95 14.814v-6.628L15.694 11.5l-5.744 3.314z" />
-                                            </svg>
-                                          ) : card.platform === 'instagram' ? (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#E1306C" xmlns="http://www.w3.org/2000/svg">
-                                              <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z" />
-                                            </svg>
-                                          ) : card.platform === 'tiktok' ? (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#000000" xmlns="http://www.w3.org/2000/svg">
-                                              <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 0010.86 4.48V13a8.28 8.28 0 005.58 2.16v-3.45a4.85 4.85 0 01-5.58-1.43V6.69h5.58z" />
-                                            </svg>
-                                          ) : card.platform === 'facebook' ? (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#1877F2" xmlns="http://www.w3.org/2000/svg">
-                                              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-                                            </svg>
-                                          ) : card.platform === 'twitter' ? (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="#000000" xmlns="http://www.w3.org/2000/svg">
-                                              <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                                            </svg>
-                                          ) : (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                              <circle cx="12" cy="12" r="10"></circle>
-                                              <line x1="2" y1="12" x2="22" y2="12"></line>
-                                              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-                                            </svg>
-                                          )}
-                                          <span>{card.domain}</span>
-                                        </div>
-                                        <div className="chat-link-card-title">{card.title}</div>
-                                      </div>
-                                      {!card.isVideo && (
-                                        <div className="chat-link-card-arrow">
-                                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M5 12h14"></path>
-                                            <path d="M12 5l7 7-7 7"></path>
-                                          </svg>
-                                        </div>
-                                      )}
+                                      <span className="chat-source-chip-title">{source.title}</span>
+                                      <span className="chat-source-chip-domain">{source.domain || source.platform}</span>
                                     </a>
                                   ))}
                                 </div>
