@@ -595,6 +595,12 @@ def build_creator_genome(
         + list(style_fp.get("signature_response_moves") or []),
         limit=10,
     )
+    lexical_markers = _clean_marker_values(
+        list(voice_profile.get("common_words") or [])
+        + list(lexical.get("high_signal_words") or [])
+        + list(style_fp.get("lexicon") or []),
+        limit=12,
+    )
     worldview_markers = _clean_marker_values(
         list(style_fp.get("value_hierarchy") or worldview.get("moral_hierarchy") or [])
         + list(worldview.get("core_beliefs") or [])
@@ -625,6 +631,7 @@ def build_creator_genome(
 
     return {
         "signature_markers": signature_markers,
+        "lexical_markers": lexical_markers,
         "worldview_markers": worldview_markers,
         "response_moves": response_moves,
         "mutation_risks": mutation_risks,
@@ -641,6 +648,8 @@ def format_creator_genome_for_prompt(genome: Dict[str, Any]) -> str:
     lines = []
     if genome.get("signature_markers"):
         lines.append(f"- Signature motifs: {json.dumps(genome['signature_markers'][:8])}")
+    if genome.get("lexical_markers"):
+        lines.append(f"- Exact lexical fingerprints: {json.dumps(genome['lexical_markers'][:10])}")
     if genome.get("worldview_markers"):
         lines.append(f"- Core worldview markers: {json.dumps(genome['worldview_markers'][:6])}")
     if genome.get("response_moves"):
@@ -692,10 +701,24 @@ def evaluate_creator_integrity(
                 invented_titles.append(quoted.strip())
     invented_titles = _clean_marker_values(invented_titles, limit=4)
 
-    identity_markers = genome.get("signature_markers", []) + genome.get("worldview_markers", []) + genome.get("response_moves", [])
+    identity_markers = (
+        genome.get("signature_markers", [])
+        + genome.get("lexical_markers", [])
+        + genome.get("worldview_markers", [])
+        + genome.get("response_moves", [])
+    )
+    lexical_hits = sum(
+        1 for marker in genome.get("lexical_markers", [])
+        if marker and _normalize_marker_key(marker) in normalized_text
+    )
     motif_hits = sum(
         1 for marker in identity_markers
         if marker and _normalize_marker_key(marker) in normalized_text
+    )
+    lexical_gap = bool(
+        len((text or "").split()) >= 24
+        and genome.get("lexical_markers")
+        and lexical_hits == 0
     )
     marker_gap = bool(
         len((text or "").split()) >= 30
@@ -712,6 +735,8 @@ def evaluate_creator_integrity(
         findings.append("invented_resource_title")
     if generic_leaks:
         findings.append("generic_persona_drift")
+    if lexical_gap:
+        findings.append("missing_creator_lexicon")
     if marker_gap:
         findings.append("missing_creator_markers")
 
@@ -721,6 +746,8 @@ def evaluate_creator_integrity(
         "generic_leaks": generic_leaks,
         "invented_titles": invented_titles,
         "raw_url_leak": raw_url_leak,
+        "lexical_gap": lexical_gap,
+        "lexical_hits": lexical_hits,
         "marker_gap": marker_gap,
         "motif_hits": motif_hits,
         "findings": findings,
@@ -2226,7 +2253,7 @@ RULES:
 2. Remove AI/system/meta phrasing completely.
 3. Remove raw URLs from the prose.
 4. If a resource title is not grounded, remove it or replace it with a truthful in-character boundary.
-5. Use at most one subtle creator marker if natural. Do not spam catchphrases.
+5. Match the creator's word choice closely. Prefer the exact lexical fingerprints and signature phrases when natural. Do not swap them for safer generic synonyms.
 6. Do not add new facts, new resources, or new personal claims.
 7. Preserve paragraph or list structure when present.
 

@@ -421,39 +421,9 @@ export function ChatPanel({
         max_distance: maxDistance,
         messages: history,
         images: imagesPayload.length > 0 ? imagesPayload : undefined,
-        onToken: (token) => {
-          let receivedVisibleText = false;
-          setMessages((prev) =>
-            prev.map((msg) => {
-              if (msg.id !== assistantMessageId) return msg;
-
-              const currentContent = msg.content ?? msg.text ?? "";
-              const incoming = typeof token === "string" ? token : "";
-              const hasVisibleCurrent = currentContent.trim().length > 0;
-              const hasVisibleIncoming = incoming.trim().length > 0;
-
-              // Ignore heartbeat whitespace so the typing bubble stays alive
-              // until real visible content begins.
-              if (!hasVisibleCurrent && !hasVisibleIncoming) {
-                return msg;
-              }
-
-              if (hasVisibleCurrent || hasVisibleIncoming) {
-                receivedVisibleText = true;
-              }
-
-              const nextContent = currentContent + incoming;
-              return {
-                ...msg,
-                content: nextContent,
-                text: nextContent,
-                status: "streaming",
-              };
-            })
-          );
-          if (receivedVisibleText) {
-            setLocalLoading(false);
-          }
+        onToken: () => {
+          // Keep the response hidden until the fully formatted final message
+          // is ready, so the conversation feels like a real DM delivery.
         },
         onComplete: (fullAnswer, meta = {}) => {
           setLocalLoading(false);
@@ -554,7 +524,7 @@ export function ChatPanel({
               const isTypingMessage = m.role === "assistant" && m.status === "typing" && !hasVisibleMessageText(m);
               const hasMessageText = hasVisibleMessageText(m);
               return (
-                <div key={m.id ?? idx} className={`msg-row msg-${m.role}`}>
+                <div key={m.id ?? idx} className={`msg-row msg-${m.role}${isTypingMessage ? " is-typing" : ""}`}>
                   <div
                     className="msg-avatar clickable"
                     title={`Change ${m.role === "assistant" ? "bot" : "your"} avatar`}
@@ -571,6 +541,13 @@ export function ChatPanel({
                       <div className="msg-sender">
                         {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
                       </div>
+                      {isTypingMessage && (
+                        <div className="typing-name-indicator" role="status" aria-live="polite" aria-label={`${formatCreatorName(creatorDisplayName)} is typing`}>
+                          <span className="typing-name-dot"></span>
+                          <span className="typing-name-dot"></span>
+                          <span className="typing-name-dot"></span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Render Images Inside Bubble */}
@@ -825,14 +802,6 @@ export function ChatPanel({
                             </div>
                           );
                         })()}
-                      </div>
-                    ) : isTypingMessage ? (
-                      <div className="typing-bubble-shell" role="status" aria-live="polite" aria-label={`${formatCreatorName(creatorDisplayName)} is typing`}>
-                        <div className="typing-bubble-core">
-                          <span className="typing-dot"></span>
-                          <span className="typing-dot"></span>
-                          <span className="typing-dot"></span>
-                        </div>
                       </div>
                     ) : null}
 
