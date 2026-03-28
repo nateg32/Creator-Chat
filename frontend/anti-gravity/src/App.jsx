@@ -474,7 +474,8 @@ function AppInner() {
           text: m.content,
           ts: m.created_at,
           images: m.images, // Include images from backend response
-          cards: m.cards    // Include recommendation cards from backend response
+          cards: m.cards,    // Include recommendation cards from backend response
+          citations: m.citations,
         })),
         isTemporary: false
       };

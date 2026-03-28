@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 from backend.settings import settings
+from backend.services.transcript_quality import assess_transcript_quality, transcript_needs_recovery
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -754,16 +755,38 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
         # Only attempt transcript extraction for video-based platforms
         if plat_key in video_platforms:
             url = it.get("source_url", "")
-            if url and it.get("transcript_status") != "present" and url not in seen_urls:
+            metadata = it.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+            title = (metadata.get("title") if isinstance(metadata, dict) else "") or ""
+            current_transcript = it.get("transcript") or ""
+            if not transcript_needs_recovery(current_transcript, caption=it.get("caption") or "", title=title):
+                diagnostics = assess_transcript_quality(current_transcript, caption=it.get("caption") or "", title=title)
+                if isinstance(metadata, dict):
+                    metadata["transcript_quality_score"] = diagnostics.get("score")
+                    metadata["transcript_quality_reason"] = diagnostics.get("reason")
+                    metadata["transcript_coverage"] = diagnostics.get("coverage")
+                    metadata.setdefault("transcript_source", "scraper")
+                    it["metadata"] = metadata
+                it["transcript_status"] = "present"
+                continue
+            if url and url not in seen_urls:
                 all_video_urls.append(url)
                 video_platform_by_url[url] = plat_key
                 seen_urls.add(url)
+                if current_transcript:
+                    it["transcript"] = ""
+                    it["transcript_status"] = "pending"
     
     if not all_video_urls:
         print("[BATCH-TRANSCRIPT] No video URLs need transcripts")
         return items
     
     all_transcripts = {}
+    transcript_sources: Dict[str, str] = {}
     youtube_urls = [
         url for url in all_video_urls
         if "youtube.com" in url or "youtu.be" in url
@@ -773,6 +796,8 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
         try:
             native_youtube = _extract_youtube_native_transcripts(youtube_urls)
             all_transcripts.update(native_youtube)
+            for url in native_youtube:
+                transcript_sources[url] = "youtube_native"
         except Exception as e:
             print(f"[BATCH-TRANSCRIPT] Native YouTube captions failed: {e}")
 
@@ -785,6 +810,8 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
         try:
             actor_transcripts = _extract_transcripts_invideoiq(remaining_video_urls, token)
             all_transcripts.update(actor_transcripts)
+            for url in actor_transcripts:
+                transcript_sources[url] = "invideoiq"
             print(f"[BATCH-TRANSCRIPT] invideoiq: {len(actor_transcripts)}/{len(remaining_video_urls)} transcripts")
         except Exception as e:
             print(f"[BATCH-TRANSCRIPT] invideoiq failed: {e}")
@@ -803,6 +830,8 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
         try:
             social_transcripts = _extract_social_transcripts(social_missing, token, platform=social_platform)
             all_transcripts.update(social_transcripts)
+            for url in social_transcripts:
+                transcript_sources[url] = f"{social_platform}_actor"
             recovered = sum(1 for url in social_missing if url in all_transcripts)
             if recovered:
                 print(f"[BATCH-TRANSCRIPT] {social_platform} fallback recovered {recovered}/{len(social_missing)} transcripts")
@@ -850,10 +879,12 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
                             orig_vid = extract_content_id(orig_url, "youtube")
                             if orig_vid and orig_vid == vid:
                                 all_transcripts[orig_url] = t_str
+                                transcript_sources[orig_url] = "youtube_karamelo"
                                 matched = True
                                 break
                     if not matched and vurl and vurl in youtube_missing:
                         all_transcripts[vurl] = t_str
+                        transcript_sources[vurl] = "youtube_karamelo"
             
             yt_recovered = sum(1 for u in youtube_missing if u in all_transcripts)
             if yt_recovered:
@@ -865,11 +896,42 @@ def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str,
     transcripts_applied = 0
     for it in items:
         url = it.get("source_url", "")
+        metadata = it.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        title = metadata.get("title") or ""
         if url in all_transcripts:
-            it["transcript"] = all_transcripts[url]
-            it["transcript_status"] = "present"
-            transcripts_applied += 1
-    
+            candidate_transcript = all_transcripts[url]
+            diagnostics = assess_transcript_quality(
+                candidate_transcript,
+                caption=it.get("caption") or "",
+                title=title,
+            )
+            metadata["transcript_quality_score"] = diagnostics.get("score")
+            metadata["transcript_quality_reason"] = diagnostics.get("reason")
+            metadata["transcript_coverage"] = diagnostics.get("coverage")
+            metadata["transcript_source"] = transcript_sources.get(url, "batch_recovery")
+            metadata["transcript_word_count"] = diagnostics.get("word_count")
+            it["metadata"] = metadata
+            if diagnostics.get("usable"):
+                it["transcript"] = candidate_transcript
+                it["transcript_status"] = "present"
+                transcripts_applied += 1
+            else:
+                it["transcript"] = ""
+                it["transcript_status"] = "pending"
+        elif (it.get("platform") or "").lower() in video_platforms:
+            metadata.setdefault("transcript_quality_reason", "pending_recovery")
+            it["metadata"] = metadata
+            if transcript_needs_recovery(it.get("transcript") or "", caption=it.get("caption") or "", title=title):
+                it["transcript"] = ""
+                it["transcript_status"] = "pending"
+
     print(f"[BATCH-TRANSCRIPT] Applied {transcripts_applied}/{len(all_video_urls)} transcripts total")
     return items
 

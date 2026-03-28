@@ -583,9 +583,12 @@ def build_creator_genome(
     lexical = style_fp.get("lexical_rules") or {}
     worldview = style_fp.get("worldview") or {}
     belief_graph = style_fp.get("belief_graph") or {}
+    value_model = style_fp.get("value_model") or {}
+    content_truth = style_fp.get("content_truth") or {}
     anti = style_fp.get("anti_persona") or {}
     contrastive = style_fp.get("contrastive_identity") or {}
     disambiguation = style_fp.get("disambiguation_markers") or {}
+    story_bank = style_fp.get("story_bank") or []
 
     signature_markers = _clean_marker_values(
         list(voice_profile.get("signature_phrases") or [])
@@ -627,12 +630,22 @@ def build_creator_genome(
         + list(identity_fp.get("verified_background") or identity_fp.get("achievements") or []),
         limit=6,
     )
+    evidence_markers = _clean_marker_values(
+        list(style_fp.get("evidence_snippets") or [])
+        + list(value_model.get("decision_heuristics") or [])
+        + list(content_truth.get("milestones") or [])
+        + list(content_truth.get("products") or [])
+        + [story.get("title") for story in story_bank if isinstance(story, dict)]
+        + [story.get("lesson") for story in story_bank if isinstance(story, dict)],
+        limit=12,
+    )
     grounded_titles = _grounded_resource_titles(rag_chunks, limit=6)
 
     return {
         "signature_markers": signature_markers,
         "lexical_markers": lexical_markers,
         "worldview_markers": worldview_markers,
+        "evidence_markers": evidence_markers,
         "response_moves": response_moves,
         "mutation_risks": mutation_risks,
         "stable_public_facts": stable_public_facts,
@@ -652,6 +665,8 @@ def format_creator_genome_for_prompt(genome: Dict[str, Any]) -> str:
         lines.append(f"- Exact lexical fingerprints: {json.dumps(genome['lexical_markers'][:10])}")
     if genome.get("worldview_markers"):
         lines.append(f"- Core worldview markers: {json.dumps(genome['worldview_markers'][:6])}")
+    if genome.get("evidence_markers"):
+        lines.append(f"- Evidence anchors: {json.dumps(genome['evidence_markers'][:8])}")
     if genome.get("response_moves"):
         lines.append(f"- Signature response moves: {json.dumps(genome['response_moves'][:6])}")
     if genome.get("mutation_risks"):
@@ -711,6 +726,15 @@ def evaluate_creator_integrity(
         1 for marker in genome.get("lexical_markers", [])
         if marker and _normalize_marker_key(marker) in normalized_text
     )
+    anchor_markers = (
+        genome.get("evidence_markers", [])
+        + genome.get("worldview_markers", [])
+        + genome.get("stable_public_facts", [])
+    )
+    anchor_hits = sum(
+        1 for marker in anchor_markers
+        if marker and _normalize_marker_key(marker) in normalized_text
+    )
     motif_hits = sum(
         1 for marker in identity_markers
         if marker and _normalize_marker_key(marker) in normalized_text
@@ -725,6 +749,11 @@ def evaluate_creator_integrity(
         and identity_markers
         and motif_hits == 0
     )
+    anchor_gap = bool(
+        len((text or "").split()) >= 12
+        and anchor_markers
+        and anchor_hits == 0
+    )
 
     findings = []
     if ai_leaks:
@@ -737,6 +766,8 @@ def evaluate_creator_integrity(
         findings.append("generic_persona_drift")
     if lexical_gap:
         findings.append("missing_creator_lexicon")
+    if anchor_gap:
+        findings.append("missing_creator_anchor")
     if marker_gap:
         findings.append("missing_creator_markers")
 
@@ -748,6 +779,8 @@ def evaluate_creator_integrity(
         "raw_url_leak": raw_url_leak,
         "lexical_gap": lexical_gap,
         "lexical_hits": lexical_hits,
+        "anchor_gap": anchor_gap,
+        "anchor_hits": anchor_hits,
         "marker_gap": marker_gap,
         "motif_hits": motif_hits,
         "findings": findings,
@@ -1680,6 +1713,7 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 resources max, and explain why each one helps with the user's specific question before you give it.
 12. RESOURCE DELIVERY: When you recommend a resource, mention it naturally, then tell the user you attached it below. Do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for YouTube, prefer YouTube results over other platforms.
 13. PERSONA HOMEOSTASIS: Keep your stable worldview, cadence, and response moves intact. Do not mutate into generic coach-talk just because the question is broad.
+14. CONCRETE ANCHOR: Every substantial answer must lean on at least one real creator anchor from the genome or knowledge, a recurring belief, decision rule, story, product, public fact, or grounded source. If you cannot anchor a claim, narrow it instead of filling space with generic advice.
 {resource_lock_instruction}
 
 {length_directive}
@@ -2065,6 +2099,7 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 10. BRIDGE & PIVOT. If the user asks about a topic outside {creator_category}, do NOT break character. Explain the concept *through the lens of your domain*. Use YOUR metaphors (e.g. if you're a basketball coach talking business, use basketball analogies). Then gently pivot back to your expertise.
 11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally, then say you attached it below. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
 12. PERSONA HOMEOSTASIS. Preserve your stable worldview, cadence, and response moves. Do not flatten into generic motivational or assistant language.
+13. CONCRETE ANCHOR. Every substantial answer must rely on at least one real creator anchor from the genome or knowledge, a recurring belief, decision rule, story, product, public fact, or grounded source. If you cannot ground it, narrow the claim instead of sounding generic.
 {resource_lock_instruction}
 
 {length_directive}
@@ -2254,6 +2289,7 @@ RULES:
 3. Remove raw URLs from the prose.
 4. If a resource title is not grounded, remove it or replace it with a truthful in-character boundary.
 5. Match the creator's word choice closely. Prefer the exact lexical fingerprints and signature phrases when natural. Do not swap them for safer generic synonyms.
+5b. Anchor the reply to at least one concrete creator belief, rule, story, product, or grounded source title from the genome when natural. Do not leave it as generic motivational advice.
 6. Do not add new facts, new resources, or new personal claims.
 7. Preserve paragraph or list structure when present.
 

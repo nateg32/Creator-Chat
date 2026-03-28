@@ -52,6 +52,7 @@ def load_research_provider_module():
 
 research_provider_module = load_research_provider_module()
 OpenAIResearchProvider = research_provider_module.OpenAIResearchProvider
+GeminiResearchProvider = research_provider_module.GeminiResearchProvider
 
 
 class ResearchProviderPolicyTests(unittest.TestCase):
@@ -112,6 +113,65 @@ class ResearchProviderPolicyTests(unittest.TestCase):
 
         self.assertEqual(scored[0]["title"], "Ultra Long Form Is the Future")
         self.assertGreater(scored[0]["query_fidelity_score"], scored[1]["query_fidelity_score"])
+
+    def test_grounded_overview_preserves_query_order_and_adjusts_citations(self):
+        provider = GeminiResearchProvider()
+        provider.enabled = True
+        provider._build_grounding_query_plan = lambda *args, **kwargs: ["alpha query", "beta query"]
+
+        def fake_call(prompt, search_enabled=True):
+            if "alpha query" in prompt:
+                return {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "Alpha facts."}]},
+                            "groundingMetadata": {
+                                "groundingChunks": [
+                                    {"web": {"uri": "https://creator.com/about", "title": "About Creator"}}
+                                ],
+                                "groundingSupports": [
+                                    {
+                                        "segment": {"text": "Alpha", "startIndex": 0, "endIndex": 5},
+                                        "groundingChunkIndices": [0],
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+            return {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "Beta facts."}]},
+                        "groundingMetadata": {
+                            "groundingChunks": [
+                                {"web": {"uri": "https://creator.com/offers", "title": "Offers"}}
+                            ],
+                            "groundingSupports": [
+                                {
+                                    "segment": {"text": "Beta", "startIndex": 0, "endIndex": 4},
+                                    "groundingChunkIndices": [0],
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+
+        with patch.object(provider, "_call_gemini_rest", side_effect=fake_call):
+            overview = provider.grounded_overview(
+                "Tell me about the creator",
+                {"name": "Creator", "official_domains": ["creator.com"], "platform_configs": {}},
+                max_queries=2,
+            )
+
+        self.assertEqual(overview["response_text"], "Alpha facts.\n\nBeta facts.")
+        self.assertEqual([pkg["subquery"] for pkg in overview["packages"]], ["alpha query", "beta query"])
+        beta_citation = next(c for c in overview["citations"] if c["text"] == "Beta")
+        self.assertEqual(beta_citation["start_index"], len("Alpha facts.\n\n"))
+        self.assertEqual(beta_citation["end_index"], len("Alpha facts.\n\n") + 4)
+        self.assertEqual(overview["sources"][0]["url"], "https://creator.com/about")
+        self.assertEqual(overview["sources"][1]["url"], "https://creator.com/offers")
 
 
 if __name__ == "__main__":

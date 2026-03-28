@@ -21,6 +21,24 @@ def load_interaction_engine_module():
     spec = importlib.util.spec_from_file_location("test_interaction_engine_module", module_path)
     module = importlib.util.module_from_spec(spec)
 
+    class FakeBaseModel:
+        def __init__(self, **kwargs):
+            for key, value in self.__class__.__dict__.items():
+                if key.startswith("_") or callable(value):
+                    continue
+                if key not in kwargs:
+                    setattr(self, key, value)
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+        def dict(self):
+            return dict(self.__dict__)
+
+    fake_pydantic = types.ModuleType("pydantic")
+    fake_pydantic.BaseModel = FakeBaseModel
+    fake_pydantic.Field = lambda default=None, default_factory=None, **kwargs: default_factory() if default_factory is not None else default
+    fake_pydantic.validator = lambda *args, **kwargs: (lambda fn: fn)
+
     fake_rag = types.ModuleType("backend.rag")
     fake_rag.generate_chat_completion = lambda *args, **kwargs: ""
     fake_rag.generate_chat_completion_async = lambda *args, **kwargs: None
@@ -58,6 +76,7 @@ def load_interaction_engine_module():
             "backend.services": fake_services_package,
             "backend.services.prompt_injection_guard": prompt_guard_module,
             "backend.services.text_sanitizer": fake_text_sanitizer,
+            "pydantic": fake_pydantic,
         },
     ):
         spec.loader.exec_module(module)
@@ -206,6 +225,47 @@ class UserPreferenceTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "Cut the fluff. Start with the long form foundation.")
+
+    def test_render_response_repairs_generic_reply_without_creator_anchor(self):
+        plan = InteractionPlan(route="ROUTE_2_TASK", routing="IN_DOMAIN")
+        creator_profile = {
+            "name": "Dan Martell",
+            "creator_category": "business",
+            "voice_profile": {"signature_phrases": ["cut the fluff"]},
+            "style_fingerprint": {
+                "signature_moves": ["find the workflow they hate"],
+                "value_model": {
+                    "decision_heuristics": ["pre sell before you build"],
+                },
+                "evidence_snippets": ["pick one buyer with money and urgency"],
+            },
+        }
+
+        def fake_generate_chat_completion(*, messages, model, temperature):
+            system_prompt = messages[0]["content"]
+            if "CREATOR INTEGRITY REPAIR LAYER" in system_prompt:
+                return "Cut the fluff. Pre sell before you build, pick one buyer with money and urgency, then solve one painful workflow."
+            return "You should stay focused, work hard, and keep testing ideas until something works."
+
+        with patch.object(interaction_engine_module.rag, "generate_chat_completion", side_effect=fake_generate_chat_completion):
+            result = interaction_engine.render_response(
+                plan=plan,
+                creator_profile=creator_profile,
+                rag_chunks=[],
+                creator_id=1,
+                user_id=1,
+                thread_id="thread-2",
+                user_name="Nathan",
+                user_msg="How should I start a software business?",
+                persona="Direct operator.",
+                history=[],
+                user_preferences=None,
+            )
+
+        self.assertEqual(
+            result,
+            "Cut the fluff. Pre sell before you build, pick one buyer with money and urgency, then solve one painful workflow.",
+        )
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ class MessageResponse(BaseModel):
     created_at: Any
     images: Optional[List[Dict[str, Any]]] = None # To return attached images
     cards: Optional[List[Dict[str, Any]]] = None  # To return recommendation cards
+    citations: Optional[List[Dict[str, Any]]] = None  # Lightweight source provenance for the message
 
 class IngestRequest(BaseModel):
     creator_id: int
@@ -118,6 +119,7 @@ class AskResponse(BaseModel):
     retrieved: List[RetrievedChunk]
     sources: Optional[List[Dict[str, Any]]] = None  # Source references with URLs
     cards: Optional[List[Dict[str, Any]]] = None  # Content cards for high confidence matches
+    citations: Optional[List[Dict[str, Any]]] = None  # Lightweight source provenance for rendering
     debug_info: Optional[Dict[str, Any]] = None  # only when debug=true
 
 class IngestResponse(BaseModel):

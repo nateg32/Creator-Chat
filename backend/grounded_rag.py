@@ -260,15 +260,19 @@ def _support_resource_card_candidates(
     preferred_platforms: Optional[List[str]] = None,
     require_video: bool = False,
     include_live_web: bool = False,
+    question: str = "",
+    answer_text: str = "",
+    recommended_urls: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     preferred = {platform.lower() for platform in (preferred_platforms or []) if platform}
     selected: List[Dict[str, Any]] = []
     seen_urls: Set[str] = set()
 
-    for chunk in support_set or []:
-        if not include_live_web and _is_live_web_chunk(chunk):
+    for chunk_index, chunk in enumerate(support_set or []):
+        is_live_web = _is_live_web_chunk(chunk)
+        if not include_live_web and is_live_web:
             continue
-        if include_live_web and not _is_live_web_chunk(chunk):
+        if include_live_web and not is_live_web:
             continue
 
         url = (
@@ -292,13 +296,38 @@ def _support_resource_card_candidates(
         if _resource_title_quality(title, url) < 0.45:
             continue
 
+        content = str(chunk.get("content") or "")
+        snippet = str(chunk.get("snippet") or "")
         selected.append({
             "title": title,
             "url": url,
             "platform": _platform_from_url(url),
+            "content": content,
+            "snippet": snippet,
+            "chunk_index": chunk_index,
+            "is_live_web": is_live_web,
+            "score": _score_support_resource_candidate(
+                title,
+                url,
+                content,
+                snippet=snippet,
+                question=question,
+                answer_text=answer_text,
+                recommended=bool(recommended_urls and url.lower() in recommended_urls),
+                is_live_web=is_live_web,
+                chunk_index=chunk_index,
+            ),
         })
         seen_urls.add(url.lower())
 
+    selected.sort(
+        key=lambda candidate: (
+            float(candidate.get("score", 0.0) or 0.0),
+            0 if candidate.get("is_live_web") else 1,
+            -int(candidate.get("chunk_index", 0) or 0),
+        ),
+        reverse=True,
+    )
     return selected
 
 
@@ -419,11 +448,35 @@ def _build_response_cards(
     rec_result: Optional[Dict[str, Any]],
     support_set: Optional[List[Dict[str, Any]]] = None,
     preferred_platforms: Optional[List[str]] = None,
+    question: str = "",
+    answer_text: str = "",
 ) -> List[Dict[str, str]]:
     cards: List[Dict[str, str]] = []
     desired_count = max(1, int((rec_result or {}).get("card_limit") or 1))
     resource_type = (((rec_result or {}).get("resource_intent") or {}).get("resource_type") or "video").lower()
     require_direct_video = resource_type not in {"article", "course_lesson", "web", "website"}
+    recommended_urls = {
+        (_candidate_url(candidate) or "").strip().lower()
+        for candidate in [((rec_result or {}).get("best_candidate"))] + list((rec_result or {}).get("alternate_candidates") or [])
+        if _candidate_url(candidate)
+    }
+
+    ingested_candidates = _support_resource_card_candidates(
+        support_set,
+        preferred_platforms=preferred_platforms,
+        require_video=require_direct_video,
+        include_live_web=False,
+        question=question,
+        answer_text=answer_text,
+        recommended_urls=recommended_urls,
+    )
+    for candidate in ingested_candidates[:desired_count]:
+        card = _preview_card_from_resource(candidate.get("title") or "", candidate.get("url") or "")
+        if not card:
+            continue
+        cards.append(card)
+    if cards:
+        return cards
 
     if _has_recommendable_resource(rec_result, preferred_platforms=preferred_platforms):
         recommended_candidates = [
@@ -447,25 +500,14 @@ def _build_response_cards(
         if cards:
             return cards
 
-    ingested_candidates = _support_resource_card_candidates(
-        support_set,
-        preferred_platforms=preferred_platforms,
-        require_video=require_direct_video,
-        include_live_web=False,
-    )
-    for candidate in ingested_candidates[:desired_count]:
-        card = _preview_card_from_resource(candidate.get("title") or "", candidate.get("url") or "")
-        if not card:
-            continue
-        cards.append(card)
-    if cards:
-        return cards
-
     live_candidates = _support_resource_card_candidates(
         support_set,
         preferred_platforms=preferred_platforms,
         require_video=require_direct_video,
         include_live_web=True,
+        question=question,
+        answer_text=answer_text,
+        recommended_urls=recommended_urls,
     )
     for candidate in live_candidates[:desired_count]:
         card = _preview_card_from_resource(
@@ -863,6 +905,50 @@ def _normalize_search_terms(text: str) -> List[str]:
         "reccomend", "watching", "learn",
     }
     return [w for w in words if len(w) > 2 and w not in stop]
+
+
+def _term_overlap_score(left: str, right: str, limit: int = 5) -> float:
+    left_terms = _normalize_search_terms(left)
+    right_terms = set(_normalize_search_terms(right))
+    if not left_terms or not right_terms:
+        return 0.0
+    hits = sum(1 for term in left_terms[:limit] if term in right_terms)
+    return min(1.0, hits / max(1, min(len(left_terms[:limit]), limit)))
+
+
+def _score_support_resource_candidate(
+    title: str,
+    url: str,
+    content: str,
+    *,
+    snippet: str = "",
+    question: str = "",
+    answer_text: str = "",
+    recommended: bool = False,
+    is_live_web: bool = False,
+    chunk_index: int = 0,
+) -> float:
+    haystack = " ".join(
+        part for part in [
+            title,
+            snippet,
+            re.sub(r"\s+", " ", (content or "").replace("[LIVE WEB SEARCH RESULT]", "").strip())[:280],
+        ]
+        if part
+    )
+    title_quality = _resource_title_quality(title, url)
+    question_overlap = _term_overlap_score(question, haystack)
+    answer_overlap = _term_overlap_score(answer_text, haystack)
+    support_rank_bonus = max(0.0, 0.16 - (chunk_index * 0.02))
+    score = (
+        (0.28 if not is_live_web else 0.12)
+        + (0.24 if recommended else 0.0)
+        + (title_quality * 0.24)
+        + (question_overlap * 0.22)
+        + (answer_overlap * 0.26)
+        + support_rank_bonus
+    )
+    return round(score, 4)
 
 
 def _topic_match_score(result: Dict[str, Any], question: str) -> float:
@@ -3587,6 +3673,8 @@ Message: {answer_text[:500]}"""
             rec_result,
             support_set,
             preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms"),
+            question=question,
+            answer_text=answer,
         )
 
     # --- Step 10: Persist + Return ---
@@ -3610,6 +3698,11 @@ Message: {answer_text[:500]}"""
         "answer": answer,
         "retrieved": support_set,
         "sources": build_source_list(support_set),
+        "citations": build_inline_citations(
+            support_set,
+            question=question,
+            answer_text=answer,
+        ),
         "cards": card,
         "meta": {
             "gen_debug": gen_debug,
@@ -3982,6 +4075,7 @@ async def grounded_rag_stream(
 
         if needs_fallback:
             logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
+            yield "__STATUS__websearch"
             if speculative_web_task:
                 try:
                     web_results = await speculative_web_task
@@ -4126,19 +4220,30 @@ async def grounded_rag_stream(
         route=route
     )
 
+    streamed_parts: List[str] = []
+    async for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:
+            streamed_parts.append(content)
+            yield content
+
+    final_stream_text = "".join(streamed_parts)
     stream_cards = _build_response_cards(
         rec_result if route == "ROUTE_2_TASK" else None,
         support_set,
         preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms") if route == "ROUTE_2_TASK" else None,
+        question=question,
+        answer_text=final_stream_text,
     )
-
-    async for chunk in stream:
-        content = chunk.choices[0].delta.content
-        if content:
-            yield content
-
     if stream_cards:
         yield f"__CARDS__{json.dumps(stream_cards)}"
+    stream_citations = build_inline_citations(
+        support_set,
+        question=question,
+        answer_text=final_stream_text,
+    )
+    if stream_citations:
+        yield f"__CITATIONS__{json.dumps(stream_citations)}"
 
 def build_source_list(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert support_set chunks into a flat list of unique source references."""
@@ -4152,3 +4257,59 @@ def build_source_list(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             seen.add(url)
             sources.append(ref)
     return sources
+
+
+def build_inline_citations(
+    support_set: List[Dict[str, Any]],
+    *,
+    question: str = "",
+    answer_text: str = "",
+    limit: int = 4,
+) -> List[Dict[str, Any]]:
+    ranked: List[Dict[str, Any]] = []
+    seen = set()
+    for idx, chunk in enumerate(support_set or []):
+        ref = chunk.get("source_ref") or {}
+        if not isinstance(ref, dict):
+            continue
+        url = str(ref.get("canonical_url") or chunk.get("url") or "").strip()
+        if not url:
+            continue
+        url_key = url.lower()
+        if url_key in seen:
+            continue
+        seen.add(url_key)
+
+        title = (
+            str(ref.get("title") or chunk.get("title") or "").strip()
+            or "Source"
+        )
+        snippet = str(chunk.get("snippet") or "").strip()
+        content = str(chunk.get("content") or "").strip()
+        platform = str(ref.get("platform") or _platform_from_url(url) or "web").strip().lower()
+        is_live_web = content.startswith("[LIVE WEB SEARCH RESULT]")
+        score = _score_support_resource_candidate(
+            title,
+            url,
+            content,
+            snippet=snippet,
+            question=question,
+            answer_text=answer_text,
+            recommended=False,
+            is_live_web=is_live_web,
+            chunk_index=idx,
+        )
+        preview = snippet or re.sub(r"\s+", " ", content.replace("[LIVE WEB SEARCH RESULT]", "").strip())
+        ranked.append(
+            {
+                "title": title[:160],
+                "url": url,
+                "platform": platform,
+                "snippet": preview[:220],
+                "is_live_web": is_live_web,
+                "score": score,
+            }
+        )
+
+    ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    return ranked[:limit]

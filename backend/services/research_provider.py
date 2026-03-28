@@ -354,6 +354,79 @@ class GeminiResearchProvider(ResearchProvider):
         self.model_name = settings.GEMINI_GROUNDING_MODEL
         self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent"
 
+    def _resolve_creator_name(self, creator_profile: Dict[str, Any]) -> str:
+        return (
+            creator_profile.get("name")
+            or creator_profile.get("handle")
+            or "The Creator"
+        )
+
+    def _build_grounding_query_plan(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        max_queries: int = 4,
+    ) -> List[str]:
+        creator_name = self._resolve_creator_name(creator_profile)
+        queries: List[str] = []
+
+        if settings.OPENAI_API_KEY:
+            planner_prompt = f"""
+You are building a live search plan for creator research.
+Creator: {creator_name}
+User query: {query}
+Recent context: {json.dumps((conversation_history or [])[-4:])}
+
+Generate 2 to {max_queries} distinct web search queries that together maximize source fidelity.
+Rules:
+- Prefer creator-owned or official public sources first.
+- Include the creator name in every query.
+- Make the queries specific, not vague.
+- Do not include quotation marks around the whole query.
+
+Return JSON only:
+{{"queries": ["query 1", "query 2"]}}
+"""
+            try:
+                planned = rag.generate_chat_completion(
+                    messages=[
+                        {"role": "system", "content": "You generate search query plans."},
+                        {"role": "user", "content": planner_prompt},
+                    ],
+                    model=settings.MODEL_VERIFY,
+                    json_mode=True,
+                    temperature=0.1,
+                )
+                data = self._parse_json(planned)
+                for candidate in (data or {}).get("queries") or []:
+                    cleaned = str(candidate or "").strip()
+                    if cleaned:
+                        queries.append(cleaned)
+            except Exception as exc:
+                logger.warning(f"GeminiResearch: grounding query plan failed: {exc}")
+
+        if not queries:
+            queries = [f"{creator_name} {query}".strip()]
+            if len(query.split()) >= 4:
+                queries.append(f"{creator_name} official {query}".strip())
+            if creator_profile.get("official_domains"):
+                domain = str((creator_profile.get("official_domains") or [""])[0] or "").strip()
+                if domain:
+                    queries.append(f"site:{domain} {creator_name} {query}".strip())
+
+        deduped: List[str] = []
+        seen = set()
+        for candidate in queries:
+            key = candidate.lower().strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate.strip())
+            if len(deduped) >= max_queries:
+                break
+        return deduped[:max_queries] or [query]
+
     def _call_gemini_rest(self, prompt: str, search_enabled: bool = True) -> Optional[Dict[str, Any]]:
         if not self.enabled: return None
         
@@ -438,6 +511,186 @@ class GeminiResearchProvider(ResearchProvider):
                 "is_public_info": True,
             })
         return results
+
+    def _extract_grounding_package(self, data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        response_text = self._extract_text_from_response(data)
+        candidates = (data or {}).get("candidates") or []
+        grounding = (candidates[0].get("groundingMetadata") or {}) if candidates else {}
+        chunks = grounding.get("groundingChunks") or []
+        supports = grounding.get("groundingSupports") or []
+        search_entry = grounding.get("searchEntryPoint") or {}
+
+        citations: List[Dict[str, Any]] = []
+        seen_keys = set()
+        for support in supports:
+            segment = support.get("segment") or {}
+            segment_text = (segment.get("text") or "").strip()
+            start_index = int(segment.get("startIndex") or 0)
+            end_index = int(segment.get("endIndex") or (start_index + len(segment_text)))
+            for chunk_index in support.get("groundingChunkIndices") or []:
+                try:
+                    chunk_index = int(chunk_index)
+                except Exception:
+                    continue
+                if chunk_index < 0 or chunk_index >= len(chunks):
+                    continue
+                web = (chunks[chunk_index] or {}).get("web") or {}
+                url = (web.get("uri") or "").strip()
+                title = (web.get("title") or "Grounded Web Result").strip()
+                if not url:
+                    continue
+                key = (start_index, end_index, url)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                citations.append({
+                    "start_index": start_index,
+                    "end_index": end_index,
+                    "startIndex": start_index,
+                    "endIndex": end_index,
+                    "text": segment_text,
+                    "url": url,
+                    "title": title,
+                    "chunk_index": chunk_index,
+                })
+
+        return {
+            "response_text": response_text,
+            "citations": citations,
+            "search_entry_point": {
+                "rendered_content": search_entry.get("renderedContent") or "",
+            },
+            "grounded_results": self._extract_grounded_results(data),
+        }
+
+    def grounded_overview(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        max_queries: int = 4,
+    ) -> Dict[str, Any]:
+        if not self.enabled:
+            return {
+                "response_text": "",
+                "citations": [],
+                "search_entry_point": {"rendered_content": ""},
+                "query_plan": [query],
+                "results": [],
+                "sources": [],
+                "packages": [],
+            }
+
+        creator_name = self._resolve_creator_name(creator_profile)
+        query_plan = self._build_grounding_query_plan(
+            query,
+            creator_profile,
+            conversation_history=conversation_history,
+            max_queries=max_queries,
+        )
+
+        def run_grounded_query(subquery: str) -> Dict[str, Any]:
+            prompt = (
+                f"Creator: {creator_name}\n"
+                f"Original user question: {query}\n"
+                f"Focused search objective: {subquery}\n\n"
+                "Use Google Search grounding to answer briefly and only from grounded public sources. "
+                "Prefer official creator-owned sources and clearly relevant public records."
+            )
+            raw = self._call_gemini_rest(prompt, search_enabled=True)
+            package = self._extract_grounding_package(raw)
+            package["subquery"] = subquery
+            return package
+
+        packages_by_query: Dict[str, Dict[str, Any]] = {}
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(len(query_plan), 4)) as executor:
+                futures = {executor.submit(run_grounded_query, subquery): subquery for subquery in query_plan}
+                for future in as_completed(futures):
+                    try:
+                        subquery = futures[future]
+                        packages_by_query[subquery] = future.result()
+                    except Exception as exc:
+                        logger.warning(f"GeminiResearch: grounded query failed for '{futures[future]}': {exc}")
+        except Exception as exc:
+            logger.warning(f"GeminiResearch: grounded overview parallelism failed: {exc}")
+            for subquery in query_plan:
+                try:
+                    packages_by_query[subquery] = run_grounded_query(subquery)
+                except Exception as inner_exc:
+                    logger.warning(f"GeminiResearch: grounded query failed for '{subquery}': {inner_exc}")
+
+        merged_results: List[Dict[str, Any]] = []
+        merged_citations: List[Dict[str, Any]] = []
+        merged_text_parts: List[str] = []
+        merged_sources: List[Dict[str, Any]] = []
+        entry_point_html = ""
+        seen_urls = set()
+        seen_citations = set()
+        ordered_packages: List[Dict[str, Any]] = []
+        text_offsets: Dict[str, int] = {}
+
+        for subquery in query_plan:
+            package = packages_by_query.get(subquery) or {}
+            if not package:
+                continue
+            ordered_packages.append(package)
+            text = str(package.get("response_text") or "").strip()
+            text_offset = 0
+            if text:
+                if text in text_offsets:
+                    text_offset = text_offsets[text]
+                else:
+                    text_offset = sum(len(part) for part in merged_text_parts)
+                    if merged_text_parts:
+                        text_offset += 2
+                    merged_text_parts.append(text)
+                    text_offsets[text] = text_offset
+            if not entry_point_html:
+                entry_point_html = ((package.get("search_entry_point") or {}).get("rendered_content") or "").strip()
+            for citation in package.get("citations") or []:
+                adjusted = dict(citation)
+                if text:
+                    start_index = int(citation.get("start_index") or 0) + text_offset
+                    end_index = int(citation.get("end_index") or 0) + text_offset
+                else:
+                    start_index = int(citation.get("start_index") or 0)
+                    end_index = int(citation.get("end_index") or 0)
+                adjusted["start_index"] = start_index
+                adjusted["end_index"] = end_index
+                adjusted["startIndex"] = start_index
+                adjusted["endIndex"] = end_index
+                adjusted["subquery"] = package.get("subquery")
+                key = (adjusted.get("start_index"), adjusted.get("end_index"), adjusted.get("url"))
+                if key in seen_citations:
+                    continue
+                seen_citations.add(key)
+                merged_citations.append(adjusted)
+            for result in package.get("grounded_results") or []:
+                url = (result.get("url") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                merged_results.append(result)
+                merged_sources.append({
+                    "url": url,
+                    "title": result.get("title") or "Grounded Web Result",
+                    "resource_type": result.get("resource_type") or "web",
+                    "platform": result.get("platform") or self._infer_platform_from_url(url),
+                    "subquery": package.get("subquery"),
+                })
+
+        merged_results = self._enforce_cog(merged_results, creator_profile)
+        return {
+            "response_text": "\n\n".join(merged_text_parts[:max_queries]).strip(),
+            "citations": merged_citations,
+            "search_entry_point": {"rendered_content": entry_point_html},
+            "query_plan": query_plan,
+            "results": merged_results,
+            "sources": merged_sources,
+            "packages": ordered_packages,
+        }
 
     def search(
         self, 

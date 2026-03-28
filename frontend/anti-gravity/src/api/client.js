@@ -137,7 +137,7 @@ export function ask({ creator_id, question, top_k, max_distance, messages, debug
   return postJson("/ask", body);
 }
 
-export async function askStream({ creator_id, question, top_k, max_distance, messages, thread_id, images, onToken, onComplete, onError }) {
+export async function askStream({ creator_id, question, top_k, max_distance, messages, thread_id, images, onToken, onComplete, onError, onStatus }) {
   const body = { creator_id, question, top_k, max_distance, messages, thread_id, images };
 
   const response = await fetch(`${API_BASE_URL}/ask-stream`, {
@@ -159,6 +159,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   let buffer = "";
   let fullAnswer = "";
   let finalCards = null;
+  let finalCitations = null;
   let finalContent = null;
 
   try {
@@ -175,8 +176,8 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
           const dataStr = part.slice(6);
           if (dataStr === "[DONE]") {
             const completedAnswer = finalContent || fullAnswer;
-            if (onComplete) onComplete(completedAnswer, { cards: finalCards || [], finalContent });
-            return { answer: completedAnswer, cards: finalCards || [] };
+            if (onComplete) onComplete(completedAnswer, { cards: finalCards || [], citations: finalCitations || [], finalContent });
+            return { answer: completedAnswer, cards: finalCards || [], citations: finalCitations || [] };
           }
           let data;
           try {
@@ -190,8 +191,16 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
             throw new Error(data.error);
           }
 
+          if (typeof data.status === "string" && onStatus) {
+            onStatus(data.status);
+          }
+
           if (Array.isArray(data.cards)) {
             finalCards = data.cards;
+          }
+
+          if (Array.isArray(data.citations)) {
+            finalCitations = data.citations;
           }
 
           if (typeof data.final_content === "string") {

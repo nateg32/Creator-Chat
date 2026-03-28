@@ -1,6 +1,7 @@
 import logging
 import json
 import asyncio
+import re
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from backend.db import db
@@ -8,7 +9,7 @@ from backend.personality_analyzer import PersonalityAnalyzer
 from backend.services.research_provider import GeminiResearchProvider
 from backend.services.corpus_state import compute_creator_corpus_checksum
 from backend.settings import settings
-from backend.rag import get_client
+from backend.rag import get_client, get_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +378,624 @@ class FingerprintService:
         # Prefer Gemini when GOOGLE_API_KEY is present; otherwise fall back to default provider factory.
         self.researcher = GeminiResearchProvider() if settings.GOOGLE_API_KEY else get_research_provider()
         self.analyzer = PersonalityAnalyzer()
+        self.agent_max_iterations = 6
+
+    @staticmethod
+    def _build_creator_profile(creator_id: int, creator: Dict[str, Any], configs: Dict[str, Any], domains: List[str]) -> Dict[str, Any]:
+        return {
+            "id": creator_id,
+            "name": creator.get("name"),
+            "handle": creator.get("handle"),
+            "platform_configs": configs or {},
+            "official_domains": domains or [],
+            "course_domains": creator.get("course_domains") or [],
+            "course_base_urls": creator.get("course_base_urls") or [],
+            "youtube_channel_id": creator.get("youtube_channel_id"),
+            "youtube_handle": creator.get("youtube_handle"),
+        }
+
+    @staticmethod
+    def _clip_text(text: Any, limit: int = 700) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        return cleaned[:limit]
+
+    def _load_approved_content_samples(self, creator_id: int, *, limit: int = 8) -> List[Dict[str, Any]]:
+        docs = self.analyzer._load_corpus(creator_id, limit=limit)
+        samples: List[Dict[str, Any]] = []
+        seen = set()
+        for idx, doc in enumerate(docs or [], start=1):
+            metadata = _load_jsonish(doc.get("metadata"))
+            content = str(doc.get("content") or "").strip()
+            if not content:
+                continue
+            title = (
+                doc.get("title")
+                or metadata.get("title")
+                or metadata.get("canonical_title")
+                or doc.get("source")
+                or f"Sample {idx}"
+            )
+            key = str(doc.get("source_id") or title).strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            samples.append(
+                {
+                    "sample_id": doc.get("source_id") or f"sample_{idx}",
+                    "title": title,
+                    "platform": metadata.get("platform") or doc.get("source") or "unknown",
+                    "url": metadata.get("canonical_url") or metadata.get("source_url") or metadata.get("url") or "",
+                    "excerpt": self._clip_text(content, limit=700),
+                    "content": self._clip_text(content, limit=1800),
+                }
+            )
+            if len(samples) >= limit:
+                break
+        return samples
+
+    @staticmethod
+    def _format_content_samples_for_prompt(samples: List[Dict[str, Any]], *, limit: int = 5) -> str:
+        rendered: List[str] = []
+        for idx, sample in enumerate(samples[:limit], start=1):
+            rendered.append(
+                f"[Sample {idx}] {sample.get('title')} | platform={sample.get('platform')}\n"
+                f"{sample.get('excerpt')}"
+            )
+        return "\n\n---\n\n".join(rendered) if rendered else "No approved content samples available."
+
+    @staticmethod
+    def _fingerprint_agent_tools() -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "analyze_content_style",
+                    "description": "Inspect approved creator content and the existing style fingerprint to understand voice, tone, beliefs, and audience relationship. Start here before web research.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "focus": {
+                                "type": "string",
+                                "enum": [
+                                    "voice_and_tone",
+                                    "themes_and_topics",
+                                    "communication_style",
+                                    "values_and_beliefs",
+                                    "audience_relationship",
+                                ],
+                            },
+                            "notes": {"type": "string"},
+                        },
+                        "required": ["focus"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "description": "Run grounded public web research. Prefer creator-owned sources and official surfaces first. Use this for identity, background, expertise, or public consensus.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "intent": {
+                                "type": "string",
+                                "enum": ["identity", "expertise", "background", "reputation", "content_topics"],
+                            },
+                        },
+                        "required": ["query", "intent"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "fetch_url",
+                    "description": "Fetch one specific URL from grounded research when the page likely contains richer creator evidence than the search summary.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["url", "reason"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "record_finding",
+                    "description": "Record a verified or uncertain finding before final synthesis. Use source references whenever possible.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "category": {
+                                "type": "string",
+                                "enum": ["identity", "expertise", "style", "values", "audience", "background", "caution"],
+                            },
+                            "finding": {"type": "string"},
+                            "confidence": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                            },
+                            "source_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "evidence": {"type": "string"},
+                        },
+                        "required": ["category", "finding", "confidence"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "synthesize_persona",
+                    "description": "FINAL STEP. Call only after at least three non-synthesis tool calls across content analysis and research. Produces the final persona seed bundle.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "ready": {"type": "boolean"},
+                            "gaps": {"type": "string"},
+                        },
+                        "required": ["ready", "gaps"],
+                    },
+                },
+            },
+        ]
+
+    @staticmethod
+    def _agent_message_to_payload(message: Any) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "role": "assistant",
+            "content": message.content or "",
+        }
+        tool_calls = []
+        for tool_call in getattr(message, "tool_calls", []) or []:
+            tool_calls.append(
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                }
+            )
+        if tool_calls:
+            payload["tool_calls"] = tool_calls
+        return payload
+
+    async def _search_web_for_agent(self, query: str, intent: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        creator_profile = context["creator_profile"]
+        if hasattr(self.researcher, "grounded_overview"):
+            overview = self.researcher.grounded_overview(
+                query,
+                creator_profile,
+                conversation_history=context.get("conversation_history") or [],
+                max_queries=4,
+            )
+            packet = {
+                "query": query,
+                "intent": intent,
+                "query_plan": overview.get("query_plan") or [query],
+                "response_text": self._clip_text(overview.get("response_text"), limit=1800),
+                "results": _normalize_search_hits(overview.get("results") or [], limit=8),
+                "citations": [
+                    {
+                        "text": self._clip_text(citation.get("text"), limit=180),
+                        "url": citation.get("url"),
+                        "title": citation.get("title"),
+                        "subquery": citation.get("subquery"),
+                    }
+                    for citation in (overview.get("citations") or [])[:12]
+                ],
+                "sources": [
+                    {
+                        "title": source.get("title"),
+                        "url": source.get("url"),
+                        "resource_type": source.get("resource_type"),
+                        "platform": source.get("platform"),
+                        "subquery": source.get("subquery"),
+                    }
+                    for source in (overview.get("sources") or [])[:12]
+                ],
+            }
+        else:
+            results = self.researcher.search_general(query, creator_profile.get("id"), creator_profile=creator_profile)
+            packet = {
+                "query": query,
+                "intent": intent,
+                "query_plan": [query],
+                "response_text": "",
+                "results": _normalize_search_hits(results, limit=8),
+                "citations": [],
+                "sources": _normalize_search_hits(results, limit=8),
+            }
+        context.setdefault("grounding_packets", []).append(packet)
+        return packet
+
+    async def _fetch_url_for_agent(self, url: str, reason: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        cached = context.setdefault("fetched_urls", {})
+        if url in cached:
+            return cached[url]
+
+        # Reuse grounded search metadata before making a raw network fetch.
+        for packet in context.get("grounding_packets") or []:
+            for source in packet.get("sources") or []:
+                if str(source.get("url") or "").strip() == url.strip():
+                    result = {
+                        "url": url,
+                        "reason": reason,
+                        "title": source.get("title"),
+                        "excerpt": self._clip_text(packet.get("response_text"), limit=1500),
+                        "source": "grounded_packet",
+                    }
+                    cached[url] = result
+                    return result
+
+        try:
+            import requests
+
+            response = requests.get(
+                url,
+                timeout=8,
+                headers={"User-Agent": "Mozilla/5.0 CreatorBot/1.0"},
+            )
+            body = response.text or ""
+            body = re.sub(r"(?is)<script.*?>.*?</script>", " ", body)
+            body = re.sub(r"(?is)<style.*?>.*?</style>", " ", body)
+            body = re.sub(r"(?s)<[^>]+>", " ", body)
+            excerpt = self._clip_text(body, limit=2200)
+            result = {
+                "url": url,
+                "reason": reason,
+                "status_code": response.status_code,
+                "excerpt": excerpt,
+                "source": "live_fetch",
+            }
+        except Exception as exc:
+            result = {
+                "url": url,
+                "reason": reason,
+                "error": str(exc),
+                "source": "live_fetch",
+            }
+
+        cached[url] = result
+        return result
+
+    async def _analyze_content_style_for_agent(self, focus: str, notes: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        voice = context.get("voice_fingerprint") or {}
+        focus_map = {
+            "voice_and_tone": {
+                "traits": voice.get("traits") or [],
+                "signature_phrases": voice.get("signature_phrases") or [],
+                "linguistic_dna": voice.get("linguistic_dna") or {},
+                "speech_mechanics": voice.get("speech_mechanics") or {},
+                "evidence_snippets": voice.get("evidence_snippets") or [],
+            },
+            "themes_and_topics": {
+                "recurring_themes": voice.get("recurring_themes") or [],
+                "content_truth": voice.get("content_truth") or {},
+                "domain_map": voice.get("domain_map") or {},
+            },
+            "communication_style": {
+                "teaching_style": voice.get("teaching_style") or [],
+                "signature_moves": voice.get("signature_moves") or [],
+                "reasoning_profile": voice.get("reasoning_profile") or {},
+                "mode_matrix": voice.get("mode_matrix") or {},
+            },
+            "values_and_beliefs": {
+                "worldview": voice.get("worldview") or {},
+                "belief_graph": voice.get("belief_graph") or {},
+                "value_model": voice.get("value_model") or {},
+                "story_bank": voice.get("story_bank") or [],
+            },
+            "audience_relationship": {
+                "audience_and_power": voice.get("audience_and_power") or {},
+                "pressure_engine": voice.get("pressure_engine") or {},
+                "identity_signature": voice.get("identity_signature") or {},
+                "golden_replies": voice.get("golden_replies") or {},
+            },
+        }
+        analysis = {
+            "focus": focus,
+            "notes": notes,
+            "analysis": focus_map.get(focus, focus_map["voice_and_tone"]),
+            "samples": context.get("approved_content") or [],
+        }
+        context.setdefault("content_analysis", []).append({"focus": focus, "notes": notes})
+        return analysis
+
+    @staticmethod
+    def _record_finding_for_agent(args: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        finding = {
+            "category": args.get("category"),
+            "finding": str(args.get("finding") or "").strip(),
+            "confidence": args.get("confidence"),
+            "source_refs": [str(item).strip() for item in (args.get("source_refs") or []) if str(item).strip()],
+            "evidence": str(args.get("evidence") or "").strip(),
+        }
+        if finding["finding"]:
+            registry = context.setdefault("gathered_facts", [])
+            existing = {str(item.get("finding") or "").strip().lower() for item in registry}
+            if finding["finding"].lower() not in existing:
+                registry.append(finding)
+        return {
+            "recorded": bool(finding["finding"]),
+            "fact_count": len(context.get("gathered_facts") or []),
+        }
+
+    async def _synthesize_persona_bundle(self, context: Dict[str, Any], gaps: str = "") -> Dict[str, Any]:
+        facts = context.get("gathered_facts") or []
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for fact in facts:
+            grouped.setdefault(str(fact.get("category") or "other"), []).append(fact)
+
+        prompt = f"""
+You are writing the evidence-backed persona seed for creator {context['creator_name']}.
+
+Use only the supplied evidence. Do not invent facts. Favor the creator's own words over third-party summaries.
+
+Return JSON only with this exact shape:
+{{
+  "identity_patch": {{
+    "identity": {{}},
+    "brand": {{}},
+    "platforms": {{}},
+    "creator_claims": [],
+    "unknown_fields": []
+  }},
+  "dossier_patch": {{
+    "biography": {{}},
+    "business_evolution": [],
+    "specific_wins": [],
+    "net_worth_milestones": [],
+    "controversies_and_boundaries": [],
+    "affiliations": [],
+    "public_consensus_facts": {{}}
+  }},
+  "creator_claims": [],
+  "unknown_fields": [],
+  "fact_registry": [],
+  "style_summary": "",
+  "identity_summary": "",
+  "runtime_anchor_points": [],
+  "verified_beliefs": [],
+  "audience_contract": [],
+  "lexical_markers": {{
+    "signature_phrases": [],
+    "high_signal_words": [],
+    "banned_generic_phrases": []
+  }},
+  "soul_seed_markdown": ""
+}}
+
+KNOWN GAPS:
+{gaps or "None noted."}
+
+VOICE FINGERPRINT:
+{json.dumps(context.get("voice_fingerprint") or {})}
+
+GROUPED FACT REGISTRY:
+{json.dumps(grouped)}
+
+GROUNDED SEARCH PACKETS:
+{json.dumps(context.get("grounding_packets") or [])}
+
+APPROVED CONTENT SAMPLES:
+{json.dumps((context.get("approved_content") or [])[:6])}
+"""
+        try:
+            response = await get_async_client().chat.completions.create(
+                model=settings.MODEL_CLASSIFICATION,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You synthesize creator persona bundles. "
+                            "Everything must be grounded to the supplied evidence."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            parsed = _load_jsonish(response.choices[0].message.content)
+        except Exception as exc:
+            logger.warning(f"FingerprintService: persona bundle synthesis failed: {exc}")
+            parsed = {}
+
+        if not parsed:
+            parsed = {
+                "identity_patch": {},
+                "dossier_patch": {},
+                "creator_claims": [],
+                "unknown_fields": [gaps] if gaps else [],
+                "fact_registry": facts,
+                "style_summary": "",
+                "identity_summary": "",
+                "runtime_anchor_points": [],
+                "verified_beliefs": [],
+                "audience_contract": [],
+                "lexical_markers": {
+                    "signature_phrases": [],
+                    "high_signal_words": [],
+                    "banned_generic_phrases": [],
+                },
+                "soul_seed_markdown": "",
+            }
+        return parsed
+
+    async def _execute_fingerprint_agent_tool(self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        if tool_name == "search_web":
+            return await self._search_web_for_agent(
+                str(args.get("query") or "").strip(),
+                str(args.get("intent") or "identity"),
+                context,
+            )
+        if tool_name == "fetch_url":
+            return await self._fetch_url_for_agent(
+                str(args.get("url") or "").strip(),
+                str(args.get("reason") or "").strip(),
+                context,
+            )
+        if tool_name == "analyze_content_style":
+            return await self._analyze_content_style_for_agent(
+                str(args.get("focus") or "voice_and_tone"),
+                str(args.get("notes") or "").strip(),
+                context,
+            )
+        if tool_name == "record_finding":
+            return self._record_finding_for_agent(args, context)
+        if tool_name == "synthesize_persona":
+            bundle = await self._synthesize_persona_bundle(context, gaps=str(args.get("gaps") or "").strip())
+            context["persona_bundle"] = bundle
+            return bundle
+        return {"error": f"Unknown tool '{tool_name}'."}
+
+    async def _run_fingerprint_agent(
+        self,
+        *,
+        creator_id: int,
+        creator_name: str,
+        creator_profile: Dict[str, Any],
+        link_identity: Dict[str, Any],
+        voice_fingerprint: Dict[str, Any],
+        creator_claims: List[str],
+        unknown_fields: List[str],
+    ) -> Dict[str, Any]:
+        if not settings.OPENAI_API_KEY:
+            return {}
+
+        approved_content = self._load_approved_content_samples(creator_id, limit=8)
+        context: Dict[str, Any] = {
+            "creator_id": creator_id,
+            "creator_name": creator_name,
+            "creator_profile": creator_profile,
+            "approved_content": approved_content,
+            "voice_fingerprint": voice_fingerprint,
+            "link_identity": link_identity,
+            "creator_claims": list(creator_claims or []),
+            "unknown_fields": list(unknown_fields or []),
+            "gathered_facts": [],
+            "grounding_packets": [],
+            "tool_trace": [],
+            "conversation_history": [],
+        }
+
+        initial_prompt = f"""
+You are building an evidence-backed runtime persona fingerprint for creator: {creator_name}
+
+Known public links and identity clues:
+{json.dumps(link_identity or {})}
+
+Creator-stated claims already observed:
+{json.dumps(creator_claims or [])}
+
+Known gaps:
+{json.dumps(unknown_fields or [])}
+
+Approved content samples:
+{self._format_content_samples_for_prompt(approved_content, limit=5)}
+
+Your job:
+1. Start with approved content and inspect how this creator actually sounds.
+2. Use grounded web research to verify public identity, business history, expertise, and public consensus.
+3. Record findings as you go.
+4. Only synthesize once you have enough coverage across identity, style, values, and audience.
+
+Rules:
+- Prefer creator-owned sources and the creator's own words.
+- Never invent facts.
+- Do not call synthesize_persona before at least three non-synthesis tool calls.
+- Be skeptical of PR fluff and third-party summaries.
+"""
+        messages: List[Dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a persona research agent. Work methodically and use the tools. "
+                    "Your final bundle must be grounded in evidence, not vibes."
+                ),
+            },
+            {"role": "user", "content": initial_prompt},
+        ]
+
+        non_synthesis_calls = 0
+        for iteration in range(1, self.agent_max_iterations + 1):
+            _set_fingerprint_progress(
+                creator_id,
+                status="processing",
+                percent=min(90, 58 + iteration * 5),
+                stage="persona_agent",
+                message=f"Persona agent iteration {iteration}: gathering evidence and checking creator-specific signals.",
+            )
+            response = await get_async_client().chat.completions.create(
+                model=settings.MODEL_VERIFY,
+                messages=messages,
+                tools=self._fingerprint_agent_tools(),
+                tool_choice="auto",
+                temperature=0.2,
+            )
+            message = response.choices[0].message
+            messages.append(self._agent_message_to_payload(message))
+            tool_calls = list(getattr(message, "tool_calls", []) or [])
+            if not tool_calls:
+                break
+
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                args = _load_jsonish(tool_call.function.arguments)
+                trace_entry = {
+                    "iteration": iteration,
+                    "tool": tool_name,
+                    "args": args,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                context["tool_trace"].append(trace_entry)
+
+                if tool_name == "synthesize_persona" and non_synthesis_calls < 3:
+                    result = {
+                        "deferred": True,
+                        "reason": "Need at least three non-synthesis tool calls before synthesis.",
+                        "non_synthesis_calls": non_synthesis_calls,
+                    }
+                else:
+                    result = await self._execute_fingerprint_agent_tool(tool_name, args, context)
+                    if tool_name != "synthesize_persona":
+                        non_synthesis_calls += 1
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result),
+                    }
+                )
+
+                if tool_name == "synthesize_persona" and not result.get("deferred"):
+                    bundle = dict(result)
+                    bundle["tool_trace"] = context.get("tool_trace") or []
+                    bundle["grounding_packets"] = context.get("grounding_packets") or []
+                    bundle["fact_registry"] = bundle.get("fact_registry") or context.get("gathered_facts") or []
+                    bundle["research_quality"] = "agentic_grounded"
+                    return bundle
+
+        forced_bundle = await self._synthesize_persona_bundle(
+            context,
+            gaps="Agent reached the iteration ceiling before explicitly synthesizing.",
+        )
+        forced_bundle["tool_trace"] = context.get("tool_trace") or []
+        forced_bundle["grounding_packets"] = context.get("grounding_packets") or []
+        forced_bundle["fact_registry"] = forced_bundle.get("fact_registry") or context.get("gathered_facts") or []
+        forced_bundle["research_quality"] = "agentic_grounded_forced"
+        return forced_bundle
 
     async def generate_fingerprint_async(self, creator_id: int, refresh: bool = False, mode: str = "full"):
         """
@@ -395,7 +1014,8 @@ class FingerprintService:
             # 2. Get Creator Info & Setup Links
             creator = db.execute_one(
                 """
-                SELECT name, handle, platform_configs, official_domains, research_summary,
+                SELECT name, handle, platform_configs, official_domains, course_domains, course_base_urls,
+                       youtube_channel_id, youtube_handle, research_summary,
                        style_fingerprint, identity_fingerprint, soul_md, fingerprint_updated_at,
                        content_corpus_checksum, fingerprint_corpus_checksum
                 FROM creators
@@ -434,11 +1054,12 @@ class FingerprintService:
                 if isinstance(cfg, dict):
                     if cfg.get("url"): links.append(cfg["url"])
                     elif cfg.get("handle"): links.append(f"https://{p}.com/{cfg['handle'].strip('@')}")
-            
+
             domains = creator.get("official_domains") or []
             for d in domains:
                 if d.startswith("http"): links.append(d)
                 else: links.append(f"https://{d}")
+            creator_profile = self._build_creator_profile(creator_id, creator, configs, domains)
 
             cached_summary = _load_cached_research_summary(creator_id)
             reuse_cached_research = (
@@ -520,12 +1141,80 @@ class FingerprintService:
                 }
 
             # PHASE 3: Targeted Google Expansion (Fill Gaps)
-            clues = {
-                "identity_hints": link_identity.get("identity", {}),
-                "content_milestones": voice_fingerprint.get("content_truth", {}),
-                "claims": creator_claims,
-            }
+            agentic_bundle: Dict[str, Any] = {}
             if not reuse_cached_research and not incremental_mode:
+                _set_fingerprint_progress(
+                    creator_id,
+                    status="processing",
+                    percent=58,
+                    stage="persona_agent",
+                    message="Running the persona research agent across approved content and grounded public sources.",
+                )
+                agentic_bundle = await self._run_fingerprint_agent(
+                    creator_id=creator_id,
+                    creator_name=name,
+                    creator_profile=creator_profile,
+                    link_identity=link_identity,
+                    voice_fingerprint=voice_fingerprint,
+                    creator_claims=creator_claims,
+                    unknown_fields=unknown_fields,
+                )
+                if agentic_bundle:
+                    link_identity = _merge_incremental_fingerprint(link_identity, agentic_bundle.get("identity_patch") or {})
+                    investigative_dossier = _merge_incremental_fingerprint(
+                        investigative_dossier,
+                        agentic_bundle.get("dossier_patch") or {},
+                    )
+                    creator_claims = _dedupe_keep_order(
+                        (creator_claims or []) + (agentic_bundle.get("creator_claims") or []),
+                        limit=10,
+                    )
+                    unknown_fields = _dedupe_keep_order(
+                        (unknown_fields or []) + (agentic_bundle.get("unknown_fields") or []),
+                        limit=10,
+                    )
+
+                    runtime_anchor_points = agentic_bundle.get("runtime_anchor_points") or []
+                    verified_beliefs = agentic_bundle.get("verified_beliefs") or []
+                    lexical_markers = agentic_bundle.get("lexical_markers") or {}
+
+                    if runtime_anchor_points:
+                        voice_fingerprint["evidence_snippets"] = _dedupe_keep_order(
+                            (voice_fingerprint.get("evidence_snippets") or []) + runtime_anchor_points,
+                            limit=12,
+                        )
+                    if verified_beliefs:
+                        belief_graph = voice_fingerprint.get("belief_graph") or {}
+                        belief_graph["core_beliefs"] = _dedupe_keep_order(
+                            (belief_graph.get("core_beliefs") or []) + verified_beliefs,
+                            limit=12,
+                        )
+                        voice_fingerprint["belief_graph"] = belief_graph
+                    if lexical_markers:
+                        voice_fingerprint["signature_phrases"] = _dedupe_keep_order(
+                            (voice_fingerprint.get("signature_phrases") or []) + (lexical_markers.get("signature_phrases") or []),
+                            limit=10,
+                        )
+                        lexical_rules = voice_fingerprint.get("lexical_rules") or {}
+                        lexical_rules["signature_phrases"] = _dedupe_keep_order(
+                            (lexical_rules.get("signature_phrases") or []) + (lexical_markers.get("signature_phrases") or []),
+                            limit=10,
+                        )
+                        lexical_rules["high_signal_words"] = _dedupe_keep_order(
+                            (lexical_rules.get("high_signal_words") or []) + (lexical_markers.get("high_signal_words") or []),
+                            limit=18,
+                        )
+                        lexical_rules["banned_frames"] = _dedupe_keep_order(
+                            (lexical_rules.get("banned_frames") or []) + (lexical_markers.get("banned_generic_phrases") or []),
+                            limit=12,
+                        )
+                        voice_fingerprint["lexical_rules"] = lexical_rules
+
+                clues = {
+                    "identity_hints": link_identity.get("identity", {}),
+                    "content_milestones": voice_fingerprint.get("content_truth", {}),
+                    "claims": creator_claims,
+                }
                 _set_fingerprint_progress(
                     creator_id,
                     status="processing",
@@ -536,9 +1225,9 @@ class FingerprintService:
                 logger.info(f"FingerprintService Phase 3: Targeted Google expansion...")
                 logger.info(f"FingerprintService: Launching Deep Dossier for {name}...")
                 if hasattr(self.researcher, "research_dossier"):
-                    investigative_dossier = self.researcher.research_dossier(name, clues)
-                    if not isinstance(investigative_dossier, dict):
-                        investigative_dossier = {}
+                    sequential_dossier = self.researcher.research_dossier(name, clues)
+                    if isinstance(sequential_dossier, dict):
+                        investigative_dossier = _merge_incremental_fingerprint(investigative_dossier, sequential_dossier)
                 else:
                     logger.warning("FingerprintService: active research provider has no research_dossier(); skipping dossier phase.")
 
@@ -550,13 +1239,6 @@ class FingerprintService:
                         research_quality = "cached"
 
                 if not _has_meaningful_dossier(investigative_dossier):
-                    creator_profile = {
-                        "id": creator_id,
-                        "name": name,
-                        "handle": creator.get("handle"),
-                        "platform_configs": configs,
-                        "official_domains": domains,
-                    }
                     fallback_dossier = _fallback_openai_dossier(creator_id, name, creator_profile, clues)
                     if fallback_dossier:
                         logger.info(f"FingerprintService: OpenAI dossier fallback succeeded for {name}.")
@@ -566,6 +1248,8 @@ class FingerprintService:
                 if not _has_meaningful_dossier(investigative_dossier):
                     research_quality = "partial"
                     investigative_dossier = {}
+                elif agentic_bundle:
+                    research_quality = agentic_bundle.get("research_quality") or "agentic_grounded"
             elif incremental_mode and reuse_cached_research:
                 logger.info(f"FingerprintService: Incremental mode reusing cached dossier for {name} ({creator_id}).")
 
@@ -585,6 +1269,28 @@ class FingerprintService:
                 "content_milestones": voice_fingerprint.get("content_truth", {}),
                 "unknown_fields": unknown_fields,
                 "research_quality": research_quality,
+                "agentic_research": {
+                    "tool_trace": (agentic_bundle or {}).get("tool_trace") or [],
+                    "fact_registry": (agentic_bundle or {}).get("fact_registry") or [],
+                    "grounded_sources": [
+                        source
+                        for packet in ((agentic_bundle or {}).get("grounding_packets") or [])
+                        for source in (packet.get("sources") or [])
+                    ][:16],
+                    "query_plan": [
+                        subquery
+                        for packet in ((agentic_bundle or {}).get("grounding_packets") or [])
+                        for subquery in (packet.get("query_plan") or [])
+                    ][:16],
+                } if agentic_bundle else {},
+                "persona_seed": {
+                    "style_summary": (agentic_bundle or {}).get("style_summary") or "",
+                    "identity_summary": (agentic_bundle or {}).get("identity_summary") or "",
+                    "runtime_anchor_points": (agentic_bundle or {}).get("runtime_anchor_points") or [],
+                    "verified_beliefs": (agentic_bundle or {}).get("verified_beliefs") or [],
+                    "audience_contract": (agentic_bundle or {}).get("audience_contract") or [],
+                    "soul_seed_markdown": (agentic_bundle or {}).get("soul_seed_markdown") or "",
+                } if agentic_bundle else {},
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
 
@@ -666,9 +1372,14 @@ class FingerprintService:
         """Synthesizes the deep research summary and style fingerprint into a 24-section soul.md document."""
         logger.info(f"FingerprintService: Synthesizing 24-section soul.md for {name}...")
 
+        agentic_research = research_summary.get("agentic_research") or {}
+        persona_seed = research_summary.get("persona_seed") or {}
+
         context_text = f"""
         NAME: {name}
         RESEARCH_SUMMARY: {json.dumps(research_summary)}
+        AGENTIC_RESEARCH_TRACE: {json.dumps(agentic_research)}
+        PERSONA_SEED: {json.dumps(persona_seed)}
         VOICE_PROFILE: {json.dumps(voice)}
         STYLE_FINGERPRINT_V3: {json.dumps(style_fingerprint)}
         """
@@ -713,6 +1424,7 @@ class FingerprintService:
 
         SECTION REQUIREMENTS:
         - Sections 13-24 must draw heavily from STYLE_FINGERPRINT_V3.
+        - Use AGENTIC_RESEARCH_TRACE and PERSONA_SEED as hard evidence for runtime anchors, lexical cues, audience contract, and verified beliefs.
         - DIFFERENTIAL DNA: what makes {name} unlike adjacent creators in the same niche.
         - ANTI-PERSONA RULES: what would make {name} sound fake, generic, or like somebody else.
         - MODE MATRIX: how they behave in greeting, teaching, comfort, rebuke, story, sales, debate, uncertainty, and boundary mode.

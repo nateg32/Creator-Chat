@@ -64,6 +64,7 @@ from backend.services.text_sanitizer import (
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
+from backend.services.transcript_quality import transcript_needs_recovery
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
     delete_document_corpus,
@@ -495,6 +496,9 @@ def _history_message_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     cards = metadata.get("cards")
     if isinstance(cards, list) and cards:
         message["cards"] = cards
+    citations = metadata.get("citations")
+    if isinstance(citations, list) and citations:
+        message["citations"] = citations
     return message
 
 @app.on_event("startup")
@@ -2166,8 +2170,10 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
             import copy
             raw_answer = ""
             explicit_cards = []
+            explicit_citations = []
             stream_sanitizer = StreamingTextSanitizer()
             try:
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 if images_payload:
                     yield f"data: {json.dumps({'content': ' '})}\n\n"
                     creator_name = "Creator"
@@ -2200,6 +2206,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     )
                     full_answer = finalize_generated_text(result.get("answer") or "")
                     cards = merge_preview_cards(result.get("cards") or [], enrich_titles=True)
+                    citations = result.get("citations") or []
                     for token in re.findall(r".{1,120}(?:\s+|$)", full_answer):
                         if token:
                             yield f"data: {json.dumps({'content': token})}\n\n"
@@ -2210,6 +2217,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                             image_question,
                             full_answer,
                             cards=cards,
+                            citations=citations,
                             user_metadata=user_image_metadata,
                             user_id=current_user["id"],
                         )
@@ -2219,6 +2227,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
 
                     if cards:
                         yield f"data: {json.dumps({'cards': cards})}\n\n"
+                    if citations:
+                        yield f"data: {json.dumps({'citations': citations})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
 
@@ -2237,6 +2247,11 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         # Early TTFB heartbeat
                         yield f"data: {json.dumps({'content': ' '})}\n\n"
                         continue
+                    if isinstance(chunk, str) and chunk.startswith("__STATUS__"):
+                        status = chunk[len("__STATUS__"):].strip().lower()
+                        if status:
+                            yield f"data: {json.dumps({'status': status})}\n\n"
+                        continue
                     if isinstance(chunk, str) and chunk.startswith("__CARDS__"):
                         try:
                             payload = json.loads(chunk[len("__CARDS__"):])
@@ -2244,6 +2259,14 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                                 explicit_cards = merge_preview_cards(explicit_cards, payload, enrich_titles=True)
                         except Exception:
                             logger.warning("Failed to parse streamed cards payload.")
+                        continue
+                    if isinstance(chunk, str) and chunk.startswith("__CITATIONS__"):
+                        try:
+                            payload = json.loads(chunk[len("__CITATIONS__"):])
+                            if isinstance(payload, list):
+                                explicit_citations = payload
+                        except Exception:
+                            logger.warning("Failed to parse streamed citations payload.")
                         continue
                         
                     raw_answer = append_stream_text(raw_answer, chunk)
@@ -2263,6 +2286,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     if explicit_cards
                     else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=True)
                 )
+                citations = explicit_citations if explicit_citations else []
                 final_input = strip_card_attachment_artifacts(streamed_answer, cards)
                 full_answer = finalize_generated_text(final_input)
                 full_answer = _apply_stream_creator_integrity(
@@ -2280,6 +2304,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         request.question,
                         full_answer,
                         cards=cards,
+                        citations=citations,
                         user_metadata=user_image_metadata,
                         user_id=current_user["id"],
                     )
@@ -2290,6 +2315,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 
                 if cards:
                     yield f"data: {json.dumps({'cards': cards})}\n\n"
+                if citations:
+                    yield f"data: {json.dumps({'citations': citations})}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as stream_err:
                 import traceback
@@ -2358,7 +2385,7 @@ def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str
         return answer
 
 
-def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, user_metadata=None, user_id: int = 1):
+def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, citations=None, user_metadata=None, user_id: int = 1):
     """Save the final interaction to DB after stream completion."""
     try:
         answer = strip_mid_sentence_hyphens(answer)
@@ -2372,6 +2399,8 @@ def finalize_stream_interaction(thread_id: str, question: str, answer: str, card
         assistant_metadata = {}
         if cards:
             assistant_metadata["cards"] = cards
+        if citations:
+            assistant_metadata["citations"] = citations
 
         # Save Assistant Message
         db.execute_update("""
@@ -2585,6 +2614,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             if explicit_cards
             else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
         )
+        citations = result.get("citations") or []
         answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
 
         # Post-Processing: Save Assistant Message & Update Thread
@@ -2593,6 +2623,8 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
              assistant_metadata = {}
              if cards:
                  assistant_metadata["cards"] = cards
+             if citations:
+                 assistant_metadata["citations"] = citations
 
              db.execute_update("""
                 INSERT INTO chat_messages (thread_id, role, content, metadata)
@@ -2617,6 +2649,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             "retrieved": result.get("retrieved", []),
             "sources": result.get("sources", []),
             "cards": cards,
+            "citations": citations,
             "debug_info": result.get("debug") if request.debug else None,
         }
     except Exception as e:
@@ -3533,7 +3566,11 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                         )
                         continue
 
-                    if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
+                    if settings.TRANSCRIBE_ON_INGEST and transcript_needs_recovery(
+                        transcript,
+                        caption=item.get("caption") or "",
+                        title=title,
+                    ):
                         yield f"data: {json.dumps({'stage': 'transcribing', 'current': current_item, 'total': total_items, 'message': f'Transcribing item {current_item}...'})}\n\n"
 
                         video_url = item_meta.get("video_url") or item_meta.get("videoUrl") or item_meta.get("video") or ""
@@ -3548,6 +3585,7 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
 
                         if video_url:
                             try:
+                                transcript = ""
                                 transcript = transcribe_video(video_url)
                                 if transcript:
                                     transcript_status = "present"
@@ -4104,7 +4142,8 @@ def list_thread_messages_endpoint(thread_id: str, current_user: Dict[str, Any] =
             content=r['content'] or "",
             created_at=r['created_at'],
             images=meta.get("images"),
-            cards=meta.get("cards")
+            cards=meta.get("cards"),
+            citations=meta.get("citations"),
         ))
         
     return results

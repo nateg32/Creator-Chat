@@ -142,6 +142,48 @@ class ResourceLinkPolicyTests(unittest.TestCase):
         self.assertEqual(cards[0]["url"], "https://www.youtube.com/watch?v=REALVIDEO01")
         self.assertEqual(cards[0]["title"], "Ultra Long Form Is the Future")
 
+    def test_build_response_cards_prefers_support_that_matches_answer_text(self):
+        rec_result = {
+            "best_candidate": {
+                "title": "Different Recommendation",
+                "url": "https://www.youtube.com/watch?v=DIFFERENT02",
+                "rerank_score": 0.91,
+            },
+            "resource_intent": {"resource_type": "video"},
+            "card_limit": 1,
+        }
+        support_set = [
+            {
+                "content": "This is the core long form foundation and the main recommendation.",
+                "title": "Ultra Long Form Is the Future",
+                "url": "https://www.youtube.com/watch?v=REALVIDEO01",
+                "source_ref": {
+                    "title": "Ultra Long Form Is the Future",
+                    "canonical_url": "https://www.youtube.com/watch?v=REALVIDEO01",
+                },
+            },
+            {
+                "content": "This one is related but not the main answer.",
+                "title": "YouTube Automation Is Getting Out of Hand",
+                "url": "https://www.youtube.com/watch?v=REALVIDEO02",
+                "source_ref": {
+                    "title": "YouTube Automation Is Getting Out of Hand",
+                    "canonical_url": "https://www.youtube.com/watch?v=REALVIDEO02",
+                },
+            },
+        ]
+
+        cards = grounded_rag._build_response_cards(
+            rec_result,
+            support_set,
+            preferred_platforms=["youtube"],
+            question="what should I watch first",
+            answer_text="Start with the ultra long form foundation because that is the core strategy.",
+        )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["url"], "https://www.youtube.com/watch?v=REALVIDEO01")
+
     def test_linkable_ingested_resource_blocks_web_fallback_for_video_request(self):
         support_set = [
             {
@@ -196,6 +238,42 @@ class ResourceLinkPolicyTests(unittest.TestCase):
 
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["url"], "https://www.youtube.com/watch?v=REALVIDEO01")
+
+    def test_inline_citations_rank_sources_closest_to_answer(self):
+        support_set = [
+            {
+                "content": "Consumer apps need retention and habit loops.",
+                "snippet": "Consumer apps need retention, not features.",
+                "title": "Consumer Apps Need Retention",
+                "url": "https://www.youtube.com/watch?v=APPRETENTION1",
+                "source_ref": {
+                    "title": "Consumer Apps Need Retention",
+                    "canonical_url": "https://www.youtube.com/watch?v=APPRETENTION1",
+                    "platform": "youtube",
+                },
+            },
+            {
+                "content": "Pick one buyer with money and urgency, then pre sell before you build.",
+                "snippet": "Pre sell before you build.",
+                "title": "Pre Sell Before You Build",
+                "url": "https://www.youtube.com/watch?v=PRESell01",
+                "source_ref": {
+                    "title": "Pre Sell Before You Build",
+                    "canonical_url": "https://www.youtube.com/watch?v=PRESell01",
+                    "platform": "youtube",
+                },
+            },
+        ]
+
+        citations = grounded_rag.build_inline_citations(
+            support_set,
+            question="how do I start a software business",
+            answer_text="Pre sell before you build and start with one buyer with money and urgency.",
+        )
+
+        self.assertEqual(citations[0]["url"], "https://www.youtube.com/watch?v=PRESell01")
+        self.assertEqual(citations[0]["platform"], "youtube")
+        self.assertIn("Pre sell", citations[0]["snippet"])
 
 
 if __name__ == "__main__":

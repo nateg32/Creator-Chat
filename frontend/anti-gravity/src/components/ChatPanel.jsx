@@ -132,6 +132,60 @@ function hasVisibleMessageText(message) {
   return String(text).trim().length > 0;
 }
 
+function getPendingStatusLabel(status) {
+  switch (String(status || "").toLowerCase()) {
+    case "websearch":
+      return "websearch...";
+    case "typing":
+      return "typing...";
+    case "grounding":
+      return "grounding...";
+    default:
+      return "thinking...";
+  }
+}
+
+function inferPlatformFromUrl(url = "") {
+  const domain = getDomainLabel(url);
+  if (domain.includes("youtube.com") || domain.includes("youtu.be")) return "youtube";
+  if (domain.includes("instagram.com")) return "instagram";
+  if (domain.includes("tiktok.com")) return "tiktok";
+  if (domain.includes("facebook.com")) return "facebook";
+  if (domain.includes("twitter.com") || domain.includes("x.com")) return "twitter";
+  return "web";
+}
+
+function normalizeCitationEntries(citations = [], cards = []) {
+  const cardUrls = new Set(
+    (cards || [])
+      .map((card) => String(card?.url || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const seen = new Set();
+  return (citations || [])
+    .map((citation, idx) => {
+      const url = String(citation?.url || "").trim();
+      if (!url) return null;
+      const urlKey = url.toLowerCase();
+      if (cardUrls.has(urlKey) || seen.has(urlKey)) return null;
+      seen.add(urlKey);
+      const title = cleanCardTitle(citation?.title || citation?.text || "Source", url);
+      return {
+        id: citation?.id || `citation-${idx}`,
+        url,
+        title,
+        snippet: String(citation?.snippet || citation?.text || "").trim(),
+        domain: getDomainLabel(url),
+        platform: citation?.platform || inferPlatformFromUrl(url),
+      };
+    })
+    .filter(Boolean);
+}
+
+function splitRevealTokens(text) {
+  return String(text || "").match(/\n+|[^\s\n]+(?:\s+)?/g) || [];
+}
+
 const MIN_IMAGE_ZOOM = 0.75;
 const MAX_IMAGE_ZOOM = 3;
 const IMAGE_ZOOM_STEP = 0.25;
@@ -179,8 +233,86 @@ export function ChatPanel({
   const [imageZoom, setImageZoom] = useState(1);
   const [attachmentError, setAttachmentError] = useState(null);
   const errorTimeoutRef = useRef(null);
+  const typewriterTimeoutRef = useRef(null);
 
   const loading = localLoading;
+
+  const clearTypewriterTimeout = () => {
+    if (typewriterTimeoutRef.current) {
+      window.clearTimeout(typewriterTimeoutRef.current);
+      typewriterTimeoutRef.current = null;
+    }
+  };
+
+  const revealAssistantMessage = (messageId, finalText, cards = [], citations = []) => {
+    clearTypewriterTimeout();
+
+    const tokens = splitRevealTokens(finalText);
+    if (tokens.length === 0) {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, content: finalText, text: finalText, status: "done", cards, citations }
+            : msg
+        )
+      );
+      setLocalLoading(false);
+      if (onInteraction) onInteraction();
+      return;
+    }
+
+    setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, content: "", text: "", status: "revealing", citations: [], cards: [] }
+            : msg
+      )
+    );
+
+    let cursor = 0;
+    const tick = () => {
+      const lastToken = tokens[Math.max(0, cursor - 1)] || "";
+      const burstSize = cursor < 10 ? 2 : 3;
+      cursor = Math.min(tokens.length, cursor + burstSize);
+      const partial = tokens.slice(0, cursor).join("");
+      const done = cursor >= tokens.length;
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId
+            ? {
+                ...msg,
+                content: partial,
+                text: partial,
+                status: done ? "done" : "revealing",
+                ...(done && cards.length ? { cards } : {}),
+                ...(done && citations.length ? { citations } : {}),
+              }
+            : msg
+        )
+      );
+
+      if (done) {
+        typewriterTimeoutRef.current = null;
+        setLocalLoading(false);
+        if (onInteraction) onInteraction();
+        return;
+      }
+
+      let nextDelay = 34;
+      if (/\n\n$/.test(partial)) {
+        nextDelay = 110;
+      } else if (/[.!?]["')\]]?\s*$/.test(lastToken)) {
+        nextDelay = 92;
+      } else if (/[,;:]\s*$/.test(lastToken)) {
+        nextDelay = 58;
+      }
+
+      typewriterTimeoutRef.current = window.setTimeout(tick, nextDelay);
+    };
+
+    typewriterTimeoutRef.current = window.setTimeout(tick, 150);
+  };
 
   // Image handlers for Chat
   const handleChatImageSelect = (e) => {
@@ -276,6 +408,7 @@ export function ChatPanel({
   // Cleanup object URLs on unmount
   useEffect(() => {
     return () => {
+      clearTypewriterTimeout();
       selectedImages.forEach(img => {
         if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
       });
@@ -400,7 +533,7 @@ export function ChatPanel({
         role: "assistant",
         content: "",
         text: "",
-        status: "typing",
+        status: "thinking",
         ts: new Date().toISOString(),
       },
     ]);
@@ -421,33 +554,27 @@ export function ChatPanel({
         max_distance: maxDistance,
         messages: history,
         images: imagesPayload.length > 0 ? imagesPayload : undefined,
+        onStatus: (status) => {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId && !hasVisibleMessageText(msg)
+                ? { ...msg, status }
+                : msg
+            )
+          );
+        },
         onToken: () => {
-          // Keep the response hidden until the fully formatted final message
-          // is ready, so the conversation feels like a real DM delivery.
+          // Hide raw streamed tokens. We reveal the finalized cleaned message
+          // locally so the delivery stays smooth and formatting stays intact.
         },
         onComplete: (fullAnswer, meta = {}) => {
-          setLocalLoading(false);
-          setMessages((prev) =>
-            prev.map((msg) => {
-              if (msg.id !== assistantMessageId) return msg;
-              const nextMessage = { ...msg };
-              if (typeof meta.finalContent === "string" && meta.finalContent.length > 0) {
-                nextMessage.content = meta.finalContent;
-                nextMessage.text = meta.finalContent;
-              } else {
-                nextMessage.content = fullAnswer;
-                nextMessage.text = fullAnswer;
-              }
-              nextMessage.status = "done";
-              if (meta.cards?.length) {
-                nextMessage.cards = meta.cards;
-              }
-              return nextMessage;
-            })
-          );
-          if (onInteraction) onInteraction();
+          const finalText = typeof meta.finalContent === "string" && meta.finalContent.length > 0
+            ? meta.finalContent
+            : fullAnswer;
+          revealAssistantMessage(assistantMessageId, finalText, meta.cards || [], meta.citations || []);
         },
         onError: (e) => {
+          clearTypewriterTimeout();
           const rawMessage = e?.message || "Something went wrong.";
           const needsApproval = /approve content to continue/i.test(rawMessage);
           const friendlyMessage = needsApproval
@@ -470,7 +597,6 @@ export function ChatPanel({
       setApprovalRequired(false);
       setError(e.message);
       if (debug) setDebugInfo(null);
-    } finally {
       setLocalLoading(false);
     }
   }
@@ -521,8 +647,9 @@ export function ChatPanel({
                   </div>
                 );
               }
-              const isTypingMessage = m.role === "assistant" && m.status === "typing" && !hasVisibleMessageText(m);
+              const isTypingMessage = m.role === "assistant" && ["thinking", "typing", "websearch", "grounding"].includes(m.status) && !hasVisibleMessageText(m);
               const hasMessageText = hasVisibleMessageText(m);
+              const pendingStatusLabel = getPendingStatusLabel(m.status);
               return (
                 <div key={m.id ?? idx} className={`msg-row msg-${m.role}${isTypingMessage ? " is-typing" : ""}`}>
                   <div
@@ -542,7 +669,13 @@ export function ChatPanel({
                         {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
                       </div>
                       {isTypingMessage && (
-                        <div className="typing-name-indicator" role="status" aria-live="polite" aria-label={`${formatCreatorName(creatorDisplayName)} is typing`}>
+                        <div
+                          className="typing-name-indicator"
+                          role="status"
+                          aria-live="polite"
+                          aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatusLabel}`}
+                        >
+                          <span className="typing-status-label">{pendingStatusLabel}</span>
                           <span className="typing-name-dot"></span>
                           <span className="typing-name-dot"></span>
                           <span className="typing-name-dot"></span>
@@ -734,12 +867,31 @@ export function ChatPanel({
                                 const key = (card.url || '').toLowerCase();
                                 return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
                               });
+                          const renderedCitations = normalizeCitationEntries(m.citations, renderedCards);
 
                           return (
                             <div className="msg-content-wrapper">
                               <div className="msg-text-blocks">
                                 {textParts.length > 0 ? textParts : displayText}
                               </div>
+                              {renderedCitations.length > 0 && (
+                                <div className="msg-citation-row">
+                                  {renderedCitations.map((citation, idx) => (
+                                    <a
+                                      key={`${citation.id}-${idx}`}
+                                      href={citation.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="chat-source-chip"
+                                      title={citation.snippet || citation.title}
+                                    >
+                                      <span className="chat-source-chip-index">{idx + 1}</span>
+                                      <span className="chat-source-chip-title">{citation.title}</span>
+                                      <span className="chat-source-chip-domain">{citation.domain || citation.platform}</span>
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
                               {renderedCards.length > 0 && (
                                 <div className="msg-preview-cards">
                                   {renderedCards.map((card, idx) => (

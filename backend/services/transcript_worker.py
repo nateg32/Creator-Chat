@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from backend.services.transcript_quality import assess_transcript_quality
 
 
 def _ensure_search_progress_table():
@@ -122,7 +123,7 @@ def transcribe_with_whisper(media_url_or_path: str) -> Optional[str]:
         print(f"transcribe_with_whisper error: {e}")
         return None
 
-def process_transcript_job(item_id: str, source_url: str, platform: str, caption: str = "", metadata: Optional[Dict[str, Any]] = None):
+def process_transcript_job(item_id: str, source_url: str, platform: str, caption: str = "", metadata: Optional[Dict[str, Any]] = None, existing_transcript: str = ""):
     """Processes a single item's transcript and updates DB."""
     print(f"[TRANSCRIPT] Starting job for {item_id} ({source_url})")
     
@@ -137,6 +138,24 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
     else:
         metadata = metadata or {}
     platform_key = (platform or "unknown").lower()
+    title = str(metadata.get("title") or "")
+    best_diag = assess_transcript_quality(existing_transcript, caption=caption, title=title)
+    if best_diag.get("usable"):
+        transcript_text = existing_transcript
+        source = str(metadata.get("transcript_source") or "SCRAPER")
+        status = "present"
+
+    def consider(candidate_text: str, candidate_source: str):
+        nonlocal transcript_text, best_diag, source, status
+        diagnostics = assess_transcript_quality(candidate_text, caption=caption, title=title)
+        if not diagnostics.get("usable"):
+            return
+        if transcript_text and diagnostics.get("score", 0.0) < best_diag.get("score", 0.0):
+            return
+        transcript_text = candidate_text
+        best_diag = diagnostics
+        source = candidate_source
+        status = "present"
     
     try:
         if platform_key in {"youtube", "youtube_shorts"}:
@@ -145,9 +164,7 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
                 token = get_apify_token()
                 youtube_transcript = _extract_youtube_transcripts([source_url], token).get(source_url, "")
                 if youtube_transcript:
-                    transcript_text = youtube_transcript
-                    status = "present"
-                    source = "YOUTUBE_ACTOR"
+                    consider(youtube_transcript, "YOUTUBE_ACTOR")
             except Exception as e:
                 print(f"[TRANSCRIPT] YouTube transcript recovery failed for {source_url}: {e}")
         elif platform_key in {"instagram", "tiktok"}:
@@ -156,9 +173,7 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
                 token = get_apify_token()
                 social_transcript = _extract_social_transcripts([source_url], token, platform=platform_key).get(source_url, "")
                 if social_transcript:
-                    transcript_text = social_transcript
-                    status = "present"
-                    source = "SOCIAL_ACTOR"
+                    consider(social_transcript, "SOCIAL_ACTOR")
             except Exception as e:
                 print(f"[TRANSCRIPT] Social transcript recovery failed for {source_url}: {e}")
 
@@ -182,23 +197,54 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
                         continue
                     direct_url = resolved_url
 
-                transcript_text = transcribe_with_whisper(direct_url)
-                if transcript_text:
-                    status = "present"
-                    source = "WHISPER_ASR"
-                    break
+                whisper_transcript = transcribe_with_whisper(direct_url)
+                if whisper_transcript:
+                    prior_text = transcript_text
+                    consider(whisper_transcript, "WHISPER_ASR")
+                    if transcript_text and transcript_text != prior_text:
+                        break
                     
         # Update DB
         if transcript_text:
             print(f"[TRANSCRIPT] Completed {item_id} via {source}")
             db.execute_update(
-                "UPDATE scrape_items SET transcript = %s, transcript_status = 'present' WHERE id = %s",
-                (transcript_text, item_id)
+                """
+                UPDATE scrape_items
+                SET transcript = %s,
+                    transcript_status = 'present',
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                WHERE id = %s
+                """,
+                (
+                    transcript_text,
+                    json.dumps({
+                        "transcript_source": str(source).lower(),
+                        "transcript_quality_score": best_diag.get("score"),
+                        "transcript_quality_reason": best_diag.get("reason"),
+                        "transcript_coverage": best_diag.get("coverage"),
+                        "transcript_word_count": best_diag.get("word_count"),
+                    }),
+                    item_id,
+                )
             )
         else:
+            failure_diag = assess_transcript_quality(existing_transcript, caption=caption, title=title)
             db.execute_update(
-                "UPDATE scrape_items SET transcript_status = %s WHERE id = %s",
-                (status, item_id)
+                """
+                UPDATE scrape_items
+                SET transcript_status = %s,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    json.dumps({
+                        "transcript_quality_score": failure_diag.get("score"),
+                        "transcript_quality_reason": failure_diag.get("reason"),
+                        "transcript_coverage": failure_diag.get("coverage"),
+                    }),
+                    item_id,
+                )
             )
             
     except Exception as e:
@@ -265,8 +311,18 @@ def run_transcripts_for_search(search_run_id: str):
             transcript_text = (candidate.get("transcript") or "").strip()
             if transcript_text:
                 db.execute_update(
-                    "UPDATE scrape_items SET transcript = %s, transcript_status = 'present' WHERE id = %s",
-                    (transcript_text, candidate["_id"]),
+                    """
+                    UPDATE scrape_items
+                    SET transcript = %s,
+                        transcript_status = 'present',
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                    WHERE id = %s
+                    """,
+                    (
+                        transcript_text,
+                        json.dumps(candidate.get("metadata") or {}),
+                        candidate["_id"],
+                    ),
                 )
                 completed += 1
             else:
@@ -293,6 +349,7 @@ def run_transcripts_for_search(search_run_id: str):
                         item.get("platform") or "unknown",
                         item.get("caption") or "",
                         item.get("metadata") or {},
+                        item.get("transcript") or "",
                     ): item for item in pending_fallback
                 }
                 for future in as_completed(futures):

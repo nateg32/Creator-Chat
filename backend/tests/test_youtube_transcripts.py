@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import types
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,11 @@ def _load_module(name: str, relative_path: str):
 
 
 sys.modules.setdefault("backend.settings", SimpleNamespace(settings=SimpleNamespace(APIFY_TOKEN="test-token")))
+backend_services_pkg = types.ModuleType("backend.services")
+backend_services_pkg.__path__ = []  # type: ignore[attr-defined]
+sys.modules.setdefault("backend.services", backend_services_pkg)
+transcript_quality_module = _load_module("backend.services.transcript_quality", "services/transcript_quality.py")
+sys.modules.setdefault("backend.services.transcript_quality", transcript_quality_module)
 apify_service = _load_module("apify_service_youtube_tests", "apify_service.py")
 
 
@@ -44,18 +50,18 @@ class YouTubeTranscriptBatchTests(unittest.TestCase):
              patch.object(
                  apify_service,
                  "_extract_youtube_native_transcripts",
-                 return_value={"https://www.youtube.com/watch?v=abcdefghijk": "native youtube transcript"},
+                 return_value={"https://www.youtube.com/watch?v=abcdefghijk": "native youtube transcript with the actual spoken steps and enough detail to count as a real caption track"},
              ) as native_mock, \
              patch.object(
                  apify_service,
                  "_extract_transcripts_invideoiq",
-                 return_value={"https://www.tiktok.com/@creator/video/123": "tiktok transcript"},
+                 return_value={"https://www.tiktok.com/@creator/video/123": "tiktok transcript with enough detail to count as a real recovered transcript for the video"},
              ) as actor_mock:
             result = apify_service.batch_extract_all_transcripts(items)
 
-        self.assertEqual(result[0]["transcript"], "native youtube transcript")
+        self.assertEqual(result[0]["transcript"], "native youtube transcript with the actual spoken steps and enough detail to count as a real caption track")
         self.assertEqual(result[0]["transcript_status"], "present")
-        self.assertEqual(result[1]["transcript"], "tiktok transcript")
+        self.assertEqual(result[1]["transcript"], "tiktok transcript with enough detail to count as a real recovered transcript for the video")
         self.assertEqual(result[1]["transcript_status"], "present")
         native_mock.assert_called_once()
         actor_mock.assert_called_once_with(["https://www.tiktok.com/@creator/video/123"], "token")
@@ -109,11 +115,11 @@ class YouTubeTranscriptBatchTests(unittest.TestCase):
              patch.object(
                  apify_service,
                  "_extract_social_transcripts",
-                 return_value={instagram_url: "instagram transcript"},
+                 return_value={instagram_url: "instagram transcript with enough detail to count as a usable recovered reel transcript, including the actual spoken points from the clip"},
              ) as social_mock:
             result = apify_service.batch_extract_all_transcripts(items)
 
-        self.assertEqual(result[0]["transcript"], "instagram transcript")
+        self.assertEqual(result[0]["transcript"], "instagram transcript with enough detail to count as a usable recovered reel transcript, including the actual spoken points from the clip")
         self.assertEqual(result[0]["transcript_status"], "present")
         actor_mock.assert_called_once_with([instagram_url], "token")
         social_mock.assert_called_once_with([instagram_url], "token", platform="instagram")

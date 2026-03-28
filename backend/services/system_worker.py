@@ -34,6 +34,7 @@ from backend.services.search_persistence import (
     merge_platform_statuses_with_checkpoints,
     resolve_transcript_status,
 )
+from backend.services.transcript_quality import transcript_needs_recovery
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("system_worker")
@@ -415,7 +416,11 @@ def handle_ingest(job_id: str, payload: dict):
                 ingested_ok += 1
                 continue
 
-            if transcript_status == "missing" and settings.TRANSCRIBE_ON_INGEST:
+            if settings.TRANSCRIBE_ON_INGEST and transcript_needs_recovery(
+                transcript,
+                caption=item.get("caption") or "",
+                title=title,
+            ):
                 video_url = meta.get("video_url") or meta.get("videoUrl") or meta.get("video") or ""
                 if not video_url:
                     vid = meta.get("videoId") or meta.get("id")
@@ -426,6 +431,7 @@ def handle_ingest(job_id: str, payload: dict):
 
                 if video_url:
                     try:
+                        transcript = ""
                         transcript = transcribe_video(video_url)
                         if transcript:
                             transcript_status = "present"
