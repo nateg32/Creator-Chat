@@ -39,25 +39,41 @@ class MemoryService:
         # 2. Semantic match: check if fact keywords appear in current message or related concepts
         # For V1, we return the 2 most recent high-confidence facts that share keywords
         
-        relevant = []
         msg_lower = current_message.lower()
-        
-        # Simple keyword matching for relevance
+        message_terms = self._tokenize(current_message)
+
+        slot_priority = {
+            "goal": 1.0,
+            "user_goal": 1.0,
+            "constraint": 0.9,
+            "preference": 0.8,
+            "skill_level": 0.75,
+            "time_horizon": 0.75,
+            "current_topic": 0.7,
+            "progress_stage": 0.65,
+            "personal_detail": 0.5,
+        }
+
         normalized_facts = []
         for i, f in enumerate(all_facts):
-            # Score relevance: 1.0 if keywords match, 0.5 otherwise (recency bias)
-            score = 0.5
+            score = 0.2
             val = str(f.get("value", "")).lower()
             slot = str(f.get("slot", "")).lower()
-            
-            # If the user is talking about this topic now, it's highly relevant
-            if slot in msg_lower or val in msg_lower:
-                score = 1.0
-            
-            # Boost goals/constraints
-            if slot in ["goal", "constraint", "preference"]:
-                score += 0.2
-                
+            fact_terms = self._tokenize(f"{slot} {val}")
+            overlap = 0.0
+            if message_terms and fact_terms:
+                overlap = len(message_terms & fact_terms) / max(1, len(fact_terms))
+
+            if slot and slot in msg_lower:
+                overlap = max(overlap, 0.8)
+            if val and val in msg_lower:
+                overlap = max(overlap, 1.0)
+
+            score += overlap
+            score += slot_priority.get(slot, 0.35)
+            if overlap > 0:
+                score += 0.25
+
             f["_match_score"] = score
             f["_index"] = i
             normalized_facts.append(f)
@@ -65,8 +81,11 @@ class MemoryService:
         # Sort by score desc, then recency (index desc)
         normalized_facts.sort(key=lambda x: (x["_match_score"], x["_index"]), reverse=True)
         
-        # Take top 2
-        return normalized_facts[:2]
+        # Prefer overlap-driven facts first, then keep important evergreen context.
+        strong_matches = [fact for fact in normalized_facts if fact.get("_match_score", 0) >= 1.0]
+        if strong_matches:
+            return strong_matches[:3]
+        return normalized_facts[:3]
 
     def update_memory(self, user_id: int, creator_id: int, thread_id: str, message: str):
         """
@@ -163,5 +182,20 @@ class MemoryService:
         except Exception as e:
             logger.error(f"Fact extraction failed: {e}")
             return []
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        import re
+
+        stop = {
+            "a", "an", "and", "are", "at", "be", "but", "for", "from", "have", "how",
+            "i", "im", "in", "is", "it", "me", "my", "of", "on", "or", "that", "the",
+            "to", "we", "with", "you", "your",
+        }
+        return {
+            token
+            for token in re.findall(r"[a-z0-9']+", str(text or "").lower())
+            if len(token) > 2 and token not in stop
+        }
 
 memory_service = MemoryService()

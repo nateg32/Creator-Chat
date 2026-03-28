@@ -14,9 +14,12 @@ from backend.settings import settings
 from backend.db import db
 from backend.core.memory_integration import MemoryIntegration
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
+from backend.services.greeting_service import greeting_service
 from backend.services.regurgitation_guard import (
     build_anti_regurgitation_block,
     check_for_regurgitation,
+    score_response_quality,
+    select_turn_anchors,
 )
 from backend.services.prompt_injection_guard import (
     build_prompt_safety_block,
@@ -686,16 +689,29 @@ def format_creator_genome_for_prompt(genome: Dict[str, Any]) -> str:
     return "CREATOR GENOME (preserve these stable markers, do not spam them):\n" + "\n".join(lines)
 
 
+def format_turn_anchor_block(question: str, genome: Dict[str, Any]) -> str:
+    anchors = select_turn_anchors(question, genome, limit=3)
+    if not anchors:
+        return ""
+    return (
+        "CURRENT TURN ANCHORS:\n"
+        f"- Lead from one of these if it naturally fits: {json.dumps(anchors)}\n"
+        "- Use them as the spine of the answer, not as a list to dump."
+    )
+
+
 def evaluate_creator_integrity(
     text: str,
     creator_profile: Dict[str, Any],
     rag_chunks: Optional[List[Dict[str, Any]]] = None,
     allow_links: bool = False,
     persona: Optional[str] = None,
+    user_msg: Optional[str] = None,
 ) -> Dict[str, Any]:
     genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
     lowered = (text or "").lower()
     normalized_text = _normalize_marker_key(text)
+    turn_anchors = select_turn_anchors(user_msg or "", genome, limit=3)
 
     ai_leaks = [phrase for phrase in AI_IDENTITY_LEAKS if phrase in lowered]
     generic_leaks = [phrase for phrase in GENERIC_PERSONA_LEAKS if phrase in lowered]
@@ -758,6 +774,15 @@ def evaluate_creator_integrity(
         and anchor_markers
         and anchor_hits == 0
     )
+    turn_anchor_hits = sum(
+        1 for marker in turn_anchors
+        if marker and _normalize_marker_key(marker) in normalized_text
+    )
+    turn_anchor_gap = bool(
+        len((text or "").split()) >= 18
+        and turn_anchors
+        and turn_anchor_hits == 0
+    )
 
     findings = []
     if ai_leaks:
@@ -772,6 +797,8 @@ def evaluate_creator_integrity(
         findings.append("missing_creator_lexicon")
     if anchor_gap:
         findings.append("missing_creator_anchor")
+    if turn_anchor_gap:
+        findings.append("missing_turn_anchor")
     if marker_gap:
         findings.append("missing_creator_markers")
 
@@ -789,6 +816,9 @@ def evaluate_creator_integrity(
         "lexical_hits": lexical_hits,
         "anchor_gap": anchor_gap,
         "anchor_hits": anchor_hits,
+        "turn_anchors": turn_anchors,
+        "turn_anchor_hits": turn_anchor_hits,
+        "turn_anchor_gap": turn_anchor_gap,
         "marker_gap": marker_gap,
         "motif_hits": motif_hits,
         "regurgitation_report": regurgitation_report,
@@ -796,6 +826,35 @@ def evaluate_creator_integrity(
         "issue_count": len(findings),
         "needs_rewrite": bool(findings),
     }
+
+
+def quality_markers_from_genome(genome: Dict[str, Any]) -> List[str]:
+    if not genome:
+        return []
+    markers = _clean_marker_values(
+        list(genome.get("evidence_markers") or [])
+        + list(genome.get("worldview_markers") or [])
+        + list(genome.get("signature_markers") or [])
+        + list(genome.get("lexical_markers") or [])
+        + list(genome.get("grounded_titles") or []),
+        limit=14,
+    )
+    return markers
+
+
+def response_needs_quality_tightening(quality_report: Dict[str, Any]) -> bool:
+    if not quality_report:
+        return False
+    if quality_report.get("grade") in {"fair", "weak"}:
+        return True
+    penalties = set(quality_report.get("penalties") or [])
+    return bool(
+        penalties
+        & {
+            "missing_followup_question",
+            "missing_creator_markers",
+        }
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1550,9 +1609,9 @@ YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
 DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not know their name yet, ask what they want to be called. Do not jump into advice or a domain question yet.
 Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
-        creator_genome_block = format_creator_genome_for_prompt(
-            build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
-        )
+        creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
+        creator_genome_block = format_creator_genome_for_prompt(creator_genome)
+        turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
 
         source_context = ""
         if rag_chunks:
@@ -1708,6 +1767,7 @@ STRICT IDENTITY LOCK:
 YOUR VOICE:
 {voice_instructions}
 {creator_genome_block if creator_genome_block else ""}
+{turn_anchor_block if turn_anchor_block else ""}
 
 CORE DIRECTIVE: You are a high-speed interaction engine. 
 1. INTERNAL PLAN: Briefly (mentally) plan your route: EXECUTE if answering a question, COACH if giving guidance, or GREET if just saying hello.
@@ -1742,69 +1802,20 @@ Output ONLY your response to the user."""
     def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None) -> str:
         creator_name = creator_profile.get("name", "the creator")
         creator_category = creator_profile.get("creator_category", "general")
-        voice_instructions = build_voice_instructions(creator_profile, mode="greeting")
-        normalized_prefs = self._normalize_user_preferences(user_preferences)
-        pref_instructions = self._build_user_pref_instructions(normalized_prefs)
-        safety_block = build_prompt_safety_block(current_message=user_msg, custom_preferences=normalized_prefs.get("custom", ""))
         known_user_name = (user_name or "").strip()
-
-        persona_context = ""
-        if persona:
-            persona_context = f"\nABOUT YOU (personality only, do NOT quote specific content):\n{persona[:600]}\n"
-
-        system_prompt = f"""IDENTITY:
-You are {creator_name}. Someone just DMed you for the first time.
-{persona_context}
-
-YOUR VOICE:
-{voice_instructions}
-
-Your specialty is {creator_category}.
-{pref_instructions}
-{safety_block}
-
-Respond with EXACTLY two sentences:
-
-Sentence 1: A short greeting that sounds like YOU.
-- This is a one to one DM, not a broadcast.
-- Never say everyone, everybody, team, guys, friends, family, folks, or chat.
-- Match your personality: energetic, calm, direct, or casual.
-- Max 8 words.
-
-Sentence 2:
-- If you know the user's name ({known_user_name or 'unknown'}), ask ONE simple question about YOUR domain ({creator_category}). Use this as a starting point: "{plan.next_question}"
-- If you do NOT know the user's name, ask their name in your own voice. Do not jump into advice or a domain question yet.
-
-CRITICAL RULES:
-- IDENTITY GUARD: You are {creator_name}. NEVER introduce yourself as the user or "ChatGPT".
-- If you know the user's name, use it once naturally.
-- Do NOT reference specific video titles, course names, frameworks, products, or catchphrases from your content.
-- Do NOT give the user options to choose from in the greeting.
-- The question must be SIMPLE and CONVERSATIONAL, like what you'd actually text a stranger who DMed you.
-- Exactly 2 sentences. Exactly 1 question mark. Max 25 words total.
-- No inline hyphens, en dashes, or em dashes inside sentences. Use commas, periods, or rewrite the sentence.
-- No formatting. No lists. No mission statements.
-
-Good examples:
-- "Hey Nathan. What are you building right now?"
-- "Hi. What's your name?"
-Bad examples:
-- "Hey everyone! What are you trying to build or scale right now?"
-- "Hey. Are you interested in my AI-first framework or my scaling program?"
-
-Output only the two sentences."""
+        voice_profile = _coerce_profile_dict(creator_profile.get("voice_profile"))
+        style_fingerprint = _coerce_profile_dict(creator_profile.get("style_fingerprint"))
 
         try:
-            response = self._generate_completion_with_compat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg}
-                ],
-                model=self._reply_model_for_route(plan.route),
-                temperature=0.8,
-                max_tokens=64,
+            direct_greeting = greeting_service.generate_greeting(
+                known_user_name,
+                voice_profile,
+                include_question=True,
+                creator_name=creator_name,
+                creator_category=creator_category,
+                style_fingerprint=style_fingerprint,
             )
-            return self._enforce_greeting_limits(response.strip())
+            return self._enforce_greeting_limits(direct_greeting.strip())
         except Exception as e:
             logger.error(f"Greeting render failed: {e}")
             if known_user_name:
@@ -1922,9 +1933,9 @@ Output only the response."""
 
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
-        creator_genome_block = format_creator_genome_for_prompt(
-            build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
-        )
+        creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
+        creator_genome_block = format_creator_genome_for_prompt(creator_genome)
+        turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
         safety_block = build_prompt_safety_block(
@@ -2066,6 +2077,7 @@ You are {creator_name}.
 YOUR VOICE AND PERSONALITY:
 {voice_instructions}
 {creator_genome_block if creator_genome_block else ""}
+{turn_anchor_block if turn_anchor_block else ""}
 
 CONTEXT:
 {routing_instruction}
@@ -2284,16 +2296,28 @@ Output the cleaned text only."""
             rag_chunks=rag_chunks,
             allow_links=allow_links,
             persona=persona,
+            user_msg=user_msg,
         )
-        if not report.get("needs_rewrite"):
+        genome = report.get("genome") or {}
+        quality_markers = quality_markers_from_genome(genome)
+        quality_report = score_response_quality(
+            user_msg,
+            cleaned,
+            rag_chunks or [],
+            creator_markers=quality_markers,
+        )
+        if not report.get("needs_rewrite") and not response_needs_quality_tightening(quality_report):
             return cleaned
 
         creator_name = (creator_profile.get("name") or "The Creator").strip() or "The Creator"
-        genome = report.get("genome") or {}
         rewrite_model = getattr(settings, "REWRITE_MODEL", settings.MODEL_MAIN_REPLY)
-        findings = ", ".join(report.get("findings") or []) or "persona drift"
+        quality_flags = [f"quality:{penalty}" for penalty in (quality_report.get("penalties") or [])]
+        combined_findings = list(dict.fromkeys(list(report.get("findings") or []) + quality_flags))
+        findings = ", ".join(combined_findings) or "persona drift"
+        quality_notes = ", ".join(quality_report.get("penalties") or []) or "none"
         anti_regurgitation_block = build_anti_regurgitation_block(user_msg, rag_chunks or []) if rag_chunks else ""
         regurgitation_reason = ((report.get("regurgitation_report") or {}).get("reason") or "").strip()
+        turn_anchor_block = format_turn_anchor_block(user_msg, genome)
         system_prompt = f"""You are the CREATOR INTEGRITY REPAIR LAYER for {creator_name}.
 
 Your job is to preserve the meaning of a draft while forcing it back into the creator's real voice and evidence boundaries.
@@ -2305,14 +2329,18 @@ RULES:
 4. If a resource title is not grounded, remove it or replace it with a truthful in-character boundary.
 5. Match the creator's word choice closely. Prefer the exact lexical fingerprints and signature phrases when natural. Do not swap them for safer generic synonyms.
 5b. Anchor the reply to at least one concrete creator belief, rule, story, product, or grounded source title from the genome when natural. Do not leave it as generic motivational advice.
+5c. If the reply feels abstract, generic, or interchangeable, make it more unmistakably this creator.
 6. Do not add new facts, new resources, or new personal claims.
 7. Preserve paragraph or list structure when present.
 8. If the draft is too close to retrieved transcript language, rewrite it into a conversational personal take. Do not mirror numbered stages, transcript labels, timestamps, or source ordering.
+9. If the reply is substantive and it does not already land naturally, end with one short follow-up question that this creator would realistically ask in a DM.
 
 {format_creator_genome_for_prompt(genome) or "CREATOR GENOME: No extra genome markers available."}
+{turn_anchor_block}
 {anti_regurgitation_block}
 
 ISSUES TO REPAIR: {findings}
+QUALITY SIGNALS: {quality_notes}
 REGURGITATION SIGNAL: {regurgitation_reason or "none"}
 
 OUTPUT ONLY THE REPAIRED MESSAGE.
@@ -2341,10 +2369,73 @@ CURRENT DRAFT:
                 rag_chunks=rag_chunks,
                 allow_links=allow_links,
                 persona=persona,
+                user_msg=user_msg,
             )
-            if repaired_report.get("issue_count", 999) > report.get("issue_count", 0):
+            repaired_quality = score_response_quality(
+                user_msg,
+                repaired,
+                rag_chunks or [],
+                creator_markers=quality_markers,
+            )
+            if (
+                repaired_report.get("issue_count", 999) > report.get("issue_count", 0)
+                and repaired_quality.get("score", 0) <= quality_report.get("score", 0)
+            ):
                 return cleaned
-            return repaired or cleaned
+
+            candidate = repaired or cleaned
+            candidate_quality = repaired_quality if repaired else quality_report
+            if response_needs_quality_tightening(candidate_quality):
+                tighten_prompt = f"""You are the FINAL QUALITY TIGHTENER for {creator_name}.
+
+Keep the meaning, but make this feel more like the creator and less like a generic assistant.
+
+Rules:
+1. Keep it concise and conversational.
+2. Use the creator's exact lexical fingerprints and anchors when natural.
+3. Remove generic filler and interchangeable coach language.
+4. If the message is substantive, end with one natural follow-up question.
+5. Do not add new facts, new resources, or raw URLs.
+6. Do not mirror transcript structure or list order from sources.
+
+{format_creator_genome_for_prompt(genome) or "CREATOR GENOME: No extra genome markers available."}
+{turn_anchor_block}
+
+QUALITY GAPS: {", ".join(candidate_quality.get("penalties") or []) or "none"}
+
+OUTPUT ONLY THE TIGHTENED MESSAGE.
+"""
+                tightened = self._generate_completion_with_compat(
+                    messages=[
+                        {"role": "system", "content": tighten_prompt},
+                        {"role": "user", "content": candidate},
+                    ],
+                    model=rewrite_model,
+                    temperature=0.0,
+                    max_tokens=max(120, min(520, len(candidate) * 2)),
+                )
+                tightened = strip_mid_sentence_hyphens((tightened or "").strip().strip('"'))
+                tightened_report = evaluate_creator_integrity(
+                    tightened,
+                    creator_profile,
+                    rag_chunks=rag_chunks,
+                    allow_links=allow_links,
+                    persona=persona,
+                    user_msg=user_msg,
+                )
+                tightened_quality = score_response_quality(
+                    user_msg,
+                    tightened,
+                    rag_chunks or [],
+                    creator_markers=quality_markers,
+                )
+                if (
+                    tightened
+                    and tightened_report.get("issue_count", 999) <= repaired_report.get("issue_count", report.get("issue_count", 0))
+                    and tightened_quality.get("score", 0) >= candidate_quality.get("score", 0)
+                ):
+                    return tightened
+            return candidate
         except Exception as exc:
             logger.error(f"Creator integrity repair failed: {exc}")
             return cleaned

@@ -54,6 +54,8 @@ from backend.services.out_of_domain_rules import (
 from backend.services.regurgitation_guard import (
     build_anti_regurgitation_block,
     check_for_regurgitation,
+    score_response_quality,
+    shape_support_set,
 )
 
 
@@ -61,6 +63,40 @@ logger = logging.getLogger(__name__)
 
 
 _CREATOR_COLUMN_CACHE: dict[str, bool] = {}
+
+
+def _coerce_json_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _quality_markers_for_creator(creator_profile: Dict[str, Any]) -> List[str]:
+    style_fp = _coerce_json_dict((creator_profile or {}).get("style_fingerprint"))
+    voice_profile = _coerce_json_dict((creator_profile or {}).get("voice_profile"))
+    lexical_rules = _coerce_json_dict(style_fp.get("lexical_rules"))
+    value_model = _coerce_json_dict(style_fp.get("value_model"))
+    markers = []
+    for value in (
+        list(style_fp.get("evidence_snippets") or [])
+        + list(style_fp.get("signature_moves") or [])
+        + list(style_fp.get("signature_response_moves") or [])
+        + list((value_model.get("decision_heuristics") or []))
+        + list((lexical_rules.get("signature_phrases") or []))
+        + list((voice_profile.get("signature_phrases") or []))
+    ):
+        cleaned = str(value or "").strip()
+        if cleaned and cleaned not in markers:
+            markers.append(cleaned)
+        if len(markers) >= 12:
+            break
+    return markers
 
 
 def _creator_column_exists(column_name: str) -> bool:
@@ -2684,6 +2720,31 @@ Rewrite the response to fix these violations.
             allow_links=include_links_in_output,
             persona=persona,
         )
+    creator_markers: List[str] = []
+    if creator_profile:
+        style_fp = creator_profile.get("style_fingerprint") or {}
+        if isinstance(style_fp, str):
+            try:
+                style_fp = json.loads(style_fp)
+            except Exception:
+                style_fp = {}
+        if isinstance(style_fp, dict):
+            lexical_rules = style_fp.get("lexical_rules") or {}
+            creator_markers = list((style_fp.get("evidence_snippets") or [])[:6])
+            creator_markers += list((lexical_rules.get("signature_phrases") or [])[:4])
+    quality_report = score_response_quality(
+        question,
+        final_response,
+        support_set,
+        creator_markers=creator_markers,
+    )
+    if quality_report.get("grade") in {"fair", "weak"}:
+        logger.warning(
+            "Response quality check for creator_id=%s returned %s (%s)",
+            creator_id,
+            quality_report.get("grade"),
+            ", ".join(quality_report.get("penalties") or []) or "no penalties",
+        )
 
     debug_info = {
         "draft": draft,
@@ -2694,6 +2755,7 @@ Rewrite the response to fix these violations.
         "sources": unique_sources[:5],
         "identity_packet": identity_packet,
         "regurgitation_report": regurgitation_report,
+        "quality_report": quality_report,
     }
     
     return final_response, debug_info
@@ -3637,6 +3699,7 @@ Message: {answer_text[:500]}"""
 
         if image_result and image_result.get("support_chunk"):
             support_set = [image_result["support_chunk"], *support_set]
+        support_set = shape_support_set(question, support_set, limit=4)
 
     # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
 
@@ -3688,12 +3751,27 @@ Message: {answer_text[:500]}"""
     except Exception as e:
         logger.error(f"Mem0 store failed: {e}")
 
+    quality_report = score_response_quality(
+        question,
+        answer,
+        support_set,
+        creator_markers=_quality_markers_for_creator(creator_row),
+    )
+    if quality_report.get("grade") in {"fair", "weak"}:
+        logger.warning(
+            "Grounded answer quality for creator_id=%s returned %s (%s)",
+            creator_id,
+            quality_report.get("grade"),
+            ", ".join(quality_report.get("penalties") or []) or "no penalties",
+        )
+
     # gen_debug for compatibility (includes UCR route info)
     gen_debug = {
         "plan": plan_obj.dict(),
         "route": plan_obj.route,
         "routing": plan_obj.routing,
-        "mvc_score": mvc_score
+        "mvc_score": mvc_score,
+        "quality_report": quality_report,
     }
 
     # --- Step 9: Video Recommendation (ONE ONLY) ---
@@ -3735,9 +3813,11 @@ Message: {answer_text[:500]}"""
             answer_text=answer,
         ),
         "cards": card,
+        "debug": gen_debug,
         "meta": {
             "gen_debug": gen_debug,
-            "plan_obj": plan_obj.dict() if plan_obj else None
+            "plan_obj": plan_obj.dict() if plan_obj else None,
+            "quality_report": quality_report,
         }
     }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=plan_obj)
 
@@ -4216,6 +4296,7 @@ async def grounded_rag_stream(
                 conversation_history,
                 kind="video" if is_video_request else "source",
             )
+        support_set = shape_support_set(question, support_set, limit=4)
 
     else:
         # Greeting/Small-talk Route: No Embeddings needed for TTFT
@@ -4234,6 +4315,31 @@ async def grounded_rag_stream(
             mems = await interaction_engine.memory.search_async(
                 str(creator_id), str(user_id), str(thread_id or "new"), question
             )
+
+        if route == "ROUTE_0_GREETING":
+            voice_profile = creator_row.get("voice_profile") or {}
+            style_fingerprint = creator_row.get("style_fingerprint") or {}
+            if isinstance(voice_profile, str):
+                try:
+                    voice_profile = json.loads(voice_profile)
+                except Exception:
+                    voice_profile = {}
+            if isinstance(style_fingerprint, str):
+                try:
+                    style_fingerprint = json.loads(style_fingerprint)
+                except Exception:
+                    style_fingerprint = {}
+
+            greeting_text = greeting_service.generate_greeting(
+                user_name,
+                voice_profile if isinstance(voice_profile, dict) else {},
+                include_question=True,
+                creator_name=creator_row.get("name") or creator_row.get("handle"),
+                creator_category=creator_row.get("creator_category"),
+                style_fingerprint=style_fingerprint if isinstance(style_fingerprint, dict) else {},
+            )
+            yield greeting_text
+            return
 
     # 4. Async Synthesis Stream (Instant Start)
     stream = await interaction_engine.render_combined_pass_stream_async(

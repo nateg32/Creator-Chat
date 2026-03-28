@@ -1,3 +1,4 @@
+import math
 import re
 from typing import Any, Dict, List
 
@@ -74,6 +75,14 @@ def _content_words(text: str) -> set[str]:
     return {word for word in _normalize_words(text) if word not in _STOPWORDS}
 
 
+def _overlap_ratio(left: str, right: str) -> float:
+    left_terms = _content_words(left)
+    right_terms = _content_words(right)
+    if not left_terms or not right_terms:
+        return 0.0
+    return len(left_terms & right_terms) / max(1, len(left_terms))
+
+
 def find_structure_markers(text: str) -> List[str]:
     value = str(text or "")
     markers: List[str] = []
@@ -119,6 +128,157 @@ def query_matches_document_title(query: str, chunks: List[Dict[str, Any]]) -> bo
         if overlap > 0.6:
             return True
     return False
+
+
+def shape_support_set(question: str, support_set: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
+    candidates = list(support_set or [])
+    if len(candidates) <= 1:
+        return candidates[:limit] if limit else candidates
+
+    prefer_diversity = query_matches_document_title(question, candidates)
+    exact_lookup = any(
+        token in (question or "").lower()
+        for token in ["exact", "word for word", "transcript", "quote", "quoted", "verbatim"]
+    )
+    max_per_document = 2 if exact_lookup else (1 if prefer_diversity else 1)
+
+    scored = []
+    for index, chunk in enumerate(candidates):
+        title = _chunk_title(chunk)
+        content = _chunk_text(chunk)
+        distance = float(chunk.get("distance") or 0.0)
+        overlap_score = (_overlap_ratio(question, title) * 1.35) + (_overlap_ratio(question, content[:500]) * 0.9)
+        recency_bias = max(0.0, 1.0 - (index * 0.08))
+        distance_score = max(0.0, 1.0 - min(distance, 1.5) / 1.5)
+        live_web_bonus = 0.18 if str(content).startswith("[LIVE WEB SEARCH RESULT]") else 0.0
+        scored.append(
+            (
+                overlap_score + (distance_score * 0.35) + recency_bias + live_web_bonus,
+                index,
+                chunk,
+            )
+        )
+
+    scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    selected: List[Dict[str, Any]] = []
+    per_doc_counts: Dict[str, int] = {}
+
+    for _, _, chunk in scored:
+        source_ref = chunk.get("source_ref") or {}
+        doc_key = str(
+            source_ref.get("content_id")
+            or source_ref.get("canonical_url")
+            or chunk.get("document_id")
+            or chunk.get("chunk_id")
+            or ""
+        )
+        if doc_key and per_doc_counts.get(doc_key, 0) >= max_per_document:
+            continue
+        selected.append(chunk)
+        if doc_key:
+            per_doc_counts[doc_key] = per_doc_counts.get(doc_key, 0) + 1
+        if limit and len(selected) >= limit:
+            break
+
+    if not selected:
+        return candidates[:limit] if limit else candidates
+    return selected
+
+
+def select_turn_anchors(question: str, genome: Dict[str, Any], limit: int = 3) -> List[str]:
+    if not genome:
+        return []
+
+    weighted_candidates = []
+    groups = [
+        (genome.get("evidence_markers") or [], 1.0),
+        (genome.get("worldview_markers") or [], 0.9),
+        (genome.get("response_moves") or [], 0.65),
+        (genome.get("signature_markers") or [], 0.55),
+        (genome.get("grounded_titles") or [], 0.75),
+        (genome.get("stable_public_facts") or [], 0.35),
+    ]
+    for values, base_weight in groups:
+        for value in values:
+            cleaned = str(value or "").strip()
+            if not cleaned:
+                continue
+            score = base_weight + (_overlap_ratio(question, cleaned) * 1.25)
+            weighted_candidates.append((score, len(cleaned), cleaned))
+
+    if not weighted_candidates:
+        return []
+
+    weighted_candidates.sort(key=lambda item: (item[0], math.log(item[1] + 1)), reverse=True)
+    selected: List[str] = []
+    seen = set()
+    for _, _, value in weighted_candidates:
+        key = re.sub(r"\s+", " ", value.lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        selected.append(value)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def score_response_quality(
+    question: str,
+    response: str,
+    chunks: List[Dict[str, Any]],
+    *,
+    creator_markers: List[str] | None = None,
+) -> Dict[str, Any]:
+    regurgitation = check_for_regurgitation(response, chunks or [])
+    response_text = str(response or "").strip()
+    response_words = _normalize_words(response_text)
+    creator_marker_hits = 0
+    for marker in creator_markers or []:
+        normalized = str(marker or "").strip().lower()
+        if normalized and normalized in response_text.lower():
+            creator_marker_hits += 1
+
+    score = 100
+    penalties = []
+    if not regurgitation.get("is_clean", True):
+        reason = regurgitation.get("reason") or "regurgitation"
+        penalties.append(reason)
+        score -= {
+            "timestamp_artifact": 35,
+            "transcript_tag": 30,
+            "transcript_structure_marker": 24,
+            "high_trigram_overlap": 24,
+            "high_word_ratio": 18,
+            "mirrors_structure": 22,
+            "missing_followup_question": 10,
+        }.get(reason, 15)
+    if len(response_words) >= 22 and creator_markers and creator_marker_hits == 0:
+        penalties.append("missing_creator_markers")
+        score -= 12
+    substantive_reply = len(response_words) >= 12 and len(_normalize_words(question)) >= 2
+    if substantive_reply and not response_tail_has_question(response_text):
+        penalties.append("missing_followup_question")
+        score -= 8
+
+    score = max(0, min(100, score))
+    if score >= 90:
+        grade = "excellent"
+    elif score >= 78:
+        grade = "strong"
+    elif score >= 62:
+        grade = "fair"
+    else:
+        grade = "weak"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "penalties": penalties,
+        "creator_marker_hits": creator_marker_hits,
+        "regurgitation": regurgitation,
+        "has_tail_question": response_tail_has_question(response_text),
+    }
 
 
 def build_anti_regurgitation_block(query: str, chunks: List[Dict[str, Any]]) -> str:

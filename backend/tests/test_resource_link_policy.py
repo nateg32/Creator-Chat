@@ -284,6 +284,51 @@ class ResourceLinkPolicyTests(unittest.TestCase):
         self.assertEqual(citations[0]["platform"], "youtube")
         self.assertIn("Pre sell", citations[0]["snippet"])
 
+    def test_support_set_shaping_prefers_document_diversity_for_title_match(self):
+        shaped = grounded_rag.shape_support_set(
+            "how the top 0.1% invest their money",
+            [
+                {
+                    "chunk_id": "a1",
+                    "document_id": 1,
+                    "distance": 0.08,
+                    "content": "Stage 1 cash engine. Stage 2 safety assets.",
+                    "source_ref": {
+                        "title": "How the Top 0.1% Invest Their Money",
+                        "canonical_url": "https://www.youtube.com/watch?v=INVEST001",
+                        "content_id": "INVEST001",
+                    },
+                },
+                {
+                    "chunk_id": "a2",
+                    "document_id": 1,
+                    "distance": 0.09,
+                    "content": "Stage 3 tax efficiency. Stage 4 asymmetric bets.",
+                    "source_ref": {
+                        "title": "How the Top 0.1% Invest Their Money",
+                        "canonical_url": "https://www.youtube.com/watch?v=INVEST001",
+                        "content_id": "INVEST001",
+                    },
+                },
+                {
+                    "chunk_id": "b1",
+                    "document_id": 2,
+                    "distance": 0.16,
+                    "content": "Wealth compounds when you earn before you allocate.",
+                    "source_ref": {
+                        "title": "The Real Order of Wealth Building",
+                        "canonical_url": "https://www.youtube.com/watch?v=INVEST002",
+                        "content_id": "INVEST002",
+                    },
+                },
+            ],
+            limit=3,
+        )
+
+        self.assertEqual(len(shaped), 2)
+        self.assertEqual(shaped[0]["source_ref"]["content_id"], "INVEST001")
+        self.assertEqual(shaped[1]["source_ref"]["content_id"], "INVEST002")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -64,6 +64,7 @@ from backend.services.text_sanitizer import (
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
+from backend.services.regurgitation_guard import score_response_quality
 from backend.services.transcript_quality import transcript_needs_recovery
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
@@ -2306,6 +2307,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     cards=cards,
                     support_chunks=explicit_support,
                 )
+                quality_report = _score_saved_answer_quality(
+                    request.creator_id,
+                    current_user["id"],
+                    request.question,
+                    full_answer,
+                    explicit_support or _card_chunks_for_integrity(cards),
+                )
                 if full_answer != streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 if request.thread_id:
@@ -2317,6 +2325,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         citations=citations,
                         user_metadata=user_image_metadata,
                         user_id=current_user["id"],
+                        quality_report=quality_report,
                     )
                     # Check for title update
                     thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
@@ -2370,6 +2379,64 @@ def _card_chunks_for_integrity(cards):
     return chunks
 
 
+def _quality_markers_for_creator_row(creator_row: Dict[str, Any]) -> List[str]:
+    style_fingerprint = creator_row.get("style_fingerprint") or {}
+    voice_profile = creator_row.get("voice_profile") or {}
+    if isinstance(style_fingerprint, str):
+        try:
+            style_fingerprint = json.loads(style_fingerprint)
+        except Exception:
+            style_fingerprint = {}
+    if isinstance(voice_profile, str):
+        try:
+            voice_profile = json.loads(voice_profile)
+        except Exception:
+            voice_profile = {}
+
+    lexical_rules = (style_fingerprint or {}).get("lexical_rules") or {}
+    value_model = (style_fingerprint or {}).get("value_model") or {}
+    candidates = (
+        list((style_fingerprint or {}).get("evidence_snippets") or [])
+        + list((style_fingerprint or {}).get("signature_moves") or [])
+        + list((style_fingerprint or {}).get("signature_response_moves") or [])
+        + list((value_model or {}).get("decision_heuristics") or [])
+        + list((lexical_rules or {}).get("signature_phrases") or [])
+        + list((voice_profile or {}).get("signature_phrases") or [])
+    )
+    markers: List[str] = []
+    for value in candidates:
+        cleaned = str(value or "").strip()
+        if cleaned and cleaned not in markers:
+            markers.append(cleaned)
+        if len(markers) >= 12:
+            break
+    return markers
+
+
+def _score_saved_answer_quality(
+    creator_id: int,
+    user_id: int,
+    question: str,
+    answer: str,
+    support_chunks: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    creator_row = db.execute_one(
+        """
+        SELECT style_fingerprint, voice_profile
+        FROM creators
+        WHERE id = %s AND user_id = %s
+        """,
+        (creator_id, user_id),
+    )
+    creator_markers = _quality_markers_for_creator_row(creator_row or {})
+    return score_response_quality(
+        question,
+        answer,
+        support_chunks or [],
+        creator_markers=creator_markers,
+    )
+
+
 def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None, support_chunks=None) -> str:
     try:
         creator_row = db.execute_one(
@@ -2395,7 +2462,7 @@ def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str
         return answer
 
 
-def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, citations=None, user_metadata=None, user_id: int = 1):
+def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, citations=None, user_metadata=None, user_id: int = 1, quality_report: Optional[Dict[str, Any]] = None):
     """Save the final interaction to DB after stream completion."""
     try:
         answer = strip_mid_sentence_hyphens(answer)
@@ -2411,6 +2478,9 @@ def finalize_stream_interaction(thread_id: str, question: str, answer: str, card
             assistant_metadata["cards"] = cards
         if citations:
             assistant_metadata["citations"] = citations
+        if quality_report:
+            assistant_metadata["quality_grade"] = quality_report.get("grade")
+            assistant_metadata["quality_score"] = quality_report.get("score")
 
         # Save Assistant Message
         db.execute_update("""
@@ -2626,6 +2696,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
         )
         citations = result.get("citations") or []
         answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
+        quality_report = ((result.get("meta") or {}).get("quality_report") or {})
 
         # Post-Processing: Save Assistant Message & Update Thread
         if request.thread_id and thread:
@@ -2635,6 +2706,9 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                  assistant_metadata["cards"] = cards
              if citations:
                  assistant_metadata["citations"] = citations
+             if quality_report:
+                 assistant_metadata["quality_grade"] = quality_report.get("grade")
+                 assistant_metadata["quality_score"] = quality_report.get("score")
 
              db.execute_update("""
                 INSERT INTO chat_messages (thread_id, role, content, metadata)
