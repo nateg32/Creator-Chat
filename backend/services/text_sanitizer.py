@@ -433,7 +433,7 @@ def strip_card_attachment_artifacts(text: str, cards) -> str:
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return strip_mid_sentence_hyphens(cleaned)
+    return _sanitize_core(cleaned, trim_line_edges=True).strip()
 
 
 def _has_suspicious_formatting(text: str) -> bool:

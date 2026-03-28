@@ -60,6 +60,7 @@ from backend.services.preview_cards import extract_preview_cards, merge_preview_
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
 from backend.services.regurgitation_guard import score_response_quality
+from backend.services.text_sanitizer import strip_card_attachment_artifacts
 from backend.services.transcript_quality import transcript_needs_recovery
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
@@ -94,6 +95,35 @@ def _creator_column_exists(column_name: str) -> bool:
 
 def _creator_select_expr(column_name: str) -> str:
     return column_name if _creator_column_exists(column_name) else f"NULL AS {column_name}"
+
+
+def _get_creator_cleaning_profile(creator_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+    query = f"SELECT {_creator_select_expr('voice_patterns')} FROM creators WHERE id = %s"
+    params: List[Any] = [creator_id]
+    if user_id is not None:
+        query += " AND user_id = %s"
+        params.append(user_id)
+    return db.execute_one(query, tuple(params)) or {}
+
+
+def _find_stream_emit_boundary(text: str, tail_size: int = 24) -> int:
+    if not text:
+        return 0
+
+    last_sentence_break = None
+    for match in re.finditer(r"(?<=[.!?])\s+|\n", text):
+        last_sentence_break = match
+    if last_sentence_break:
+        return last_sentence_break.end()
+
+    if len(text) <= tail_size:
+        return 0
+
+    limit = len(text) - tail_size
+    for index in range(limit, 0, -1):
+        if text[index - 1].isspace():
+            return index
+    return 0
 
 
 @app.exception_handler(Exception)
@@ -2184,11 +2214,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
         # 3. Generator Wrapper to capture full answer
         async def stream_wrapper():
             import copy
-            raw_answer = ""
             explicit_cards = []
             explicit_citations = []
             explicit_support = []
             assembled = []
+            pending_stream_text = ""
+            creator_cleaning_profile = _get_creator_cleaning_profile(request.creator_id, current_user["id"])
+            strip_hyphens = should_strip_hyphens(creator_cleaning_profile)
             try:
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 if images_payload:
@@ -2220,7 +2252,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         images=images_payload,
                         user_id=current_user["id"],
                     )
-                    full_answer = finalize_generated_text(result.get("answer") or "")
+                    full_answer = clean_response(result.get("answer") or "", strip_hyphens=strip_hyphens)
                     cards = merge_preview_cards(result.get("cards") or [], enrich_titles=True)
                     citations = result.get("citations") or []
                     for token in re.findall(r".{1,120}(?:\s+|$)", full_answer):
@@ -2292,16 +2324,22 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         except Exception:
                             logger.warning("Failed to parse streamed support payload.")
                         continue
-                        
-                    raw_answer = append_stream_text(raw_answer, chunk)
+
                     cleaned_chunk = clean_for_stream_chunk(chunk)
                     if cleaned_chunk:
-                        assembled.append(cleaned_chunk)
-                        yield f"data: {json.dumps({'content': cleaned_chunk})}\n\n"
+                        pending_stream_text += cleaned_chunk
+                        emit_boundary = _find_stream_emit_boundary(pending_stream_text)
+                        if emit_boundary > 0:
+                            safe_chunk = pending_stream_text[:emit_boundary]
+                            pending_stream_text = pending_stream_text[emit_boundary:]
+                            assembled.append(safe_chunk)
+                            yield f"data: {json.dumps({'content': safe_chunk})}\n\n"
 
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, we do the background work
-                streamed_answer = clean_response("".join(assembled), strip_hyphens=should_strip_hyphens(creator_profile))
+                if pending_stream_text:
+                    assembled.append(pending_stream_text)
+                streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
@@ -2309,12 +2347,12 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 )
                 citations = explicit_citations if explicit_citations else []
                 final_input = strip_card_attachment_artifacts(streamed_answer, cards)
-                full_answer = finalize_generated_text(final_input)
+                full_answer = clean_response(final_input, strip_hyphens=strip_hyphens)
                 
                 # P2.3: Apply rhythm shaper before creator integrity 
                 full_answer = rhythm_shaper.apply_rhythm(
                     full_answer,
-                    profile=creator_profile,
+                    profile=creator_cleaning_profile,
                 )
                 
                 full_answer = _apply_stream_creator_integrity(
@@ -2499,7 +2537,7 @@ def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str
 def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, citations=None, user_metadata=None, user_id: int = 1, quality_report: Optional[Dict[str, Any]] = None):
     """Save the final interaction to DB after stream completion."""
     try:
-        answer = strip_mid_sentence_hyphens(answer)
+        answer = clean_response(answer)
         user_metadata = user_metadata or {}
         # Save User Message
         db.execute_update("""
@@ -2721,7 +2759,9 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             thread_id=request.thread_id
         )
         
-        answer_text = strip_mid_sentence_hyphens(result["answer"])
+        creator_cleaning_profile = _get_creator_cleaning_profile(request.creator_id, current_user["id"])
+        strip_hyphens = should_strip_hyphens(creator_cleaning_profile)
+        answer_text = clean_response(result["answer"] or "", strip_hyphens=strip_hyphens)
         explicit_cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
         cards = (
             merge_preview_cards(explicit_cards, enrich_titles=True)
@@ -2729,7 +2769,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
         )
         citations = result.get("citations") or []
-        answer_text = finalize_generated_text(strip_card_attachment_artifacts(answer_text, cards))
+        answer_text = clean_response(strip_card_attachment_artifacts(answer_text, cards), strip_hyphens=strip_hyphens)
         quality_report = ((result.get("meta") or {}).get("quality_report") or {})
 
         # Post-Processing: Save Assistant Message & Update Thread
