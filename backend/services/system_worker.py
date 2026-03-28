@@ -35,6 +35,7 @@ from backend.services.search_persistence import (
     resolve_transcript_status,
 )
 from backend.services.transcript_quality import transcript_needs_recovery
+from backend.ingest import clean_transcript_for_ingestion
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("system_worker")
@@ -277,7 +278,7 @@ def _save_scrape_item(item: dict, creator_id: int, search_run_id: str):
 
 def _compose_ingest_text(caption: str, transcript: str) -> str:
     caption_text = str(caption or "").strip()
-    transcript_text = str(transcript or "").strip()
+    transcript_text = clean_transcript_for_ingestion(transcript)
 
     if not caption_text and not transcript_text:
         return ""
@@ -295,7 +296,7 @@ def _compose_ingest_text(caption: str, transcript: str) -> str:
     if transcript_norm in cap_norm:
         return caption_text
 
-    return f"Caption:\n{caption_text}\n\nTranscript:\n{transcript_text}"
+    return f"{caption_text}\n\n---\n\n{transcript_text}"
 
 
 def handle_transcript(job_id: str, payload: dict):

@@ -14,6 +14,10 @@ from backend.settings import settings
 from backend.db import db
 from backend.core.memory_integration import MemoryIntegration
 from backend.services.text_sanitizer import strip_mid_sentence_hyphens
+from backend.services.regurgitation_guard import (
+    build_anti_regurgitation_block,
+    check_for_regurgitation,
+)
 from backend.services.prompt_injection_guard import (
     build_prompt_safety_block,
     normalize_user_preferences,
@@ -771,6 +775,10 @@ def evaluate_creator_integrity(
     if marker_gap:
         findings.append("missing_creator_markers")
 
+    regurgitation_report = check_for_regurgitation(text, rag_chunks or [])
+    if not regurgitation_report.get("is_clean", True):
+        findings.append(f"regurgitation:{regurgitation_report.get('reason')}")
+
     return {
         "genome": genome,
         "ai_leaks": ai_leaks,
@@ -783,6 +791,7 @@ def evaluate_creator_integrity(
         "anchor_hits": anchor_hits,
         "marker_gap": marker_gap,
         "motif_hits": motif_hits,
+        "regurgitation_report": regurgitation_report,
         "findings": findings,
         "issue_count": len(findings),
         "needs_rewrite": bool(findings),
@@ -1588,6 +1597,7 @@ Output ONLY your response."""
             max_chars=context_limits["history_chars"],
         )
         resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
+        anti_regurgitation_block = build_anti_regurgitation_block(user_msg, rag_chunks or []) if rag_chunks else ""
 
         memory_section = ""
         if pre_fetched_memories:
@@ -1722,6 +1732,7 @@ CONTEXT:
 {memory_section}
 {history_context}
 {safety_block}
+{anti_regurgitation_block}
 KNOWLEDGE:
 {source_context}
 {pref_instructions}
@@ -1976,6 +1987,7 @@ Output only the response."""
             max_chars=context_limits["history_chars"],
         )
         resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
+        anti_regurgitation_block = build_anti_regurgitation_block(user_msg, rag_chunks or []) if rag_chunks else ""
 
         # Retrieve Persistent Memories
         memory_section = ""
@@ -2059,6 +2071,7 @@ CONTEXT:
 {routing_instruction}
 {memory_section}
 {history_context}
+{anti_regurgitation_block}
 
 KNOWLEDGE FROM YOUR CONTENT (use ideas naturally, do NOT quote titles or specific names of your content unless you are sharing the link):
 {source_context}
@@ -2279,6 +2292,8 @@ Output the cleaned text only."""
         genome = report.get("genome") or {}
         rewrite_model = getattr(settings, "REWRITE_MODEL", settings.MODEL_MAIN_REPLY)
         findings = ", ".join(report.get("findings") or []) or "persona drift"
+        anti_regurgitation_block = build_anti_regurgitation_block(user_msg, rag_chunks or []) if rag_chunks else ""
+        regurgitation_reason = ((report.get("regurgitation_report") or {}).get("reason") or "").strip()
         system_prompt = f"""You are the CREATOR INTEGRITY REPAIR LAYER for {creator_name}.
 
 Your job is to preserve the meaning of a draft while forcing it back into the creator's real voice and evidence boundaries.
@@ -2292,10 +2307,13 @@ RULES:
 5b. Anchor the reply to at least one concrete creator belief, rule, story, product, or grounded source title from the genome when natural. Do not leave it as generic motivational advice.
 6. Do not add new facts, new resources, or new personal claims.
 7. Preserve paragraph or list structure when present.
+8. If the draft is too close to retrieved transcript language, rewrite it into a conversational personal take. Do not mirror numbered stages, transcript labels, timestamps, or source ordering.
 
 {format_creator_genome_for_prompt(genome) or "CREATOR GENOME: No extra genome markers available."}
+{anti_regurgitation_block}
 
 ISSUES TO REPAIR: {findings}
+REGURGITATION SIGNAL: {regurgitation_reason or "none"}
 
 OUTPUT ONLY THE REPAIRED MESSAGE.
 """

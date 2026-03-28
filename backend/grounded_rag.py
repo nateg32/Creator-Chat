@@ -51,6 +51,10 @@ from backend.services.out_of_domain_rules import (
     recent_bridge_topic,
     should_soft_decline_external_live_fact,
 )
+from backend.services.regurgitation_guard import (
+    build_anti_regurgitation_block,
+    check_for_regurgitation,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1989,7 +1993,8 @@ def generate_meaning_draft(
     memory_context: str = "",
     user_state: Optional[Dict[str, Any]] = None,
     steering_guidance: str = "",
-    steering_move: str = ""
+    steering_move: str = "",
+    support_set: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Step 3: Generate a Neutral Meaning Draft (Content Plan).
@@ -2098,7 +2103,13 @@ Output a JSON object with the following structure:
     if conversation_history:
         history_text = "\nRecent History:\n" + "\n".join([f"{m.get('role', 'unknown')}: {m.get('content', '')}" for m in conversation_history[-3:]])
 
+    anti_regurgitation_block = ""
+    if intent not in ["greeting", "greeting_only", "small_talk"] and support_set:
+        anti_regurgitation_block = build_anti_regurgitation_block(question, support_set)
+
     user_prompt = f"""
+{anti_regurgitation_block}
+
 Context:
 {context if intent not in ["greeting", "greeting_only", "small_talk"] else "None (Greeting/Small talk mode - do not use RAG context)"}
 
@@ -2294,7 +2305,8 @@ def generate_grounded_answer(
             memory_context=memory_context_str, 
             user_state=user_state,
             steering_guidance=steering_guidance,
-            steering_move=steering_move
+            steering_move=steering_move,
+            support_set=support_set,
         )
     
     # --- Step 1.5: Fast Path for Greetings (GreetingService) ---
@@ -2656,6 +2668,23 @@ Rewrite the response to fix these violations.
     )
     final_response = strip_mid_sentence_hyphens(final_response)
 
+    regurgitation_report = check_for_regurgitation(final_response, support_set)
+    if not regurgitation_report.get("is_clean", True):
+        logger.warning(
+            "Transcript regurgitation guard flagged sync reply for creator_id=%s: %s",
+            creator_id,
+            regurgitation_report.get("reason"),
+        )
+    if creator_profile:
+        final_response = interaction_engine._apply_creator_integrity_guard(
+            final_response,
+            creator_profile,
+            support_set,
+            question,
+            allow_links=include_links_in_output,
+            persona=persona,
+        )
+
     debug_info = {
         "draft": draft,
         "style_score": style_score,
@@ -2663,7 +2692,8 @@ Rewrite the response to fix these violations.
         "dna_used": style_dna,
         "retrieved_count": len(support_set),
         "sources": unique_sources[:5],
-        "identity_packet": identity_packet
+        "identity_packet": identity_packet,
+        "regurgitation_report": regurgitation_report,
     }
     
     return final_response, debug_info
@@ -4245,6 +4275,9 @@ async def grounded_rag_stream(
     )
     if stream_citations:
         yield f"__CITATIONS__{json.dumps(stream_citations)}"
+    support_payload = build_regurgitation_support_payload(support_set)
+    if support_payload:
+        yield f"__SUPPORT__{json.dumps(support_payload)}"
 
 def build_source_list(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert support_set chunks into a flat list of unique source references."""
@@ -4258,6 +4291,27 @@ def build_source_list(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             seen.add(url)
             sources.append(ref)
     return sources
+
+
+def build_regurgitation_support_payload(support_set: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    payload: List[Dict[str, Any]] = []
+    for chunk in support_set or []:
+        source_ref = chunk.get("source_ref") or {}
+        payload.append(
+            {
+                "content": str(chunk.get("content") or "")[:1200],
+                "title": chunk.get("title") or source_ref.get("title") or "",
+                "url": chunk.get("url") or source_ref.get("canonical_url") or "",
+                "source_ref": {
+                    "title": source_ref.get("title") or chunk.get("title") or "",
+                    "canonical_url": source_ref.get("canonical_url") or chunk.get("url") or "",
+                    "platform": source_ref.get("platform") or "",
+                },
+            }
+        )
+        if len(payload) >= 4:
+            break
+    return payload
 
 
 def build_inline_citations(

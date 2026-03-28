@@ -92,6 +92,15 @@ def _load_grounded_rag():
         recent_bridge_topic=lambda *args, **kwargs: "",
         should_soft_decline_external_live_fact=lambda *args, **kwargs: False,
     )
+    regurgitation_guard_path = BACKEND_ROOT / "services" / "regurgitation_guard.py"
+    regurgitation_guard_spec = importlib.util.spec_from_file_location(
+        "backend.services.regurgitation_guard",
+        regurgitation_guard_path,
+    )
+    regurgitation_guard_module = importlib.util.module_from_spec(regurgitation_guard_spec)
+    assert regurgitation_guard_spec.loader is not None
+    sys.modules["backend.services.regurgitation_guard"] = regurgitation_guard_module
+    regurgitation_guard_spec.loader.exec_module(regurgitation_guard_module)
 
     module_path = BACKEND_ROOT / "grounded_rag.py"
     spec = importlib.util.spec_from_file_location("grounded_rag_test", module_path)

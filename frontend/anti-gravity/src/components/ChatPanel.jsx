@@ -131,16 +131,19 @@ function hasVisibleMessageText(message) {
   return String(text).trim().length > 0;
 }
 
-function getPendingStatusLabel(status) {
+const VISIBLE_PENDING_STATUSES = new Set(["thinking", "typing", "websearch", "searching", "grounding"]);
+
+function getPendingStatusMeta(status) {
   switch (String(status || "").toLowerCase()) {
     case "websearch":
-      return "websearch...";
+    case "searching":
+      return { label: "🔎", ariaLabel: "searching", showDots: true };
     case "typing":
-      return "typing...";
+      return { label: "typing...", ariaLabel: "typing", showDots: true };
     case "grounding":
-      return "grounding...";
+      return { label: "grounding...", ariaLabel: "grounding", showDots: true };
     default:
-      return "thinking...";
+      return { label: "....", ariaLabel: "thinking", showDots: false };
   }
 }
 
@@ -301,7 +304,7 @@ export function ChatPanel({
     let cursor = 0;
     const tick = () => {
       const lastToken = tokens[Math.max(0, cursor - 1)] || "";
-      const burstSize = cursor < 10 ? 2 : 3;
+      const burstSize = cursor < 12 ? 1 : 2;
       cursor = Math.min(tokens.length, cursor + burstSize);
       const partial = tokens.slice(0, cursor).join("");
       const done = cursor >= tokens.length;
@@ -328,19 +331,19 @@ export function ChatPanel({
         return;
       }
 
-      let nextDelay = 34;
+      let nextDelay = 64;
       if (/\n\n$/.test(partial)) {
-        nextDelay = 110;
+        nextDelay = 180;
       } else if (/[.!?]["')\]]?\s*$/.test(lastToken)) {
-        nextDelay = 92;
+        nextDelay = 150;
       } else if (/[,;:]\s*$/.test(lastToken)) {
-        nextDelay = 58;
+        nextDelay = 96;
       }
 
       typewriterTimeoutRef.current = window.setTimeout(tick, nextDelay);
     };
 
-    typewriterTimeoutRef.current = window.setTimeout(tick, 150);
+    typewriterTimeoutRef.current = window.setTimeout(tick, 220);
   };
 
   // Image handlers for Chat
@@ -676,9 +679,10 @@ export function ChatPanel({
                   </div>
                 );
               }
-              const isTypingMessage = m.role === "assistant" && ["thinking", "typing", "websearch", "grounding"].includes(m.status) && !hasVisibleMessageText(m);
+              const normalizedStatus = String(m.status || "").toLowerCase();
+              const isTypingMessage = m.role === "assistant" && VISIBLE_PENDING_STATUSES.has(normalizedStatus) && !hasVisibleMessageText(m);
               const hasMessageText = hasVisibleMessageText(m);
-              const pendingStatusLabel = getPendingStatusLabel(m.status);
+              const pendingStatus = getPendingStatusMeta(m.status);
               return (
                 <div key={m.id ?? idx} className={`msg-row msg-${m.role}${isTypingMessage ? " is-typing" : ""}`}>
                   <div
@@ -702,12 +706,12 @@ export function ChatPanel({
                           className="typing-name-indicator"
                           role="status"
                           aria-live="polite"
-                          aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatusLabel}`}
+                          aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
                         >
-                          <span className="typing-status-label">{pendingStatusLabel}</span>
-                          <span className="typing-name-dot"></span>
-                          <span className="typing-name-dot"></span>
-                          <span className="typing-name-dot"></span>
+                          <span className="typing-status-label">{pendingStatus.label}</span>
+                          {pendingStatus.showDots && <span className="typing-name-dot"></span>}
+                          {pendingStatus.showDots && <span className="typing-name-dot"></span>}
+                          {pendingStatus.showDots && <span className="typing-name-dot"></span>}
                         </div>
                       )}
                     </div>

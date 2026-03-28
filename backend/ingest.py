@@ -7,6 +7,27 @@ from backend.settings import settings
 
 _client = None
 
+
+def clean_transcript_for_ingestion(transcript: str) -> str:
+    """
+    Strip transcript artifacts before chunking and embedding.
+
+    This keeps timestamps, stage directions, and caption-noise markers out of
+    the vector store so retrieved chunks sound more like content and less like
+    a subtitle file.
+    """
+    if not transcript:
+        return ""
+
+    cleaned = str(transcript or "")
+    cleaned = re.sub(r"\b\d{1,2}:\d{2}\b", " ", cleaned)
+    cleaned = re.sub(r"\[(?:[^\]\n]{1,40})\]", " ", cleaned)
+    cleaned = re.sub(r"\((?:[^\)\n]{1,40})\)", " ", cleaned)
+    cleaned = re.sub(r"(?im)^\s*\d+\s*:\s*", "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 def get_client():
     """Lazy initialization of OpenAI client to avoid import-time errors"""
     global _client

@@ -35,7 +35,7 @@ from backend.rag import get_persona
 import backend.rag as rag
 from backend.creator_engine import ask as creator_ask
 from backend.grounded_rag import grounded_rag_ask, grounded_rag_stream
-from backend.ingest import ingest_document
+from backend.ingest import clean_transcript_for_ingestion, ingest_document
 from backend.services.identity_manager import autofill_creator_identity
 from backend.apify_service import search_all, search_instagram_reels
 from backend.lib.instagram_parser import parse_instagram_url
@@ -2171,6 +2171,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
             raw_answer = ""
             explicit_cards = []
             explicit_citations = []
+            explicit_support = []
             stream_sanitizer = StreamingTextSanitizer()
             try:
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
@@ -2268,6 +2269,14 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         except Exception:
                             logger.warning("Failed to parse streamed citations payload.")
                         continue
+                    if isinstance(chunk, str) and chunk.startswith("__SUPPORT__"):
+                        try:
+                            payload = json.loads(chunk[len("__SUPPORT__"):])
+                            if isinstance(payload, list):
+                                explicit_support = payload
+                        except Exception:
+                            logger.warning("Failed to parse streamed support payload.")
+                        continue
                         
                     raw_answer = append_stream_text(raw_answer, chunk)
                     cleaned_chunk = stream_sanitizer.feed(chunk)
@@ -2295,6 +2304,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     request.question,
                     full_answer,
                     cards=cards,
+                    support_chunks=explicit_support,
                 )
                 if full_answer != streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
@@ -2360,7 +2370,7 @@ def _card_chunks_for_integrity(cards):
     return chunks
 
 
-def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None) -> str:
+def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None, support_chunks=None) -> str:
     try:
         creator_row = db.execute_one(
             """
@@ -2375,7 +2385,7 @@ def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str
         return interaction_engine._apply_creator_integrity_guard(
             answer,
             creator_row,
-            _card_chunks_for_integrity(cards),
+            support_chunks or _card_chunks_for_integrity(cards),
             question,
             allow_links=False,
             persona=creator_row.get("soul_md"),
@@ -3137,7 +3147,7 @@ def _search_run_has_pending_transcripts(search_id: Optional[str]) -> bool:
 
 def _compose_ingest_text(caption: str, transcript: str) -> str:
     caption_text = str(caption or "").strip()
-    transcript_text = str(transcript or "").strip()
+    transcript_text = clean_transcript_for_ingestion(transcript)
 
     if not caption_text and not transcript_text:
         return ""
@@ -3155,7 +3165,7 @@ def _compose_ingest_text(caption: str, transcript: str) -> str:
     if transcript_norm in cap_norm:
         return caption_text
 
-    return f"Caption:\n{caption_text}\n\nTranscript:\n{transcript_text}"
+    return f"{caption_text}\n\n---\n\n{transcript_text}"
 
 @app.post("/approve_ingest", response_model=ApproveIngestResponseNew)
 async def approve_ingest(request: ApproveIngestRequestNew):
