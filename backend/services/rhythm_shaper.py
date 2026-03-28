@@ -4,7 +4,7 @@ import random
 import logging
 from typing import List, Dict, Any, Optional
 
-from backend.services.formatting import clean_response
+from backend.services.formatting import clean_response, should_strip_hyphens
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +24,11 @@ class RhythmShaper:
             return text
         
         profile = profile or {}
+        strip_hyphens = should_strip_hyphens(profile)
         
         # 1. Bot Phrase Removal (Anti-AI slop)
         text = self._remove_bot_phrases(text)
-        text = clean_response(text)
+        text = clean_response(text, strip_hyphens=strip_hyphens)
         
         # 2. Skill-based Sentence Shortening
         user_state = (state or {}).get("last_router_meta", {}).get("user_state", {})
@@ -64,7 +65,10 @@ class RhythmShaper:
 
         # 6. DM Chunking (Max Paragraphs)
         # Production Rule: Never more than 3 paragraphs for DMs
-        return clean_response(self._apply_dm_chunking(final_sentences, max_paragraphs=3))
+        return clean_response(
+            self._apply_dm_chunking(final_sentences, max_paragraphs=3),
+            strip_hyphens=strip_hyphens,
+        )
 
     def _remove_bot_phrases(self, text: str) -> str:
         forbidden = [

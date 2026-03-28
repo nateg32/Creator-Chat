@@ -51,6 +51,7 @@ def _load_formatting_module():
 formatting = _load_formatting_module()
 clean_response = formatting.clean_response
 clean_for_stream_chunk = formatting.clean_for_stream_chunk
+should_strip_hyphens = formatting.should_strip_hyphens
 
 
 def _sample_pipeline_responses():
@@ -146,8 +147,23 @@ class ResponseFormattingTests(unittest.TestCase):
         self.assertEqual(cases["it's"], "it's")
         self.assertEqual(cases["can't"], "can't")
         self.assertEqual(cases["I've"], "I've")
+        self.assertEqual(clean_response("well-known"), "well-known")
 
         self._assert_no_short_alpha_fragments(clean_response("You need a non-negotiable standard.", strip_hyphens=True))
+
+    def test_should_strip_hyphens_reads_nested_rhythm_flag(self):
+        self.assertFalse(should_strip_hyphens({}))
+        self.assertFalse(should_strip_hyphens({"voice_patterns": {}}))
+        self.assertTrue(
+            should_strip_hyphens(
+                {"voice_patterns": {"rhythm": {"strip_hyphens": True}}}
+            )
+        )
+        self.assertTrue(
+            should_strip_hyphens(
+                {"voice_patterns": '{"rhythm": {"strip_hyphens": true}}'}
+            )
+        )
 
     def test_no_double_whitespace_in_response(self):
         for raw in _sample_pipeline_responses():

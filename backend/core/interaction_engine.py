@@ -13,7 +13,7 @@ import backend.rag as rag
 from backend.settings import settings
 from backend.db import db
 from backend.core.memory_integration import MemoryIntegration
-from backend.services.text_sanitizer import strip_mid_sentence_hyphens
+from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.greeting_service import greeting_service
 from backend.services.regurgitation_guard import (
     build_anti_regurgitation_block,
@@ -259,7 +259,12 @@ DOMAIN_GREETING_QUESTIONS = {
 # No LLM can override this.
 # ══════════════════════════════════════════════════════════════
 
-def strip_all_markdown(text: str, allow_lists: bool = False, allow_links: bool = False) -> str:
+def strip_all_markdown(
+    text: str,
+    allow_lists: bool = False,
+    allow_links: bool = False,
+    creator_profile: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Remove ALL markdown formatting artifacts from LLM output.
     Produces clean ChatGPT-style paragraph text.
@@ -326,7 +331,18 @@ def strip_all_markdown(text: str, allow_lists: bool = False, allow_links: bool =
     lines = [line.strip() for line in text.split('\n')]
     text = '\n'.join(lines)
 
-    return strip_mid_sentence_hyphens(text.strip())
+    return clean_response(
+        text.strip(),
+        strip_hyphens=should_strip_hyphens(creator_profile or {}),
+    )
+
+
+def finalize_visible_text(text: str, creator_profile: Optional[Dict[str, Any]] = None) -> str:
+    """Apply the shared final formatting contract with creator-aware hyphen policy."""
+    return clean_response(
+        (text or "").strip(),
+        strip_hyphens=should_strip_hyphens(creator_profile or {}),
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1430,7 +1446,7 @@ Generate InteractionPlan JSON."""
 
         if plan.route == "ROUTE_0_GREETING":
             raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences)
-            cleaned = strip_all_markdown(raw, allow_links=allow_links)
+            cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
             return self._apply_creator_integrity_guard(
                 cleaned,
                 creator_profile,
@@ -1442,7 +1458,7 @@ Generate InteractionPlan JSON."""
 
         if plan.route == "ROUTE_1_SMALL_TALK":
             raw = self._render_small_talk(plan, creator_profile, user_msg, user_name, persona, user_preferences)
-            cleaned = strip_all_markdown(raw, allow_links=allow_links)
+            cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
             return self._apply_creator_integrity_guard(
                 cleaned,
                 creator_profile,
@@ -1815,7 +1831,7 @@ Output ONLY your response to the user."""
                 creator_category=creator_category,
                 style_fingerprint=style_fingerprint,
             )
-            return self._enforce_greeting_limits(direct_greeting.strip())
+            return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
         except Exception as e:
             logger.error(f"Greeting render failed: {e}")
             if known_user_name:
@@ -1872,7 +1888,7 @@ Output only the response."""
                 temperature=0.7,
                 max_tokens=80,
             )
-            return self._enforce_small_talk_limits(response.strip())
+            return self._enforce_small_talk_limits(response.strip(), creator_profile=creator_profile)
         except Exception as e:
             logger.error(f"Small talk render failed: {e}")
             if known_user_name:
@@ -2156,9 +2172,9 @@ Output only the response text."""
     # STEP 4 — HARD REDUCTION ENFORCERS
     # ──────────────────────────────────────────────────────────
 
-    def _enforce_greeting_limits(self, text: str) -> str:
+    def _enforce_greeting_limits(self, text: str, creator_profile: Optional[Dict[str, Any]] = None) -> str:
         """Hard enforcement for ROUTE 0 greeting responses."""
-        text = strip_all_markdown(text)
+        text = strip_all_markdown(text, creator_profile=creator_profile)
 
         sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
 
@@ -2179,11 +2195,11 @@ Output only the response text."""
             parts = result.split("?")
             result = parts[0] + "?"
 
-        return strip_mid_sentence_hyphens(result.strip())
+        return finalize_visible_text(result, creator_profile=creator_profile)
 
-    def _enforce_small_talk_limits(self, text: str) -> str:
+    def _enforce_small_talk_limits(self, text: str, creator_profile: Optional[Dict[str, Any]] = None) -> str:
         """Hard enforcement for ROUTE 1 small talk responses."""
-        text = strip_all_markdown(text)
+        text = strip_all_markdown(text, creator_profile=creator_profile)
 
         sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
 
@@ -2203,7 +2219,7 @@ Output only the response text."""
             parts = result.split("?")
             result = parts[0] + "?"
 
-        return strip_mid_sentence_hyphens(result.strip())
+        return finalize_visible_text(result, creator_profile=creator_profile)
 
     def _enforce_task_reduction(self, draft: str, plan: InteractionPlan, user_msg: str, allow_lists: bool = False, allow_links: bool = False) -> str:
         """
@@ -2289,7 +2305,7 @@ Output the cleaned text only."""
         allow_links: bool = False,
         persona: Optional[str] = None,
     ) -> str:
-        cleaned = strip_mid_sentence_hyphens((text or "").strip())
+        cleaned = finalize_visible_text(text, creator_profile=creator_profile)
         report = evaluate_creator_integrity(
             cleaned,
             creator_profile,
@@ -2362,7 +2378,10 @@ CURRENT DRAFT:
                 temperature=0.0,
                 max_tokens=max(120, min(700, len(cleaned) * 2)),
             )
-            repaired = strip_mid_sentence_hyphens((repaired or "").strip().strip('"'))
+            repaired = finalize_visible_text(
+                (repaired or "").strip().strip('"'),
+                creator_profile=creator_profile,
+            )
             repaired_report = evaluate_creator_integrity(
                 repaired,
                 creator_profile,
@@ -2414,7 +2433,10 @@ OUTPUT ONLY THE TIGHTENED MESSAGE.
                     temperature=0.0,
                     max_tokens=max(120, min(520, len(candidate) * 2)),
                 )
-                tightened = strip_mid_sentence_hyphens((tightened or "").strip().strip('"'))
+                tightened = finalize_visible_text(
+                    (tightened or "").strip().strip('"'),
+                    creator_profile=creator_profile,
+                )
                 tightened_report = evaluate_creator_integrity(
                     tightened,
                     creator_profile,
