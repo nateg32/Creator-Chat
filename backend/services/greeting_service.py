@@ -1,6 +1,8 @@
 import hashlib
 import logging
+import random
 import re
+from collections import defaultdict, deque
 from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,10 @@ class GreetingService:
     Ensures creator specific voice, avoids repetition, and applies constraints.
     """
 
+    def __init__(self) -> None:
+        self._rng = random.SystemRandom()
+        self._recent_greetings: Dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=24))
+
     def _clean_text(self, value: Any) -> str:
         text = str(value or "").strip()
         if not text:
@@ -113,9 +119,38 @@ class GreetingService:
         index = int.from_bytes(digest[:4], "big") % len(options)
         return options[index]
 
+    def _ordered(self, options: List[str], seed_key: Optional[str] = None) -> List[str]:
+        cleaned = self._dedupe_preserve(options)
+        if not cleaned:
+            return []
+        if seed_key:
+            return sorted(
+                cleaned,
+                key=lambda item: hashlib.sha256(f"{seed_key}|{item}".encode("utf-8")).hexdigest(),
+            )
+        ordered = list(cleaned)
+        self._rng.shuffle(ordered)
+        return ordered
+
+    def _dedupe_preserve(self, values: Iterable[Any]) -> List[str]:
+        cleaned: List[str] = []
+        seen = set()
+        for value in values or []:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(text)
+        return cleaned
+
     def _looks_like_opening_hook(self, text: str) -> bool:
         normalized = str(text or "").strip().lower()
         if not normalized:
+            return False
+        if normalized.startswith(("what", "where", "how", "which", "who", "why", "when")):
             return False
         if len(normalized.split()) > 8:
             return False
@@ -433,6 +468,164 @@ class GreetingService:
             questions.insert(0, "Who am I talking to?")
         return self._clean_options(questions) or NAME_QUESTIONS
 
+    def _punctuate_statement(self, text: str, energy_bucket: str) -> str:
+        statement = self._clean_text(text).rstrip(" ?!.")
+        if not statement:
+            return ""
+        punct = "!" if energy_bucket == "HIGH" else "."
+        return f"{statement}{punct}"
+
+    def _opening_variants(
+        self,
+        openers: List[str],
+        user_name: Optional[str],
+        energy_bucket: str,
+        creator_seed: str,
+    ) -> List[str]:
+        clean_name = (user_name or "").strip()
+        variants: List[str] = []
+        for opener in self._ordered(openers, f"{creator_seed}|opening-raw")[:8]:
+            base = self._punctuate_statement(opener, energy_bucket)
+            if not base:
+                continue
+            variants.append(base)
+            if clean_name:
+                naked = base[:-1]
+                variants.append(f"{naked} {clean_name}{base[-1]}")
+                variants.append(f"{naked}, {clean_name}{base[-1]}")
+        return self._dedupe_preserve(variants)
+
+    def _composed_topic_questions(
+        self,
+        topics: List[str],
+        tone_traits: Dict[str, Any],
+        energy_bucket: str,
+    ) -> List[str]:
+        blunt = float(tone_traits.get("blunt", 0.0) or 0.0)
+        supportive = float(tone_traits.get("supportive", 0.0) or 0.0)
+        hype = float(tone_traits.get("hype", 0.0) or 0.0)
+        variants: List[str] = []
+
+        for topic in topics[:4]:
+            cleaned = self._clean_text(topic)
+            if not cleaned:
+                continue
+            if blunt >= 0.65:
+                variants.extend([
+                    f"Where is {cleaned} actually breaking right now?",
+                    f"What part of {cleaned} needs tightening first?",
+                    f"What's the bottleneck in {cleaned} right now?",
+                ])
+            elif supportive >= 0.7:
+                variants.extend([
+                    f"What feels heaviest around {cleaned} right now?",
+                    f"Where does {cleaned} feel hardest at the moment?",
+                    f"What part of {cleaned} needs the gentlest next step?",
+                ])
+            elif hype >= 0.65 or energy_bucket == "HIGH":
+                variants.extend([
+                    f"What's the move with {cleaned} right now?",
+                    f"Where are you pushing {cleaned} next?",
+                    f"What are you trying to unlock in {cleaned} right now?",
+                ])
+            else:
+                variants.extend([
+                    f"What part of {cleaned} needs a cleaner decision right now?",
+                    f"Where is {cleaned} getting muddy for you?",
+                    f"What's the real constraint around {cleaned} right now?",
+                ])
+        return self._clean_options(variants)
+
+    def _composed_general_questions(self, tone_traits: Dict[str, Any], energy_bucket: str) -> List[str]:
+        blunt = float(tone_traits.get("blunt", 0.0) or 0.0)
+        supportive = float(tone_traits.get("supportive", 0.0) or 0.0)
+        hype = float(tone_traits.get("hype", 0.0) or 0.0)
+
+        if blunt >= 0.65:
+            return [
+                "What's the real thing you want to solve?",
+                "Where are you actually stuck?",
+                "What needs tightening first?",
+                "What are we really dealing with here?",
+            ]
+        if supportive >= 0.7:
+            return [
+                "What feels hardest right now?",
+                "What needs a steadier next step?",
+                "What's been sitting heavy on you lately?",
+                "Where do you want to start, the messy version is fine?",
+            ]
+        if hype >= 0.65 or energy_bucket == "HIGH":
+            return [
+                "What's the move right now?",
+                "What are you going after next?",
+                "Where do you want momentum first?",
+                "What are we attacking first?",
+            ]
+        return [
+            "What's most live for you right now?",
+            "What needs a clearer next move?",
+            "Where do you want to start?",
+            "What are you trying to sort out right now?",
+        ]
+
+    def _question_variants(
+        self,
+        user_name: Optional[str],
+        voice_profile: Dict[str, Any],
+        style_fingerprint: Dict[str, Any],
+        creator_category: Optional[str],
+        tone_traits: Dict[str, Any],
+        energy_bucket: str,
+    ) -> List[str]:
+        style_signals = self._style_signals(style_fingerprint)
+        if not (user_name or "").strip():
+            return self._build_unknown_name_questions(tone_traits, energy_bucket, style_fingerprint)
+
+        topic_questions = self._composed_topic_questions(style_signals.get("topics", []), tone_traits, energy_bucket)
+        style_questions = self._clean_options(
+            list(style_signals.get("questions", []))
+            + list(voice_profile.get("greeting_questions", []) or [])
+        )
+        if topic_questions:
+            prioritized = self._clean_options(topic_questions + style_questions)
+            if prioritized:
+                return prioritized
+
+        base_pool = self._build_known_name_questions(
+            voice_profile,
+            style_fingerprint,
+            creator_category,
+            tone_traits,
+            energy_bucket,
+        )
+        enriched = self._clean_options(
+            list(base_pool)
+            + topic_questions
+            + self._composed_general_questions(tone_traits, energy_bucket)
+        )
+        return enriched or CATEGORY_QUESTIONS.get(str(creator_category or "general").strip().lower(), CATEGORY_QUESTIONS["general"])
+
+    def _select_greeting_candidate(
+        self,
+        candidates: List[str],
+        creator_seed: str,
+        variation_seed: Optional[str] = None,
+    ) -> str:
+        if not candidates:
+            return ""
+        ordered = self._ordered(candidates, variation_seed)
+        if variation_seed:
+            return ordered[0]
+        recent = self._recent_greetings[creator_seed]
+        for candidate in ordered:
+            if candidate not in recent:
+                recent.append(candidate)
+                return candidate
+        choice = ordered[0]
+        recent.append(choice)
+        return choice
+
     def generate_greeting(
         self,
         user_name: Optional[str],
@@ -441,10 +634,11 @@ class GreetingService:
         creator_name: Optional[str] = None,
         creator_category: Optional[str] = None,
         style_fingerprint: Optional[Dict[str, Any]] = None,
+        variation_seed: Optional[str] = None,
     ) -> str:
         """
-        Generate a deterministic but varied greeting based on creator profile.
-        Format: [Opener] [Optional Name]. [Optional Question]
+        Generate a naturally varied, persona-restricted greeting.
+        Format: [Opener] [Optional Question]
         """
         voice_profile = voice_profile or {}
         style_fingerprint = style_fingerprint or {}
@@ -455,51 +649,48 @@ class GreetingService:
 
         openers = self._build_openers(voice_profile, style_fingerprint, energy_bucket, tone_traits)
         non_generic_openers = [item for item in openers if not self._is_generic_or_banned(item, banned_frames)]
-        opener = self._pick(non_generic_openers or openers, f"{creator_seed}|opener").strip()
-        opener = self._clean_text(opener) or self._pick(DIRECT_DM_OPENERS, f"{creator_seed}|direct")
-
-        if opener.endswith("?"):
-            opener = opener[:-1]
-        if not opener.endswith((".", "!")):
-            opener += "!" if energy_bucket == "HIGH" else "."
-
-        final_greeting = opener
+        opening_lines = self._opening_variants(non_generic_openers or openers or DIRECT_DM_OPENERS, user_name, energy_bucket, creator_seed)
         clean_name = (user_name or "").strip()
-        if clean_name and len(opener.split()) < 4:
-            base = opener[:-1]
-            punct = opener[-1]
-            final_greeting = f"{base} {clean_name}{punct}"
+        if clean_name:
+            named_openings = [item for item in opening_lines if clean_name.lower() in item.lower()]
+            if named_openings:
+                opening_lines = named_openings
+        final_greeting = self._select_greeting_candidate(
+            opening_lines or [self._punctuate_statement(self._pick(DIRECT_DM_OPENERS, f"{creator_seed}|direct"), energy_bucket)],
+            f"{creator_seed}|opening-only",
+            variation_seed=f"{variation_seed}|opening" if variation_seed else None,
+        )
 
         if not include_question:
             return final_greeting
 
-        if not clean_name:
-            question_pool = self._build_unknown_name_questions(tone_traits, energy_bucket, style_fingerprint)
-        else:
-            style_signals = self._style_signals(style_fingerprint)
-            question_pool = self._build_known_name_questions(
-                voice_profile,
-                style_fingerprint,
-                creator_category,
-                tone_traits,
-                energy_bucket,
-            )
-            filtered = [item for item in question_pool if not self._is_generic_or_banned(item, banned_frames)]
-            if filtered:
-                question_pool = filtered
-            else:
-                question_pool = self._clean_options(
-                    self._topic_question_bank(style_signals.get("topics", []), tone_traits, energy_bucket)
-                    + self._question_tone_bank(tone_traits, energy_bucket)
-                    + CATEGORY_QUESTIONS.get(str(creator_category or "general").strip().lower(), CATEGORY_QUESTIONS["general"])
-                ) or question_pool or CATEGORY_QUESTIONS["general"]
+        question_pool = self._question_variants(
+            user_name,
+            voice_profile,
+            style_fingerprint,
+            creator_category,
+            tone_traits,
+            energy_bucket,
+        )
+        filtered_questions = [item for item in question_pool if not self._is_generic_or_banned(item, banned_frames)]
+        question_pool = filtered_questions or question_pool or ["What's on your mind?"]
+        ordered_questions = self._ordered(question_pool, f"{variation_seed}|question" if variation_seed else None)
 
-        question = self._pick(question_pool, f"{creator_seed}|question")
-        question = self._clean_text(question)
-        if not question:
-            question = "What's on your mind"
-        question = question.rstrip(" ?!.") + "?"
-        return f"{final_greeting} {question}"
+        candidates: List[str] = []
+        for opener in self._ordered(opening_lines, f"{variation_seed}|opener-line" if variation_seed else None)[:8]:
+            for question in ordered_questions[:10]:
+                clean_question = self._clean_text(question).rstrip(" ?!.") + "?"
+                candidate = f"{opener} {clean_question}".strip()
+                if self._is_generic_or_banned(candidate, banned_frames):
+                    continue
+                candidates.append(candidate)
+
+        final = self._select_greeting_candidate(
+            candidates or [f"{final_greeting} What's on your mind?"],
+            creator_seed,
+            variation_seed=variation_seed,
+        )
+        return final
 
 
 greeting_service = GreetingService()

@@ -64,6 +64,9 @@ def load_interaction_engine_module():
 
     fake_text_sanitizer = types.ModuleType("backend.services.text_sanitizer")
     fake_text_sanitizer.strip_mid_sentence_hyphens = lambda text: text
+    fake_formatting = types.ModuleType("backend.services.formatting")
+    fake_formatting.clean_response = lambda text, **kwargs: text
+    fake_formatting.should_strip_hyphens = lambda creator=None: False
     greeting_service_module = load_module(
         "test_greeting_service_module",
         pathlib.Path("services") / "greeting_service.py",
@@ -76,6 +79,7 @@ def load_interaction_engine_module():
     fake_services_package = types.ModuleType("backend.services")
     fake_services_package.prompt_injection_guard = prompt_guard_module
     fake_services_package.text_sanitizer = fake_text_sanitizer
+    fake_services_package.formatting = fake_formatting
     fake_services_package.greeting_service = greeting_service_module
     fake_services_package.regurgitation_guard = regurgitation_guard_module
 
@@ -89,6 +93,7 @@ def load_interaction_engine_module():
             "backend.services": fake_services_package,
             "backend.services.prompt_injection_guard": prompt_guard_module,
             "backend.services.text_sanitizer": fake_text_sanitizer,
+            "backend.services.formatting": fake_formatting,
             "backend.services.greeting_service": greeting_service_module,
             "backend.services.regurgitation_guard": regurgitation_guard_module,
             "pydantic": fake_pydantic,

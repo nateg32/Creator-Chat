@@ -19,7 +19,7 @@ greeting_service = _load_module("greeting_service", "services/greeting_service.p
 
 
 class GreetingServiceTests(unittest.TestCase):
-    def test_greeting_is_deterministic_for_same_creator(self):
+    def test_greeting_is_stable_for_same_variation_seed(self):
         voice_profile = {
             "energy": {"bucket": "HIGH"},
             "greeting_high_energy": ["Let's move", "Lock in"],
@@ -33,15 +33,44 @@ class GreetingServiceTests(unittest.TestCase):
             voice_profile,
             creator_name="Alex",
             creator_category="business",
+            variation_seed="thread-1|seed-a",
         )
         second = greeting_service.generate_greeting(
             "Nathan",
             voice_profile,
             creator_name="Alex",
             creator_category="business",
+            variation_seed="thread-1|seed-a",
         )
 
         self.assertEqual(first, second)
+
+    def test_greeting_varies_across_calls_for_same_creator(self):
+        voice_profile = {
+            "energy": {"bucket": "HIGH"},
+            "greeting_high_energy": ["Let's move", "Lock in"],
+            "greeting_questions": ["What are we building?", "What's the move right now?"],
+            "signature_phrases": ["Lock in"],
+            "tone_traits": {"hype": 0.9, "supportive": 0.2, "blunt": 0.4},
+        }
+        style_fingerprint = {
+            "speech_mechanics": {"signature_openings": ["Cut the fluff", "Alright, let's go"]},
+            "domain_map": {"strong_topics": ["offers", "pricing", "sales process"]},
+            "golden_examples": {"greeting": ["Cut the fluff. Where is the offer leaking right now?"]},
+        }
+
+        greetings = {
+            greeting_service.generate_greeting(
+                "Nathan",
+                voice_profile,
+                creator_name="Alex",
+                creator_category="business",
+                style_fingerprint=style_fingerprint,
+            )
+            for _ in range(6)
+        }
+
+        self.assertGreater(len(greetings), 1)
 
     def test_distinct_creators_get_distinct_greetings(self):
         shared_voice = {
