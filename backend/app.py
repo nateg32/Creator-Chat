@@ -2340,6 +2340,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 # After the stream is exhausted, we do the background work
                 if pending_stream_text:
                     assembled.append(pending_stream_text)
+                    yield f"data: {json.dumps({'content': pending_stream_text})}\n\n"
+                    pending_stream_text = ""
                 streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)

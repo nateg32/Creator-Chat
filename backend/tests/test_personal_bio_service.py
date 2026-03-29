@@ -103,6 +103,33 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("I haven't really talked about that publicly", answer)
         self.assertNotIn("wouldn't want to guess", answer)
 
+    def test_public_book_question_forces_web_when_caller_disables_it(self):
+        service, provider = _load_personal_bio_service(
+            [
+                {
+                    "title": "Buy Back Your Time",
+                    "url": "https://www.amazon.com/Buy-Back-Your-Time/dp/example",
+                    "snippet": "Buy Back Your Time was published on September 26, 2023.",
+                }
+            ]
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did your first book come out?",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={"name": "Dan Martell"},
+            allow_web=False,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.calls)
+        self.assertTrue("September" in answer or "2023" in answer, answer)
+        self.assertNotIn("I haven't really talked about that publicly", answer)
+
     def test_public_book_question_falls_back_to_official_sources_honestly(self):
         service, provider = _load_personal_bio_service([])
 

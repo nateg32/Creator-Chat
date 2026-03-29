@@ -50,12 +50,14 @@ class PersonalBioService:
         # 1. Classification
         q_type, topic, sufficiency = decision_service.classify_question(question, "personal_bio_question")
         public_fact_query = self._is_public_creator_fact_query(question, creator_name, creator_profile)
+        researcher_enabled = bool(getattr(self.researcher, "enabled", True))
+        effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
         
         # 2. Evidence Gathering
         internal_facts = self._search_internal_knowledge(creator_id, question, creator_profile=creator_profile)
         
         web_facts = []
-        if allow_web and (public_fact_query or self._needs_more_evidence(internal_facts)):
+        if effective_allow_web and (public_fact_query or self._needs_more_evidence(internal_facts)):
             logger.info("PersonalBioService: Internal evidence weak, checking web...")
             web_facts = self._search_web_evidence(creator_id, creator_name, question, creator_profile=creator_profile)
             
@@ -190,18 +192,45 @@ class PersonalBioService:
         return facts
 
     def _search_web_evidence(self, creator_id: int, creator_name: str, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        query = f"{creator_name} {question}".strip()
-        try:
-            if hasattr(self.researcher, "search_general"):
-                results = self.researcher.search_general(query, creator_id, creator_profile=creator_profile)
-            else:
-                profile = dict(creator_profile or {})
-                profile.setdefault("id", creator_id)
-                profile.setdefault("name", creator_name)
-                results = self.researcher.search(query, profile, resource_type="any", conversation_history=None)
-        except Exception as e:
-            logger.error(f"PersonalBioService: Web evidence search failed: {e}")
-            return []
+        lowered_question = str(question or "").lower()
+        profile = dict(creator_profile or {})
+        profile.setdefault("id", creator_id)
+        profile.setdefault("name", creator_name)
+        search_engine = SearchDecisionEngine(profile)
+
+        queries = [f"{creator_name} {question}".strip()]
+        if any(token in lowered_question for token in ["book", "published", "publication", "release", "released", "launched", "launch", "come out"]):
+            queries.append(f"{creator_name} book published".strip())
+            queries.append(f"{creator_name} first book".strip())
+            queries.append(f"site:amazon.com {creator_name} book".strip())
+            queries.append(f"site:audible.com {creator_name} book".strip())
+            queries.append(f"site:penguinrandomhouse.com {creator_name} book".strip())
+            queries.append(f"site:goodreads.com {creator_name} book".strip())
+            for term in search_engine.creator_terms:
+                if len(term.split()) >= 2:
+                    queries.append(f'"{term}" published')
+                    queries.append(f'"{term}" release date')
+                    queries.append(f'site:amazon.com "{term}"')
+                    queries.append(f'site:audible.com "{term}"')
+                    queries.append(f'site:goodreads.com "{term}"')
+
+        results = []
+        seen_queries = set()
+        for query in queries:
+            normalized_query = re.sub(r"\s+", " ", query).strip()
+            if not normalized_query or normalized_query.lower() in seen_queries:
+                continue
+            seen_queries.add(normalized_query.lower())
+            try:
+                if hasattr(self.researcher, "search_general"):
+                    results = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
+                else:
+                    results = self.researcher.search(normalized_query, profile, resource_type="any", conversation_history=None)
+            except Exception as e:
+                logger.error(f"PersonalBioService: Web evidence search failed for query '{normalized_query}': {e}")
+                continue
+            if results:
+                break
 
         normalized = []
         for result in results or []:
