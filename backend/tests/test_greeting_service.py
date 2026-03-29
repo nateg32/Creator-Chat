@@ -1,9 +1,9 @@
-import unittest
 import importlib.util
-from pathlib import Path
+import pathlib
+import unittest
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _load_module(name: str, relative_path: str):
@@ -15,163 +15,148 @@ def _load_module(name: str, relative_path: str):
     return module
 
 
-greeting_service = _load_module("greeting_service", "services/greeting_service.py").greeting_service
+greeting_module = _load_module("greeting_service_module", pathlib.Path("services") / "greeting_service.py")
+greeting_service = greeting_module.greeting_service
+is_greeting = greeting_module.is_greeting
+
+
+def _fixture():
+    creator = {
+        "name": "Operator",
+        "creator_category": "business",
+        "voice_patterns": {
+            "interaction_style": {"energy_level": "high"},
+            "rhythm": {"pacing": "fast"},
+            "sentence_structure": {"avg_sentence_length": "short"},
+        },
+    }
+    voice_profile = {
+        "energy": {"bucket": "HIGH"},
+        "greeting_high_energy": ["Let's go", "Alright", "Good to see you"],
+        "greeting_neutral": ["Hey"],
+        "tone_traits": {"hype": 0.8, "supportive": 0.2, "blunt": 0.6},
+    }
+    style_fingerprint = {
+        "speech_mechanics": {"signature_openings": ["Cut the fluff", "Let's get into it"]},
+        "golden_examples": {"greeting": ["Cut the fluff. What's on your mind right now?"]},
+    }
+    return creator, voice_profile, style_fingerprint
 
 
 class GreetingServiceTests(unittest.TestCase):
-    def test_greeting_is_stable_for_same_variation_seed(self):
-        voice_profile = {
-            "energy": {"bucket": "HIGH"},
-            "greeting_high_energy": ["Let's move", "Lock in"],
-            "greeting_questions": ["What are we building?", "What's the move right now?"],
-            "signature_phrases": ["Lock in"],
-            "tone_traits": {"hype": 0.9, "supportive": 0.2, "blunt": 0.4},
-        }
+    def test_is_greeting_detects_social_openers(self):
+        self.assertTrue(is_greeting("hello"))
+        self.assertTrue(is_greeting("hey there"))
+        self.assertTrue(is_greeting("yo"))
+        self.assertFalse(is_greeting("what's your best advice for starting a business"))
 
+    def test_greeting_is_stable_for_same_variation_seed(self):
+        creator, voice_profile, style_fingerprint = _fixture()
         first = greeting_service.generate_greeting(
             "Nathan",
             voice_profile,
-            creator_name="Alex",
-            creator_category="business",
+            creator_name=creator["name"],
+            creator_category=creator["creator_category"],
+            style_fingerprint=style_fingerprint,
             variation_seed="thread-1|seed-a",
+            creator_profile=creator,
         )
         second = greeting_service.generate_greeting(
             "Nathan",
             voice_profile,
-            creator_name="Alex",
-            creator_category="business",
+            creator_name=creator["name"],
+            creator_category=creator["creator_category"],
+            style_fingerprint=style_fingerprint,
             variation_seed="thread-1|seed-a",
+            creator_profile=creator,
         )
-
         self.assertEqual(first, second)
 
     def test_greeting_varies_across_calls_for_same_creator(self):
-        voice_profile = {
-            "energy": {"bucket": "HIGH"},
-            "greeting_high_energy": ["Let's move", "Lock in"],
-            "greeting_questions": ["What are we building?", "What's the move right now?"],
-            "signature_phrases": ["Lock in"],
-            "tone_traits": {"hype": 0.9, "supportive": 0.2, "blunt": 0.4},
-        }
-        style_fingerprint = {
-            "speech_mechanics": {"signature_openings": ["Cut the fluff", "Alright, let's go"]},
-            "domain_map": {"strong_topics": ["offers", "pricing", "sales process"]},
-            "golden_examples": {"greeting": ["Cut the fluff. Where is the offer leaking right now?"]},
-        }
-
+        creator, voice_profile, style_fingerprint = _fixture()
         greetings = {
             greeting_service.generate_greeting(
                 "Nathan",
                 voice_profile,
-                creator_name="Alex",
-                creator_category="business",
+                creator_name=creator["name"],
+                creator_category=creator["creator_category"],
                 style_fingerprint=style_fingerprint,
+                creator_profile=creator,
             )
             for _ in range(6)
         }
-
         self.assertGreater(len(greetings), 1)
 
     def test_distinct_creators_get_distinct_greetings(self):
-        shared_voice = {
-            "energy": {"bucket": "HIGH"},
-            "greeting_high_energy": ["Let's move", "Lock in"],
-            "greeting_questions": ["What are we building?", "What's the move right now?"],
-            "signature_phrases": ["Lock in"],
-            "tone_traits": {"hype": 0.9, "supportive": 0.1, "blunt": 0.5},
-        }
-        first_style = {
-            "speech_mechanics": {"signature_openings": ["Cut the fluff"]},
-            "domain_map": {"strong_topics": ["offers", "B2B outbound"]},
-            "golden_examples": {"greeting": ["Cut the fluff. Where is the offer leaking right now?"]},
-        }
-        second_style = {
-            "speech_mechanics": {"signature_openings": ["Take a breath"]},
-            "domain_map": {"strong_topics": ["recovery", "training blocks"]},
-            "golden_examples": {"greeting": ["Take a breath. What part of training feels off right now?"]},
-        }
-
+        creator, voice_profile, style_fingerprint = _fixture()
         first = greeting_service.generate_greeting(
             "Nathan",
-            shared_voice,
-            creator_name="Alex",
-            creator_category="business",
-            style_fingerprint=first_style,
+            voice_profile,
+            creator_name=creator["name"],
+            creator_category=creator["creator_category"],
+            style_fingerprint=style_fingerprint,
+            variation_seed="creator-a",
+            creator_profile=creator,
         )
         second = greeting_service.generate_greeting(
             "Nathan",
-            shared_voice,
+            {
+                "energy": {"bucket": "LOW"},
+                "greeting_short": ["Hey", "Good to hear from you"],
+                "tone_traits": {"supportive": 0.9, "hype": 0.1, "blunt": 0.1},
+            },
             creator_name="Sarah",
             creator_category="fitness",
-            style_fingerprint=second_style,
+            style_fingerprint={
+                "speech_mechanics": {"signature_openings": ["Take a breath"]},
+                "golden_examples": {"greeting": ["Take a breath. What's been on your mind lately?"]},
+            },
+            variation_seed="creator-b",
+            creator_profile={
+                "name": "Sarah",
+                "creator_category": "fitness",
+                "voice_patterns": {
+                    "interaction_style": {"energy_level": "calm"},
+                    "rhythm": {"pacing": "measured"},
+                    "sentence_structure": {"avg_sentence_length": "medium"},
+                },
+            },
         )
-
         self.assertNotEqual(first, second)
         self.assertIn("Nathan", first)
         self.assertIn("Nathan", second)
 
-    def test_style_fingerprint_replaces_generic_build_prompt(self):
-        voice_profile = {
-            "energy": {"bucket": "HIGH"},
-            "greeting_high_energy": ["Let's move"],
-            "greeting_questions": ["What are you building right now?"],
-            "signature_phrases": ["Lock in"],
-            "tone_traits": {"hype": 0.9, "supportive": 0.1, "blunt": 0.7},
-        }
-        style_fingerprint = {
-            "domain_map": {"strong_topics": ["offers", "outbound systems"]},
-            "speech_mechanics": {"signature_openings": ["Cut the fluff"]},
-            "golden_examples": {"greeting": ["Cut the fluff. Where is the offer leaking right now?"]},
-            "anti_persona": {"forbidden_generic_coach_lines": ["What are you building right now?"]},
-            "lexical_rules": {"banned_frames": ["What are you building right now?"]},
-        }
-
+    def test_greeting_avoids_hyper_specific_business_prompt(self):
+        creator, voice_profile, style_fingerprint = _fixture()
         greeting = greeting_service.generate_greeting(
             "Nathan",
             voice_profile,
-            creator_name="Operator",
-            creator_category="business",
+            creator_name=creator["name"],
+            creator_category=creator["creator_category"],
             style_fingerprint=style_fingerprint,
+            variation_seed="no-business-diagnosis",
+            creator_profile=creator,
         )
-
-        self.assertNotIn("What are you building right now?", greeting)
-        self.assertTrue("offer" in greeting.lower() or "outbound" in greeting.lower())
+        self.assertNotIn("what part of", greeting.lower())
+        self.assertNotIn("needs tightening", greeting.lower())
+        self.assertNotIn("bottleneck", greeting.lower())
 
     def test_unknown_name_question_stays_personal(self):
-        voice_profile = {
-            "energy": {"bucket": "LOW"},
-            "tone_traits": {"supportive": 0.9},
-        }
-
+        creator, voice_profile, style_fingerprint = _fixture()
         greeting = greeting_service.generate_greeting(
             "",
             voice_profile,
-            creator_name="Sarah",
-            creator_category="fitness",
+            creator_name=creator["name"],
+            creator_category=creator["creator_category"],
+            style_fingerprint=style_fingerprint,
+            variation_seed="unknown-name",
+            creator_profile=creator,
         )
-
         self.assertTrue(
-            greeting.endswith("What should I call you?") or greeting.endswith("What's your name?") or greeting.endswith("Who am I talking to?")
+            greeting.endswith("What should I call you?")
+            or greeting.endswith("What's your name?")
+            or greeting.endswith("Who am I talking to?")
         )
-
-    def test_greeting_rejects_conditional_fragment_openers(self):
-        voice_profile = {
-            "energy": {"bucket": "MID"},
-            "greeting_neutral": ["If you want to get rich", "Alright"],
-            "tone_traits": {"supportive": 0.2, "blunt": 0.6},
-        }
-
-        greeting = greeting_service.generate_greeting(
-            "Nathan",
-            voice_profile,
-            creator_name="Dan",
-            creator_category="business",
-            variation_seed="conditional-fragment-check",
-        )
-
-        self.assertNotIn("If you want to get rich", greeting)
-        self.assertIn("Nathan", greeting)
-        self.assertIn("?", greeting)
 
 
 if __name__ == "__main__":

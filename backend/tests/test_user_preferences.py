@@ -326,7 +326,14 @@ class UserPreferenceTests(unittest.TestCase):
 
         self.assertIn("Nathan", result)
         self.assertNotIn("What are you building right now?", result)
-        self.assertTrue("offer" in result.lower() or "outbound" in result.lower())
+        self.assertNotIn("what part of", result.lower())
+        self.assertLessEqual(result.count("?"), 1)
+        self.assertTrue(
+            "what are you working on" in result.lower()
+            or "what's on your mind" in result.lower()
+            or "where do you want to start" in result.lower()
+            or "what are you building" in result.lower()
+        )
 
     def test_integrity_guard_runs_final_quality_tightener_for_missing_followup_question(self):
         plan = InteractionPlan(route="ROUTE_2_TASK", routing="IN_DOMAIN")

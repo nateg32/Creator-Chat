@@ -14,7 +14,7 @@ from backend.settings import settings
 from backend.db import db
 from backend.core.memory_integration import MemoryIntegration
 from backend.services.formatting import clean_response, should_strip_hyphens
-from backend.services.greeting_service import greeting_service
+from backend.services.greeting_service import greeting_service, is_greeting
 from backend.services.regurgitation_guard import (
     build_anti_regurgitation_block,
     check_for_regurgitation,
@@ -1056,7 +1056,7 @@ class InteractionEngine:
                         return True
             return False
 
-        is_social = msg in GREETING_WORDS or phrase_in_msg(GREETING_WORDS, msg, words)
+        is_social = is_greeting(msg) or msg in GREETING_WORDS or phrase_in_msg(GREETING_WORDS, msg, words)
         is_reactive = msg in REACTIVE_WORDS or (word_count <= 3 and any(w in REACTIVE_WORDS for w in words))
         is_emotional = phrase_in_msg(EMOTION_WORDS, msg, words)
         is_small_talk_phrase = phrase_in_msg(SMALL_TALK_PHRASES, msg, words)
@@ -1103,7 +1103,7 @@ class InteractionEngine:
         msg = user_msg.strip().lower()
         words = msg.split()
 
-        if msg in GREETING_WORDS or any(g in msg for g in ["hello", "hey", "hi", "sup", "what's up"]):
+        if is_greeting(msg) or msg in GREETING_WORDS or any(g in msg for g in ["hello", "hey", "hi", "sup", "what's up"]):
             return "SOCIAL_OPEN"
         if any(e in msg for e in EMOTION_WORDS):
             return "EMOTION_DROP"
@@ -1482,7 +1482,7 @@ Generate InteractionPlan JSON."""
         allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none"
 
         if plan.route == "ROUTE_0_GREETING":
-            raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences)
+            raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences, history=history)
             cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
             return self._apply_creator_integrity_guard(
                 cleaned,
@@ -1850,7 +1850,7 @@ KNOWLEDGE:
 
 Output ONLY your response to the user."""
 
-    def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None) -> str:
+    def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None, history: Optional[List[Dict[str, str]]] = None) -> str:
         creator_name = creator_profile.get("name", "the creator")
         creator_category = creator_profile.get("creator_category", "general")
         known_user_name = (user_name or "").strip()
@@ -1865,6 +1865,8 @@ Output ONLY your response to the user."""
                 creator_name=creator_name,
                 creator_category=creator_category,
                 style_fingerprint=style_fingerprint,
+                conversation_history=history or [],
+                creator_profile=creator_profile,
             )
             return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
         except Exception as e:

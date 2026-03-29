@@ -175,7 +175,11 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         get_research_provider=lambda: provider,
     )
     _stub_module("backend.services.memory_service", memory_service=types.SimpleNamespace(update_memory=lambda *args, **kwargs: None))
-    _stub_module("backend.services.greeting_service", greeting_service=types.SimpleNamespace(generate_greeting=lambda *args, **kwargs: "Hi."))
+    _stub_module(
+        "backend.services.greeting_service",
+        greeting_service=types.SimpleNamespace(generate_greeting=lambda *args, **kwargs: "Hi."),
+        is_greeting=lambda *args, **kwargs: False,
+    )
     _stub_module("backend.services.personal_bio_service", personal_bio_service=types.SimpleNamespace(answer=lambda *args, **kwargs: None))
     _stub_module("backend.services.persona_filter", apply_persona_surface_filter=lambda text, *args, **kwargs: text)
     _stub_module("backend.services.curiosity_service", curiosity_service=types.SimpleNamespace())

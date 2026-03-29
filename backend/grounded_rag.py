@@ -21,14 +21,14 @@ from backend.services.style_scorer import StyleScorer
 from backend.services.content_finder import ContentFinder
 from backend.services.research_provider import GeminiResearchProvider
 from backend.services.memory_service import memory_service
-from backend.services.greeting_service import greeting_service
+from backend.services.greeting_service import greeting_service, is_greeting
 from backend.services.personal_bio_service import personal_bio_service
 from backend.services.persona_filter import apply_persona_surface_filter
 from backend.services.curiosity_service import curiosity_service
 from backend.services.rhythm_shaper import rhythm_shaper
 from backend.services.user_priority_service import user_priority_service
 from backend.services.decision_service import decision_service
-from backend.services.greeting_service import greeting_service
+from backend.services.greeting_service import greeting_service, is_greeting
 from backend.services.memory_loop_service import memory_loop_service
 from backend.services.steering_service import steering_service
 from backend.services.classifiers import classifiers
@@ -1631,6 +1631,8 @@ def classify_intent(question: str) -> str:
     q = (question or "").lower().strip()
     if not q:
         return "greeting_only"
+    if is_greeting(q):
+        return "greeting_only"
     
     # 1. Check explicit patterns
     for patterns, type_label in _INTENT_PATTERNS:
@@ -1840,7 +1842,9 @@ def response_length_instruction(
         - Max {budget} words.
         - DO NOT give advice yet.
         - BANNED PHRASES: "I don't have enough information", "To better assist you", "Based on what you said".
-        - STRUCTURE: Greeting -> Short optional hook -> One short question (optional).
+        - STRUCTURE: Warm social acknowledgment -> one broad open question (optional).
+        - NEVER describe your own style out loud.
+        - NEVER ask a hyper-specific business or diagnostic question.
         """
 
     if intent == "identity":
@@ -2485,6 +2489,8 @@ def generate_grounded_answer(
                 creator_name=(creator_profile or {}).get("name"),
                 creator_category=(creator_profile or {}).get("creator_category"),
                 style_fingerprint=style_fingerprint or {},
+                conversation_history=conversation_history or [],
+                creator_profile=creator_profile or {},
             )
             # We still might want the LLM to 'voice' it slightly if the DNA is complex,
             # but for now, returning the simple greeting is safer.
@@ -2566,8 +2572,10 @@ def generate_grounded_answer(
         7. GREETING MODE: You are in a high-speed messaging mode.
            - NO explanations of what you can do.
            - NO instructions to the user.
-           - Sentence 1: Pick one literal opener from the ALLOWED GREETINGS list.
-           - Sentence 2: Ask one short, domain-aware question (e.g. "What's the goal today?").
+           - Sentence 1: Acknowledge them naturally like a real person.
+           - Sentence 2: If you ask a question, keep it broad and social, like "What's on your mind?" or "What are you working on?"
+           - NEVER diagnose their business or situation from a hello.
+           - NEVER describe your own communication style.
            - MAXIMUM 2 sentences total.
         """
 
@@ -4496,6 +4504,8 @@ async def grounded_rag_stream(
                 creator_name=creator_row.get("name") or creator_row.get("handle"),
                 creator_category=creator_row.get("creator_category"),
                 style_fingerprint=style_fingerprint if isinstance(style_fingerprint, dict) else {},
+                conversation_history=conversation_history or [],
+                creator_profile=creator_row,
             )
             yield greeting_text
             return

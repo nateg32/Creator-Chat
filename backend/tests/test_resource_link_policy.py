@@ -62,7 +62,11 @@ def _load_grounded_rag():
     _stub_module("backend.services.content_finder", ContentFinder=type("ContentFinder", (), {}))
     _stub_module("backend.services.research_provider", GeminiResearchProvider=type("GeminiResearchProvider", (), {}))
     _stub_module("backend.services.memory_service", memory_service=types.SimpleNamespace())
-    _stub_module("backend.services.greeting_service", greeting_service=types.SimpleNamespace())
+    _stub_module(
+        "backend.services.greeting_service",
+        greeting_service=types.SimpleNamespace(),
+        is_greeting=lambda *args, **kwargs: False,
+    )
     _stub_module("backend.services.personal_bio_service", personal_bio_service=types.SimpleNamespace())
     _stub_module("backend.services.persona_filter", apply_persona_surface_filter=lambda *args, **kwargs: "")
     _stub_module("backend.services.curiosity_service", curiosity_service=types.SimpleNamespace())
