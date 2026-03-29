@@ -433,6 +433,16 @@ class WebSearchTriggerTests(unittest.TestCase):
             decision = self.engine.pre_retrieval_decision(query)
             self.assertTrue(decision.should_search, query)
 
+    def test_entity_confirmation_skips_web_search(self):
+        queries = [
+            "do you know the book buy your time",
+            "do you have a book",
+            "tell me about buy back your time",
+        ]
+        for query in queries:
+            decision = self.engine.pre_retrieval_decision(query)
+            self.assertFalse(decision.should_search, query)
+
     def test_web_search_result_used_in_response(self):
         search_results = [
             {

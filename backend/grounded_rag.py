@@ -43,6 +43,7 @@ from backend.services.live_search_rules import (
     extract_requested_platforms,
     needs_fresh_public_web_search,
 )
+from backend.services.creator_entity_service import creator_entity_service
 from backend.services.evidence_router import (
     EvidencePlan,
     EvidenceRouter,
@@ -1497,6 +1498,46 @@ def _inject_live_web_results(
             )
             merged.insert(i, faux_chunk)
     return merged
+
+
+def _inject_entity_graph_support(
+    support_set: List[Dict[str, Any]],
+    question: str,
+    creator_row: Dict[str, Any],
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    *,
+    evidence_plan: Optional[EvidencePlan] = None,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    plan = evidence_plan or _build_evidence_plan(question, creator_row, conversation_history)
+    if not plan or plan.query_goal not in {"entity_confirmation", "entity_overview", "availability_lookup", "resource_lookup"}:
+        return list(support_set or []), None
+
+    entity = creator_entity_service.resolve_entity(
+        plan.resolved_query or question,
+        creator_id=creator_row.get("id"),
+        creator_profile=creator_row,
+        conversation_history=conversation_history,
+    )
+    if not entity:
+        return list(support_set or []), None
+
+    entity_chunks = creator_entity_service.build_entity_support_chunks(
+        entity=entity,
+        query=plan.resolved_query or question,
+        creator_id=creator_row.get("id"),
+        creator_profile=creator_row,
+        conversation_history=conversation_history,
+    )
+    if not entity_chunks:
+        return list(support_set or []), entity
+
+    logger.info(
+        "[EVIDENCE] Injecting %s creator-entity support chunk(s) for '%s' (%s)",
+        len(entity_chunks),
+        entity.get("name") or plan.entity_subject or "entity",
+        plan.query_goal,
+    )
+    return merge_support_sets(list(support_set or []), entity_chunks, limit=4), entity
 
 
 def _build_public_fact_fallback(question: str, creator_name: str) -> str:
@@ -3794,9 +3835,10 @@ Message: {answer_text[:500]}"""
                 evidence_plan,
                 metadata={"service": "grounded_rag_sync", "phase": "pre_retrieval"},
             )
+        search_question = (evidence_plan.resolved_query if evidence_plan and evidence_plan.resolved_query else question)
         search_engine = SearchDecisionEngine(creator_row)
         pre_search_decision = (
-            search_engine.pre_retrieval_decision(question)
+            search_engine.pre_retrieval_decision(question, conversation_history=conversation_history)
             if search_mode == "hybrid"
             else SearchDecision(False, "search_disabled", "Creator search mode disabled live search", "pre_retrieval", 1.0)
         )
@@ -3811,7 +3853,7 @@ Message: {answer_text[:500]}"""
                 pre_web_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 pre_web_future = pre_web_executor.submit(
                     _run_live_web_search,
-                    question,
+                    search_question,
                     creator_row,
                     conversation_history,
                     preferred_platforms,
@@ -3820,7 +3862,7 @@ Message: {answer_text[:500]}"""
                 )
             else:
                 pre_web_results = _run_live_web_search(
-                    question,
+                    search_question,
                     creator_row,
                     conversation_history=conversation_history,
                     preferred_platforms=preferred_platforms,
@@ -3886,6 +3928,13 @@ Message: {answer_text[:500]}"""
             )
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
+        support_set, resolved_entity = _inject_entity_graph_support(
+            support_set,
+            question,
+            creator_row,
+            conversation_history,
+            evidence_plan=evidence_plan,
+        )
             
         # --- NEW: Real-Time Web Search Fallback (Sync) ---
         # Check context: Did the bot just talk about a video/link?
@@ -3941,14 +3990,24 @@ Message: {answer_text[:500]}"""
                 metadata={"service": "grounded_rag_sync", "phase": "post_retrieval"},
             )
         post_search_decision = (
-            search_engine.post_retrieval_decision(question, support_set, top_support_score)
+            search_engine.post_retrieval_decision(
+                question,
+                support_set,
+                top_support_score,
+                conversation_history=conversation_history,
+            )
             if search_mode == "hybrid" and not pre_search_decision.should_search
             else None
         )
         if post_search_decision and post_search_decision.should_search:
             log_search_decision(str(creator_id), question, post_search_decision)
         needs_fallback = explicit_or_live_request_fallback or bool(post_search_decision and post_search_decision.should_search)
-        fact_search_requested = _decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision)
+        active_plan = evidence_plan_post or evidence_plan
+        entity_memory_query = bool(active_plan and active_plan.query_goal in {"entity_confirmation", "entity_overview"})
+        fact_search_requested = (
+            not entity_memory_query
+            and (_decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision))
+        )
         contradiction_report = detect_evidence_contradiction(
             question,
             corpus_chunks=corpus_support_snapshot,
@@ -3995,7 +4054,7 @@ Message: {answer_text[:500]}"""
             if not support_set:
                 try:
                     web_results = _run_live_web_search(
-                        question,
+                        search_question,
                         creator_row,
                         conversation_history=conversation_history,
                         preferred_platforms=preferred_platforms,
@@ -4008,7 +4067,7 @@ Message: {answer_text[:500]}"""
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     search_future = executor.submit(
                         _run_live_web_search,
-                        question,
+                        search_question,
                         creator_row,
                         conversation_history,
                         preferred_platforms,
@@ -4412,14 +4471,15 @@ async def grounded_rag_stream(
                 evidence_plan,
                 metadata={"service": "grounded_rag_stream", "phase": "pre_retrieval"},
             )
+        search_question = (evidence_plan.resolved_query if evidence_plan and evidence_plan.resolved_query else question)
         search_engine = SearchDecisionEngine(creator_row)
         pre_search_decision = (
-            search_engine.pre_retrieval_decision(question)
+            search_engine.pre_retrieval_decision(question, conversation_history=conversation_history)
             if search_mode == "hybrid"
             else SearchDecision(False, "search_disabled", "Creator search mode disabled live search", "pre_retrieval", 1.0)
         )
         web_query = build_live_search_query(
-            question,
+            search_question,
             conversation_history,
             creator_name=creator_row.get("name") or creator_row.get("handle"),
             preferred_platforms=preferred_platforms,
@@ -4443,7 +4503,7 @@ async def grounded_rag_stream(
             speculative_web_task = asyncio.create_task(
                 asyncio.to_thread(
                     _run_live_web_search,
-                    question,
+                    search_question,
                     creator_row,
                     conversation_history,
                     preferred_platforms,
@@ -4515,6 +4575,13 @@ async def grounded_rag_stream(
             )
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
+        support_set, resolved_entity = _inject_entity_graph_support(
+            support_set,
+            question,
+            creator_row,
+            conversation_history,
+            evidence_plan=evidence_plan,
+        )
         
         # --- Optimized Real-Time Web Search Fallback ---
         import time as _time
@@ -4561,14 +4628,24 @@ async def grounded_rag_stream(
                 metadata={"service": "grounded_rag_stream", "phase": "post_retrieval"},
             )
         post_search_decision = (
-            search_engine.post_retrieval_decision(question, support_set, top_support_score)
+            search_engine.post_retrieval_decision(
+                question,
+                support_set,
+                top_support_score,
+                conversation_history=conversation_history,
+            )
             if search_mode == "hybrid" and not pre_search_decision.should_search
             else None
         )
         if post_search_decision and post_search_decision.should_search:
             log_search_decision(str(creator_id), question, post_search_decision)
         needs_fallback = explicit_or_live_request_fallback or bool(post_search_decision and post_search_decision.should_search)
-        fact_search_requested = _decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision)
+        active_plan = evidence_plan_post or evidence_plan
+        entity_memory_query = bool(active_plan and active_plan.query_goal in {"entity_confirmation", "entity_overview"})
+        fact_search_requested = (
+            not entity_memory_query
+            and (_decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision))
+        )
 
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
@@ -4594,7 +4671,7 @@ async def grounded_rag_stream(
                     live_intent_metadata = {"intent": "PUBLIC_CREATOR_FACT"}
                 web_results = await asyncio.to_thread(
                     _run_live_web_search,
-                    question,
+                    search_question,
                     creator_row,
                     conversation_history,
                     preferred_platforms,

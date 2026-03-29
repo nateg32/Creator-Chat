@@ -97,6 +97,21 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertIn("Buy Back Your Time", plan.resolved_query)
         self.assertEqual(plan.entity_subject, "Buy Back Your Time")
 
+    def test_entity_confirmation_uses_entity_graph_before_web(self):
+        plan = self.router.build_plan("do you know the book buy your time")
+        self.assertEqual(plan.query_goal, "entity_confirmation")
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertFalse(plan.should_search_web)
+        self.assertEqual(plan.search_strategy, "entity_graph_first")
+        self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
+    def test_availability_lookup_prefers_official_urls_before_search(self):
+        plan = self.router.build_plan("where can i buy your book")
+        self.assertEqual(plan.query_goal, "availability_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertFalse(plan.should_search_web)
+        self.assertEqual(plan.search_strategy, "official_urls_first")
+
     def test_detect_evidence_contradiction_for_dates(self):
         report = self.detect_evidence_contradiction(
             "when was your book published",

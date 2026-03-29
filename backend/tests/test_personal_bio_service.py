@@ -221,6 +221,30 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("when did u write it", query.lower())
         self.assertTrue("September" in answer or "2023" in answer, answer)
 
+    def test_entity_confirmation_uses_creator_entity_graph_before_web_search(self):
+        service, provider = _load_personal_bio_service([])
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="do you know the book buy your time",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={
+                "name": "Dan Martell",
+                "identity_fingerprint": 'Author of "Buy Back Your Time".',
+                "official_domains": ["danmartell.com"],
+            },
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertFalse(provider.grounded_calls)
+        self.assertFalse(provider.calls)
+        self.assertIn("Buy Back Your Time", answer)
+        self.assertEqual(result.get("move"), "ANSWER_ENTITY_GRAPH_CONFIRMATION")
+
     def test_public_book_question_falls_back_to_official_sources_honestly(self):
         service, provider = _load_personal_bio_service([])
 

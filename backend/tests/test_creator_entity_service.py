@@ -91,6 +91,23 @@ class CreatorEntityServiceTests(unittest.TestCase):
         self.assertIsNotNone(entity)
         self.assertEqual(entity.get("name"), "Buy Back Your Time")
 
+    def test_build_entity_support_chunk_contains_identity_and_urls(self):
+        entity = self.service.resolve_entity(
+            "do you know the book buy your time",
+            creator_profile=self.creator,
+            conversation_history=[],
+        )
+        chunks = self.service.build_entity_support_chunks(
+            entity=entity,
+            creator_profile=self.creator,
+            query="do you know the book buy your time",
+        )
+        self.assertEqual(len(chunks), 1)
+        chunk = chunks[0]
+        self.assertIn("Buy Back Your Time", chunk.get("content", ""))
+        self.assertEqual(chunk.get("source"), "entity_graph")
+        self.assertTrue(chunk.get("url"))
+
 
 if __name__ == "__main__":
     unittest.main()

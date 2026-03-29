@@ -99,6 +99,23 @@ def _safe_domain(url: str) -> str:
     return host
 
 
+def _platform_from_url(url: str) -> str:
+    host = _safe_domain(url)
+    if "youtube.com" in host or "youtu.be" in host:
+        return "youtube"
+    if "instagram.com" in host:
+        return "instagram"
+    if "linkedin.com" in host:
+        return "linkedin"
+    if "x.com" in host or "twitter.com" in host:
+        return "twitter"
+    if "tiktok.com" in host:
+        return "tiktok"
+    if "facebook.com" in host:
+        return "facebook"
+    return "web" if host else "unknown"
+
+
 def _build_platform_url(platform: str, handle: str) -> str:
     clean = str(handle or "").strip().lstrip("@")
     if not clean:
@@ -533,6 +550,89 @@ class CreatorEntityService:
             if len(type_groups.get(entity_type, [])) == 1 and any(hint in normalized_query for hint in hints):
                 return type_groups[entity_type][0]
         return None
+
+    def describe_entity_identity(self, entity: Optional[Dict[str, Any]]) -> str:
+        if not entity:
+            return ""
+        entity_type = str(entity.get("type") or "entity").lower()
+        entity_name = _normalize_space(entity.get("name"))
+        if not entity_name:
+            return ""
+        if entity_type == "book":
+            return f"I wrote a book called {entity_name}."
+        if entity_type == "course":
+            return f"I have a program called {entity_name}."
+        if entity_type == "podcast":
+            return f"I have a show called {entity_name}."
+        if entity_type == "company":
+            return f"I built a company called {entity_name}."
+        if entity_type == "profile":
+            return f"I'm on {entity_name}."
+        if entity_type == "website":
+            official_urls = list(entity.get("official_urls") or [])
+            if official_urls:
+                return f"My official site is {official_urls[0]}."
+            return "I have an official website."
+        return f"I have {entity_name}."
+
+    def build_entity_support_chunks(
+        self,
+        *,
+        entity: Optional[Dict[str, Any]] = None,
+        query: str = "",
+        creator_id: Optional[int] = None,
+        creator_profile: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        resolved_entity = entity or self.resolve_entity(
+            query,
+            creator_id=creator_id,
+            creator_profile=creator_profile,
+            conversation_history=conversation_history,
+        )
+        if not resolved_entity:
+            return []
+
+        entity_type = str(resolved_entity.get("type") or "entity").lower()
+        entity_name = _normalize_space(resolved_entity.get("name"))
+        official_urls = [str(url or "").strip() for url in (resolved_entity.get("official_urls") or []) if str(url or "").strip()]
+        aliases = [str(alias or "").strip() for alias in (resolved_entity.get("aliases") or []) if str(alias or "").strip()]
+        fact_fields = [str(field or "").strip() for field in (resolved_entity.get("fact_fields") or []) if str(field or "").strip()]
+
+        description = self.describe_entity_identity(resolved_entity)
+        parts = [description] if description else [f"Creator-owned {entity_type}: {entity_name}."]
+        if aliases:
+            alias_text = ", ".join(aliases[:5])
+            parts.append(f"Known aliases: {alias_text}.")
+        if fact_fields:
+            parts.append(f"Relevant fact fields: {', '.join(fact_fields[:6])}.")
+        if official_urls:
+            parts.append(f"Official URLs: {', '.join(official_urls[:3])}.")
+
+        primary_url = official_urls[0] if official_urls else ""
+        chunk_id = f"entity_{entity_type}_{re.sub(r'[^a-z0-9]+', '_', entity_name.lower()).strip('_') or 'item'}"
+        content = " ".join(part for part in parts if part).strip()
+
+        return [
+            {
+                "chunk_id": chunk_id,
+                "chunk_index": 0,
+                "distance": 0.03,
+                "content": content,
+                "snippet": content[:260],
+                "title": entity_name,
+                "url": primary_url,
+                "source": "entity_graph",
+                "sim": 0.96,
+                "confidence": 0.96,
+                "source_ref": {
+                    "platform": _platform_from_url(primary_url),
+                    "canonical_url": primary_url,
+                    "title": entity_name,
+                    "content_type": entity_type,
+                },
+            }
+        ]
 
 
 creator_entity_service = CreatorEntityService()

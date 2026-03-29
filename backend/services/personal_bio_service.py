@@ -72,6 +72,13 @@ class PersonalBioService:
             entity=resolved_entity,
             evidence_plan=evidence_plan,
         )
+        entity_graph_evidence = creator_entity_service.build_entity_support_chunks(
+            entity=resolved_entity,
+            query=resolved_question,
+            creator_id=creator_id,
+            creator_profile=creator_payload,
+            conversation_history=conversation_history,
+        )
         logger.info(
             "PersonalBioService: Processing '%s' for creator %s (resolved='%s', contextual='%s')",
             question,
@@ -89,9 +96,25 @@ class PersonalBioService:
         # 1. Classification
         q_type, topic, sufficiency = decision_service.classify_question(resolved_question, "personal_bio_question", conversation_history)
         public_fact_query = (
-            evidence_plan.primary_world in {"creator_world", "live_world"}
-            or self._is_public_creator_fact_query(contextual_question, creator_name, creator_profile)
+            evidence_plan.primary_world == "live_world"
+            or (
+                evidence_plan.primary_world == "creator_world"
+                and (evidence_plan.should_verify or evidence_plan.should_search_web)
+            )
+            or evidence_plan.query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}
+            or (
+                evidence_plan.query_goal in {"availability_lookup", "resource_lookup"}
+                and evidence_plan.should_search_web
+            )
+            or self._is_public_creator_fact_query(
+                contextual_question,
+                creator_name,
+                creator_profile,
+                conversation_history=conversation_history,
+            )
         )
+        if evidence_plan.query_goal in {"entity_confirmation", "entity_overview"}:
+            public_fact_query = False
         researcher_enabled = bool(getattr(self.researcher, "enabled", True))
         effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
         fact_field = fact_registry.infer_fact_field(resolved_question, evidence_plan.entity_type)
@@ -104,6 +127,28 @@ class PersonalBioService:
                 fact_field,
                 freshness_required=evidence_plan.freshness_required,
             )
+
+        if evidence_plan.query_goal == "entity_confirmation" and resolved_entity:
+            return {
+                "answer": self._answer_entity_confirmation(resolved_entity),
+                "confidence": "HIGH",
+                "sources": entity_graph_evidence,
+                "move": "ANSWER_ENTITY_GRAPH_CONFIRMATION",
+                "evidence_plan": evidence_plan.to_dict(),
+                "fact_cache_hit": False,
+                "contradiction_report": {"has_contradiction": False, "kind": "none"},
+            }
+
+        if evidence_plan.query_goal == "availability_lookup" and resolved_entity and (resolved_entity.get("official_urls") or []):
+            return {
+                "answer": self._answer_entity_availability(resolved_entity),
+                "confidence": "HIGH",
+                "sources": entity_graph_evidence,
+                "move": "ANSWER_ENTITY_GRAPH_AVAILABILITY",
+                "evidence_plan": evidence_plan.to_dict(),
+                "fact_cache_hit": False,
+                "contradiction_report": {"has_contradiction": False, "kind": "none"},
+            }
         
         # 2. Evidence Gathering
         internal_facts = (
@@ -111,6 +156,8 @@ class PersonalBioService:
             if evidence_plan.should_search_corpus
             else []
         )
+        if entity_graph_evidence:
+            internal_facts = entity_graph_evidence + internal_facts
         cached_facts = self._cached_fact_to_evidence(cached_fact)
         if cached_facts:
             internal_facts = cached_facts + internal_facts
@@ -189,7 +236,7 @@ class PersonalBioService:
                 }
 
             return {
-                "answer": self._public_fact_fallback(resolved_question, creator_name),
+                "answer": self._public_fact_fallback(resolved_question, creator_name, evidence_plan=evidence_plan, entity=resolved_entity),
                 "confidence": "LOW",
                 "sources": all_evidence,
                 "move": "DIRECT_TO_OFFICIAL_SOURCE",
@@ -252,10 +299,14 @@ class PersonalBioService:
         question: str,
         creator_name: str,
         creator_profile: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> bool:
         creator_payload = dict(creator_profile or {})
         creator_payload.setdefault("name", creator_name)
-        decision = SearchDecisionEngine(creator_payload).pre_retrieval_decision(question)
+        decision = SearchDecisionEngine(creator_payload).pre_retrieval_decision(
+            question,
+            conversation_history=conversation_history,
+        )
         return bool(decision.should_search)
 
     def _search_internal_knowledge(self, creator_id: int, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -481,6 +532,24 @@ class PersonalBioService:
                 return title
         return ""
 
+    def _answer_entity_confirmation(self, entity: Dict[str, Any]) -> str:
+        return creator_entity_service.describe_entity_identity(entity) or "I do."
+
+    def _answer_entity_availability(self, entity: Dict[str, Any]) -> str:
+        entity_name = str(entity.get("name") or "").strip()
+        entity_type = str(entity.get("type") or "entity").lower()
+        official_urls = [str(url or "").strip() for url in (entity.get("official_urls") or []) if str(url or "").strip()]
+        if not official_urls:
+            return "I want to point you to the right place on that. Check my official website or verified profile links for the current listing."
+        primary_url = official_urls[0]
+        if entity_type == "profile":
+            return f"You can find me on {primary_url}."
+        if entity_type == "website":
+            return f"My official site is {primary_url}."
+        if entity_name:
+            return f"You can find {entity_name} here: {primary_url}."
+        return f"You can find it here: {primary_url}."
+
     def _answer_public_creator_fact(self, question: str, evidence: List[Dict[str, Any]], creator_name: str) -> str:
         blob = self._evidence_blob(evidence)
         lowered_question = str(question or "").lower()
@@ -585,17 +654,37 @@ Evidence:
             logger.error(f"Public fact synthesis failed: {e}")
             return ""
 
-    def _public_fact_fallback(self, question: str, creator_name: str) -> str:
+    def _public_fact_fallback(
+        self,
+        question: str,
+        creator_name: str,
+        *,
+        evidence_plan: Optional[Any] = None,
+        entity: Optional[Dict[str, Any]] = None,
+    ) -> str:
         lowered = str(question or "").lower()
-        if "book" in lowered or "publish" in lowered or "publication" in lowered or "release" in lowered:
+        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+        official_urls = [str(url or "").strip() for url in ((entity or {}).get("official_urls") or []) if str(url or "").strip()]
+
+        if query_goal == "timeline_lookup" or any(token in lowered for token in ["publish", "publication", "release", "released", "launch", "launched", "come out", "write", "wrote", "written"]):
             return (
                 "I want to give you the right date on that. Check my Amazon listing, Audible, "
                 "or the publisher page for the exact publication info."
             )
-        if any(token in lowered for token in ["where can i buy", "purchase", "course", "program"]):
+        if query_goal in {"price_lookup"} or any(token in lowered for token in ["price", "pricing", "cost", "how much"]):
+            return (
+                "I want to give you the right pricing info there. Check my website or official checkout page for the current details."
+            )
+        if query_goal in {"availability_lookup", "resource_lookup"}:
+            if official_urls:
+                return f"I want to point you to the right place on that. Start here: {official_urls[0]}"
             return (
                 "I want to point you to the right place on that. Check my official website, "
                 "course page, or verified profile links for the current listing."
+            )
+        if query_goal in {"current_stat_lookup", "stat_lookup"} or any(token in lowered for token in ["followers", "subscribers", "members", "students", "employees"]):
+            return (
+                "I want to give you the right number on that. Check my live profiles or current public listings directly for the latest count."
             )
         return (
             "I want to give you the right answer on that. Check my official website, "

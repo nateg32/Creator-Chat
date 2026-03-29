@@ -41,6 +41,18 @@ _FACTUAL_PATTERNS = [
     re.compile(r"\bpublish(?:ed|ing)?\b|\bpublication\b|\brelease(?:d)?\b|\blaunch(?:ed)?\b", re.IGNORECASE),
     re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bmembers?\b|\bstudents?\b|\branking\b|\branked\b|\bvaluation\b", re.IGNORECASE),
 ]
+_TIMELINE_PATTERNS = [
+    re.compile(r"\bwhen (?:did|was|were|is)\b", re.IGNORECASE),
+    re.compile(r"\bwhat (?:year|date|month|day)\b", re.IGNORECASE),
+    re.compile(r"\bpublish(?:ed|ing)?\b|\bpublication\b|\brelease(?:d)?\b|\blaunch(?:ed)?\b|\bcome out\b", re.IGNORECASE),
+]
+_PRICE_PATTERNS = [
+    re.compile(r"\bprice\b|\bcost\b|\bpricing\b", re.IGNORECASE),
+    re.compile(r"\bhow much\b", re.IGNORECASE),
+]
+_STAT_PATTERNS = [
+    re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bmembers?\b|\bstudents?\b|\bemployees?\b|\branking\b|\branked\b|\bvaluation\b|\bnet worth\b", re.IGNORECASE),
+]
 _LIVE_PATTERNS = [
     re.compile(r"\b(latest|newest|recent|current|today|right now|currently|still)\b", re.IGNORECASE),
     re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bprice\b|\bpricing\b|\branking\b|\branked\b", re.IGNORECASE),
@@ -48,6 +60,19 @@ _LIVE_PATTERNS = [
 _RESOURCE_PATTERNS = [
     re.compile(r"\bwhere can i (?:buy|get|find|purchase)\b", re.IGNORECASE),
     re.compile(r"\bwatch\b|\blink\b|\bvideo\b|\bepisode\b|\bresource\b", re.IGNORECASE),
+]
+_CONFIRMATION_PATTERNS = [
+    re.compile(r"\bdo you know\b", re.IGNORECASE),
+    re.compile(r"\bhave you heard of\b", re.IGNORECASE),
+    re.compile(r"\bare you familiar with\b", re.IGNORECASE),
+    re.compile(r"\bdo you have\b", re.IGNORECASE),
+    re.compile(r"\bdid you write\b", re.IGNORECASE),
+    re.compile(r"\bis there (?:a|an|any)\b", re.IGNORECASE),
+]
+_OVERVIEW_PATTERNS = [
+    re.compile(r"\btell me about\b", re.IGNORECASE),
+    re.compile(r"\bwhat is\b", re.IGNORECASE),
+    re.compile(r"\bdo you know about\b", re.IGNORECASE),
 ]
 _CREATOR_WORLD_HINTS = [
     re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business)\b", re.IGNORECASE),
@@ -68,6 +93,8 @@ class EvidencePlan:
     freshness_required: str
     answer_mode: str
     risk_flags: List[str]
+    query_goal: str = "general"
+    search_strategy: str = "memory_first"
     entity_type: str = ""
     top_score: Optional[float] = None
     contradiction_risk: bool = False
@@ -91,6 +118,8 @@ def _ensure_evidence_schema() -> bool:
                 resolved_query TEXT,
                 primary_world TEXT,
                 secondary_worlds JSONB DEFAULT '[]'::jsonb,
+                query_goal TEXT,
+                search_strategy TEXT,
                 answer_mode TEXT,
                 should_search_web BOOLEAN,
                 should_search_corpus BOOLEAN,
@@ -105,6 +134,12 @@ def _ensure_evidence_schema() -> bool:
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
             """
+        )
+        db.execute_update(
+            "ALTER TABLE evidence_plan_log ADD COLUMN IF NOT EXISTS query_goal TEXT"
+        )
+        db.execute_update(
+            "ALTER TABLE evidence_plan_log ADD COLUMN IF NOT EXISTS search_strategy TEXT"
         )
         db.execute_update(
             """
@@ -136,6 +171,8 @@ def log_evidence_plan(
                 resolved_query,
                 primary_world,
                 secondary_worlds,
+                query_goal,
+                search_strategy,
                 answer_mode,
                 should_search_web,
                 should_search_corpus,
@@ -149,7 +186,7 @@ def log_evidence_plan(
                 metadata,
                 created_at
             )
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW())
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW())
             """,
             (
                 str(creator_id),
@@ -157,6 +194,8 @@ def log_evidence_plan(
                 str(plan.resolved_query or ""),
                 str(plan.primary_world or ""),
                 json.dumps(plan.secondary_worlds or []),
+                str(plan.query_goal or ""),
+                str(plan.search_strategy or ""),
                 str(plan.answer_mode or ""),
                 bool(plan.should_search_web),
                 bool(plan.should_search_corpus),
@@ -324,6 +363,28 @@ class EvidenceRouter:
             return "creator_take"
         return "hybrid"
 
+    def _query_goal(self, query: str, entity: Optional[Dict[str, Any]], risk_flags: List[str]) -> str:
+        lowered = str(query or "").lower()
+        if re.search(r"\bwhere can i (?:buy|get|find|purchase)\b", lowered, re.IGNORECASE):
+            return "availability_lookup"
+        if any(pattern.search(lowered) for pattern in _RESOURCE_PATTERNS):
+            return "resource_lookup"
+        if any(pattern.search(lowered) for pattern in _TIMELINE_PATTERNS):
+            return "timeline_lookup"
+        if any(pattern.search(lowered) for pattern in _PRICE_PATTERNS):
+            return "price_lookup"
+        if any(pattern.search(lowered) for pattern in _STAT_PATTERNS):
+            return "current_stat_lookup" if any(pattern.search(lowered) for pattern in _LIVE_PATTERNS) else "stat_lookup"
+        if entity and any(pattern.search(lowered) for pattern in _CONFIRMATION_PATTERNS):
+            return "entity_confirmation"
+        if entity and any(pattern.search(lowered) for pattern in _OVERVIEW_PATTERNS):
+            return "entity_overview"
+        if any(token in lowered for token in ("advice", "how do you", "what do you think", "your take", "best advice")):
+            return "creator_take"
+        if entity and "creator_owned_entity" in risk_flags:
+            return "entity_overview"
+        return "general"
+
     def _classify_worlds(
         self,
         query: str,
@@ -331,13 +392,31 @@ class EvidenceRouter:
         entity: Optional[Dict[str, Any]],
         answer_mode: str,
         top_score: Optional[float],
-    ) -> tuple[str, List[str], bool, bool, bool]:
+        query_goal: str,
+    ) -> tuple[str, List[str], bool, bool, bool, str]:
         lowered = str(query or "").lower()
         creator_world_signal = bool(entity and entity.get("creator_owned")) or any(
             pattern.search(lowered) for pattern in _CREATOR_WORLD_HINTS
         )
         live_world_signal = "fresh" in risk_flags or any(pattern.search(lowered) for pattern in _LIVE_PATTERNS)
         factual_signal = any(flag in risk_flags for flag in ("public_fact", "date", "pricing", "stats"))
+
+        if query_goal == "entity_confirmation":
+            return "creator_memory", ["creator_world"], False, True, False, "entity_graph_first"
+
+        if query_goal == "entity_overview":
+            return "creator_memory", ["creator_world"], False, True, False, "memory_plus_entity_graph"
+
+        if query_goal == "availability_lookup":
+            has_official_urls = bool((entity or {}).get("official_urls"))
+            return (
+                "creator_world",
+                ["creator_memory"],
+                not has_official_urls,
+                True,
+                not has_official_urls,
+                "official_urls_first" if has_official_urls else "official_grounded_search",
+            )
 
         if live_world_signal:
             primary_world = "live_world"
@@ -347,26 +426,31 @@ class EvidenceRouter:
             should_search_web = True
             should_search_corpus = answer_mode == "hybrid"
             should_verify = True
+            search_strategy = "live_grounded_search"
         elif creator_world_signal or factual_signal:
             primary_world = "creator_world"
             secondary = ["creator_memory"]
             should_search_web = True
             should_search_corpus = answer_mode == "hybrid"
             should_verify = True
+            search_strategy = "official_grounded_search"
         else:
             primary_world = "creator_memory"
             secondary = []
             should_search_web = False
             should_search_corpus = True
             should_verify = False
+            search_strategy = "memory_first"
 
         if primary_world == "creator_memory" and top_score is not None and top_score < 0.65:
             should_search_web = True
             should_verify = False
             secondary = ["live_world"]
+            search_strategy = "memory_then_live_fallback"
 
         if primary_world == "creator_memory" and top_score is not None and top_score >= 0.80 and answer_mode == "creator_take":
             should_search_web = False
+            search_strategy = "memory_only"
 
         deduped_secondary: List[str] = []
         seen = set()
@@ -374,7 +458,7 @@ class EvidenceRouter:
             if world != primary_world and world not in seen:
                 deduped_secondary.append(world)
                 seen.add(world)
-        return primary_world, deduped_secondary, should_search_web, should_search_corpus, should_verify
+        return primary_world, deduped_secondary, should_search_web, should_search_corpus, should_verify, search_strategy
 
     def build_plan(
         self,
@@ -394,12 +478,14 @@ class EvidenceRouter:
         risk_flags = self._risk_flags(resolved_query, entity)
         freshness_required = self._freshness(resolved_query, risk_flags)
         answer_mode = self._answer_mode(resolved_query, risk_flags, entity)
-        primary_world, secondary_worlds, should_search_web, should_search_corpus, should_verify = self._classify_worlds(
+        query_goal = self._query_goal(resolved_query, entity, risk_flags)
+        primary_world, secondary_worlds, should_search_web, should_search_corpus, should_verify, search_strategy = self._classify_worlds(
             resolved_query,
             risk_flags,
             entity,
             answer_mode,
             top_score,
+            query_goal,
         )
         contradiction = detect_evidence_contradiction(
             resolved_query,
@@ -423,6 +509,8 @@ class EvidenceRouter:
             freshness_required=freshness_required,
             answer_mode=answer_mode,
             risk_flags=risk_flags,
+            query_goal=query_goal,
+            search_strategy=search_strategy,
             entity_type=str((entity or {}).get("type") or ""),
             top_score=top_score,
             contradiction_risk=bool(contradiction.get("has_contradiction")),

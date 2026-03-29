@@ -99,7 +99,11 @@ class SearchDecisionEngine:
                 seen.add(normalized)
         return cleaned_terms
 
-    def pre_retrieval_decision(self, query: str) -> SearchDecision:
+    def pre_retrieval_decision(
+        self,
+        query: str,
+        conversation_history: Optional[list] = None,
+    ) -> SearchDecision:
         query_lower = str(query or "").lower().strip()
         if not query_lower:
             return SearchDecision(
@@ -111,7 +115,7 @@ class SearchDecisionEngine:
             )
 
         try:
-            plan = self.router.build_plan(query)
+            plan = self.router.build_plan(query, conversation_history=conversation_history)
             if plan.should_search_web and plan.primary_world in {"creator_world", "live_world"}:
                 reason = "creator_own_world" if plan.primary_world == "creator_world" else "factual_query"
                 return SearchDecision(
@@ -168,10 +172,12 @@ class SearchDecisionEngine:
         query: str,
         chunks: list,
         top_score: Optional[float],
+        conversation_history: Optional[list] = None,
     ) -> SearchDecision:
         try:
             plan = self.router.build_plan(
                 query,
+                conversation_history=conversation_history,
                 top_score=top_score,
                 retrieved_chunks=chunks,
             )
