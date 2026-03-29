@@ -2268,6 +2268,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                             citations=citations,
                             user_metadata=user_image_metadata,
                             user_id=current_user["id"],
+                            creator_profile=creator_cleaning_profile,
                         )
                         thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
                         if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
@@ -2382,6 +2383,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         user_metadata=user_image_metadata,
                         user_id=current_user["id"],
                         quality_report=quality_report,
+                        creator_profile=creator_cleaning_profile,
                     )
                     # Check for title update
                     thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
@@ -2534,10 +2536,23 @@ def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str
         return answer
 
 
-def finalize_stream_interaction(thread_id: str, question: str, answer: str, cards=None, citations=None, user_metadata=None, user_id: int = 1, quality_report: Optional[Dict[str, Any]] = None):
+def finalize_stream_interaction(
+    thread_id: str,
+    question: str,
+    answer: str,
+    cards=None,
+    citations=None,
+    user_metadata=None,
+    user_id: int = 1,
+    quality_report: Optional[Dict[str, Any]] = None,
+    creator_profile: Optional[Dict[str, Any]] = None,
+):
     """Save the final interaction to DB after stream completion."""
     try:
-        answer = clean_response(answer)
+        answer = clean_response(
+            answer,
+            strip_hyphens=should_strip_hyphens(creator_profile or {}),
+        )
         user_metadata = user_metadata or {}
         # Save User Message
         db.execute_update("""
