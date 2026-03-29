@@ -3752,6 +3752,9 @@ Message: {answer_text[:500]}"""
 
     # --- Step 5: Personal / Biographical Routing ---
     rule_intent = classify_intent(question)
+    route_q_type, route_topic, _ = decision_service.classify_question(question, rule_intent, conversation_history)
+    creator_personal_detector = getattr(decision_service, "is_creator_personal_fact_question", None)
+    route_creator_personal = bool(creator_personal_detector(question)) if callable(creator_personal_detector) else False
     route_evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
     route_personal_via_evidence = bool(
         route_evidence_plan
@@ -3771,7 +3774,13 @@ Message: {answer_text[:500]}"""
             )
         )
     )
-    if user_state.get("flags", {}).get("personal_question_flag") or rule_intent == "personal_bio_question" or route_personal_via_evidence:
+    route_personal_from_classifier = bool(
+        user_state.get("flags", {}).get("personal_question_flag") and route_creator_personal
+    )
+    route_personal_from_rules = bool(
+        route_q_type == "personal_bio" or rule_intent == "personal_bio_question"
+    )
+    if route_personal_from_classifier or route_personal_from_rules or route_personal_via_evidence:
         logger.info("Pipeline Step 5: Routing personal factual question through PersonalBioService...")
         personal_result = personal_bio_service.handle_personal_question(
             user_id=user_id,
@@ -3813,7 +3822,7 @@ Message: {answer_text[:500]}"""
 
     # --- Step 5: Personal / Factual Check (Web Verify) ---
     verified_fact_data = None
-    if user_state.get("flags", {}).get("personal_question_flag"):
+    if route_personal_from_classifier or route_personal_from_rules:
         logger.info("Pipeline Step 5: Web Verifying Personal Question...")
         verified_fact_data = web_verify.verify_fact(
             question,
@@ -4386,6 +4395,7 @@ async def grounded_rag_stream(
     mems = []
     no_online_fallback = None
     rule_intent = classify_intent(question)
+    route_q_type, route_topic, _ = decision_service.classify_question(question, rule_intent, conversation_history)
 
     if detect_external_live_fact_topic(question):
         creator_row = await creator_task
@@ -4443,7 +4453,8 @@ async def grounded_rag_stream(
         except Exception:
             pass
 
-    if rule_intent == "personal_bio_question" or route_personal_via_evidence:
+    route_personal_from_rules = bool(route_q_type == "personal_bio" or rule_intent == "personal_bio_question")
+    if route_personal_from_rules or route_personal_via_evidence:
         creator_row = await creator_task
         if not creator_row:
             yield "I couldn't find information about that creator."

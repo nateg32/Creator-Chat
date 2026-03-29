@@ -112,6 +112,30 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertFalse(plan.should_search_web)
         self.assertEqual(plan.entity_subject, "Buy Back Your Time")
 
+    def test_user_partner_business_question_stays_creator_memory(self):
+        plan = self.router.build_plan(
+            "what would u reccomend if i have a partner who doesnt like my business?"
+        )
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertEqual(plan.query_goal, "creator_take")
+        self.assertEqual(plan.answer_mode, "creator_take")
+        self.assertFalse(plan.should_search_web)
+
+    def test_wdym_followup_resolves_to_contextual_clarification(self):
+        plan = self.router.build_plan(
+            "wdymean?",
+            conversation_history=[
+                {
+                    "role": "user",
+                    "content": "what would u reccomend if i have a partner who doesnt like my business?",
+                },
+                {"role": "assistant", "content": "I keep that side of my life private."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertIn("clarify what you meant", plan.resolved_query.lower())
+        self.assertIn("partner who doesnt like my business", plan.resolved_query.lower())
+
     def test_availability_lookup_prefers_official_urls_before_search(self):
         plan = self.router.build_plan("where can i buy your book")
         self.assertEqual(plan.query_goal, "availability_lookup")

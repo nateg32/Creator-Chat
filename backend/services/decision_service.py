@@ -11,9 +11,46 @@ AFFIRMATIVE_FOLLOWUPS = {
     "yes please", "yep yes",
 }
 
+CLARIFICATION_FOLLOWUPS = {
+    "wdym",
+    "wdymean",
+    "what do you mean",
+    "what do u mean",
+    "what u mean",
+    "what do you mean by that",
+    "what do u mean by that",
+}
+
 BOOK_CONTEXT_TERMS = (
     "book", "launch", "launched", "publish", "published", "publication",
     "release", "released", "release date", "come out", "write", "wrote", "writing",
+)
+
+RELATIONSHIP_TERMS = {
+    "wife", "husband", "married", "dating", "girlfriend", "boyfriend",
+    "relationship", "partner", "spouse", "fiance", "fiancee",
+}
+
+FAMILY_TERMS = {
+    "kids", "children", "son", "daughter", "parents", "family",
+    "mom", "dad", "siblings",
+}
+
+USER_SELF_TERMS = {"i", "im", "i'm", "me", "my", "mine", "we", "our", "us"}
+CREATOR_REF_TERMS = {"you", "your", "yours", "u", "ur"}
+BUSINESS_CONTEXT_TERMS = {
+    "business", "company", "startup", "sales", "client", "clients", "offer",
+    "offers", "revenue", "team", "teams", "marketing", "content", "work",
+    "job", "career", "entrepreneur", "founder", "build", "building", "built",
+}
+
+ADVICE_REQUEST_PATTERNS = (
+    re.compile(r"\bwhat (?:would|should) (?:you|u) rec(?:o|c)o?m+e?n?d\b", re.IGNORECASE),
+    re.compile(r"\bwhat do you rec(?:o|c)o?m+e?n?d\b", re.IGNORECASE),
+    re.compile(r"\bwhat should i do\b", re.IGNORECASE),
+    re.compile(r"\bhow do i\b", re.IGNORECASE),
+    re.compile(r"\bhow can i\b", re.IGNORECASE),
+    re.compile(r"\bany advice\b", re.IGNORECASE),
 )
 
 CLARIFICATION_TITLE_PATTERNS = (
@@ -102,12 +139,88 @@ class DecisionService:
             
         return score
 
+    def _normalized_followup(self, question: str) -> str:
+        return re.sub(r"[^a-z0-9\s']", "", str(question or "").lower()).strip()
+
+    def _words(self, question: str) -> List[str]:
+        return re.findall(r"[a-z0-9']+", str(question or "").lower())
+
+    def is_user_relationship_business_question(self, question: str) -> bool:
+        lowered = self._normalized_followup(question)
+        words = set(self._words(question))
+        has_relationship = bool(words & RELATIONSHIP_TERMS)
+        has_business = bool(words & BUSINESS_CONTEXT_TERMS)
+        if not (has_relationship and has_business):
+            return False
+
+        user_centered = bool(words & USER_SELF_TERMS) or "if i have" in lowered or "my business" in lowered or "our business" in lowered
+        if not user_centered:
+            return False
+
+        return any(pattern.search(lowered) for pattern in ADVICE_REQUEST_PATTERNS) or "?" in str(question or "")
+
+    def is_creator_personal_fact_question(self, question: str) -> bool:
+        lowered = self._normalized_followup(question)
+        words = set(self._words(question))
+        if self.is_user_relationship_business_question(question):
+            return False
+
+        sensitive_terms = RELATIONSHIP_TERMS | FAMILY_TERMS | {
+            "age", "birthday", "born", "birth", "address", "house", "city",
+            "state", "resident", "located", "live", "religion", "religious",
+            "god", "belief", "beliefs", "worldview", "net", "worth", "salary",
+            "income", "rich", "earn",
+        }
+        if not (words & sensitive_terms):
+            return False
+
+        if words & CREATOR_REF_TERMS:
+            return True
+
+        creator_question_starts = (
+            "are you", "do you", "did you", "how old are you", "where are you",
+            "who are you", "tell me about yourself", "what do you believe",
+            "what are your beliefs", "your family", "your background",
+        )
+        return any(lowered.startswith(prefix) or prefix in lowered for prefix in creator_question_starts)
+
+    def _looks_like_clarification_followup(self, question: str) -> bool:
+        normalized = self._normalized_followup(question)
+        compact = normalized.replace(" ", "")
+        return normalized in CLARIFICATION_FOLLOWUPS or compact in CLARIFICATION_FOLLOWUPS
+
+    def _rewrite_clarification_followup(self, history: Optional[List[Dict[str, str]]] = None) -> str:
+        if not history:
+            return ""
+        last_assistant_index = None
+        for idx in range(len(history) - 1, -1, -1):
+            if (history[idx].get("role") or "").lower() == "assistant":
+                last_assistant_index = idx
+                break
+        if last_assistant_index is None:
+            return ""
+
+        previous_user = ""
+        for idx in range(last_assistant_index - 1, -1, -1):
+            if (history[idx].get("role") or "").lower() == "user":
+                previous_user = (history[idx].get("content") or history[idx].get("text") or "").strip()
+                break
+
+        if previous_user:
+            cleaned = re.sub(r"\s+", " ", previous_user).strip(" .!?")
+            return f"Can you clarify what you meant in your last answer about: {cleaned}?"
+        return "Can you clarify what you meant in your last answer?"
+
     def resolve_followup_question(self, question: str, history: Optional[List[Dict[str, str]]] = None) -> str:
         q = (question or "").strip()
         if not q or not history:
             return question
 
         normalized = re.sub(r"\s+", " ", q.lower()).strip(" .!?")
+        if self._looks_like_clarification_followup(q):
+            rewritten = self._rewrite_clarification_followup(history)
+            if rewritten:
+                return rewritten
         if self._looks_like_book_followup(q):
             title = self._extract_recent_book_title(history)
             if title:
@@ -203,7 +316,9 @@ class DecisionService:
         
         # 1. Topic Identification
         topic = "general"
-        if any(word in q for word in ["wife", "husband", "married", "dating", "girlfriend", "boyfriend", "relationship", "partner"]):
+        if self.is_user_relationship_business_question(question):
+            topic = "general"
+        elif any(word in q for word in ["wife", "husband", "married", "dating", "girlfriend", "boyfriend", "relationship", "partner"]):
             topic = "relationship"
         elif any(word in q for word in ["kids", "children", "son", "daughter", "parents", "family", "mom", "dad", "siblings"]):
             topic = "family"
@@ -228,7 +343,7 @@ class DecisionService:
             q_type = "greeting"
         elif intent in ["greeting", "greeting_only"]:
             q_type = "greeting"
-        elif intent == "personal_bio_question":
+        elif intent == "personal_bio_question" or self.is_creator_personal_fact_question(question):
             q_type = "personal_bio"
         
         # Override for high-sensitivity items

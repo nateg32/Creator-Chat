@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 _EVIDENCE_SCHEMA_READY = False
 
 
+def _is_user_relationship_business_question(query: str) -> bool:
+    detector = getattr(decision_service, "is_user_relationship_business_question", None)
+    return bool(detector(query)) if callable(detector) else False
+
+
 _FOLLOWUP_REFERENTS = {"it", "that", "this", "one", "book", "course", "program", "podcast", "episode"}
 _FACTUAL_PATTERNS = [
     re.compile(r"\bwhen (?:did|was|were|is)\b", re.IGNORECASE),
@@ -74,6 +79,14 @@ _OVERVIEW_PATTERNS = [
     re.compile(r"\btell me about\b", re.IGNORECASE),
     re.compile(r"\bwhat is\b", re.IGNORECASE),
     re.compile(r"\bdo you know about\b", re.IGNORECASE),
+]
+_ADVICE_PATTERNS = [
+    re.compile(r"\bwhat (?:would|should) (?:you|u) rec(?:o|c)o?m+e?n?d\b", re.IGNORECASE),
+    re.compile(r"\bwhat do you rec(?:o|c)o?m+e?n?d\b", re.IGNORECASE),
+    re.compile(r"\bwhat should i do\b", re.IGNORECASE),
+    re.compile(r"\bhow do i\b", re.IGNORECASE),
+    re.compile(r"\bhow can i\b", re.IGNORECASE),
+    re.compile(r"\bany advice\b", re.IGNORECASE),
 ]
 _CREATOR_WORLD_HINTS = [
     re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business)\b", re.IGNORECASE),
@@ -358,9 +371,11 @@ class EvidenceRouter:
             return "resource_recommendation"
         if any(flag in risk_flags for flag in ("date", "pricing", "stats")):
             return "direct_fact"
+        if _is_user_relationship_business_question(query):
+            return "creator_take"
         if entity and entity.get("creator_owned"):
             return "hybrid"
-        if any(token in lowered for token in ("advice", "how do you", "what's your best", "what do you think", "your take")):
+        if any(pattern.search(lowered) for pattern in _ADVICE_PATTERNS) or any(token in lowered for token in ("advice", "how do you", "what's your best", "what do you think", "your take")):
             return "creator_take"
         return "hybrid"
 
@@ -380,7 +395,9 @@ class EvidenceRouter:
             return "entity_confirmation"
         if entity and any(pattern.search(lowered) for pattern in _OVERVIEW_PATTERNS):
             return "entity_overview"
-        if any(token in lowered for token in ("advice", "how do you", "what do you think", "your take", "best advice")):
+        if _is_user_relationship_business_question(query):
+            return "creator_take"
+        if any(pattern.search(lowered) for pattern in _ADVICE_PATTERNS) or any(token in lowered for token in ("advice", "how do you", "what do you think", "your take", "best advice")):
             return "creator_take"
         if entity and "creator_owned_entity" in risk_flags:
             return "entity_overview"
@@ -396,6 +413,8 @@ class EvidenceRouter:
         query_goal: str,
     ) -> tuple[str, List[str], bool, bool, bool, str]:
         lowered = str(query or "").lower()
+        if _is_user_relationship_business_question(query):
+            return "creator_memory", [], False, True, False, "memory_first"
         creator_world_signal = bool(entity and entity.get("creator_owned")) or any(
             pattern.search(lowered) for pattern in _CREATOR_WORLD_HINTS
         )

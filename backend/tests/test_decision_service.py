@@ -79,6 +79,44 @@ class DecisionServiceTests(unittest.TestCase):
         )
         self.assertEqual(resolved, "When did you write Buy Back Your Time?")
 
+    def test_partner_business_question_stays_domain_advice(self):
+        service = decision_service_module.DecisionService()
+        q_type, topic, _ = service.classify_question(
+            "what would u reccomend if i have a partner who doesnt like my business?",
+            "unknown",
+        )
+        self.assertEqual(q_type, "domain_advice")
+        self.assertEqual(topic, "general")
+        self.assertTrue(
+            service.is_user_relationship_business_question(
+                "what would u reccomend if i have a partner who doesnt like my business?"
+            )
+        )
+
+    def test_creator_family_question_still_counts_as_personal(self):
+        service = decision_service_module.DecisionService()
+        q_type, topic, _ = service.classify_question("yo do you have a family?", "unknown")
+        self.assertEqual(q_type, "personal_bio")
+        self.assertEqual(topic, "family")
+
+    def test_resolves_wdym_as_contextual_clarification(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "wdymean?",
+            [
+                {
+                    "role": "user",
+                    "content": "what would u reccomend if i have a partner who doesnt like my business?",
+                },
+                {
+                    "role": "assistant",
+                    "content": "I keep that side of my life private.",
+                },
+            ],
+        )
+        self.assertIn("clarify what you meant", resolved.lower())
+        self.assertIn("partner who doesnt like my business", resolved.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
