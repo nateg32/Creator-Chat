@@ -132,19 +132,19 @@ function hasVisibleMessageText(message) {
 }
 
 const VISIBLE_PENDING_STATUSES = new Set(["thinking", "typing", "websearch", "searching", "grounding"]);
+const SEARCH_PENDING_STATUSES = new Set(["websearch", "searching", "grounding"]);
 
 function getPendingStatusMeta(status) {
-  switch (String(status || "").toLowerCase()) {
-    case "websearch":
-    case "searching":
-      return { label: "🔎", ariaLabel: "searching", showDots: true };
-    case "typing":
-      return { label: "typing...", ariaLabel: "typing", showDots: true };
-    case "grounding":
-      return { label: "grounding...", ariaLabel: "grounding", showDots: true };
-    default:
-      return { label: "....", ariaLabel: "thinking", showDots: false };
+  const normalized = String(status || "").toLowerCase();
+
+  if (SEARCH_PENDING_STATUSES.has(normalized)) {
+    return { variant: "searching", ariaLabel: "searching" };
   }
+
+  return {
+    variant: "thinking",
+    ariaLabel: normalized === "typing" ? "typing" : "thinking",
+  };
 }
 
 function inferPlatformFromUrl(url = "") {
@@ -703,15 +703,30 @@ export function ChatPanel({
                       </div>
                       {isTypingMessage && (
                         <div
-                          className="typing-name-indicator"
+                          className={`typing-name-indicator is-${pendingStatus.variant}`}
                           role="status"
                           aria-live="polite"
                           aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
                         >
-                          <span className="typing-status-label">{pendingStatus.label}</span>
-                          {pendingStatus.showDots && <span className="typing-name-dot"></span>}
-                          {pendingStatus.showDots && <span className="typing-name-dot"></span>}
-                          {pendingStatus.showDots && <span className="typing-name-dot"></span>}
+                          <span className="typing-status-separator" aria-hidden="true"></span>
+                          <span className="typing-status-shell" aria-hidden="true">
+                            {pendingStatus.variant === "searching" ? (
+                              <>
+                                <span className="typing-side-dot"></span>
+                                <span className="typing-search-icon">
+                                  <span className="typing-search-ring"></span>
+                                  <span className="typing-search-handle"></span>
+                                </span>
+                                <span className="typing-side-dot"></span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="typing-name-dot"></span>
+                                <span className="typing-name-dot"></span>
+                                <span className="typing-name-dot"></span>
+                              </>
+                            )}
+                          </span>
                         </div>
                       )}
                     </div>
