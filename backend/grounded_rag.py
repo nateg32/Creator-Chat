@@ -3752,7 +3752,26 @@ Message: {answer_text[:500]}"""
 
     # --- Step 5: Personal / Biographical Routing ---
     rule_intent = classify_intent(question)
-    if user_state.get("flags", {}).get("personal_question_flag") or rule_intent == "personal_bio_question":
+    route_evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
+    route_personal_via_evidence = bool(
+        route_evidence_plan
+        and (
+            route_evidence_plan.query_goal in {
+                "entity_confirmation",
+                "entity_overview",
+                "availability_lookup",
+                "timeline_lookup",
+                "price_lookup",
+                "stat_lookup",
+                "current_stat_lookup",
+            }
+            or (
+                route_evidence_plan.primary_world in {"creator_world", "live_world"}
+                and route_evidence_plan.entity_subject
+            )
+        )
+    )
+    if user_state.get("flags", {}).get("personal_question_flag") or rule_intent == "personal_bio_question" or route_personal_via_evidence:
         logger.info("Pipeline Step 5: Routing personal factual question through PersonalBioService...")
         personal_result = personal_bio_service.handle_personal_question(
             user_id=user_id,
@@ -3827,7 +3846,7 @@ Message: {answer_text[:500]}"""
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
-        evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
+        evidence_plan = route_evidence_plan or _build_evidence_plan(question, creator_row, conversation_history)
         if evidence_plan:
             log_evidence_plan(
                 creator_id,
@@ -4395,7 +4414,36 @@ async def grounded_rag_stream(
             yield answer
             return
 
-    if rule_intent == "personal_bio_question":
+    route_evidence_plan = None
+    route_personal_via_evidence = False
+    if creator_task:
+        try:
+            creator_preview = await creator_task
+            if creator_preview:
+                route_evidence_plan = _build_evidence_plan(question, creator_preview, conversation_history)
+                route_personal_via_evidence = bool(
+                    route_evidence_plan
+                    and (
+                        route_evidence_plan.query_goal in {
+                            "entity_confirmation",
+                            "entity_overview",
+                            "availability_lookup",
+                            "timeline_lookup",
+                            "price_lookup",
+                            "stat_lookup",
+                            "current_stat_lookup",
+                        }
+                        or (
+                            route_evidence_plan.primary_world in {"creator_world", "live_world"}
+                            and route_evidence_plan.entity_subject
+                        )
+                    )
+                )
+            creator_task = asyncio.create_task(asyncio.sleep(0, result=creator_preview))
+        except Exception:
+            pass
+
+    if rule_intent == "personal_bio_question" or route_personal_via_evidence:
         creator_row = await creator_task
         if not creator_row:
             yield "I couldn't find information about that creator."
@@ -4463,7 +4511,7 @@ async def grounded_rag_stream(
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
-        evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
+        evidence_plan = route_evidence_plan or _build_evidence_plan(question, creator_row, conversation_history)
         if evidence_plan:
             log_evidence_plan(
                 creator_id,

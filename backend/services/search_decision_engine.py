@@ -116,6 +116,22 @@ class SearchDecisionEngine:
 
         try:
             plan = self.router.build_plan(query, conversation_history=conversation_history)
+            if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject:
+                return SearchDecision(
+                    should_search=False,
+                    reason="entity_graph_answerable",
+                    reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject}",
+                    phase="pre_retrieval",
+                    confidence=0.96,
+                )
+            if plan.query_goal == "availability_lookup" and not plan.should_search_web and plan.entity_subject:
+                return SearchDecision(
+                    should_search=False,
+                    reason="official_entity_url_available",
+                    reason_detail=f"EvidencePlan availability can be answered from known official URLs for {plan.entity_subject}",
+                    phase="pre_retrieval",
+                    confidence=0.94,
+                )
             if plan.should_search_web and plan.primary_world in {"creator_world", "live_world"}:
                 reason = "creator_own_world" if plan.primary_world == "creator_world" else "factual_query"
                 return SearchDecision(
@@ -181,6 +197,22 @@ class SearchDecisionEngine:
                 top_score=top_score,
                 retrieved_chunks=chunks,
             )
+            if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject:
+                return SearchDecision(
+                    should_search=False,
+                    reason="entity_graph_answerable",
+                    reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject}",
+                    phase="post_retrieval",
+                    confidence=0.96,
+                )
+            if plan.query_goal == "availability_lookup" and not plan.should_search_web and plan.entity_subject:
+                return SearchDecision(
+                    should_search=False,
+                    reason="official_entity_url_available",
+                    reason_detail=f"EvidencePlan availability can be answered from known official URLs for {plan.entity_subject}",
+                    phase="post_retrieval",
+                    confidence=0.94,
+                )
             if plan.primary_world in {"creator_world", "live_world"} and plan.should_search_web:
                 reason = "low_rag_confidence" if top_score is not None and top_score < self.RAG_CONFIDENCE_THRESHOLD else "medium_confidence_factual"
                 if not chunks:

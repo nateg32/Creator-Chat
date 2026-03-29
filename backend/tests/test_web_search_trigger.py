@@ -438,10 +438,20 @@ class WebSearchTriggerTests(unittest.TestCase):
             "do you know the book buy your time",
             "do you have a book",
             "tell me about buy back your time",
+            "is buy back your time your book?",
         ]
         for query in queries:
             decision = self.engine.pre_retrieval_decision(query)
             self.assertFalse(decision.should_search, query)
+
+    def test_entity_confirmation_skips_web_search_even_with_no_rag_chunks(self):
+        decision = self.engine.post_retrieval_decision(
+            "is buy back your time your book?",
+            chunks=[],
+            top_score=None,
+        )
+        self.assertFalse(decision.should_search)
+        self.assertEqual(decision.reason, "entity_graph_answerable")
 
     def test_web_search_result_used_in_response(self):
         search_results = [

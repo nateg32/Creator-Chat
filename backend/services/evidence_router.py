@@ -68,6 +68,7 @@ _CONFIRMATION_PATTERNS = [
     re.compile(r"\bdo you have\b", re.IGNORECASE),
     re.compile(r"\bdid you write\b", re.IGNORECASE),
     re.compile(r"\bis there (?:a|an|any)\b", re.IGNORECASE),
+    re.compile(r"\b(?:is|was)\s+.+\s+(?:your|my)\s+(?:book|course|program|podcast|show|company|business)\b", re.IGNORECASE),
 ]
 _OVERVIEW_PATTERNS = [
     re.compile(r"\btell me about\b", re.IGNORECASE),

@@ -105,6 +105,13 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertEqual(plan.search_strategy, "entity_graph_first")
         self.assertEqual(plan.entity_subject, "Buy Back Your Time")
 
+    def test_yes_no_book_identity_query_is_entity_confirmation(self):
+        plan = self.router.build_plan("is buy back your time your book?")
+        self.assertEqual(plan.query_goal, "entity_confirmation")
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertFalse(plan.should_search_web)
+        self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
     def test_availability_lookup_prefers_official_urls_before_search(self):
         plan = self.router.build_plan("where can i buy your book")
         self.assertEqual(plan.query_goal, "availability_lookup")
