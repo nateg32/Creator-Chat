@@ -43,6 +43,11 @@ from backend.services.live_search_rules import (
     extract_requested_platforms,
     needs_fresh_public_web_search,
 )
+from backend.services.search_decision_engine import (
+    SearchDecision,
+    SearchDecisionEngine,
+    log_search_decision,
+)
 from backend.services.rag_text_matcher import merge_support_sets, retrieve_exact_text_matches
 from backend.services.out_of_domain_rules import (
     default_bridge_question,
@@ -1299,6 +1304,131 @@ def _should_block_on_web_fallback(
         return False
 
     return True
+
+
+def _support_set_top_score(
+    support_set: Optional[List[Dict[str, Any]]],
+    *,
+    max_distance: float = 1.15,
+) -> Optional[float]:
+    scores: List[float] = []
+    for chunk in support_set or []:
+        if chunk.get("distance") is not None:
+            try:
+                distance = float(chunk.get("distance") or 0.0)
+                scores.append(max(0.0, min(1.0, 1.0 - (distance / max_distance))))
+                continue
+            except Exception:
+                pass
+        for key in ("rerank_score", "score", "confidence"):
+            if chunk.get(key) is not None:
+                try:
+                    scores.append(max(0.0, min(1.0, float(chunk.get(key) or 0.0))))
+                    break
+                except Exception:
+                    continue
+    return max(scores) if scores else None
+
+
+def _decision_is_creator_public_fact(decision: Optional[SearchDecision]) -> bool:
+    if not decision:
+        return False
+    return decision.reason in {
+        "creator_own_world",
+        "creator_named_fact",
+        "factual_query",
+        "medium_confidence_factual",
+    }
+
+
+def _run_live_web_search(
+    question: str,
+    creator_row: Dict[str, Any],
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    preferred_platforms: Optional[List[str]] = None,
+    is_video_request: bool = False,
+    intent_metadata: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    from backend.services.research_provider import get_research_provider
+
+    rp = get_research_provider()
+    web_query = build_live_search_query(
+        question,
+        conversation_history,
+        creator_name=creator_row.get("name") or creator_row.get("handle"),
+        preferred_platforms=preferred_platforms,
+        require_video=is_video_request,
+    )
+    web_results = rp.search(
+        web_query,
+        creator_row,
+        conversation_history=conversation_history,
+        intent_metadata=intent_metadata,
+    )
+    web_results = _filter_live_web_results(
+        web_results,
+        question,
+        require_video=is_video_request,
+    )
+    seen_resources = _get_suggested_resources(conversation_history)
+    if seen_resources:
+        deduped_web_results = []
+        for result in web_results:
+            pseudo_candidate = {
+                "title": result.get("title"),
+                "url": result.get("url"),
+                "platform": result.get("platform"),
+            }
+            if not _is_recent_duplicate_candidate(pseudo_candidate, seen_resources):
+                deduped_web_results.append(result)
+        if deduped_web_results:
+            web_results = deduped_web_results
+    if preferred_platforms:
+        lowered = {platform.lower() for platform in preferred_platforms}
+        platform_filtered = [
+            result
+            for result in web_results
+            if (result.get("platform") or "").lower() in lowered
+        ]
+        if platform_filtered:
+            web_results = platform_filtered
+    return web_results
+
+
+def _inject_live_web_results(
+    support_set: List[Dict[str, Any]],
+    web_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    merged = list(support_set or [])
+    if web_results:
+        logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
+        for i, result in enumerate(web_results[:6]):
+            faux_chunk = _make_live_web_chunk(result, i)
+            logger.info(
+                f"[SEARCH]   [{i}] {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}"
+            )
+            merged.insert(i, faux_chunk)
+    return merged
+
+
+def _build_public_fact_fallback(question: str, creator_name: str) -> str:
+    lowered = (question or "").lower()
+    if "book" in lowered or "published" in lowered or "publication" in lowered or "release" in lowered:
+        return (
+            f"I want to give you the right date on that. Check {creator_name}'s official book listing, "
+            "Amazon, or the publisher page for the exact publication info. If you want, I can help you narrow the fastest place to verify it."
+        )
+    if any(token in lowered for token in ["followers", "subscribers", "members"]):
+        return (
+            f"I want to give you the right number on that. Check {creator_name}'s live social profiles directly for the current count."
+        )
+    if any(token in lowered for token in ["price", "cost", "buy", "course", "program"]):
+        return (
+            f"I want to give you the right pricing info there. Check {creator_name}'s website or official checkout page for the current details."
+        )
+    return (
+        f"I want to make sure I give you the right info on that. Check {creator_name}'s website, official listings, or current public profiles for the most accurate answer."
+    )
 
 def evaluate_context_sufficiency(
     question: str,
@@ -3525,6 +3655,27 @@ Message: {answer_text[:500]}"""
         context_needs_video = _is_followup_resource_request(question, last_bot_msg)
         should_run_recommender = _should_run_resource_recommender(question, conversation_history, last_bot_msg)
         preferred_platforms = extract_requested_platforms(question, conversation_history)
+        search_mode = creator_row.get("search_mode") or "hybrid"
+        wants_link = explicit_link_request or context_needs_video
+        video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
+        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        search_engine = SearchDecisionEngine(creator_row)
+        pre_search_decision = (
+            search_engine.pre_retrieval_decision(question)
+            if search_mode == "hybrid"
+            else SearchDecision(False, "search_disabled", "Creator search mode disabled live search", "pre_retrieval", 1.0)
+        )
+        pre_web_results: List[Dict[str, Any]] = []
+        if search_mode == "hybrid" and pre_search_decision.should_search:
+            log_search_decision(str(creator_id), question, pre_search_decision)
+            pre_web_results = _run_live_web_search(
+                question,
+                creator_row,
+                conversation_history=conversation_history,
+                preferred_platforms=preferred_platforms,
+                is_video_request=is_video_request,
+                intent_metadata={"intent": "PUBLIC_CREATOR_FACT"},
+            )
         if should_run_recommender:
             rec_result = recommend_one_content(
                 user_id=user_id,
@@ -3587,9 +3738,6 @@ Message: {answer_text[:500]}"""
             
         # --- NEW: Real-Time Web Search Fallback (Sync) ---
         # Check context: Did the bot just talk about a video/link?
-        wants_link = explicit_link_request or context_needs_video
-        video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
-        is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
         has_recommendable_ingested_resource = _has_recommendable_resource(
             rec_result,
             preferred_platforms=preferred_platforms,
@@ -3600,9 +3748,9 @@ Message: {answer_text[:500]}"""
             require_video=is_video_request,
         )
         
-        search_mode = creator_row.get("search_mode") or "hybrid"
         no_online_fallback = None
-        needs_fallback = _should_block_on_web_fallback(
+        web_results = list(pre_web_results)
+        explicit_or_live_request_fallback = _should_block_on_web_fallback(
             question,
             conversation_history,
             wants_link=wants_link,
@@ -3613,31 +3761,60 @@ Message: {answer_text[:500]}"""
             search_mode=search_mode,
             images=bool(images),
         )
+        top_support_score = _support_set_top_score(support_set)
+        post_search_decision = (
+            search_engine.post_retrieval_decision(question, support_set, top_support_score)
+            if search_mode == "hybrid" and not pre_search_decision.should_search
+            else None
+        )
+        if post_search_decision and post_search_decision.should_search:
+            log_search_decision(str(creator_id), question, post_search_decision)
+        needs_fallback = explicit_or_live_request_fallback or bool(post_search_decision and post_search_decision.should_search)
+        fact_search_requested = _decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision)
 
-        if needs_fallback:
-            logger.info("Triggering live web search fallback for explicit live/source request.")
-            from backend.services.research_provider import get_research_provider
-            import concurrent.futures
-
-            rp = get_research_provider()
-            web_results = []
-            web_query = build_live_search_query(
+        if web_results:
+            support_set = _inject_live_web_results(support_set, web_results)
+        elif fact_search_requested:
+            fallback_answer = _build_public_fact_fallback(
                 question,
-                conversation_history,
-                creator_name=creator_row.get("name") or creator_row.get("handle"),
-                preferred_platforms=preferred_platforms,
-                require_video=is_video_request,
+                creator_row.get("name") or creator_row.get("handle") or "the creator",
             )
+            return apply_final_polish({
+                "answer": fallback_answer,
+                "retrieved": support_set,
+                "sources": build_source_list(support_set),
+                "citations": build_inline_citations(
+                    support_set,
+                    question=question,
+                    answer_text=fallback_answer,
+                ),
+                "cards": [],
+                "debug": {
+                    "search_decision": (post_search_decision.__dict__ if post_search_decision else pre_search_decision.__dict__),
+                    "web_results_count": 0,
+                },
+                "meta": {
+                    "search_decision": (post_search_decision.__dict__ if post_search_decision else pre_search_decision.__dict__),
+                },
+            }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
+
+        if needs_fallback and not web_results:
+            logger.info("Triggering live web search fallback for explicit live/source request.")
+            import concurrent.futures
             intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
+            if _decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision):
+                intent_metadata = {"intent": "PUBLIC_CREATOR_FACT"}
             
             # Explicit live/source requests can block on web results because the
             # user asked for current facts or trustworthy links.
             if not support_set:
                 try:
-                    web_results = rp.search(
-                        web_query,
+                    web_results = _run_live_web_search(
+                        question,
                         creator_row,
                         conversation_history=conversation_history,
+                        preferred_platforms=preferred_platforms,
+                        is_video_request=is_video_request,
                         intent_metadata=intent_metadata,
                     )
                 except Exception as e:
@@ -3645,50 +3822,22 @@ Message: {answer_text[:500]}"""
             else:
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     search_future = executor.submit(
-                        rp.search,
-                        web_query,
+                        _run_live_web_search,
+                        question,
                         creator_row,
-                        conversation_history=conversation_history,
-                        intent_metadata=intent_metadata,
+                        conversation_history,
+                        preferred_platforms,
+                        is_video_request,
+                        intent_metadata,
                     )
                     
                     try:
                         web_results = search_future.result(timeout=10)
                     except concurrent.futures.TimeoutError:
                         logger.warning("Blocking web search timed out, proceeding with existing RAG results.")
-            
-            web_results = _filter_live_web_results(
-                web_results,
-                question,
-                require_video=is_video_request if 'is_video_request' in locals() else wants_link,
-            )
-            seen_resources = _get_suggested_resources(conversation_history)
-            if seen_resources:
-                deduped_web_results = []
-                for result in web_results:
-                    pseudo_candidate = {
-                        "title": result.get("title"),
-                        "url": result.get("url"),
-                        "platform": result.get("platform"),
-                    }
-                    if not _is_recent_duplicate_candidate(pseudo_candidate, seen_resources):
-                        deduped_web_results.append(result)
-                if deduped_web_results:
-                    web_results = deduped_web_results
-            if preferred_platforms:
-                platform_filtered = [
-                    result for result in web_results
-                    if (result.get("platform") or "").lower() in {platform.lower() for platform in preferred_platforms}
-                ]
-                if platform_filtered:
-                    web_results = platform_filtered
-            # Inject Live Search results as faux-chunks
+
             if web_results:
-                logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
-                for i, w in enumerate(web_results[:6]):
-                    faux_chunk = _make_live_web_chunk(w, i)
-                    logger.info(f"[SEARCH]   [{i}] {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}")
-                    support_set.insert(i, faux_chunk)
+                support_set = _inject_live_web_results(support_set, web_results)
             elif wants_link:
                 no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if (is_video_request if 'is_video_request' in locals() else False) else "source")
         elif wants_link and not has_recommendable_ingested_resource:
@@ -4065,6 +4214,12 @@ async def grounded_rag_stream(
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        search_engine = SearchDecisionEngine(creator_row)
+        pre_search_decision = (
+            search_engine.pre_retrieval_decision(question)
+            if search_mode == "hybrid"
+            else SearchDecision(False, "search_disabled", "Creator search mode disabled live search", "pre_retrieval", 1.0)
+        )
         web_query = build_live_search_query(
             question,
             conversation_history,
@@ -4073,23 +4228,29 @@ async def grounded_rag_stream(
             require_video=is_video_request,
         )
         intent_metadata = {"intent": "EVENT_PUBLIC_FACTS"} if needs_fresh_public_web_search(question, conversation_history) else None
+        if _decision_is_creator_public_fact(pre_search_decision):
+            intent_metadata = {"intent": "PUBLIC_CREATOR_FACT"}
         speculative_web_task = None
-        if search_mode == "hybrid" and _should_speculate_live_search(
-            question,
-            conversation_history,
-            explicit_link_request=explicit_link_request,
-            context_needs_video=context_needs_video,
-            should_run_recommender=should_run_recommender,
+        if search_mode == "hybrid" and (
+            pre_search_decision.should_search or _should_speculate_live_search(
+                question,
+                conversation_history,
+                explicit_link_request=explicit_link_request,
+                context_needs_video=context_needs_video,
+                should_run_recommender=should_run_recommender,
+            )
         ):
-            from backend.services.research_provider import get_research_provider
-            rp = get_research_provider()
+            if pre_search_decision.should_search:
+                log_search_decision(str(creator_id), question, pre_search_decision)
             speculative_web_task = asyncio.create_task(
                 asyncio.to_thread(
-                    rp.search,
-                    web_query,
+                    _run_live_web_search,
+                    question,
                     creator_row,
-                    conversation_history=conversation_history,
-                    intent_metadata=intent_metadata,
+                    conversation_history,
+                    preferred_platforms,
+                    is_video_request,
+                    intent_metadata,
                 )
             )
 
@@ -4175,7 +4336,7 @@ async def grounded_rag_stream(
         # IN PARALLEL with sufficiency check to save ~1.5s
         needs_fallback = False
         web_results = []
-        needs_fallback = _should_block_on_web_fallback(
+        explicit_or_live_request_fallback = _should_block_on_web_fallback(
             question,
             conversation_history,
             wants_link=wants_link,
@@ -4185,6 +4346,25 @@ async def grounded_rag_stream(
             has_linkable_ingested_resource=has_linkable_ingested_resource,
             search_mode=search_mode,
         )
+        top_support_score = _support_set_top_score(support_set)
+        post_search_decision = (
+            search_engine.post_retrieval_decision(question, support_set, top_support_score)
+            if search_mode == "hybrid" and not pre_search_decision.should_search
+            else None
+        )
+        if post_search_decision and post_search_decision.should_search:
+            log_search_decision(str(creator_id), question, post_search_decision)
+        needs_fallback = explicit_or_live_request_fallback or bool(post_search_decision and post_search_decision.should_search)
+        fact_search_requested = _decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision)
+
+        if web_results:
+            support_set = _inject_live_web_results(support_set, web_results)
+        elif fact_search_requested:
+            yield _build_public_fact_fallback(
+                question,
+                creator_row.get("name") or creator_row.get("handle") or "the creator",
+            )
+            return
 
         if needs_fallback:
             logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
@@ -4196,14 +4376,17 @@ async def grounded_rag_stream(
                     logger.warning("[LATENCY] Speculative web search failed: %s", exc)
                     web_results = []
             if not web_results:
-                from backend.services.research_provider import get_research_provider
-                rp = get_research_provider()
+                live_intent_metadata = intent_metadata
+                if _decision_is_creator_public_fact(post_search_decision):
+                    live_intent_metadata = {"intent": "PUBLIC_CREATOR_FACT"}
                 web_results = await asyncio.to_thread(
-                    rp.search,
-                    web_query,
+                    _run_live_web_search,
+                    question,
                     creator_row,
-                    conversation_history=conversation_history,
-                    intent_metadata=intent_metadata,
+                    conversation_history,
+                    preferred_platforms,
+                    is_video_request,
+                    live_intent_metadata,
                 )
         elif search_mode == "hybrid":
             if speculative_web_task:
@@ -4261,34 +4444,8 @@ async def grounded_rag_stream(
         _t_search_end = _time.time()
         logger.info(f"[LATENCY] Search fallback phase: {_t_search_end - _t_search_start:.2f}s (fallback={needs_fallback}, results={len(web_results)})")
         
-        web_results = _filter_live_web_results(web_results, question, require_video=is_video_request)
-        seen_resources = _get_suggested_resources(conversation_history)
-        if seen_resources:
-            deduped_web_results = []
-            for result in web_results:
-                pseudo_candidate = {
-                    "title": result.get("title"),
-                    "url": result.get("url"),
-                    "platform": result.get("platform"),
-                }
-                if not _is_recent_duplicate_candidate(pseudo_candidate, seen_resources):
-                    deduped_web_results.append(result)
-            if deduped_web_results:
-                web_results = deduped_web_results
-        if preferred_platforms:
-            platform_filtered = [
-                result for result in web_results
-                if (result.get("platform") or "").lower() in {platform.lower() for platform in preferred_platforms}
-            ]
-            if platform_filtered:
-                web_results = platform_filtered
         if needs_fallback and web_results:
-            # Inject Live Search results as faux-chunks
-            logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
-            for i, w in enumerate(web_results[:6]):
-                faux_chunk = _make_live_web_chunk(w, i)
-                logger.info(f"[SEARCH]   [{i}] {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}")
-                support_set.insert(i, faux_chunk)
+            support_set = _inject_live_web_results(support_set, web_results)
         elif needs_fallback and wants_link:
             no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if is_video_request else "source")
         elif wants_link and not has_recommendable_ingested_resource:

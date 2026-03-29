@@ -28,6 +28,16 @@ def _load_grounded_rag():
     _stub_package("backend.services")
     _stub_package("backend.core")
 
+    search_decision_path = BACKEND_ROOT / "services" / "search_decision_engine.py"
+    search_decision_spec = importlib.util.spec_from_file_location(
+        "backend.services.search_decision_engine",
+        search_decision_path,
+    )
+    search_decision_module = importlib.util.module_from_spec(search_decision_spec)
+    assert search_decision_spec.loader is not None
+    sys.modules["backend.services.search_decision_engine"] = search_decision_module
+    search_decision_spec.loader.exec_module(search_decision_module)
+
     db_stub = types.SimpleNamespace(
         execute_one=lambda *args, **kwargs: None,
         execute_query=lambda *args, **kwargs: [],

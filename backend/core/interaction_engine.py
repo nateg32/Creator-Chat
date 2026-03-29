@@ -345,6 +345,43 @@ def finalize_visible_text(text: str, creator_profile: Optional[Dict[str, Any]] =
     )
 
 
+HONEST_FALLBACK_INSTRUCTION = """
+## WHEN YOU DON'T HAVE THE ANSWER
+
+If you genuinely do not have the information needed to answer:
+- Never say "I haven't talked about that publicly" about your own public work
+- Never say "I don't have that in front of me" about your own products, books, or public releases
+- Never fabricate dates, prices, follower counts, or statistics
+- Instead, say you want to give the right answer and direct the user to a concrete place to verify it
+- Give a specific next step such as your website, Amazon listing, publisher page, newsletter archive, or live social profile
+- Never end with a dead-end "I don't know" and nothing else
+"""
+
+
+def build_live_web_prompt_block(rag_chunks: List[Dict[str, Any]], *, source_items: int = 4) -> str:
+    lines: List[str] = []
+    for chunk in rag_chunks[:source_items]:
+        content = str(chunk.get("content") or "")
+        if not content.startswith("[LIVE WEB SEARCH RESULT]"):
+            continue
+        title = (
+            chunk.get("title")
+            or (chunk.get("source_ref") or {}).get("title")
+            or "External result"
+        )
+        url = chunk.get("url") or (chunk.get("source_ref") or {}).get("canonical_url") or ""
+        snippet = chunk.get("snippet") or content.replace("[LIVE WEB SEARCH RESULT]", "").strip()
+        domain = ""
+        if url:
+            domain = re.sub(r"^www\.", "", re.sub(r"^https?://", "", url.lower()).split("/", 1)[0])
+        label = domain or "web"
+        detail = snippet or title
+        lines.append(f"- [{label}] {title}: {detail}")
+    if not lines:
+        return ""
+    return "## LIVE WEB RESULTS\nThe following was retrieved from the live web for this query. Treat it as current public information and prioritize it for factual answers.\n" + "\n".join(lines)
+
+
 # ══════════════════════════════════════════════════════════════
 # STYLE DNA BUILDER
 # Extracts voice personality from creator data for the prompt
@@ -1630,6 +1667,7 @@ Output ONLY your response."""
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
 
         source_context = ""
+        live_web_context = build_live_web_prompt_block(rag_chunks, source_items=context_limits["source_items"])
         if rag_chunks:
             chunks_text = []
             for i, c in enumerate(rag_chunks[:context_limits["source_items"]]):
@@ -1647,13 +1685,8 @@ Output ONLY your response."""
 
                 if content:
                     if content.startswith("[LIVE WEB SEARCH RESULT]"):
-                        snippet = c.get("snippet") or content.replace("[LIVE WEB SEARCH RESULT]", "").strip()
-                        item_text = f"Verified external result: {title}"
-                        if snippet:
-                            item_text += f" | Why it matches: {snippet}"
-                    else:
-                        item_text = f"From your content: \"{content[:context_limits['source_chars']]}\""
-                    
+                        continue
+                    item_text = f"From your content: \"{content[:context_limits['source_chars']]}\""
                     if url:
                         item_text += f"\n(Video Title: {title} | Link: {url})"
                     chunks_text.append(item_text)
@@ -1803,12 +1836,14 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 {resource_lock_instruction}
 
 {length_directive}
+{HONEST_FALLBACK_INSTRUCTION}
 
 CONTEXT:
 {memory_section}
 {history_context}
 {safety_block}
 {anti_regurgitation_block}
+{live_web_context}
 KNOWLEDGE:
 {source_context}
 {pref_instructions}
@@ -1963,6 +1998,7 @@ Output only the response."""
 
         # Build context from RAG chunks — these are the creator's actual words
         source_context = ""
+        live_web_context = build_live_web_prompt_block(rag_chunks, source_items=context_limits["source_items"])
         if rag_chunks:
             chunks_text = []
             for i, c in enumerate(rag_chunks[:context_limits["source_items"]]):
@@ -1971,13 +2007,7 @@ Output only the response."""
                 title = c.get("title") or (c.get("source_ref") or {}).get("title")
                 
                 if content.startswith("[LIVE WEB SEARCH RESULT]"):
-                    snippet = c.get("snippet") or content.replace("[LIVE WEB SEARCH RESULT]", "").strip()
-                    item_text = f"Verified external result: {title}"
-                    if snippet:
-                        item_text += f" | Why it matches: {snippet}"
-                    if url:
-                        item_text += f" (Link: {url})"
-                    chunks_text.append(item_text)
+                    continue
                 elif content:
                     prefix = f"From your video '{title}'" if title else "From your content"
                     item_text = f"{prefix}: \"{content[:context_limits['source_chars']]}\""
@@ -2144,9 +2174,12 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 {resource_lock_instruction}
 
 {length_directive}
+{HONEST_FALLBACK_INSTRUCTION}
 
 FORMAT RULES (non-negotiable):
 {formatting_rules}
+
+{live_web_context}
 
 Output only the response text."""
 
