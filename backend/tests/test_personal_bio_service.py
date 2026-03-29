@@ -34,7 +34,7 @@ def _load_module(name: str, relative_path: str):
     return module
 
 
-def _load_personal_bio_service(search_results):
+def _load_personal_bio_service(search_results, grounded_results=None):
     search_engine_module = _load_module(
         "backend.services.search_decision_engine",
         pathlib.Path("services") / "search_decision_engine.py",
@@ -44,10 +44,23 @@ def _load_personal_bio_service(search_results):
         def __init__(self, results):
             self.results = list(results)
             self.calls = []
+            self.grounded_calls = []
 
         def search(self, query, creator_profile, **kwargs):
             self.calls.append((query, creator_profile.get("name")))
             return list(self.results)
+
+        def grounded_overview(self, query, creator_profile, conversation_history=None, max_queries=4):
+            self.grounded_calls.append((query, creator_profile.get("name")))
+            return {
+                "response_text": "Buy Back Your Time was published in September 2023.",
+                "citations": [],
+                "search_entry_point": {"rendered_content": ""},
+                "query_plan": [query],
+                "results": list(grounded_results if grounded_results is not None else self.results),
+                "sources": [],
+                "packages": [],
+            }
 
     provider = _Provider(search_results)
 
@@ -98,7 +111,7 @@ class PersonalBioServiceTests(unittest.TestCase):
         )
 
         answer = result.get("answer", "")
-        self.assertTrue(provider.calls)
+        self.assertTrue(provider.grounded_calls or provider.calls)
         self.assertTrue("2023" in answer or "September" in answer, answer)
         self.assertNotIn("I haven't really talked about that publicly", answer)
         self.assertNotIn("wouldn't want to guess", answer)
@@ -126,9 +139,35 @@ class PersonalBioServiceTests(unittest.TestCase):
         )
 
         answer = result.get("answer", "")
-        self.assertTrue(provider.calls)
+        self.assertTrue(provider.grounded_calls or provider.calls)
         self.assertTrue("September" in answer or "2023" in answer, answer)
         self.assertNotIn("I haven't really talked about that publicly", answer)
+
+    def test_public_book_question_prefers_gemini_grounded_overview(self):
+        grounded_results = [
+            {
+                "title": "Buy Back Your Time",
+                "url": "https://www.amazon.com/Buy-Back-Your-Time/dp/example",
+                "snippet": "Buy Back Your Time was published on September 26, 2023.",
+            }
+        ]
+        service, provider = _load_personal_bio_service([], grounded_results=grounded_results)
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when was your book published?",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={"name": "Dan Martell"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls)
+        self.assertFalse(provider.calls)
+        self.assertTrue("September" in answer or "2023" in answer, answer)
 
     def test_public_book_question_falls_back_to_official_sources_honestly(self):
         service, provider = _load_personal_bio_service([])
@@ -145,9 +184,10 @@ class PersonalBioServiceTests(unittest.TestCase):
         )
 
         answer = result.get("answer", "")
-        self.assertTrue(provider.calls)
+        self.assertTrue(provider.grounded_calls or provider.calls)
         self.assertNotIn("I haven't really talked about that publicly", answer)
         self.assertNotIn("wouldn't want to guess", answer)
+        self.assertNotIn("Dan Martell's", answer)
         self.assertTrue("amazon" in answer.lower() or "publisher" in answer.lower() or "official" in answer.lower(), answer)
 
 

@@ -1341,6 +1341,52 @@ def _decision_is_creator_public_fact(decision: Optional[SearchDecision]) -> bool
     }
 
 
+def _should_use_gemini_grounded_search(
+    provider: Any,
+    question: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    *,
+    is_video_request: bool = False,
+    intent_metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if is_video_request:
+        return False
+    if not callable(getattr(provider, "grounded_overview", None)):
+        return False
+
+    intent = str((intent_metadata or {}).get("intent") or "").upper()
+    if intent in {"PUBLIC_CREATOR_FACT", "EVENT_PUBLIC_FACTS"}:
+        return True
+    return needs_fresh_public_web_search(question, conversation_history)
+
+
+def _run_gemini_grounded_search(
+    provider: Any,
+    question: str,
+    creator_row: Dict[str, Any],
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, Any]]:
+    overview = provider.grounded_overview(
+        question,
+        creator_row,
+        conversation_history=conversation_history,
+    ) or {}
+    results = list(overview.get("results") or [])
+    response_text = str(overview.get("response_text") or "").strip()
+
+    if response_text:
+        for result in results:
+            if not str(result.get("snippet") or "").strip():
+                result["snippet"] = response_text[:280]
+
+    logger.info(
+        "[SEARCH] Gemini grounded overview returned %s results across %s subqueries",
+        len(results),
+        len(overview.get("query_plan") or []),
+    )
+    return results
+
+
 def _run_live_web_search(
     question: str,
     creator_row: Dict[str, Any],
@@ -1352,19 +1398,33 @@ def _run_live_web_search(
     from backend.services.research_provider import get_research_provider
 
     rp = get_research_provider()
-    web_query = build_live_search_query(
+    if _should_use_gemini_grounded_search(
+        rp,
         question,
         conversation_history,
-        creator_name=creator_row.get("name") or creator_row.get("handle"),
-        preferred_platforms=preferred_platforms,
-        require_video=is_video_request,
-    )
-    web_results = rp.search(
-        web_query,
-        creator_row,
-        conversation_history=conversation_history,
+        is_video_request=is_video_request,
         intent_metadata=intent_metadata,
-    )
+    ):
+        web_results = _run_gemini_grounded_search(
+            rp,
+            question,
+            creator_row,
+            conversation_history=conversation_history,
+        )
+    else:
+        web_query = build_live_search_query(
+            question,
+            conversation_history,
+            creator_name=creator_row.get("name") or creator_row.get("handle"),
+            preferred_platforms=preferred_platforms,
+            require_video=is_video_request,
+        )
+        web_results = rp.search(
+            web_query,
+            creator_row,
+            conversation_history=conversation_history,
+            intent_metadata=intent_metadata,
+        )
     web_results = _filter_live_web_results(
         web_results,
         question,
@@ -1415,19 +1475,19 @@ def _build_public_fact_fallback(question: str, creator_name: str) -> str:
     lowered = (question or "").lower()
     if "book" in lowered or "published" in lowered or "publication" in lowered or "release" in lowered:
         return (
-            f"I want to give you the right date on that. Check {creator_name}'s official book listing, "
-            "Amazon, or the publisher page for the exact publication info. If you want, I can help you narrow the fastest place to verify it."
+            "I want to give you the right date on that. Check my Amazon listing, my official book page, "
+            "or the publisher page for the exact publication info. If you want, I can help you narrow the fastest place to verify it."
         )
     if any(token in lowered for token in ["followers", "subscribers", "members"]):
         return (
-            f"I want to give you the right number on that. Check {creator_name}'s live social profiles directly for the current count."
+            "I want to give you the right number on that. Check my live social profiles directly for the current count."
         )
     if any(token in lowered for token in ["price", "cost", "buy", "course", "program"]):
         return (
-            f"I want to give you the right pricing info there. Check {creator_name}'s website or official checkout page for the current details."
+            "I want to give you the right pricing info there. Check my website or official checkout page for the current details."
         )
     return (
-        f"I want to make sure I give you the right info on that. Check {creator_name}'s website, official listings, or current public profiles for the most accurate answer."
+        "I want to make sure I give you the right info on that. Check my website, official listings, or current public profiles for the most accurate answer."
     )
 
 def evaluate_context_sufficiency(

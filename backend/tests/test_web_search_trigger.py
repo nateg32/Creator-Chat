@@ -100,7 +100,7 @@ class _FakePriorityService:
         return 0
 
 
-def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybrid"):
+def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybrid", grounded_results=None):
     _stub_package("backend.prompts")
     _stub_package("backend.services")
     _stub_package("backend.core")
@@ -155,10 +155,63 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     class _Provider:
         def __init__(self):
             self.calls = []
+            self.search_calls = []
+            self.grounded_calls = []
 
         def search(self, query, creator_profile, **kwargs):
-            self.calls.append((query, creator_profile.get("name")))
+            self.search_calls.append((query, creator_profile.get("name")))
+            self.calls.append(("search", query, creator_profile.get("name")))
             return list(search_results)
+
+        def grounded_overview(self, query, creator_profile, conversation_history=None, max_queries=4):
+            self.grounded_calls.append((query, creator_profile.get("name")))
+            self.calls.append(("grounded_overview", query, creator_profile.get("name")))
+            results = list(grounded_results if grounded_results is not None else search_results)
+            return {
+                "response_text": "Buy Back Your Time was published in September 2023." if results else "",
+                "citations": [],
+                "search_entry_point": {"rendered_content": ""},
+                "query_plan": [query],
+                "results": results,
+                "sources": [],
+                "packages": [],
+            }
+
+    class _FakePersonalBioService:
+        def handle_personal_question(
+            self,
+            user_id,
+            creator_id,
+            question,
+            voice_profile,
+            creator_name,
+            decision_policy,
+            creator_profile=None,
+            allow_web=True,
+        ):
+            profile = dict(creator_profile or {})
+            profile.setdefault("name", creator_name)
+            if callable(getattr(provider, "grounded_overview", None)):
+                overview = provider.grounded_overview(question, profile, conversation_history=None)
+                results = list(overview.get("results") or [])
+            else:
+                results = provider.search(question, profile)
+
+            if results:
+                snippet = str(results[0].get("snippet") or "")
+                return {
+                    "answer": snippet or "Buy Back Your Time was published in 2023.",
+                    "confidence": "HIGH",
+                    "sources": results,
+                    "move": "ANSWER_PUBLIC_FACT",
+                }
+
+            return {
+                "answer": "I want to give you the right date on that. Check my Amazon listing or my website for the exact publication info.",
+                "confidence": "LOW",
+                "sources": [],
+                "move": "DIRECT_TO_OFFICIAL_SOURCE",
+            }
 
     provider = _Provider()
 
@@ -180,7 +233,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         greeting_service=types.SimpleNamespace(generate_greeting=lambda *args, **kwargs: "Hi."),
         is_greeting=lambda *args, **kwargs: False,
     )
-    _stub_module("backend.services.personal_bio_service", personal_bio_service=types.SimpleNamespace(answer=lambda *args, **kwargs: None))
+    _stub_module("backend.services.personal_bio_service", personal_bio_service=_FakePersonalBioService())
     _stub_module("backend.services.persona_filter", apply_persona_surface_filter=lambda text, *args, **kwargs: text)
     _stub_module("backend.services.curiosity_service", curiosity_service=types.SimpleNamespace())
     _stub_module("backend.services.rhythm_shaper", rhythm_shaper=types.SimpleNamespace(apply_rhythm=lambda text, *args, **kwargs: text))
@@ -381,6 +434,33 @@ class WebSearchTriggerTests(unittest.TestCase):
         self.assertNotIn("I'm not sure", answer)
         self.assertNotIn("I wouldn't want to guess", answer)
 
+    def test_gemini_grounded_overview_used_for_creator_public_facts(self):
+        grounded_results = [
+            {
+                "title": "Buy Back Your Time",
+                "url": "https://www.amazon.com/dp/059342297X",
+                "snippet": "Buy Back Your Time was published in September 2023.",
+                "platform": "web",
+                "confidence": 0.9,
+                "relation": "PUBLIC_FACTS",
+            }
+        ]
+        module, provider = _load_grounded_rag(search_results=[], grounded_results=grounded_results, retrieved_chunks=[])
+
+        result = module.grounded_rag_ask(
+            1,
+            "when was your book published",
+            user_id=1,
+            thread_id="test-thread",
+            conversation_history=[],
+            user_name="Nathan",
+        )
+
+        self.assertTrue(provider.grounded_calls, "Expected grounded_overview to be called")
+        self.assertFalse(provider.search_calls, "Expected factual creator query to use grounded_overview instead of generic search")
+        answer = result.get("answer", "")
+        self.assertTrue("2023" in answer or "September" in answer, answer)
+
     def test_no_hallucination_when_search_fails(self):
         module, provider = _load_grounded_rag(search_results=[], retrieved_chunks=[])
 
@@ -398,6 +478,7 @@ class WebSearchTriggerTests(unittest.TestCase):
         self.assertFalse("2023" in answer or "September" in answer, answer)
         self.assertNotIn("I haven't really talked about that publicly", answer)
         self.assertNotIn("I don't have that information", answer)
+        self.assertNotIn("Dan Martell's", answer)
         self.assertTrue(
             "check" in answer.lower() or "website" in answer.lower() or "amazon" in answer.lower(),
             answer,

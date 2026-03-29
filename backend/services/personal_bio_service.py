@@ -222,7 +222,14 @@ class PersonalBioService:
                 continue
             seen_queries.add(normalized_query.lower())
             try:
-                if hasattr(self.researcher, "search_general"):
+                if callable(getattr(self.researcher, "grounded_overview", None)):
+                    overview = self.researcher.grounded_overview(
+                        normalized_query,
+                        profile,
+                        conversation_history=None,
+                    ) or {}
+                    results = list(overview.get("results") or [])
+                elif hasattr(self.researcher, "search_general"):
                     results = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
                 else:
                     results = self.researcher.search(normalized_query, profile, resource_type="any", conversation_history=None)
@@ -384,16 +391,16 @@ Evidence:
         lowered = str(question or "").lower()
         if "book" in lowered or "publish" in lowered or "publication" in lowered or "release" in lowered:
             return (
-                f"I want to give you the right date on that. Check {creator_name}'s official book listing, "
-                "Amazon, Audible, or the publisher page for the exact publication info."
+                "I want to give you the right date on that. Check my Amazon listing, Audible, "
+                "or the publisher page for the exact publication info."
             )
         if any(token in lowered for token in ["where can i buy", "purchase", "course", "program"]):
             return (
-                f"I want to point you to the right place on that. Check {creator_name}'s official website, "
+                "I want to point you to the right place on that. Check my official website, "
                 "course page, or verified profile links for the current listing."
             )
         return (
-            f"I want to give you the right answer on that. Check {creator_name}'s official website, "
+            "I want to give you the right answer on that. Check my official website, "
             "verified profiles, or the primary listing page for the exact current details."
         )
 
