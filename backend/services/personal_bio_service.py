@@ -139,6 +139,25 @@ def _set_hot_fact(cache_key: str, candidate: StructuredFactCandidate) -> None:
     _hot_fact_cache[cache_key] = {"value": candidate, "ts": time.time()}
     logger.info(f"{SEARCH_TRACE_PREFIX} cache_set: {cache_key} ({len(candidate.answer_text)} chars)")
 
+
+def _repair_first_person_creator_reference(text: str, creator_name: str) -> str:
+    repaired = str(text or "")
+    if not repaired.strip() or not creator_name:
+        return repaired.strip()
+    escaped = re.escape(creator_name)
+    repairs = [
+        (rf"\b{escaped}'s\b", "my"),
+        (rf"\b{escaped}\s+is\b", "I am"),
+        (rf"\b{escaped}\s+was\b", "I was"),
+        (rf"\b{escaped}\s+has\b", "I have"),
+        (rf"\baccording to {escaped}\b", "from what I know"),
+        (rf"\bcheck {escaped}'s\b", "check my"),
+        (rf"\bvisit {escaped}'s\b", "visit my"),
+    ]
+    for pattern, replacement in repairs:
+        repaired = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", repaired).strip()
+
 class PersonalBioService:
     """
     Handles personal/biographical questions about the creator.
@@ -232,10 +251,17 @@ class PersonalBioService:
         )
         if evidence_plan.query_goal in {"entity_confirmation", "entity_overview"}:
             public_fact_query = False
+        if evidence_plan.query_goal == "entity_catalog_lookup":
+            public_fact_query = False
         researcher_enabled = bool(getattr(self.researcher, "enabled", True))
         effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
         fact_field = fact_registry.infer_fact_field(resolved_question, evidence_plan.entity_type)
-        entity_subject = evidence_plan.entity_subject or (resolved_entity or {}).get("name") or creator_name
+        entity_subject = self._derive_entity_subject(
+            resolved_question,
+            creator_name,
+            evidence_plan=evidence_plan,
+            entity=resolved_entity,
+        )
         hot_cache_key = _hot_cache_key(creator_id, entity_subject, fact_field) if public_fact_query and entity_subject and fact_field else ""
         hot_cached_fact = _get_hot_fact(hot_cache_key) if hot_cache_key else None
         cached_fact = None
@@ -273,6 +299,37 @@ class PersonalBioService:
                 "fact_cache_hit": False,
                 "contradiction_report": {"has_contradiction": False, "kind": "none"},
             }
+
+        if evidence_plan.query_goal == "entity_catalog_lookup":
+            entity_catalog = creator_entity_service.list_entities(
+                entity_type=evidence_plan.entity_type,
+                creator_id=creator_id,
+                creator_profile=creator_payload,
+            )
+            web_catalog = []
+            if effective_allow_web and callable(getattr(self.researcher, "lookup_creator_entities", None)):
+                web_lookup = self.researcher.lookup_creator_entities(
+                    contextual_question,
+                    creator_payload,
+                    entity_type=evidence_plan.entity_type,
+                    conversation_history=conversation_history,
+                ) or {}
+                web_catalog = list(web_lookup.get("entities") or [])
+            merged_catalog = self._merge_entity_catalog(entity_catalog, web_catalog, evidence_plan.entity_type)
+            if merged_catalog:
+                return {
+                    "answer": self._answer_entity_catalog(
+                        merged_catalog,
+                        creator_name,
+                        evidence_plan.entity_type,
+                    ),
+                    "confidence": "HIGH" if web_catalog else "MEDIUM",
+                    "sources": self._catalog_sources(merged_catalog),
+                    "move": "ANSWER_ENTITY_CATALOG",
+                    "evidence_plan": evidence_plan.to_dict(),
+                    "fact_cache_hit": False,
+                    "contradiction_report": {"has_contradiction": False, "kind": "none"},
+                }
         
         # 2. Evidence Gathering
         internal_facts = (
@@ -318,6 +375,13 @@ class PersonalBioService:
 
         if public_fact_query:
             if extracted_fact:
+                extracted_fact.answer_text = self._render_structured_fact_answer(
+                    extracted_fact,
+                    resolved_question,
+                    creator_name,
+                    voice_profile,
+                    entity=resolved_entity,
+                )
                 self._cache_structured_fact(
                     creator_id,
                     entity_subject,
@@ -338,7 +402,13 @@ class PersonalBioService:
                     "fact_cache_hit": bool(cached_fact or hot_cached_fact),
                     "contradiction_report": contradiction_report,
                 }
-            direct_public_answer = self._answer_public_creator_fact(resolved_question, all_evidence, creator_name)
+            direct_public_answer = self._answer_public_creator_fact(
+                resolved_question,
+                all_evidence,
+                creator_name,
+                entity=resolved_entity,
+                voice_profile=voice_profile,
+            )
             if direct_public_answer:
                 self._cache_public_fact_answer(
                     creator_id,
@@ -446,6 +516,106 @@ class PersonalBioService:
         if evidence_plan and getattr(evidence_plan, "primary_world", "") == "live_world":
             contextual = f"{contextual} current".strip()
         return contextual
+
+    def _derive_entity_subject(
+        self,
+        question: str,
+        creator_name: str,
+        *,
+        evidence_plan: Optional[Any] = None,
+        entity: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        explicit = str(getattr(evidence_plan, "entity_subject", "") or "").strip()
+        if explicit:
+            return explicit
+        resolved_name = str((entity or {}).get("name") or "").strip()
+        if resolved_name:
+            return resolved_name
+        extracted = self._extract_subject(question, [])
+        if extracted and extracted.lower() not in {"it", "that", "this", "one", "book", "course", "podcast"}:
+            return extracted
+        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+        entity_type = str(getattr(evidence_plan, "entity_type", "") or "").lower()
+        lowered = str(question or "").lower()
+        if query_goal in {"stat_lookup", "current_stat_lookup"}:
+            return creator_name
+        if entity_type == "book" or any(token in lowered for token in ("book", "published", "publication", "release", "write", "wrote", "written")):
+            return ""
+        return creator_name
+
+    def _merge_entity_catalog(
+        self,
+        internal_entities: List[Dict[str, Any]],
+        web_entities: List[Dict[str, Any]],
+        entity_type: str,
+    ) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for entity in list(internal_entities or []) + list(web_entities or []):
+            name = re.sub(r"\s+", " ", str(entity.get("name") or "").strip())
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(
+                {
+                    "name": name,
+                    "type": str(entity.get("type") or entity_type or "entity").strip().lower(),
+                    "official_urls": list(entity.get("official_urls") or []),
+                    "source_title": str(entity.get("source_title") or "").strip(),
+                    "source_snippet": str(entity.get("source_snippet") or "").strip(),
+                }
+            )
+        return merged
+
+    def _catalog_sources(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        sources: List[Dict[str, Any]] = []
+        for entity in entities:
+            urls = [str(url or "").strip() for url in (entity.get("official_urls") or []) if str(url or "").strip()]
+            snippet = str(entity.get("source_snippet") or "").strip()
+            title = str(entity.get("source_title") or entity.get("name") or "").strip()
+            if title or urls or snippet:
+                sources.append(
+                    {
+                        "text": snippet or title,
+                        "source": "entity_catalog",
+                        "url": urls[0] if urls else "",
+                        "title": title,
+                        "sim": 0.88,
+                    }
+                )
+        return sources
+
+    def _answer_entity_catalog(
+        self,
+        entities: List[Dict[str, Any]],
+        creator_name: str,
+        entity_type: str,
+    ) -> str:
+        names = [str(entity.get("name") or "").strip() for entity in entities if str(entity.get("name") or "").strip()]
+        if not names:
+            if entity_type == "book":
+                return "Yeah, I have written books."
+            return "Yeah, I do."
+        if len(names) == 1:
+            if entity_type == "book":
+                return f"Yeah. I've written {names[0]}."
+            return f"Yeah. I've got {names[0]}."
+
+        if len(names) == 2:
+            joined = f"{names[0]} and {names[1]}"
+        else:
+            joined = ", ".join(names[:-1]) + f", and {names[-1]}"
+
+        if entity_type == "book":
+            return f"Yeah. I've written {joined}."
+        if entity_type == "podcast":
+            return f"Yeah. The main ones are {joined}."
+        if entity_type == "course":
+            return f"Yeah. The main programs are {joined}."
+        return f"Yeah. I've got {joined}."
 
     def _is_public_creator_fact_query(
         self,
@@ -898,6 +1068,55 @@ class PersonalBioService:
             confidence=float(payload.get("confidence") or 0.92),
         )
 
+    def _render_structured_fact_answer(
+        self,
+        candidate: StructuredFactCandidate,
+        question: str,
+        creator_name: str,
+        voice_profile: Optional[Dict[str, Any]] = None,
+        *,
+        entity: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        if not candidate:
+            return ""
+        fact_field = str(candidate.fact_field or "").strip().lower()
+        subject = str((entity or {}).get("name") or candidate.subject or "it").strip() or "it"
+        entity_type = str((entity or {}).get("type") or "").strip().lower()
+        value = str(candidate.value or "").strip()
+        existing = _repair_first_person_creator_reference(candidate.answer_text, creator_name)
+        lowered_question = str(question or "").lower()
+        voice_blob = json.dumps(voice_profile or {}).lower()
+        is_direct_voice = any(token in voice_blob for token in ["direct", "punchy", "intense", "high"])
+
+        if fact_field in {"publication_date", "launch_date"} and value:
+            if re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", value, re.IGNORECASE):
+                phrase = "put out" if is_direct_voice else "published"
+                return f"I {phrase} {subject} on {value}."
+            if re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", value, re.IGNORECASE):
+                phrase = "put out" if is_direct_voice else "published"
+                return f"I {phrase} {subject} in {value}."
+            if re.search(r"\b(20\d{2}|19\d{2})\b", value):
+                phrase = "put out" if is_direct_voice else "published"
+                return f"I {phrase} {subject} in {value}."
+
+        if fact_field == "price" and value:
+            return f"I've got {subject} at {value} right now."
+
+        if fact_field in {"followers", "subscribers", "students", "members"} and value:
+            label = fact_field.replace("_", " ")
+            if label.endswith("s"):
+                return f"I'm at {value} {label} right now."
+            return f"I'm at {value} {label} right now."
+
+        if fact_field == "latest_episode" and value:
+            return f"My latest episode is {value}."
+
+        if entity_type == "book" and any(token in lowered_question for token in TIMELINE_TOKENS) and value:
+            phrase = "put out" if is_direct_voice else "published"
+            return f"I {phrase} {subject} in {value}."
+
+        return existing or str(candidate.answer_text or "").strip()
+
     def _cached_fact_to_evidence(self, cached_fact) -> List[Dict[str, Any]]:
         if not cached_fact:
             return []
@@ -1102,11 +1321,21 @@ class PersonalBioService:
             return f"You can find {entity_name} here: {primary_url}."
         return f"You can find it here: {primary_url}."
 
-    def _answer_public_creator_fact(self, question: str, evidence: List[Dict[str, Any]], creator_name: str) -> str:
+    def _answer_public_creator_fact(
+        self,
+        question: str,
+        evidence: List[Dict[str, Any]],
+        creator_name: str,
+        *,
+        entity: Optional[Dict[str, Any]] = None,
+        voice_profile: Optional[Dict[str, Any]] = None,
+    ) -> str:
         blob = self._evidence_blob(evidence)
         lowered_question = str(question or "").lower()
-        subject = self._extract_subject(question, evidence)
+        subject = str((entity or {}).get("name") or self._extract_subject(question, evidence) or "").strip()
         subject = subject or "It"
+        voice_blob = json.dumps(voice_profile or {}).lower()
+        is_direct_voice = any(token in voice_blob for token in ["direct", "punchy", "intense", "high"])
 
         full_date = re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE)
         month_year = re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE)
@@ -1114,11 +1343,14 @@ class PersonalBioService:
 
         if any(token in lowered_question for token in TIMELINE_TOKENS):
             if full_date:
-                return f"{subject} was published on {full_date.group(0)}."
+                phrase = "put out" if is_direct_voice else "published"
+                return f"I {phrase} {subject} on {full_date.group(0)}."
             if month_year:
-                return f"{subject} was published in {month_year.group(0)}."
+                phrase = "put out" if is_direct_voice else "published"
+                return f"I {phrase} {subject} in {month_year.group(0)}."
             if year:
-                return f"{subject} was published in {year.group(1)}."
+                phrase = "put out" if is_direct_voice else "published"
+                return f"I {phrase} {subject} in {year.group(1)}."
 
         if any(token in lowered_question for token in ["where can i buy", "where do i buy", "where can i get", "where can i find", "purchase"]):
             domains = {

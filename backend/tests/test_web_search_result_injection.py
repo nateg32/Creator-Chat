@@ -134,6 +134,8 @@ class WebSearchResultInjectionTests(unittest.TestCase):
         self.assertIn("2023", result.get("answer", ""))
         self.assertEqual(result.get("move"), "ANSWER_STRUCTURED_FACT")
         self.assertNotIn("check my", result.get("answer", "").lower())
+        self.assertNotIn("Dan Martell's", result.get("answer", ""))
+        self.assertTrue(result.get("answer", "").startswith("I "), result.get("answer", ""))
 
 
 if __name__ == "__main__":

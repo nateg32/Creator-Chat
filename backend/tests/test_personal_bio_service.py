@@ -46,6 +46,7 @@ def _load_personal_bio_service(
     grounded_results=None,
     grounded_response_text="Buy Back Your Time was published in September 2023.",
     grounded_overview_callback=None,
+    entity_lookup_result=None,
 ):
     _stub_package("backend")
     _stub_package("backend.services")
@@ -89,6 +90,7 @@ def _load_personal_bio_service(
             self.results = list(results)
             self.calls = []
             self.grounded_calls = []
+            self.entity_calls = []
 
         def search(self, query, creator_profile, **kwargs):
             self.calls.append((query, creator_profile.get("name")))
@@ -107,6 +109,10 @@ def _load_personal_bio_service(
                 "sources": [],
                 "packages": [],
             }
+
+        def lookup_creator_entities(self, query, creator_profile, entity_type="", conversation_history=None):
+            self.entity_calls.append((query, creator_profile.get("name"), entity_type))
+            return entity_lookup_result or {"entities": [], "response_text": "", "sources": []}
 
     provider = _Provider(search_results)
     _stub_module("backend.services.research_provider", GeminiResearchProvider=type("GeminiResearchProvider", (), {}), get_research_provider=lambda: provider)
@@ -147,6 +153,8 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertTrue("2023" in answer or "September" in answer, answer)
         self.assertNotIn("I haven't really talked about that publicly", answer)
         self.assertNotIn("wouldn't want to guess", answer)
+        self.assertNotIn("Dan Martell's", answer)
+        self.assertTrue(answer.startswith("I "), answer)
 
     def test_public_book_question_forces_web_when_caller_disables_it(self):
         service, provider = _load_personal_bio_service(
@@ -222,6 +230,8 @@ class PersonalBioServiceTests(unittest.TestCase):
         answer = result.get("answer", "")
         self.assertTrue(provider.grounded_calls)
         self.assertIn("September 26, 2023", answer)
+        self.assertNotIn("Dan Martell's", answer)
+        self.assertTrue(answer.startswith("I "), answer)
 
     def test_public_book_followup_uses_conversation_context_before_web_search(self):
         grounded_results = [
@@ -283,6 +293,8 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertTrue(provider.grounded_calls)
         self.assertTrue("September" in answer or "2023" in answer, answer)
         self.assertNotIn("check my", answer.lower())
+        self.assertNotIn("Dan Martell's", answer)
+        self.assertTrue(answer.startswith("I "), answer)
 
     def test_public_book_question_keeps_searching_until_date_evidence_found(self):
         def grounded_callback(query, creator_profile):
@@ -363,6 +375,67 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertFalse(provider.calls)
         self.assertIn("Buy Back Your Time", answer)
         self.assertEqual(result.get("move"), "ANSWER_ENTITY_GRAPH_CONFIRMATION")
+
+    def test_book_catalog_question_uses_entity_lookup_to_return_full_list(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            entity_lookup_result={
+                "entities": [
+                    {"name": "$100M Offers", "type": "book", "official_urls": ["https://www.amazon.com/offers"]},
+                    {"name": "$100M Leads", "type": "book", "official_urls": ["https://www.amazon.com/leads"]},
+                    {"name": "$100M Money Models", "type": "book", "official_urls": ["https://www.amazon.com/money-models"]},
+                ],
+                "response_text": "",
+                "sources": [],
+            },
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="have u written any books?",
+            voice_profile={},
+            creator_name="Alex Hormozi",
+            decision_policy={},
+            creator_profile={"name": "Alex Hormozi"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.entity_calls)
+        self.assertIn("$100M Offers", answer)
+        self.assertIn("$100M Leads", answer)
+        self.assertIn("$100M Money Models", answer)
+        self.assertEqual(result.get("move"), "ANSWER_ENTITY_CATALOG")
+
+    def test_followup_write_question_uses_recent_book_title_not_creator_name(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            grounded_results=[],
+            grounded_response_text="$100M Money Models was published on August 16, 2025.",
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u write it?",
+            voice_profile={"energy": "direct"},
+            creator_name="Alex Hormozi",
+            decision_policy={},
+            creator_profile={"name": "Alex Hormozi"},
+            conversation_history=[
+                {"role": "user", "content": "what about 100m money models?"},
+                {"role": "assistant", "content": "Yeah, that's mine too. $100M Money Models is the third book I put out in the $100M series."},
+            ],
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls)
+        self.assertIn("$100M Money Models", provider.grounded_calls[0][0])
+        self.assertIn("$100M Money Models", answer)
+        self.assertNotIn("Alex Hormozi was published", answer)
+        self.assertTrue(answer.startswith("I "), answer)
 
     def test_public_book_question_falls_back_to_official_sources_honestly(self):
         service, provider = _load_personal_bio_service([], grounded_response_text="")

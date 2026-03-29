@@ -21,7 +21,18 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from backend.db import db
+try:
+    from backend.db import db
+except Exception:  # pragma: no cover - lightweight test environments may not ship psycopg
+    db = type(
+        "_NullDB",
+        (),
+        {
+            "execute_update": staticmethod(lambda *args, **kwargs: None),
+            "execute_query": staticmethod(lambda *args, **kwargs: []),
+            "execute_one": staticmethod(lambda *args, **kwargs: None),
+        },
+    )()
 from backend.services.creator_entity_service import creator_entity_service
 from backend.services.decision_service import decision_service
 
@@ -79,6 +90,15 @@ _OVERVIEW_PATTERNS = [
     re.compile(r"\btell me about\b", re.IGNORECASE),
     re.compile(r"\bwhat is\b", re.IGNORECASE),
     re.compile(r"\bdo you know about\b", re.IGNORECASE),
+]
+_CATALOG_PATTERNS = [
+    re.compile(r"\bhave (?:you|u) (?:written|published)\s+any\s+books\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+books\b", re.IGNORECASE),
+    re.compile(r"\bwhich\s+books\b", re.IGNORECASE),
+    re.compile(r"\bany\s+books\b", re.IGNORECASE),
+    re.compile(r"\ball\s+books\b", re.IGNORECASE),
+    re.compile(r"\bhave (?:you|u)\s+written\s+any\b", re.IGNORECASE),
+    re.compile(r"\b(?:courses|programs|podcasts|shows)\b", re.IGNORECASE),
 ]
 _ADVICE_PATTERNS = [
     re.compile(r"\bwhat (?:would|should) (?:you|u) rec(?:o|c)o?m+e?n?d\b", re.IGNORECASE),
@@ -323,6 +343,20 @@ class EvidenceRouter:
         self.creator = dict(creator or {})
         self.creator_name = str(self.creator.get("name") or self.creator.get("handle") or "the creator").strip()
 
+    def _infer_entity_type(self, query: str, entity: Optional[Dict[str, Any]]) -> str:
+        if entity and entity.get("type"):
+            return str(entity.get("type") or "").strip()
+        lowered = str(query or "").lower()
+        if any(token in lowered for token in ("books", "book", "author", "published", "publication", "audible", "amazon", "goodreads")):
+            return "book"
+        if any(token in lowered for token in ("courses", "course", "programs", "program", "coaching", "membership")):
+            return "course"
+        if any(token in lowered for token in ("podcasts", "podcast", "episodes", "episode", "show", "newsletter", "channel")):
+            return "podcast"
+        if any(token in lowered for token in ("companies", "company", "business", "businesses")):
+            return "company"
+        return ""
+
     def _resolve_query(self, query: str, conversation_history: Optional[List[Dict[str, str]]]) -> str:
         return decision_service.resolve_followup_question(query, conversation_history)
 
@@ -381,6 +415,10 @@ class EvidenceRouter:
 
     def _query_goal(self, query: str, entity: Optional[Dict[str, Any]], risk_flags: List[str]) -> str:
         lowered = str(query or "").lower()
+        if any(pattern.search(lowered) for pattern in _CATALOG_PATTERNS) and any(
+            token in lowered for token in ("books", "courses", "programs", "podcasts", "shows", "written", "published")
+        ):
+            return "entity_catalog_lookup"
         if re.search(r"\bwhere can i (?:buy|get|find|purchase)\b", lowered, re.IGNORECASE):
             return "availability_lookup"
         if any(pattern.search(lowered) for pattern in _RESOURCE_PATTERNS):
@@ -426,6 +464,9 @@ class EvidenceRouter:
 
         if query_goal == "entity_overview":
             return "creator_memory", ["creator_world"], False, True, False, "memory_plus_entity_graph"
+
+        if query_goal == "entity_catalog_lookup":
+            return "creator_world", ["creator_memory"], True, True, True, "entity_catalog_plus_web"
 
         if query_goal == "availability_lookup":
             has_official_urls = bool((entity or {}).get("official_urls"))
@@ -495,6 +536,7 @@ class EvidenceRouter:
             creator_profile=self.creator,
             conversation_history=conversation_history,
         )
+        inferred_entity_type = self._infer_entity_type(resolved_query, entity)
         risk_flags = self._risk_flags(resolved_query, entity)
         freshness_required = self._freshness(resolved_query, risk_flags)
         answer_mode = self._answer_mode(resolved_query, risk_flags, entity)
@@ -531,7 +573,7 @@ class EvidenceRouter:
             risk_flags=risk_flags,
             query_goal=query_goal,
             search_strategy=search_strategy,
-            entity_type=str((entity or {}).get("type") or ""),
+            entity_type=inferred_entity_type,
             top_score=top_score,
             contradiction_risk=bool(contradiction.get("has_contradiction")),
         )

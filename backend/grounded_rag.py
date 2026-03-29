@@ -3766,6 +3766,7 @@ Message: {answer_text[:500]}"""
             route_evidence_plan.query_goal in {
                 "entity_confirmation",
                 "entity_overview",
+                "entity_catalog_lookup",
                 "availability_lookup",
                 "timeline_lookup",
                 "price_lookup",
@@ -4441,6 +4442,7 @@ async def grounded_rag_stream(
                         route_evidence_plan.query_goal in {
                             "entity_confirmation",
                             "entity_overview",
+                            "entity_catalog_lookup",
                             "availability_lookup",
                             "timeline_lookup",
                             "price_lookup",

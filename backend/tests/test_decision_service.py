@@ -79,6 +79,17 @@ class DecisionServiceTests(unittest.TestCase):
         )
         self.assertEqual(resolved, "When did you write Buy Back Your Time?")
 
+    def test_resolves_pronoun_followup_from_sentence_style_book_title(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "when did u write it?",
+            [
+                {"role": "user", "content": "what about 100m money models?"},
+                {"role": "assistant", "content": "Yeah, that's mine too. $100M Money Models is the third book I put out in the $100M series."},
+            ],
+        )
+        self.assertEqual(resolved, "When did you write $100M Money Models?")
+
     def test_partner_business_question_stays_domain_advice(self):
         service = decision_service_module.DecisionService()
         q_type, topic, _ = service.classify_question(

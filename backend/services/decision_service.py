@@ -65,6 +65,11 @@ RECENT_BOOK_TITLE_PATTERNS = (
     re.compile(r'(?i)\btitled\s*[\"â€œ]?([^\"\n\.\!\?]+?)[\"â€]?(?:[\.\!\?]|$)'),
 )
 
+RECENT_BOOK_TITLE_PATTERNS_EXTRA = (
+    re.compile(r'(?i)(?:^|[\.!\?]\s+)([$A-Za-z0-9][^"\n\.\!\?]{2,100}?)\s+is\s+the\s+\w+\s+book\b'),
+    re.compile(r'(?i)(?:^|[\.!\?]\s+)([$A-Za-z0-9][^"\n\.\!\?]{2,100}?)\s+is\s+my\s+\w+\s+book\b'),
+)
+
 
 class DecisionService:
     """
@@ -297,7 +302,7 @@ class DecisionService:
             clarified = self._extract_clarified_title(text)
             if clarified:
                 return clarified
-            for pattern in RECENT_BOOK_TITLE_PATTERNS:
+            for pattern in RECENT_BOOK_TITLE_PATTERNS + RECENT_BOOK_TITLE_PATTERNS_EXTRA:
                 match = pattern.search(text)
                 if not match:
                     continue

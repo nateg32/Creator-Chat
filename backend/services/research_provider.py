@@ -30,6 +30,16 @@ class ResearchProvider(ABC):
     ) -> Dict[str, Any]:
         return {}
 
+    def lookup_creator_entities(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        *,
+        entity_type: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        return {}
+
     def _get_cache(self, creator_id: int, query: str, provider_name: str, cache_salt: str = "") -> Optional[List[Dict[str, Any]]]:
         combined = f"{query.lower().strip()}:{cache_salt}"
         query_hash = hashlib.sha256(combined.encode()).hexdigest()
@@ -813,6 +823,111 @@ Rules:
             result.get("confidence"),
         )
         return result
+
+    def lookup_creator_entities(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        *,
+        entity_type: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        if not self.enabled:
+            return {"entities": [], "response_text": "", "sources": []}
+
+        creator_name = self._resolve_creator_name(creator_profile)
+        requested_type = (entity_type or "entity").strip().lower() or "entity"
+        context_preview = json.dumps((conversation_history or [])[-4:])
+        plural_label = {
+            "book": "books",
+            "course": "courses or programs",
+            "podcast": "podcasts or shows",
+            "company": "companies or businesses",
+        }.get(requested_type, f"{requested_type}s")
+        prompt = f"""
+You are verifying a creator-owned catalog for {creator_name}.
+
+User question: {query}
+Target entity type: {requested_type}
+Recent context: {context_preview}
+
+Use Google Search grounding and return JSON only.
+
+Rules:
+- Find the creator's public list of owned {plural_label}.
+- Prefer official creator-owned sources, publisher/product pages, Amazon, Audible, Goodreads, and authoritative public sources.
+- Return every clearly supported item you can verify, not just one.
+- Do not include entities owned by someone else.
+
+Return JSON:
+{{
+  "entities": [
+    {{
+      "name": "entity name",
+      "entity_type": "{requested_type}",
+      "official_url": "https://...",
+      "source_title": "source title",
+      "source_snippet": "supporting snippet"
+    }}
+  ]
+}}
+"""
+        raw = self._call_gemini_rest(prompt, search_enabled=True)
+        package = self._extract_grounding_package(raw)
+        text = self._extract_text_from_response(raw).strip()
+        parsed = self._parse_json(text) if text else None
+        entities = []
+        if isinstance(parsed, dict) and isinstance(parsed.get("entities"), list):
+            for item in parsed.get("entities") or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                entities.append(
+                    {
+                        "name": name,
+                        "type": str(item.get("entity_type") or requested_type or "entity").strip().lower(),
+                        "creator_owned": True,
+                        "official_urls": [str(item.get("official_url") or "").strip()] if str(item.get("official_url") or "").strip() else [],
+                        "source_title": str(item.get("source_title") or "").strip(),
+                        "source_snippet": str(item.get("source_snippet") or "").strip(),
+                    }
+                )
+
+        if not entities:
+            grounded_results = list(package.get("grounded_results") or [])
+            seen_names = set()
+            for result in grounded_results:
+                title = str(result.get("title") or "").strip()
+                if not title:
+                    continue
+                normalized = re.sub(r"\s+", " ", title).strip().lower()
+                if normalized in seen_names:
+                    continue
+                seen_names.add(normalized)
+                entities.append(
+                    {
+                        "name": title,
+                        "type": requested_type or "entity",
+                        "creator_owned": True,
+                        "official_urls": [str(result.get("url") or "").strip()] if str(result.get("url") or "").strip() else [],
+                        "source_title": str(result.get("title") or "").strip(),
+                        "source_snippet": str(result.get("snippet") or "").strip(),
+                    }
+                )
+
+        logger.info(
+            "[SEARCH_TRACE] entity_lookup: query=%r type=%s count=%s",
+            query,
+            requested_type,
+            len(entities),
+        )
+        return {
+            "entities": entities,
+            "response_text": str(package.get("response_text") or text or "").strip(),
+            "sources": list(package.get("grounded_results") or []),
+        }
 
     def search(
         self, 

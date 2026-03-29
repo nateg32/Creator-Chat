@@ -112,6 +112,13 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertFalse(plan.should_search_web)
         self.assertEqual(plan.entity_subject, "Buy Back Your Time")
 
+    def test_plural_book_query_routes_to_entity_catalog_lookup(self):
+        plan = self.router.build_plan("have u written any books?")
+        self.assertEqual(plan.query_goal, "entity_catalog_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertEqual(plan.entity_type, "book")
+
     def test_user_partner_business_question_stays_creator_memory(self):
         plan = self.router.build_plan(
             "what would u reccomend if i have a partner who doesnt like my business?"

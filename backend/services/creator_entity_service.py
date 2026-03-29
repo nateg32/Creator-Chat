@@ -16,7 +16,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from backend.db import db
+try:
+    from backend.db import db
+except Exception:  # pragma: no cover - lightweight test environments may not ship psycopg
+    db = type(
+        "_NullDB",
+        (),
+        {
+            "execute_update": staticmethod(lambda *args, **kwargs: None),
+            "execute_query": staticmethod(lambda *args, **kwargs: []),
+            "execute_one": staticmethod(lambda *args, **kwargs: None),
+        },
+    )()
 
 
 logger = logging.getLogger(__name__)
@@ -550,6 +561,20 @@ class CreatorEntityService:
             if len(type_groups.get(entity_type, [])) == 1 and any(hint in normalized_query for hint in hints):
                 return type_groups[entity_type][0]
         return None
+
+    def list_entities(
+        self,
+        *,
+        entity_type: str = "",
+        creator_id: Optional[int] = None,
+        creator_profile: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        graph = self.build_entity_graph(creator_id=creator_id, creator_profile=creator_profile)
+        entities = list(graph.get("entities") or [])
+        wanted = str(entity_type or "").strip().lower()
+        if wanted:
+            entities = [entity for entity in entities if str(entity.get("type") or "").strip().lower() == wanted]
+        return entities
 
     def describe_entity_identity(self, entity: Optional[Dict[str, Any]]) -> str:
         if not entity:
