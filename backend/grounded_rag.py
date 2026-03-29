@@ -1490,13 +1490,15 @@ def _inject_live_web_results(
 ) -> List[Dict[str, Any]]:
     merged = list(support_set or [])
     if web_results:
-        logger.info(f"[SEARCH] Injecting {len(web_results[:6])} web results into support_set")
+        logger.info(f"[SEARCH_TRACE] prompt_injection: INCLUDED count={len(web_results[:6])}")
         for i, result in enumerate(web_results[:6]):
             faux_chunk = _make_live_web_chunk(result, i)
             logger.info(
-                f"[SEARCH]   [{i}] {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}"
+                f"[SEARCH_TRACE] prompt_injection_item[{i}]: {(faux_chunk.get('title') or '')[:60]} -> {(faux_chunk.get('url') or '')[:80]}"
             )
             merged.insert(i, faux_chunk)
+    else:
+        logger.info("[SEARCH_TRACE] prompt_injection: SKIPPED count=0")
     return merged
 
 
@@ -2585,6 +2587,8 @@ def generate_grounded_answer(
             + chunk["content"]
         )
     context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
+    live_web_chunks = sum(1 for chunk in support_set if _is_live_web_chunk(chunk))
+    logger.info(f"[SEARCH_TRACE] prompt_context: support_chunks={len(support_set)} live_web_chunks={live_web_chunks} context_len={len(context)}")
 
     # Fetch verified facts
     from backend.services.fact_verification import FactVerificationService

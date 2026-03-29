@@ -95,7 +95,7 @@ def _load_personal_bio_service(
             return list(self.results)
 
         def grounded_overview(self, query, creator_profile, conversation_history=None, max_queries=4):
-            self.grounded_calls.append((query, creator_profile.get("name")))
+            self.grounded_calls.append((query, creator_profile.get("name"), max_queries))
             if callable(grounded_overview_callback):
                 return grounded_overview_callback(query, creator_profile)
             return {
@@ -255,6 +255,35 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("when did u write it", query.lower())
         self.assertTrue("September" in answer or "2023" in answer, answer)
 
+    def test_direct_write_question_answers_from_publication_evidence(self):
+        grounded_results = [
+            {
+                "title": "Buy Back Your Time",
+                "url": "https://www.amazon.com/Buy-Back-Your-Time/dp/example",
+                "snippet": "Buy Back Your Time was published on September 26, 2023.",
+            }
+        ]
+        service, provider = _load_personal_bio_service([], grounded_results=grounded_results)
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u write buy back your time",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={
+                "name": "Dan Martell",
+                "identity_fingerprint": 'Author of "Buy Back Your Time".',
+            },
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls)
+        self.assertTrue("September" in answer or "2023" in answer, answer)
+        self.assertNotIn("check my", answer.lower())
+
     def test_public_book_question_keeps_searching_until_date_evidence_found(self):
         def grounded_callback(query, creator_profile):
             lowered = query.lower()
@@ -298,7 +327,13 @@ class PersonalBioServiceTests(unittest.TestCase):
         )
 
         answer = result.get("answer", "")
-        self.assertGreaterEqual(len(provider.grounded_calls), 2)
+        self.assertGreaterEqual(len(provider.grounded_calls), 1)
+        self.assertTrue(
+            "publication date" in provider.grounded_calls[0][0].lower()
+            or "release date" in provider.grounded_calls[0][0].lower(),
+            provider.grounded_calls,
+        )
+        self.assertLessEqual(len(provider.grounded_calls), 2, provider.grounded_calls)
         self.assertIn("2023", answer)
         self.assertTrue(
             any("publication date" in call[0].lower() or "release date" in call[0].lower() for call in provider.grounded_calls),

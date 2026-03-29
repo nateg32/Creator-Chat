@@ -123,7 +123,7 @@ class FactRegistryService:
 
     def infer_fact_field(self, question: str, entity_type: str = "") -> str:
         lowered = _clean_value(question).lower()
-        if any(token in lowered for token in ("published", "publication", "release date", "released", "come out", "launch date")):
+        if any(token in lowered for token in ("published", "publication", "release date", "released", "come out", "launch date", "write", "wrote", "written")):
             return "publication_date" if entity_type == "book" else "launch_date"
         if any(token in lowered for token in ("price", "pricing", "cost", "how much")):
             return "price"

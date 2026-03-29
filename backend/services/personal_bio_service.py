@@ -2,6 +2,8 @@
 import logging
 import json
 import re
+import time
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
 from backend.db import db
@@ -21,6 +23,116 @@ logger = logging.getLogger(__name__)
 MONTH_PATTERN = (
     r"January|February|March|April|May|June|July|August|September|October|November|December"
 )
+
+TIMELINE_TOKENS = ["when", "published", "publication", "release", "released", "launched", "launch", "come out", "what year", "what date", "which month", "write", "wrote", "written"]
+SEARCH_TRACE_PREFIX = "[SEARCH_TRACE]"
+HOT_FACT_CACHE_TTL = 3600.0
+_hot_fact_cache: Dict[str, Dict[str, Any]] = {}
+
+
+@dataclass
+class StructuredFactCandidate:
+    fact_field: str
+    subject: str
+    value: str
+    answer_text: str
+    source_url: str = ""
+    source_title: str = ""
+    confidence: float = 0.9
+
+
+def extract_search_text(result: Any) -> str:
+    """
+    Safely extracts text from search provider output without discarding
+    valid grounded summaries or snippets.
+    """
+    if result is None:
+        extracted = ""
+    elif isinstance(result, str):
+        extracted = result.strip()
+    elif isinstance(result, dict):
+        extracted = ""
+        for field in [
+            "text",
+            "content",
+            "answer",
+            "snippet",
+            "result",
+            "body",
+            "summary",
+            "grounding_text",
+            "response_text",
+            "fact_value",
+        ]:
+            val = result.get(field, "")
+            if isinstance(val, str) and len(val.strip()) > 10:
+                extracted = val.strip()
+                break
+        if not extracted:
+            parts: List[str] = []
+            for field in ("title", "snippet", "text", "response_text"):
+                val = result.get(field, "")
+                if isinstance(val, str) and val.strip():
+                    parts.append(val.strip())
+            if parts:
+                extracted = " ".join(parts[:3]).strip()
+            else:
+                nested_parts: List[str] = []
+                for field in ("results", "items"):
+                    val = result.get(field)
+                    if isinstance(val, list):
+                        nested_text = extract_search_text(val)
+                        if nested_text:
+                            nested_parts.append(nested_text)
+                if nested_parts:
+                    extracted = " ".join(nested_parts[:2]).strip()
+                elif any(field in result for field in ("results", "sources", "packages", "citations", "query_plan", "search_entry_point")):
+                    extracted = ""
+                else:
+                    extracted = str(result).strip()
+    elif isinstance(result, list):
+        parts = []
+        for item in result:
+            item_text = extract_search_text(item)
+            if item_text:
+                parts.append(item_text)
+        extracted = " ".join(parts[:3]).strip()
+    else:
+        extracted = str(result).strip()
+    logger.info(f"{SEARCH_TRACE_PREFIX} extraction: raw_type={type(result).__name__} extracted_len={len(extracted)}")
+    return extracted
+
+
+def _preview_text(value: Any, limit: int = 500) -> str:
+    text = extract_search_text(value)
+    if not text:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def _hot_cache_key(creator_id: int, entity_subject: str, fact_field: str) -> str:
+    return f"{creator_id}:{re.sub(r'\s+', ' ', str(entity_subject or '').strip().lower())}:{str(fact_field or '').strip().lower()}"
+
+
+def _get_hot_fact(cache_key: str) -> Optional[StructuredFactCandidate]:
+    entry = _hot_fact_cache.get(cache_key)
+    if not entry:
+        return None
+    if time.time() - float(entry.get("ts") or 0.0) > HOT_FACT_CACHE_TTL:
+        _hot_fact_cache.pop(cache_key, None)
+        return None
+    candidate = entry.get("value")
+    if isinstance(candidate, StructuredFactCandidate):
+        logger.info(f"{SEARCH_TRACE_PREFIX} cache_hit: {cache_key}")
+        return candidate
+    return None
+
+
+def _set_hot_fact(cache_key: str, candidate: StructuredFactCandidate) -> None:
+    if not candidate or not candidate.answer_text.strip():
+        return
+    _hot_fact_cache[cache_key] = {"value": candidate, "ts": time.time()}
+    logger.info(f"{SEARCH_TRACE_PREFIX} cache_set: {cache_key} ({len(candidate.answer_text)} chars)")
 
 class PersonalBioService:
     """
@@ -119,6 +231,8 @@ class PersonalBioService:
         effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
         fact_field = fact_registry.infer_fact_field(resolved_question, evidence_plan.entity_type)
         entity_subject = evidence_plan.entity_subject or (resolved_entity or {}).get("name") or creator_name
+        hot_cache_key = _hot_cache_key(creator_id, entity_subject, fact_field) if public_fact_query and entity_subject and fact_field else ""
+        hot_cached_fact = _get_hot_fact(hot_cache_key) if hot_cache_key else None
         cached_fact = None
         if public_fact_query and entity_subject and fact_field:
             cached_fact = fact_registry.lookup_fact(
@@ -127,6 +241,11 @@ class PersonalBioService:
                 fact_field,
                 freshness_required=evidence_plan.freshness_required,
             )
+        logger.info(
+            f"{SEARCH_TRACE_PREFIX} handle_start: question={question!r} resolved={resolved_question!r} "
+            f"goal={evidence_plan.query_goal} fact_field={fact_field!r} entity={entity_subject!r} "
+            f"public_fact={public_fact_query} allow_web={effective_allow_web}"
+        )
 
         if evidence_plan.query_goal == "entity_confirmation" and resolved_entity:
             return {
@@ -162,12 +281,13 @@ class PersonalBioService:
         if cached_facts:
             internal_facts = cached_facts + internal_facts
 
+        extracted_fact = hot_cached_fact or self._cached_fact_to_candidate(cached_fact)
         web_facts = []
-        if effective_allow_web and evidence_plan.should_search_web and (
+        if not extracted_fact and effective_allow_web and evidence_plan.should_search_web and (
             public_fact_query or self._needs_more_evidence(internal_facts) or evidence_plan.should_verify
         ):
             logger.info("PersonalBioService: Internal evidence weak, checking web...")
-            web_facts = self._search_web_evidence(
+            web_facts, extracted_fact = self._search_web_evidence(
                 creator_id,
                 creator_name,
                 contextual_question,
@@ -175,7 +295,11 @@ class PersonalBioService:
                 conversation_history=conversation_history,
                 evidence_plan=evidence_plan,
                 resolved_entity=resolved_entity,
+                fact_field=fact_field,
+                entity_subject=entity_subject,
             )
+        elif extracted_fact:
+            logger.info(f"{SEARCH_TRACE_PREFIX} fact_source: using_cached_fact field={extracted_fact.fact_field} value={extracted_fact.value!r}")
 
         contradiction_report = detect_evidence_contradiction(
             resolved_question,
@@ -188,6 +312,27 @@ class PersonalBioService:
             all_evidence = internal_facts + web_facts
 
         if public_fact_query:
+            if extracted_fact:
+                self._cache_structured_fact(
+                    creator_id,
+                    entity_subject,
+                    evidence_plan.entity_type or str((resolved_entity or {}).get("type") or ""),
+                    fact_field,
+                    extracted_fact,
+                    evidence_plan.freshness_required,
+                    cache_key=hot_cache_key,
+                )
+                answer = extracted_fact.answer_text
+                logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move=ANSWER_STRUCTURED_FACT answer={answer[:240]!r}")
+                return {
+                    "answer": answer,
+                    "confidence": "HIGH" if web_facts or hot_cached_fact else ("MEDIUM" if cached_fact else "MEDIUM"),
+                    "sources": all_evidence,
+                    "move": "ANSWER_STRUCTURED_FACT",
+                    "evidence_plan": evidence_plan.to_dict(),
+                    "fact_cache_hit": bool(cached_fact or hot_cached_fact),
+                    "contradiction_report": contradiction_report,
+                }
             direct_public_answer = self._answer_public_creator_fact(resolved_question, all_evidence, creator_name)
             if direct_public_answer:
                 self._cache_public_fact_answer(
@@ -235,8 +380,10 @@ class PersonalBioService:
                     "contradiction_report": contradiction_report,
                 }
 
+            fallback_answer = self._public_fact_fallback(resolved_question, creator_name, evidence_plan=evidence_plan, entity=resolved_entity)
+            logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move=DIRECT_TO_OFFICIAL_SOURCE answer={fallback_answer[:240]!r}")
             return {
-                "answer": self._public_fact_fallback(resolved_question, creator_name, evidence_plan=evidence_plan, entity=resolved_entity),
+                "answer": fallback_answer,
                 "confidence": "LOW",
                 "sources": all_evidence,
                 "move": "DIRECT_TO_OFFICIAL_SOURCE",
@@ -269,6 +416,7 @@ class PersonalBioService:
         synthesis["evidence_plan"] = evidence_plan.to_dict()
         synthesis["fact_cache_hit"] = bool(cached_fact)
         synthesis["contradiction_report"] = contradiction_report
+        logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move={move} answer={str(synthesis.get('answer') or '')[:240]!r}")
         
         return synthesis
 
@@ -380,11 +528,13 @@ class PersonalBioService:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         evidence_plan: Optional[Any] = None,
         resolved_entity: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
-        lowered_question = str(question or "").lower()
+        fact_field: str = "",
+        entity_subject: str = "",
+    ) -> Tuple[List[Dict[str, Any]], Optional[StructuredFactCandidate]]:
         profile = dict(creator_profile or {})
         profile.setdefault("id", creator_id)
         profile.setdefault("name", creator_name)
+        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
         queries = self._build_public_fact_search_queries(
             question,
             creator_name,
@@ -400,49 +550,100 @@ class PersonalBioService:
 
         best_evidence: List[Dict[str, Any]] = []
         best_score = 0.0
+        best_fact: Optional[StructuredFactCandidate] = None
         seen_queries = set()
+        max_query_attempts = self._max_query_attempts(query_goal)
+        grounded_max_queries = self._grounded_query_plan_limit(query_goal)
+        deadline = time.monotonic() + self._search_time_budget_seconds(query_goal)
         for query in queries:
+            if len(seen_queries) >= max_query_attempts:
+                break
             normalized_query = re.sub(r"\s+", " ", query).strip()
             if not normalized_query or normalized_query.lower() in seen_queries:
                 continue
             seen_queries.add(normalized_query.lower())
+            logger.info(f"{SEARCH_TRACE_PREFIX} query: {normalized_query}")
             try:
+                raw_result: Any = None
                 if callable(getattr(self.researcher, "grounded_overview", None)):
-                    overview = self.researcher.grounded_overview(
+                    raw_result = self.researcher.grounded_overview(
                         normalized_query,
                         profile,
                         conversation_history=conversation_history,
+                        max_queries=grounded_max_queries,
                     ) or {}
-                    evidence = self._normalize_grounded_overview_evidence(overview)
+                    logger.info(f"{SEARCH_TRACE_PREFIX} provider_raw: { _preview_text(raw_result) }")
+                    evidence = self._normalize_grounded_overview_evidence(raw_result)
                 elif hasattr(self.researcher, "search_general"):
-                    raw_results = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
-                    evidence = self._normalize_web_evidence(raw_results)
+                    raw_result = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
+                    logger.info(f"{SEARCH_TRACE_PREFIX} provider_raw: { _preview_text(raw_result) }")
+                    evidence = self._normalize_web_evidence(raw_result)
                 else:
-                    raw_results = self.researcher.search(
+                    raw_result = self.researcher.search(
                         normalized_query,
                         profile,
                         resource_type="any",
                         conversation_history=conversation_history,
                     )
-                    evidence = self._normalize_web_evidence(raw_results)
+                    logger.info(f"{SEARCH_TRACE_PREFIX} provider_raw: { _preview_text(raw_result) }")
+                    evidence = self._normalize_web_evidence(raw_result)
             except Exception as e:
-                logger.error(f"PersonalBioService: Web evidence search failed for query '{normalized_query}': {e}")
+                logger.error(f"{SEARCH_TRACE_PREFIX} query_error: query={normalized_query!r} error={e}")
                 continue
+            logger.info(f"{SEARCH_TRACE_PREFIX} query_result_count: query={normalized_query!r} count={len(evidence)}")
             score = self._score_web_evidence_quality(evidence_plan, evidence)
+            candidate = self._extract_structured_fact_candidate(
+                question,
+                evidence,
+                fact_field=fact_field,
+                entity_subject=entity_subject or str((resolved_entity or {}).get("name") or ""),
+            )
+            if candidate:
+                logger.info(
+                    f"{SEARCH_TRACE_PREFIX} fact_candidate: query={normalized_query!r} "
+                    f"field={candidate.fact_field} value={candidate.value!r} confidence={candidate.confidence}"
+                )
             if score > best_score:
                 best_score = score
                 best_evidence = evidence
+                best_fact = candidate
             if score >= 0.9:
                 break
+            if time.monotonic() >= deadline:
+                logger.warning(f"{SEARCH_TRACE_PREFIX} query_budget_exceeded: goal={query_goal} best_score={best_score}")
+                break
 
-        return best_evidence
+        logger.info(
+            f"{SEARCH_TRACE_PREFIX} web_search_complete: attempts={len(seen_queries)} "
+            f"best_score={best_score} fact_found={bool(best_fact)} evidence_count={len(best_evidence)}"
+        )
+        return best_evidence, best_fact
+
+    def _max_query_attempts(self, query_goal: str) -> int:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
+            return 2
+        if query_goal in {"availability_lookup", "resource_lookup"}:
+            return 2
+        return 2
+
+    def _grounded_query_plan_limit(self, query_goal: str) -> int:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
+            return 1
+        if query_goal in {"availability_lookup", "resource_lookup"}:
+            return 2
+        return 1
+
+    def _search_time_budget_seconds(self, query_goal: str) -> float:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
+            return 9.0
+        return 8.0
 
     def _normalize_web_evidence(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized = []
         for result in results or []:
-            title = (result.get("title") or "").strip()
-            snippet = (result.get("snippet") or result.get("text") or "").strip()
-            url = (result.get("url") or "").strip()
+            title = (result.get("title") or "").strip() if isinstance(result, dict) else ""
+            snippet = extract_search_text(result)
+            url = (result.get("url") or "").strip() if isinstance(result, dict) else ""
             if not any([title, snippet, url]):
                 continue
             normalized.append({
@@ -456,7 +657,7 @@ class PersonalBioService:
 
     def _normalize_grounded_overview_evidence(self, overview: Dict[str, Any]) -> List[Dict[str, Any]]:
         evidence = self._normalize_web_evidence(list(overview.get("results") or []))
-        response_text = re.sub(r"\s+", " ", str(overview.get("response_text") or "").strip())
+        response_text = re.sub(r"\s+", " ", extract_search_text(overview).strip())
         sources = list(overview.get("sources") or [])
         if response_text:
             primary_source = (sources[0] or {}) if sources else {}
@@ -487,10 +688,7 @@ class PersonalBioService:
         query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
         subject_hint = str((resolved_entity or {}).get("name") or self._extract_subject(question, []))
         entity_type = str((resolved_entity or {}).get("type") or "").lower()
-        queries = [question.strip(), f"{creator_name} {question}".strip()]
-
-        if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
-            queries.append(f'{creator_name} "{subject_hint}"')
+        queries: List[str] = []
 
         if query_goal == "timeline_lookup":
             if subject_hint:
@@ -502,12 +700,20 @@ class PersonalBioService:
                 ])
             if entity_type == "book":
                 queries.extend([
-                    f"{creator_name} book published",
-                    f"{creator_name} first book release date",
                     f'site:amazon.com "{subject_hint or creator_name}"',
                     f'site:audible.com "{subject_hint or creator_name}"',
                     f'site:goodreads.com "{subject_hint or creator_name}"',
                     f'site:penguinrandomhouse.com "{subject_hint or creator_name}"',
+                ])
+
+        if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
+            queries.append(f'{creator_name} "{subject_hint}"')
+
+        if query_goal == "timeline_lookup":
+            if entity_type == "book":
+                queries.extend([
+                    f"{creator_name} book published",
+                    f"{creator_name} first book release date",
                 ])
         elif query_goal == "price_lookup":
             if subject_hint:
@@ -529,6 +735,8 @@ class PersonalBioService:
             if len(term.split()) >= 2 and query_goal == "timeline_lookup":
                 queries.append(f'"{term}" publication date')
                 queries.append(f'{creator_name} "{term}" published')
+
+        queries.extend([question.strip(), f"{creator_name} {question}".strip()])
 
         deduped: List[str] = []
         seen = set()
@@ -575,6 +783,24 @@ class PersonalBioService:
 
         return 0.6 if evidence else 0.0
 
+    def _cached_fact_to_candidate(self, cached_fact) -> Optional[StructuredFactCandidate]:
+        if not cached_fact or not getattr(cached_fact, "fact_value", ""):
+            return None
+        subject = str(getattr(cached_fact, "entity_subject", "") or "It").strip() or "It"
+        fact_field = str(getattr(cached_fact, "fact_field", "") or "public_fact").strip()
+        answer_text = str(getattr(cached_fact, "fact_value", "") or "").strip()
+        if not answer_text:
+            return None
+        return StructuredFactCandidate(
+            fact_field=fact_field,
+            subject=subject,
+            value=answer_text,
+            answer_text=answer_text,
+            source_url=str(getattr(cached_fact, "source_url", "") or ""),
+            source_title=str(getattr(cached_fact, "source_title", "") or ""),
+            confidence=float(getattr(cached_fact, "confidence", 0.85) or 0.85),
+        )
+
     def _cached_fact_to_evidence(self, cached_fact) -> List[Dict[str, Any]]:
         if not cached_fact:
             return []
@@ -587,6 +813,35 @@ class PersonalBioService:
                 "sim": float(cached_fact.confidence or 0.85),
             }
         ]
+
+    def _cache_structured_fact(
+        self,
+        creator_id: int,
+        entity_subject: str,
+        entity_type: str,
+        fact_field: str,
+        candidate: StructuredFactCandidate,
+        freshness_required: str,
+        *,
+        cache_key: str = "",
+    ) -> None:
+        if not candidate:
+            return
+        if cache_key:
+            _set_hot_fact(cache_key, candidate)
+        fact_registry.upsert_fact(
+            creator_id,
+            entity_subject=entity_subject or candidate.subject,
+            entity_type=entity_type,
+            fact_field=fact_field or candidate.fact_field,
+            fact_value=candidate.answer_text,
+            source_url=candidate.source_url,
+            source_title=candidate.source_title,
+            source_snippet=candidate.value,
+            confidence=candidate.confidence,
+            freshness=freshness_required or "low",
+            metadata={"cached_from": "personal_bio_service_structured_fact"},
+        )
 
     def _cache_public_fact_answer(
         self,
@@ -623,6 +878,94 @@ class PersonalBioService:
 
     def _evidence_blob(self, evidence: List[Dict[str, Any]]) -> str:
         return " ".join(str(item.get("text") or "") for item in evidence if item.get("text"))
+
+    def _extract_structured_fact_candidate(
+        self,
+        question: str,
+        evidence: List[Dict[str, Any]],
+        fact_field: str,
+        entity_subject: str,
+    ) -> Optional[StructuredFactCandidate]:
+        if not evidence:
+            return None
+        blob = self._evidence_blob(evidence)
+        if not blob.strip():
+            return None
+
+        primary = (evidence or [{}])[0] or {}
+        source_url = str(primary.get("url") or "")
+        source_title = str(primary.get("title") or "")
+        subject = str(entity_subject or self._extract_subject(question, evidence) or "It").strip() or "It"
+        lowered_question = str(question or "").lower()
+
+        if fact_field in {"publication_date", "launch_date", "public_fact"} and any(token in lowered_question for token in TIMELINE_TOKENS):
+            full_date = re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE)
+            month_year = re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE)
+            year = re.search(r"\b(20\d{2}|19\d{2})\b", blob)
+            if full_date:
+                value = full_date.group(0)
+                return StructuredFactCandidate(
+                    fact_field=fact_field or "publication_date",
+                    subject=subject,
+                    value=value,
+                    answer_text=f"{subject} was published on {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.96,
+                )
+            if month_year:
+                value = month_year.group(0)
+                return StructuredFactCandidate(
+                    fact_field=fact_field or "publication_date",
+                    subject=subject,
+                    value=value,
+                    answer_text=f"{subject} was published in {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.93,
+                )
+            if year:
+                value = year.group(1)
+                return StructuredFactCandidate(
+                    fact_field=fact_field or "publication_date",
+                    subject=subject,
+                    value=value,
+                    answer_text=f"{subject} was published in {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.9,
+                )
+
+        if fact_field == "price":
+            match = re.search(r"\$\s?\d[\d,]*(?:\.\d{2})?", blob)
+            if match:
+                value = match.group(0)
+                return StructuredFactCandidate(
+                    fact_field="price",
+                    subject=subject,
+                    value=value,
+                    answer_text=f"{subject} is listed at {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.92,
+                )
+
+        if fact_field in {"followers", "latest_episode", "valuation", "net_worth"}:
+            count_match = re.search(r"\b\d[\d,]*(?:\.\d+)?(?:\s?[kKmM])?\b", blob)
+            if count_match:
+                value = count_match.group(0)
+                label = fact_field.replace("_", " ")
+                return StructuredFactCandidate(
+                    fact_field=fact_field,
+                    subject=subject,
+                    value=value,
+                    answer_text=f"My {label} is {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.88,
+                )
+
+        return None
 
     def _extract_subject(self, question: str, evidence: List[Dict[str, Any]]) -> str:
         patterns = [
@@ -672,7 +1015,7 @@ class PersonalBioService:
         month_year = re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE)
         year = re.search(r"\b(20\d{2}|19\d{2})\b", blob)
 
-        if any(token in lowered_question for token in ["when", "published", "publication", "release", "released", "launched", "launch", "come out", "what year", "what date", "which month"]):
+        if any(token in lowered_question for token in TIMELINE_TOKENS):
             if full_date:
                 return f"{subject} was published on {full_date.group(0)}."
             if month_year:

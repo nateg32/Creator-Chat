@@ -435,13 +435,15 @@ Return JSON only:
             "contents": [{"parts": [{"text": prompt}]}],
             "tools": [{"google_search": {}}] if search_enabled else []
         }
+        prompt_preview = re.sub(r"\s+", " ", prompt).strip()[:500]
+        logger.info(f"[SEARCH_TRACE] provider_request: {prompt_preview}")
         
         import time
-        for attempt in range(2): # Only 1 retry for real-time latency
+        for attempt in range(2): # Retry only for explicit rate limiting.
             try:
-                response = requests.post(url, json=payload, timeout=15) # Increased timeout for Google Search
+                response = requests.post(url, json=payload, timeout=5.0)
                 if response.status_code == 429:
-                    wait = 2 # Short wait for rate limit
+                    wait = 1
                     logger.warning(f"GeminiResearch: 429 Rate Limit. Waiting {wait}s... (Attempt {attempt+1}/2)")
                     time.sleep(wait)
                     continue
@@ -449,13 +451,11 @@ Return JSON only:
                 if response.status_code != 200:
                     logger.error(f"GeminiResearch REST Error {response.status_code}: {response.text}")
                     return None
-                
+                body = response.text[:500]
+                logger.info(f"[SEARCH_TRACE] provider_response: {body}")
                 return response.json()
             except Exception as e:
-                logger.error(f"GeminiResearch REST Exception: {e}")
-                if attempt < 2:
-                    time.sleep(2)
-                    continue
+                logger.error(f"[SEARCH_TRACE] provider_exception: {e}")
                 return None
         return None
 
@@ -588,6 +588,7 @@ Return JSON only:
             conversation_history=conversation_history,
             max_queries=max_queries,
         )
+        logger.info(f"[SEARCH_TRACE] grounded_query_plan: {query_plan}")
 
         def run_grounded_query(subquery: str) -> Dict[str, Any]:
             prompt = (
