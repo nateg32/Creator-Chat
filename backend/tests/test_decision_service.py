@@ -68,6 +68,17 @@ class DecisionServiceTests(unittest.TestCase):
         )
         self.assertEqual(resolved, "yes")
 
+    def test_resolves_pronoun_book_followup_from_recent_title(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "when did u write it?",
+            [
+                {"role": "user", "content": "do you have a book?"},
+                {"role": "assistant", "content": "Yeah. I wrote a book called Buy Back Your Time."},
+            ],
+        )
+        self.assertEqual(resolved, "When did you write Buy Back Your Time?")
+
 
 if __name__ == "__main__":
     unittest.main()

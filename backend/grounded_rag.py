@@ -3666,6 +3666,7 @@ Message: {answer_text[:500]}"""
             creator_name=creator_row.get("name") or creator_row.get("handle") or "the creator",
             decision_policy=creator_row.get("decision_policy") or {},
             creator_profile=creator_row,
+            conversation_history=conversation_history,
             allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
         )
         personal_sources = []

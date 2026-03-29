@@ -39,6 +39,10 @@ def _load_personal_bio_service(search_results, grounded_results=None):
         "backend.services.search_decision_engine",
         pathlib.Path("services") / "search_decision_engine.py",
     )
+    decision_service_module = _load_module(
+        "backend.services.decision_service",
+        pathlib.Path("services") / "decision_service.py",
+    )
 
     class _Provider:
         def __init__(self, results):
@@ -75,10 +79,7 @@ def _load_personal_bio_service(search_results, grounded_results=None):
     _stub_module("backend.rag", **fake_rag.__dict__)
     _stub_module("backend.settings", settings=fake_settings)
     _stub_module("backend.services.research_provider", GeminiResearchProvider=type("GeminiResearchProvider", (), {}), get_research_provider=lambda: provider)
-    _stub_module("backend.services.decision_service", decision_service=types.SimpleNamespace(
-        classify_question=lambda *args, **kwargs: ("personal_bio", "general", 3),
-        choose_move=lambda *args, **kwargs: "ANSWER_DIRECTLY",
-    ))
+    sys.modules["backend.services.decision_service"] = decision_service_module
 
     module = _load_module(
         "backend.services.personal_bio_service",
@@ -167,6 +168,38 @@ class PersonalBioServiceTests(unittest.TestCase):
         answer = result.get("answer", "")
         self.assertTrue(provider.grounded_calls)
         self.assertFalse(provider.calls)
+        self.assertTrue("September" in answer or "2023" in answer, answer)
+
+    def test_public_book_followup_uses_conversation_context_before_web_search(self):
+        grounded_results = [
+            {
+                "title": "Buy Back Your Time",
+                "url": "https://www.amazon.com/Buy-Back-Your-Time/dp/example",
+                "snippet": "Buy Back Your Time was published on September 26, 2023.",
+            }
+        ]
+        service, provider = _load_personal_bio_service([], grounded_results=grounded_results)
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u write it?",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={"name": "Dan Martell"},
+            conversation_history=[
+                {"role": "user", "content": "do you have a book?"},
+                {"role": "assistant", "content": "Yeah. I wrote a book called Buy Back Your Time."},
+            ],
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls)
+        query = provider.grounded_calls[0][0]
+        self.assertIn("Buy Back Your Time", query)
+        self.assertNotIn("when did u write it", query.lower())
         self.assertTrue("September" in answer or "2023" in answer, answer)
 
     def test_public_book_question_falls_back_to_official_sources_honestly(self):

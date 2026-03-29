@@ -22,6 +22,13 @@ CLARIFICATION_TITLE_PATTERNS = (
     re.compile(r'(?i)\bare you asking about[,:-]?\s*[\"“]?([^?\"\n]+?)[\"”]?\??\s*$'),
 )
 
+RECENT_BOOK_TITLE_PATTERNS = (
+    re.compile(r'(?i)\bbook (?:called|titled)\s*[\"â€œ]?([^\"\n\.\!\?]+?)[\"â€]?(?:[\.\!\?]|$)'),
+    re.compile(r'(?i)\bcalled\s*[\"â€œ]?([^\"\n\.\!\?]+?)[\"â€]?(?:[\.\!\?]|$)'),
+    re.compile(r'(?i)\btitled\s*[\"â€œ]?([^\"\n\.\!\?]+?)[\"â€]?(?:[\.\!\?]|$)'),
+)
+
+
 class DecisionService:
     """
     Implements Creator-Style Decision Making.
@@ -101,6 +108,10 @@ class DecisionService:
             return question
 
         normalized = re.sub(r"\s+", " ", q.lower()).strip(" .!?")
+        if self._looks_like_book_followup(q):
+            title = self._extract_recent_book_title(history)
+            if title:
+                return self._rewrite_book_followup(q, title)
         if normalized not in AFFIRMATIVE_FOLLOWUPS:
             return question
 
@@ -153,6 +164,34 @@ class DecisionService:
         if any(token in lower for token in ["write", "wrote", "writing", "written"]):
             return f"When did you write {clean_title}?"
         return f"When was {clean_title} published?"
+
+    def _looks_like_book_followup(self, question: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(question or "").lower()).strip(" .!?")
+        if not lowered:
+            return False
+        words = re.findall(r"[a-z0-9']+", lowered)
+        if len(words) > 10:
+            return False
+        referential = {"it", "that", "this", "one", "book"}
+        timing = {"when", "publish", "published", "publication", "release", "released", "launch", "launched", "write", "wrote", "written"}
+        return bool(set(words) & referential) and bool(set(words) & timing)
+
+    def _extract_recent_book_title(self, history: Optional[List[Dict[str, str]]]) -> str:
+        for message in reversed(list(history or [])[-6:]):
+            text = (message.get("content") or message.get("text") or "").strip()
+            if not text:
+                continue
+            clarified = self._extract_clarified_title(text)
+            if clarified:
+                return clarified
+            for pattern in RECENT_BOOK_TITLE_PATTERNS:
+                match = pattern.search(text)
+                if not match:
+                    continue
+                candidate = re.sub(r"\s+", " ", match.group(1)).strip(" \"â€œâ€'.,:;!?")
+                if 1 <= len(candidate) <= 160:
+                    return candidate
+        return ""
 
     def classify_question(self, question: str, intent: str, history: Optional[List[Dict[str, str]]] = None) -> Tuple[str, str, int]:
         """

@@ -187,6 +187,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
             creator_name,
             decision_policy,
             creator_profile=None,
+            conversation_history=None,
             allow_web=True,
         ):
             profile = dict(creator_profile or {})

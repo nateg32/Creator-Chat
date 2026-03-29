@@ -9,6 +9,7 @@ from backend.services.research_provider import GeminiResearchProvider
 from backend.settings import settings
 
 from backend.services.decision_service import decision_service
+from backend.services.live_search_rules import build_live_search_query
 from backend.services.search_decision_engine import SearchDecisionEngine
 
 logger = logging.getLogger(__name__)
@@ -40,31 +41,50 @@ class PersonalBioService:
         creator_name: str,
         decision_policy: Dict[str, Any],
         creator_profile: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
         allow_web: bool = True,
     ) -> Dict[str, Any]:
         """
         Main entry point. Returns { "answer": str, "confidence": "HIGH"|"MEDIUM"|"LOW", "sources": [], "move": str }
         """
-        logger.info(f"PersonalBioService: Processing '{question}' for creator {creator_id}")
+        resolved_question = decision_service.resolve_followup_question(question, conversation_history)
+        contextual_question = self._contextualize_search_question(
+            resolved_question,
+            creator_name,
+            conversation_history,
+        )
+        logger.info(
+            "PersonalBioService: Processing '%s' for creator %s (resolved='%s', contextual='%s')",
+            question,
+            creator_id,
+            resolved_question,
+            contextual_question,
+        )
         
         # 1. Classification
-        q_type, topic, sufficiency = decision_service.classify_question(question, "personal_bio_question")
-        public_fact_query = self._is_public_creator_fact_query(question, creator_name, creator_profile)
+        q_type, topic, sufficiency = decision_service.classify_question(resolved_question, "personal_bio_question", conversation_history)
+        public_fact_query = self._is_public_creator_fact_query(contextual_question, creator_name, creator_profile)
         researcher_enabled = bool(getattr(self.researcher, "enabled", True))
         effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
         
         # 2. Evidence Gathering
-        internal_facts = self._search_internal_knowledge(creator_id, question, creator_profile=creator_profile)
+        internal_facts = self._search_internal_knowledge(creator_id, contextual_question, creator_profile=creator_profile)
         
         web_facts = []
         if effective_allow_web and (public_fact_query or self._needs_more_evidence(internal_facts)):
             logger.info("PersonalBioService: Internal evidence weak, checking web...")
-            web_facts = self._search_web_evidence(creator_id, creator_name, question, creator_profile=creator_profile)
+            web_facts = self._search_web_evidence(
+                creator_id,
+                creator_name,
+                contextual_question,
+                creator_profile=creator_profile,
+                conversation_history=conversation_history,
+            )
             
         all_evidence = internal_facts + web_facts
 
         if public_fact_query:
-            direct_public_answer = self._answer_public_creator_fact(question, all_evidence, creator_name)
+            direct_public_answer = self._answer_public_creator_fact(resolved_question, all_evidence, creator_name)
             if direct_public_answer:
                 return {
                     "answer": direct_public_answer,
@@ -74,7 +94,7 @@ class PersonalBioService:
                 }
 
             synthesized_public_answer = self._synthesize_public_fact_answer(
-                question,
+                resolved_question,
                 all_evidence,
                 voice_profile,
                 creator_name,
@@ -88,7 +108,7 @@ class PersonalBioService:
                 }
 
             return {
-                "answer": self._public_fact_fallback(question, creator_name),
+                "answer": self._public_fact_fallback(resolved_question, creator_name),
                 "confidence": "LOW",
                 "sources": all_evidence,
                 "move": "DIRECT_TO_OFFICIAL_SOURCE",
@@ -107,7 +127,7 @@ class PersonalBioService:
 
         # 5. Synthesis
         synthesis = self._synthesize_answer(
-            question, 
+            resolved_question, 
             all_evidence, 
             voice_profile, 
             creator_name, 
@@ -117,6 +137,18 @@ class PersonalBioService:
         synthesis["move"] = move
         
         return synthesis
+
+    def _contextualize_search_question(
+        self,
+        question: str,
+        creator_name: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
+        return build_live_search_query(
+            question,
+            conversation_history,
+            creator_name=creator_name,
+        )
 
     def _is_public_creator_fact_query(
         self,
@@ -191,21 +223,35 @@ class PersonalBioService:
         _push_fact("Themes", research.get("themes"))
         return facts
 
-    def _search_web_evidence(self, creator_id: int, creator_name: str, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def _search_web_evidence(
+        self,
+        creator_id: int,
+        creator_name: str,
+        question: str,
+        creator_profile: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> List[Dict[str, Any]]:
         lowered_question = str(question or "").lower()
         profile = dict(creator_profile or {})
         profile.setdefault("id", creator_id)
         profile.setdefault("name", creator_name)
         search_engine = SearchDecisionEngine(profile)
 
-        queries = [f"{creator_name} {question}".strip()]
-        if any(token in lowered_question for token in ["book", "published", "publication", "release", "released", "launched", "launch", "come out"]):
+        subject_hint = self._extract_subject(question, [])
+        queries = [question.strip(), f"{creator_name} {question}".strip()]
+        if any(token in lowered_question for token in ["book", "published", "publication", "release", "released", "launched", "launch", "come out", "write", "wrote", "written"]):
             queries.append(f"{creator_name} book published".strip())
             queries.append(f"{creator_name} first book".strip())
             queries.append(f"site:amazon.com {creator_name} book".strip())
             queries.append(f"site:audible.com {creator_name} book".strip())
             queries.append(f"site:penguinrandomhouse.com {creator_name} book".strip())
             queries.append(f"site:goodreads.com {creator_name} book".strip())
+            if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
+                queries.append(f'"{subject_hint}" published')
+                queries.append(f'"{subject_hint}" release date')
+                queries.append(f'site:amazon.com "{subject_hint}"')
+                queries.append(f'site:audible.com "{subject_hint}"')
+                queries.append(f'site:goodreads.com "{subject_hint}"')
             for term in search_engine.creator_terms:
                 if len(term.split()) >= 2:
                     queries.append(f'"{term}" published')
@@ -226,13 +272,18 @@ class PersonalBioService:
                     overview = self.researcher.grounded_overview(
                         normalized_query,
                         profile,
-                        conversation_history=None,
+                        conversation_history=conversation_history,
                     ) or {}
                     results = list(overview.get("results") or [])
                 elif hasattr(self.researcher, "search_general"):
                     results = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
                 else:
-                    results = self.researcher.search(normalized_query, profile, resource_type="any", conversation_history=None)
+                    results = self.researcher.search(
+                        normalized_query,
+                        profile,
+                        resource_type="any",
+                        conversation_history=conversation_history,
+                    )
             except Exception as e:
                 logger.error(f"PersonalBioService: Web evidence search failed for query '{normalized_query}': {e}")
                 continue
@@ -267,6 +318,7 @@ class PersonalBioService:
     def _extract_subject(self, question: str, evidence: List[Dict[str, Any]]) -> str:
         patterns = [
             re.compile(r"(?:when|where|what year|what date|which month)\s+(?:was|did)\s+(.+?)\s+(?:published|launch(?:ed)?|release(?:d)?|come out)", re.IGNORECASE),
+            re.compile(r"(?:when)\s+(?:did)\s+(?:you|u)\s+write\s+(.+)", re.IGNORECASE),
             re.compile(r"where can i (?:buy|get|find|purchase)\s+(.+)", re.IGNORECASE),
         ]
         normalized_question = re.sub(r"\s+", " ", str(question or "")).strip(" ?!.")
