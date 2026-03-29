@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from backend.services.evidence_router import EvidenceRouter
+
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,7 @@ class SearchDecisionEngine:
         self.creator = creator or {}
         self.creator_name = str(self.creator.get("name") or "").lower().strip()
         self.creator_terms = self._extract_creator_terms(self.creator)
+        self.router = EvidenceRouter(self.creator)
 
     def _extract_creator_terms(self, creator: dict) -> list[str]:
         terms: list[str] = []
@@ -106,6 +109,20 @@ class SearchDecisionEngine:
                 phase="pre_retrieval",
                 confidence=1.0,
             )
+
+        try:
+            plan = self.router.build_plan(query)
+            if plan.should_search_web and plan.primary_world in {"creator_world", "live_world"}:
+                reason = "creator_own_world" if plan.primary_world == "creator_world" else "factual_query"
+                return SearchDecision(
+                    should_search=True,
+                    reason=reason,
+                    reason_detail=f"EvidencePlan primary_world={plan.primary_world} answer_mode={plan.answer_mode} risk_flags={','.join(plan.risk_flags)}",
+                    phase="pre_retrieval",
+                    confidence=0.95 if plan.primary_world == "creator_world" else 0.9,
+                )
+        except Exception as exc:
+            logger.warning("Evidence router pre-retrieval plan failed, falling back to heuristic search rules: %s", exc)
 
         for pattern in _CREATOR_PATTERNS:
             if pattern.search(query_lower):
@@ -152,6 +169,26 @@ class SearchDecisionEngine:
         chunks: list,
         top_score: Optional[float],
     ) -> SearchDecision:
+        try:
+            plan = self.router.build_plan(
+                query,
+                top_score=top_score,
+                retrieved_chunks=chunks,
+            )
+            if plan.primary_world in {"creator_world", "live_world"} and plan.should_search_web:
+                reason = "low_rag_confidence" if top_score is not None and top_score < self.RAG_CONFIDENCE_THRESHOLD else "medium_confidence_factual"
+                if not chunks:
+                    reason = "no_rag_results"
+                return SearchDecision(
+                    should_search=True,
+                    reason=reason,
+                    reason_detail=f"EvidencePlan primary_world={plan.primary_world} should_verify={plan.should_verify} freshness={plan.freshness_required}",
+                    phase="post_retrieval",
+                    confidence=0.92 if not chunks else 0.85,
+                )
+        except Exception as exc:
+            logger.warning("Evidence router post-retrieval plan failed, falling back to heuristic search rules: %s", exc)
+
         if not chunks:
             return SearchDecision(
                 should_search=True,

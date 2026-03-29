@@ -1,0 +1,432 @@
+"""
+Central evidence planning for Creator Bot.
+
+Instead of asking only "should I search?", this router decides which world
+should answer:
+
+1. creator_memory - what the creator has already said in content
+2. creator_world  - public facts about the creator and their owned entities
+3. live_world     - fresh/current public facts that need verification
+
+The router is cheap, deterministic, and designed to run before generation on
+every turn.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from backend.db import db
+from backend.services.creator_entity_service import creator_entity_service
+from backend.services.decision_service import decision_service
+
+
+logger = logging.getLogger(__name__)
+
+
+_EVIDENCE_SCHEMA_READY = False
+
+
+_FOLLOWUP_REFERENTS = {"it", "that", "this", "one", "book", "course", "program", "podcast", "episode"}
+_FACTUAL_PATTERNS = [
+    re.compile(r"\bwhen (?:did|was|were|is)\b", re.IGNORECASE),
+    re.compile(r"\bwhat (?:year|date|month|day)\b", re.IGNORECASE),
+    re.compile(r"\bhow (?:many|much)\b", re.IGNORECASE),
+    re.compile(r"\bprice\b|\bcost\b|\bpricing\b", re.IGNORECASE),
+    re.compile(r"\bpublish(?:ed|ing)?\b|\bpublication\b|\brelease(?:d)?\b|\blaunch(?:ed)?\b", re.IGNORECASE),
+    re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bmembers?\b|\bstudents?\b|\branking\b|\branked\b|\bvaluation\b", re.IGNORECASE),
+]
+_LIVE_PATTERNS = [
+    re.compile(r"\b(latest|newest|recent|current|today|right now|currently|still)\b", re.IGNORECASE),
+    re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bprice\b|\bpricing\b|\branking\b|\branked\b", re.IGNORECASE),
+]
+_RESOURCE_PATTERNS = [
+    re.compile(r"\bwhere can i (?:buy|get|find|purchase)\b", re.IGNORECASE),
+    re.compile(r"\bwatch\b|\blink\b|\bvideo\b|\bepisode\b|\bresource\b", re.IGNORECASE),
+]
+_CREATOR_WORLD_HINTS = [
+    re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business)\b", re.IGNORECASE),
+    re.compile(r"\bnet worth\b|\bemployees\b|\bfounded\b|\bvaluation\b|\bfollowers?\b|\bsubscribers?\b", re.IGNORECASE),
+]
+
+
+@dataclass
+class EvidencePlan:
+    primary_world: str
+    secondary_worlds: List[str]
+    should_search_web: bool
+    should_search_corpus: bool
+    should_verify: bool
+    user_is_followup: bool
+    resolved_query: str
+    entity_subject: str
+    freshness_required: str
+    answer_mode: str
+    risk_flags: List[str]
+    entity_type: str = ""
+    top_score: Optional[float] = None
+    contradiction_risk: bool = False
+    plan_version: str = "evidence_router_v1"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def _ensure_evidence_schema() -> bool:
+    global _EVIDENCE_SCHEMA_READY
+    if _EVIDENCE_SCHEMA_READY:
+        return True
+    try:
+        db.execute_update(
+            """
+            CREATE TABLE IF NOT EXISTS evidence_plan_log (
+                id SERIAL PRIMARY KEY,
+                creator_id TEXT,
+                query TEXT,
+                resolved_query TEXT,
+                primary_world TEXT,
+                secondary_worlds JSONB DEFAULT '[]'::jsonb,
+                answer_mode TEXT,
+                should_search_web BOOLEAN,
+                should_search_corpus BOOLEAN,
+                should_verify BOOLEAN,
+                freshness_required TEXT,
+                entity_subject TEXT,
+                entity_type TEXT,
+                risk_flags JSONB DEFAULT '[]'::jsonb,
+                contradiction_risk BOOLEAN DEFAULT FALSE,
+                confidence_score FLOAT,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+        db.execute_update(
+            """
+            CREATE INDEX IF NOT EXISTS idx_evidence_plan_log_creator
+            ON evidence_plan_log (creator_id, created_at DESC)
+            """
+        )
+        _EVIDENCE_SCHEMA_READY = True
+        return True
+    except Exception as exc:
+        logger.warning("Evidence plan schema bootstrap failed: %s", exc)
+        return False
+
+
+def log_evidence_plan(
+    creator_id: int,
+    query: str,
+    plan: EvidencePlan,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        if not _ensure_evidence_schema():
+            return
+        db.execute_update(
+            """
+            INSERT INTO evidence_plan_log (
+                creator_id,
+                query,
+                resolved_query,
+                primary_world,
+                secondary_worlds,
+                answer_mode,
+                should_search_web,
+                should_search_corpus,
+                should_verify,
+                freshness_required,
+                entity_subject,
+                entity_type,
+                risk_flags,
+                contradiction_risk,
+                confidence_score,
+                metadata,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW())
+            """,
+            (
+                str(creator_id),
+                str(query or ""),
+                str(plan.resolved_query or ""),
+                str(plan.primary_world or ""),
+                json.dumps(plan.secondary_worlds or []),
+                str(plan.answer_mode or ""),
+                bool(plan.should_search_web),
+                bool(plan.should_search_corpus),
+                bool(plan.should_verify),
+                str(plan.freshness_required or "none"),
+                str(plan.entity_subject or ""),
+                str(plan.entity_type or ""),
+                json.dumps(plan.risk_flags or []),
+                bool(plan.contradiction_risk),
+                float(plan.top_score or 0.0),
+                json.dumps(metadata or {}),
+            ),
+        )
+    except Exception as exc:
+        logger.warning("Evidence plan log write failed: %s", exc)
+
+
+def recent_evidence_activity(creator_id: int, limit: int = 40) -> List[Dict[str, Any]]:
+    try:
+        if not _ensure_evidence_schema():
+            return []
+        rows = db.execute_query(
+            """
+            SELECT *
+            FROM evidence_plan_log
+            WHERE creator_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (str(creator_id), int(limit)),
+        )
+        return list(rows or [])
+    except Exception as exc:
+        logger.warning("Evidence plan log read failed: %s", exc)
+        return []
+
+
+def _extract_date_markers(text: str) -> List[str]:
+    markers = set()
+    for match in re.findall(r"\b(?:19|20)\d{2}\b", text or ""):
+        markers.add(match)
+    for match in re.findall(
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b",
+        text or "",
+        flags=re.IGNORECASE,
+    ):
+        markers.add(re.sub(r"\s+", " ", match).strip())
+    return sorted(markers)
+
+
+def _extract_price_markers(text: str) -> List[str]:
+    markers = set(re.findall(r"\$\s?\d[\d,]*(?:\.\d{2})?", text or ""))
+    markers.update(re.findall(r"\b\d+(?:\.\d+)?\s?(?:usd|aud|cad|eur)\b", text or "", flags=re.IGNORECASE))
+    return sorted(markers)
+
+
+def _extract_count_markers(text: str) -> List[str]:
+    markers = set(re.findall(r"\b\d[\d,]*(?:\.\d+)?(?:\s?[kKmM])?\b", text or ""))
+    return sorted(marker for marker in markers if len(marker) <= 12)
+
+
+def detect_evidence_contradiction(
+    query: str,
+    corpus_chunks: Optional[List[Dict[str, Any]]] = None,
+    web_results: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    corpus_text = " ".join(str(chunk.get("content") or chunk.get("text") or "") for chunk in (corpus_chunks or []))
+    web_text = " ".join(str(item.get("snippet") or item.get("text") or item.get("title") or "") for item in (web_results or []))
+    if not corpus_text or not web_text:
+        return {"has_contradiction": False, "kind": "none", "corpus_markers": [], "web_markers": []}
+
+    lowered = str(query or "").lower()
+    if any(token in lowered for token in ("published", "publication", "release", "launch", "when did", "what year", "what date", "which month")):
+        corpus_markers = _extract_date_markers(corpus_text)
+        web_markers = _extract_date_markers(web_text)
+        if corpus_markers and web_markers and set(corpus_markers).isdisjoint(set(web_markers)):
+            return {
+                "has_contradiction": True,
+                "kind": "date",
+                "corpus_markers": corpus_markers,
+                "web_markers": web_markers,
+            }
+
+    if any(token in lowered for token in ("price", "cost", "pricing", "how much")):
+        corpus_markers = _extract_price_markers(corpus_text)
+        web_markers = _extract_price_markers(web_text)
+        if corpus_markers and web_markers and set(corpus_markers).isdisjoint(set(web_markers)):
+            return {
+                "has_contradiction": True,
+                "kind": "price",
+                "corpus_markers": corpus_markers,
+                "web_markers": web_markers,
+            }
+
+    if any(token in lowered for token in ("followers", "subscribers", "members", "students", "employees", "ranking", "ranked")):
+        corpus_markers = _extract_count_markers(corpus_text)
+        web_markers = _extract_count_markers(web_text)
+        if corpus_markers and web_markers and set(corpus_markers).isdisjoint(set(web_markers)):
+            return {
+                "has_contradiction": True,
+                "kind": "count",
+                "corpus_markers": corpus_markers,
+                "web_markers": web_markers,
+            }
+
+    return {"has_contradiction": False, "kind": "none", "corpus_markers": [], "web_markers": []}
+
+
+class EvidenceRouter:
+    def __init__(self, creator: Dict[str, Any]):
+        self.creator = dict(creator or {})
+        self.creator_name = str(self.creator.get("name") or self.creator.get("handle") or "the creator").strip()
+
+    def _resolve_query(self, query: str, conversation_history: Optional[List[Dict[str, str]]]) -> str:
+        return decision_service.resolve_followup_question(query, conversation_history)
+
+    def _risk_flags(self, query: str, entity: Optional[Dict[str, Any]]) -> List[str]:
+        lowered = str(query or "").lower()
+        flags: List[str] = []
+        if entity:
+            flags.append("entity_resolved")
+            if entity.get("creator_owned"):
+                flags.append("creator_owned_entity")
+            if entity.get("name") and entity.get("name", "").lower() in lowered:
+                flags.append("title_match")
+        if any(pattern.search(lowered) for pattern in _FACTUAL_PATTERNS):
+            flags.append("public_fact")
+        if any(token in lowered for token in ("published", "publication", "release", "launch", "when did", "what year", "what date", "which month")):
+            flags.append("date")
+        if any(token in lowered for token in ("price", "pricing", "cost", "how much", "buy", "purchase")):
+            flags.append("pricing")
+        if any(token in lowered for token in ("followers", "subscribers", "members", "students", "ranking", "ranked", "valuation")):
+            flags.append("stats")
+        if any(token in lowered for token in ("latest", "newest", "recent", "current", "today", "right now", "currently", "still")):
+            flags.append("fresh")
+        if any(pattern.search(lowered) for pattern in _RESOURCE_PATTERNS):
+            flags.append("resource_request")
+        deduped: List[str] = []
+        seen = set()
+        for flag in flags:
+            if flag not in seen:
+                deduped.append(flag)
+                seen.add(flag)
+        return deduped
+
+    def _freshness(self, query: str, risk_flags: List[str]) -> str:
+        lowered = str(query or "").lower()
+        if "fresh" in risk_flags or any(pattern.search(lowered) for pattern in _LIVE_PATTERNS):
+            return "high"
+        if any(flag in risk_flags for flag in ("pricing", "stats", "date")):
+            return "medium"
+        if "public_fact" in risk_flags:
+            return "low"
+        return "none"
+
+    def _answer_mode(self, query: str, risk_flags: List[str], entity: Optional[Dict[str, Any]]) -> str:
+        lowered = str(query or "").lower()
+        if "resource_request" in risk_flags:
+            return "resource_recommendation"
+        if any(flag in risk_flags for flag in ("date", "pricing", "stats")):
+            return "direct_fact"
+        if entity and entity.get("creator_owned"):
+            return "hybrid"
+        if any(token in lowered for token in ("advice", "how do you", "what's your best", "what do you think", "your take")):
+            return "creator_take"
+        return "hybrid"
+
+    def _classify_worlds(
+        self,
+        query: str,
+        risk_flags: List[str],
+        entity: Optional[Dict[str, Any]],
+        answer_mode: str,
+        top_score: Optional[float],
+    ) -> tuple[str, List[str], bool, bool, bool]:
+        lowered = str(query or "").lower()
+        creator_world_signal = bool(entity and entity.get("creator_owned")) or any(
+            pattern.search(lowered) for pattern in _CREATOR_WORLD_HINTS
+        )
+        live_world_signal = "fresh" in risk_flags or any(pattern.search(lowered) for pattern in _LIVE_PATTERNS)
+        factual_signal = any(flag in risk_flags for flag in ("public_fact", "date", "pricing", "stats"))
+
+        if live_world_signal:
+            primary_world = "live_world"
+            secondary = ["creator_world"]
+            if answer_mode == "hybrid":
+                secondary.append("creator_memory")
+            should_search_web = True
+            should_search_corpus = answer_mode == "hybrid"
+            should_verify = True
+        elif creator_world_signal or factual_signal:
+            primary_world = "creator_world"
+            secondary = ["creator_memory"]
+            should_search_web = True
+            should_search_corpus = answer_mode == "hybrid"
+            should_verify = True
+        else:
+            primary_world = "creator_memory"
+            secondary = []
+            should_search_web = False
+            should_search_corpus = True
+            should_verify = False
+
+        if primary_world == "creator_memory" and top_score is not None and top_score < 0.65:
+            should_search_web = True
+            should_verify = False
+            secondary = ["live_world"]
+
+        if primary_world == "creator_memory" and top_score is not None and top_score >= 0.80 and answer_mode == "creator_take":
+            should_search_web = False
+
+        deduped_secondary: List[str] = []
+        seen = set()
+        for world in secondary:
+            if world != primary_world and world not in seen:
+                deduped_secondary.append(world)
+                seen.add(world)
+        return primary_world, deduped_secondary, should_search_web, should_search_corpus, should_verify
+
+    def build_plan(
+        self,
+        query: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        top_score: Optional[float] = None,
+        retrieved_chunks: Optional[List[Dict[str, Any]]] = None,
+        web_results: Optional[List[Dict[str, Any]]] = None,
+    ) -> EvidencePlan:
+        resolved_query = self._resolve_query(query, conversation_history)
+        entity = creator_entity_service.resolve_entity(
+            resolved_query,
+            creator_id=self.creator.get("id"),
+            creator_profile=self.creator,
+            conversation_history=conversation_history,
+        )
+        risk_flags = self._risk_flags(resolved_query, entity)
+        freshness_required = self._freshness(resolved_query, risk_flags)
+        answer_mode = self._answer_mode(resolved_query, risk_flags, entity)
+        primary_world, secondary_worlds, should_search_web, should_search_corpus, should_verify = self._classify_worlds(
+            resolved_query,
+            risk_flags,
+            entity,
+            answer_mode,
+            top_score,
+        )
+        contradiction = detect_evidence_contradiction(
+            resolved_query,
+            corpus_chunks=retrieved_chunks,
+            web_results=web_results,
+        )
+        user_is_followup = (
+            resolved_query != query
+            or bool(set(re.findall(r"[a-z0-9']+", str(query or "").lower())) & _FOLLOWUP_REFERENTS)
+        )
+
+        return EvidencePlan(
+            primary_world=primary_world,
+            secondary_worlds=secondary_worlds,
+            should_search_web=should_search_web,
+            should_search_corpus=should_search_corpus,
+            should_verify=should_verify,
+            user_is_followup=user_is_followup,
+            resolved_query=resolved_query,
+            entity_subject=str((entity or {}).get("name") or ""),
+            freshness_required=freshness_required,
+            answer_mode=answer_mode,
+            risk_flags=risk_flags,
+            entity_type=str((entity or {}).get("type") or ""),
+            top_score=top_score,
+            contradiction_risk=bool(contradiction.get("has_contradiction")),
+        )
+
+
+evidence_router = EvidenceRouter

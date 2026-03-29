@@ -62,6 +62,9 @@ from backend.services.prompt_injection_guard import normalize_user_preferences
 from backend.services.regurgitation_guard import score_response_quality
 from backend.services.text_sanitizer import strip_card_attachment_artifacts
 from backend.services.transcript_quality import transcript_needs_recovery
+from backend.services.creator_entity_service import creator_entity_service
+from backend.services.evidence_router import recent_evidence_activity
+from backend.services.fact_registry import fact_registry
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
     delete_document_corpus,
@@ -2058,6 +2061,51 @@ async def get_creator_stats(creator_id: int, current_user: Dict[str, Any] = Depe
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/creators/{creator_id}/evidence-dashboard")
+async def get_creator_evidence_dashboard(
+    creator_id: int,
+    limit: int = 40,
+    refresh_entities: bool = False,
+    current_user: Dict[str, Any] = Depends(require_auth),
+):
+    try:
+        ensure_creator_access(creator_id, current_user["id"])
+        creator_row = db.execute_one(
+            f"""
+            SELECT
+                id,
+                name,
+                handle,
+                {_creator_select_expr('identity_fingerprint')},
+                {_creator_select_expr('research_summary')},
+                {_creator_select_expr('style_fingerprint')},
+                {_creator_select_expr('soul_md')},
+                {_creator_select_expr('platform_configs')}
+            FROM creators
+            WHERE id = %s AND user_id = %s
+            """,
+            (creator_id, current_user["id"]),
+        )
+        if not creator_row:
+            raise HTTPException(status_code=404, detail="Creator not found")
+
+        entity_graph = creator_entity_service.build_entity_graph(
+            creator_id=creator_id,
+            creator_profile=creator_row,
+            refresh=refresh_entities,
+        )
+        return {
+            "creator_id": creator_id,
+            "entity_graph": entity_graph,
+            "recent_evidence_plans": recent_evidence_activity(creator_id, limit=limit),
+            "fact_registry": fact_registry.list_facts(creator_id, limit=limit),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # Core Endpoints
 # ============================================================================
@@ -2800,6 +2848,12 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
              if quality_report:
                  assistant_metadata["quality_grade"] = quality_report.get("grade")
                  assistant_metadata["quality_score"] = quality_report.get("score")
+             evidence_plan = ((result.get("meta") or {}).get("evidence_plan") or {})
+             if evidence_plan:
+                 assistant_metadata["evidence_plan"] = evidence_plan
+             contradiction_report = ((result.get("meta") or {}).get("contradiction_report") or {})
+             if contradiction_report:
+                 assistant_metadata["contradiction_report"] = contradiction_report
 
              db.execute_update("""
                 INSERT INTO chat_messages (thread_id, role, content, metadata)

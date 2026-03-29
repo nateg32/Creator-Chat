@@ -43,6 +43,18 @@ def _load_personal_bio_service(search_results, grounded_results=None):
         "backend.services.decision_service",
         pathlib.Path("services") / "decision_service.py",
     )
+    _load_module(
+        "backend.services.creator_entity_service",
+        pathlib.Path("services") / "creator_entity_service.py",
+    )
+    _load_module(
+        "backend.services.fact_registry",
+        pathlib.Path("services") / "fact_registry.py",
+    )
+    _load_module(
+        "backend.services.evidence_router",
+        pathlib.Path("services") / "evidence_router.py",
+    )
 
     class _Provider:
         def __init__(self, results):
@@ -75,7 +87,14 @@ def _load_personal_bio_service(search_results, grounded_results=None):
     )
     fake_settings = types.SimpleNamespace(FINAL_RESPONSE_MODEL="test-model")
 
-    _stub_module("backend.db", db=types.SimpleNamespace(execute_query=lambda *args, **kwargs: []))
+    _stub_module(
+        "backend.db",
+        db=types.SimpleNamespace(
+            execute_query=lambda *args, **kwargs: [],
+            execute_one=lambda *args, **kwargs: None,
+            execute_update=lambda *args, **kwargs: None,
+        ),
+    )
     _stub_module("backend.rag", **fake_rag.__dict__)
     _stub_module("backend.settings", settings=fake_settings)
     _stub_module("backend.services.research_provider", GeminiResearchProvider=type("GeminiResearchProvider", (), {}), get_research_provider=lambda: provider)

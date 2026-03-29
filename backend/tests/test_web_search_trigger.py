@@ -28,6 +28,16 @@ def _load_search_decision_engine():
     return module
 
 
+def _load_module(name: str, relative_path):
+    module_path = BASE_DIR / relative_path
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _stub_package(name: str):
     module = types.ModuleType(name)
     module.__path__ = []  # type: ignore[attr-defined]
@@ -106,6 +116,21 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     _stub_package("backend.core")
     search_engine_module = _load_search_decision_engine()
     sys.modules["backend.services.search_decision_engine"] = search_engine_module
+    evidence_router_module = _load_module(
+        "backend.services.evidence_router",
+        pathlib.Path("services") / "evidence_router.py",
+    )
+    creator_entity_module = _load_module(
+        "backend.services.creator_entity_service",
+        pathlib.Path("services") / "creator_entity_service.py",
+    )
+    fact_registry_module = _load_module(
+        "backend.services.fact_registry",
+        pathlib.Path("services") / "fact_registry.py",
+    )
+    sys.modules["backend.services.evidence_router"] = evidence_router_module
+    sys.modules["backend.services.creator_entity_service"] = creator_entity_module
+    sys.modules["backend.services.fact_registry"] = fact_registry_module
 
     creator_row = {
         "id": 1,

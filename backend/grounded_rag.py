@@ -43,6 +43,12 @@ from backend.services.live_search_rules import (
     extract_requested_platforms,
     needs_fresh_public_web_search,
 )
+from backend.services.evidence_router import (
+    EvidencePlan,
+    EvidenceRouter,
+    detect_evidence_contradiction,
+    log_evidence_plan,
+)
 from backend.services.search_decision_engine import (
     SearchDecision,
     SearchDecisionEngine,
@@ -101,6 +107,28 @@ def _quality_markers_for_creator(creator_profile: Dict[str, Any]) -> List[str]:
         if len(markers) >= 12:
             break
     return markers
+
+
+def _build_evidence_plan(
+    question: str,
+    creator_profile: Dict[str, Any],
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    *,
+    top_score: Optional[float] = None,
+    support_set: Optional[List[Dict[str, Any]]] = None,
+    web_results: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[EvidencePlan]:
+    try:
+        return EvidenceRouter(creator_profile or {}).build_plan(
+            question,
+            conversation_history=conversation_history,
+            top_score=top_score,
+            retrieved_chunks=support_set,
+            web_results=web_results,
+        )
+    except Exception as exc:
+        logger.warning("Evidence plan build failed: %s", exc)
+        return None
 
 
 def _creator_column_exists(column_name: str) -> bool:
@@ -3717,6 +3745,9 @@ Message: {answer_text[:500]}"""
                 "move": personal_result.get("move"),
                 "confidence": personal_result.get("confidence"),
                 "question_type": "personal_bio_question",
+                "evidence_plan": personal_result.get("evidence_plan"),
+                "fact_cache_hit": personal_result.get("fact_cache_hit"),
+                "contradiction_report": personal_result.get("contradiction_report"),
             },
         }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
 
@@ -3755,6 +3786,14 @@ Message: {answer_text[:500]}"""
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
+        if evidence_plan:
+            log_evidence_plan(
+                creator_id,
+                question,
+                evidence_plan,
+                metadata={"service": "grounded_rag_sync", "phase": "pre_retrieval"},
+            )
         search_engine = SearchDecisionEngine(creator_row)
         pre_search_decision = (
             search_engine.pre_retrieval_decision(question)
@@ -3762,16 +3801,32 @@ Message: {answer_text[:500]}"""
             else SearchDecision(False, "search_disabled", "Creator search mode disabled live search", "pre_retrieval", 1.0)
         )
         pre_web_results: List[Dict[str, Any]] = []
+        pre_web_future = None
+        pre_web_executor = None
         if search_mode == "hybrid" and pre_search_decision.should_search:
             log_search_decision(str(creator_id), question, pre_search_decision)
-            pre_web_results = _run_live_web_search(
-                question,
-                creator_row,
-                conversation_history=conversation_history,
-                preferred_platforms=preferred_platforms,
-                is_video_request=is_video_request,
-                intent_metadata={"intent": "PUBLIC_CREATOR_FACT"},
-            )
+            if evidence_plan and evidence_plan.should_search_corpus:
+                import concurrent.futures
+
+                pre_web_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                pre_web_future = pre_web_executor.submit(
+                    _run_live_web_search,
+                    question,
+                    creator_row,
+                    conversation_history,
+                    preferred_platforms,
+                    is_video_request,
+                    {"intent": "PUBLIC_CREATOR_FACT"},
+                )
+            else:
+                pre_web_results = _run_live_web_search(
+                    question,
+                    creator_row,
+                    conversation_history=conversation_history,
+                    preferred_platforms=preferred_platforms,
+                    is_video_request=is_video_request,
+                    intent_metadata={"intent": "PUBLIC_CREATOR_FACT"},
+                )
         if should_run_recommender:
             rec_result = recommend_one_content(
                 user_id=user_id,
@@ -3845,6 +3900,18 @@ Message: {answer_text[:500]}"""
         )
         
         no_online_fallback = None
+        corpus_support_snapshot = list(support_set)
+        if pre_web_future:
+            try:
+                pre_web_results = pre_web_future.result(timeout=12)
+            except Exception as exc:
+                logger.warning("Parallel pre-retrieval web search failed: %s", exc)
+                pre_web_results = []
+            finally:
+                try:
+                    pre_web_executor.shutdown(wait=False)
+                except Exception:
+                    pass
         web_results = list(pre_web_results)
         explicit_or_live_request_fallback = _should_block_on_web_fallback(
             question,
@@ -3858,6 +3925,21 @@ Message: {answer_text[:500]}"""
             images=bool(images),
         )
         top_support_score = _support_set_top_score(support_set)
+        evidence_plan_post = _build_evidence_plan(
+            question,
+            creator_row,
+            conversation_history,
+            top_score=top_support_score,
+            support_set=support_set,
+            web_results=web_results,
+        )
+        if evidence_plan_post:
+            log_evidence_plan(
+                creator_id,
+                question,
+                evidence_plan_post,
+                metadata={"service": "grounded_rag_sync", "phase": "post_retrieval"},
+            )
         post_search_decision = (
             search_engine.post_retrieval_decision(question, support_set, top_support_score)
             if search_mode == "hybrid" and not pre_search_decision.should_search
@@ -3867,6 +3949,11 @@ Message: {answer_text[:500]}"""
             log_search_decision(str(creator_id), question, post_search_decision)
         needs_fallback = explicit_or_live_request_fallback or bool(post_search_decision and post_search_decision.should_search)
         fact_search_requested = _decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision)
+        contradiction_report = detect_evidence_contradiction(
+            question,
+            corpus_chunks=corpus_support_snapshot,
+            web_results=web_results,
+        )
 
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
@@ -3888,9 +3975,11 @@ Message: {answer_text[:500]}"""
                 "debug": {
                     "search_decision": (post_search_decision.__dict__ if post_search_decision else pre_search_decision.__dict__),
                     "web_results_count": 0,
+                    "evidence_plan": evidence_plan_post.to_dict() if evidence_plan_post else (evidence_plan.to_dict() if evidence_plan else None),
                 },
                 "meta": {
                     "search_decision": (post_search_decision.__dict__ if post_search_decision else pre_search_decision.__dict__),
+                    "evidence_plan": evidence_plan_post.to_dict() if evidence_plan_post else (evidence_plan.to_dict() if evidence_plan else None),
                 },
             }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
 
@@ -4019,6 +4108,8 @@ Message: {answer_text[:500]}"""
         "routing": plan_obj.routing,
         "mvc_score": mvc_score,
         "quality_report": quality_report,
+        "evidence_plan": evidence_plan_post.to_dict() if 'evidence_plan_post' in locals() and evidence_plan_post else (evidence_plan.to_dict() if 'evidence_plan' in locals() and evidence_plan else None),
+        "contradiction_report": contradiction_report if 'contradiction_report' in locals() else None,
     }
 
     # --- Step 9: Video Recommendation (ONE ONLY) ---
@@ -4065,6 +4156,8 @@ Message: {answer_text[:500]}"""
             "gen_debug": gen_debug,
             "plan_obj": plan_obj.dict() if plan_obj else None,
             "quality_report": quality_report,
+            "evidence_plan": evidence_plan_post.to_dict() if 'evidence_plan_post' in locals() and evidence_plan_post else (evidence_plan.to_dict() if 'evidence_plan' in locals() and evidence_plan else None),
+            "contradiction_report": contradiction_report if 'contradiction_report' in locals() else None,
         }
     }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=plan_obj)
 
@@ -4250,14 +4343,15 @@ async def grounded_rag_stream(
             return
         personal_result = await asyncio.to_thread(
             personal_bio_service.handle_personal_question,
-            user_id,
-            creator_id,
-            question,
-            creator_row.get("voice_profile") or {},
-            creator_row.get("name") or creator_row.get("handle") or "the creator",
-            creator_row.get("decision_policy") or {},
-            creator_row,
-            ((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+            user_id=user_id,
+            creator_id=creator_id,
+            question=question,
+            voice_profile=creator_row.get("voice_profile") or {},
+            creator_name=creator_row.get("name") or creator_row.get("handle") or "the creator",
+            decision_policy=creator_row.get("decision_policy") or {},
+            creator_profile=creator_row,
+            conversation_history=conversation_history,
+            allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
         )
         yield personal_result.get("answer", "I haven't really talked about that publicly.")
         return
@@ -4310,6 +4404,14 @@ async def grounded_rag_stream(
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
+        evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
+        if evidence_plan:
+            log_evidence_plan(
+                creator_id,
+                question,
+                evidence_plan,
+                metadata={"service": "grounded_rag_stream", "phase": "pre_retrieval"},
+            )
         search_engine = SearchDecisionEngine(creator_row)
         pre_search_decision = (
             search_engine.pre_retrieval_decision(question)
@@ -4443,6 +4545,21 @@ async def grounded_rag_stream(
             search_mode=search_mode,
         )
         top_support_score = _support_set_top_score(support_set)
+        evidence_plan_post = _build_evidence_plan(
+            question,
+            creator_row,
+            conversation_history,
+            top_score=top_support_score,
+            support_set=support_set,
+            web_results=web_results,
+        )
+        if evidence_plan_post:
+            log_evidence_plan(
+                creator_id,
+                question,
+                evidence_plan_post,
+                metadata={"service": "grounded_rag_stream", "phase": "post_retrieval"},
+            )
         post_search_decision = (
             search_engine.post_retrieval_decision(question, support_set, top_support_score)
             if search_mode == "hybrid" and not pre_search_decision.should_search

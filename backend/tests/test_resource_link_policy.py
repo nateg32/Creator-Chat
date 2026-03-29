@@ -28,6 +28,61 @@ def _load_grounded_rag():
     _stub_package("backend.services")
     _stub_package("backend.core")
 
+    db_stub = types.SimpleNamespace(
+        execute_one=lambda *args, **kwargs: None,
+        execute_query=lambda *args, **kwargs: [],
+        execute_update=lambda *args, **kwargs: None,
+    )
+    _stub_module("backend.db", db=db_stub)
+    _stub_module("backend.services.decision_service", decision_service=types.SimpleNamespace(resolve_followup_question=lambda q, h: q))
+    _stub_module("backend.services.creator_entity_service", creator_entity_service=types.SimpleNamespace(resolve_entity=lambda *args, **kwargs: None))
+
+    class _EvidenceRouter:
+        def __init__(self, creator):
+            self.creator = creator or {}
+
+        def build_plan(self, query, conversation_history=None, top_score=None, retrieved_chunks=None, web_results=None):
+            return types.SimpleNamespace(
+                primary_world="creator_memory",
+                secondary_worlds=[],
+                should_search_web=False,
+                should_search_corpus=True,
+                should_verify=False,
+                user_is_followup=False,
+                resolved_query=query,
+                entity_subject="",
+                freshness_required="none",
+                answer_mode="creator_take",
+                risk_flags=[],
+                entity_type="",
+                top_score=top_score,
+                contradiction_risk=False,
+                to_dict=lambda: {
+                    "primary_world": "creator_memory",
+                    "secondary_worlds": [],
+                    "should_search_web": False,
+                    "should_search_corpus": True,
+                    "should_verify": False,
+                    "user_is_followup": False,
+                    "resolved_query": query,
+                    "entity_subject": "",
+                    "freshness_required": "none",
+                    "answer_mode": "creator_take",
+                    "risk_flags": [],
+                    "entity_type": "",
+                    "top_score": top_score,
+                    "contradiction_risk": False,
+                },
+            )
+
+    _stub_module(
+        "backend.services.evidence_router",
+        EvidenceRouter=_EvidenceRouter,
+        EvidencePlan=type("EvidencePlan", (), {}),
+        detect_evidence_contradiction=lambda *args, **kwargs: {"has_contradiction": False, "kind": "none", "corpus_markers": [], "web_markers": []},
+        log_evidence_plan=lambda *args, **kwargs: None,
+    )
+
     search_decision_path = BACKEND_ROOT / "services" / "search_decision_engine.py"
     search_decision_spec = importlib.util.spec_from_file_location(
         "backend.services.search_decision_engine",
@@ -37,11 +92,6 @@ def _load_grounded_rag():
     assert search_decision_spec.loader is not None
     sys.modules["backend.services.search_decision_engine"] = search_decision_module
     search_decision_spec.loader.exec_module(search_decision_module)
-
-    db_stub = types.SimpleNamespace(
-        execute_one=lambda *args, **kwargs: None,
-        execute_query=lambda *args, **kwargs: [],
-    )
     settings_stub = types.SimpleNamespace(
         EMBEDDING_MODEL="test-embed",
         ROUTER_MODEL="test-router",
@@ -53,7 +103,6 @@ def _load_grounded_rag():
         generate_chat_completion=lambda *args, **kwargs: '{"classification": "SUFFICIENT"}',
     )
 
-    _stub_module("backend.db", db=db_stub)
     _stub_module("backend.settings", settings=settings_stub)
     _stub_module("backend.rag", **rag_stub.__dict__)
     _stub_module("backend.prompts.creator_base_prompt", CREATOR_BASE_SYSTEM_PROMPT="")
@@ -72,7 +121,6 @@ def _load_grounded_rag():
     _stub_module("backend.services.curiosity_service", curiosity_service=types.SimpleNamespace())
     _stub_module("backend.services.rhythm_shaper", rhythm_shaper=types.SimpleNamespace())
     _stub_module("backend.services.user_priority_service", user_priority_service=types.SimpleNamespace())
-    _stub_module("backend.services.decision_service", decision_service=types.SimpleNamespace(resolve_followup_question=lambda q, h: q))
     _stub_module("backend.services.memory_loop_service", memory_loop_service=types.SimpleNamespace())
     _stub_module("backend.services.steering_service", steering_service=types.SimpleNamespace())
     _stub_module("backend.services.classifiers", classifiers=types.SimpleNamespace())

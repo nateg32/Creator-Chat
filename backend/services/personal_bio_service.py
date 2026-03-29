@@ -3,12 +3,16 @@ import logging
 import json
 import re
 from typing import Dict, Any, List, Optional, Tuple
+from urllib.parse import urlparse
 from backend.db import db
 import backend.rag as rag
 from backend.services.research_provider import GeminiResearchProvider
 from backend.settings import settings
 
+from backend.services.creator_entity_service import creator_entity_service
 from backend.services.decision_service import decision_service
+from backend.services.evidence_router import EvidenceRouter, detect_evidence_contradiction, log_evidence_plan
+from backend.services.fact_registry import fact_registry
 from backend.services.live_search_rules import build_live_search_query
 from backend.services.search_decision_engine import SearchDecisionEngine
 
@@ -47,11 +51,26 @@ class PersonalBioService:
         """
         Main entry point. Returns { "answer": str, "confidence": "HIGH"|"MEDIUM"|"LOW", "sources": [], "move": str }
         """
-        resolved_question = decision_service.resolve_followup_question(question, conversation_history)
+        creator_payload = dict(creator_profile or {})
+        creator_payload.setdefault("id", creator_id)
+        creator_payload.setdefault("name", creator_name)
+        evidence_plan = EvidenceRouter(creator_payload).build_plan(
+            question,
+            conversation_history=conversation_history,
+        )
+        resolved_question = evidence_plan.resolved_query or decision_service.resolve_followup_question(question, conversation_history)
+        resolved_entity = creator_entity_service.resolve_entity(
+            resolved_question,
+            creator_id=creator_id,
+            creator_profile=creator_payload,
+            conversation_history=conversation_history,
+        )
         contextual_question = self._contextualize_search_question(
             resolved_question,
             creator_name,
             conversation_history,
+            entity=resolved_entity,
+            evidence_plan=evidence_plan,
         )
         logger.info(
             "PersonalBioService: Processing '%s' for creator %s (resolved='%s', contextual='%s')",
@@ -60,18 +79,46 @@ class PersonalBioService:
             resolved_question,
             contextual_question,
         )
+        log_evidence_plan(
+            creator_id,
+            question,
+            evidence_plan,
+            metadata={"service": "personal_bio_service"},
+        )
         
         # 1. Classification
         q_type, topic, sufficiency = decision_service.classify_question(resolved_question, "personal_bio_question", conversation_history)
-        public_fact_query = self._is_public_creator_fact_query(contextual_question, creator_name, creator_profile)
+        public_fact_query = (
+            evidence_plan.primary_world in {"creator_world", "live_world"}
+            or self._is_public_creator_fact_query(contextual_question, creator_name, creator_profile)
+        )
         researcher_enabled = bool(getattr(self.researcher, "enabled", True))
         effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
+        fact_field = fact_registry.infer_fact_field(resolved_question, evidence_plan.entity_type)
+        entity_subject = evidence_plan.entity_subject or (resolved_entity or {}).get("name") or creator_name
+        cached_fact = None
+        if public_fact_query and entity_subject and fact_field:
+            cached_fact = fact_registry.lookup_fact(
+                creator_id,
+                entity_subject,
+                fact_field,
+                freshness_required=evidence_plan.freshness_required,
+            )
         
         # 2. Evidence Gathering
-        internal_facts = self._search_internal_knowledge(creator_id, contextual_question, creator_profile=creator_profile)
-        
+        internal_facts = (
+            self._search_internal_knowledge(creator_id, contextual_question, creator_profile=creator_profile)
+            if evidence_plan.should_search_corpus
+            else []
+        )
+        cached_facts = self._cached_fact_to_evidence(cached_fact)
+        if cached_facts:
+            internal_facts = cached_facts + internal_facts
+
         web_facts = []
-        if effective_allow_web and (public_fact_query or self._needs_more_evidence(internal_facts)):
+        if effective_allow_web and evidence_plan.should_search_web and (
+            public_fact_query or self._needs_more_evidence(internal_facts) or evidence_plan.should_verify
+        ):
             logger.info("PersonalBioService: Internal evidence weak, checking web...")
             web_facts = self._search_web_evidence(
                 creator_id,
@@ -79,18 +126,40 @@ class PersonalBioService:
                 contextual_question,
                 creator_profile=creator_profile,
                 conversation_history=conversation_history,
+                evidence_plan=evidence_plan,
+                resolved_entity=resolved_entity,
             )
-            
-        all_evidence = internal_facts + web_facts
+
+        contradiction_report = detect_evidence_contradiction(
+            resolved_question,
+            corpus_chunks=internal_facts,
+            web_results=web_facts,
+        )
+        if contradiction_report.get("has_contradiction") and web_facts:
+            all_evidence = web_facts + internal_facts
+        else:
+            all_evidence = internal_facts + web_facts
 
         if public_fact_query:
             direct_public_answer = self._answer_public_creator_fact(resolved_question, all_evidence, creator_name)
             if direct_public_answer:
+                self._cache_public_fact_answer(
+                    creator_id,
+                    entity_subject,
+                    evidence_plan.entity_type or str((resolved_entity or {}).get("type") or ""),
+                    fact_field,
+                    direct_public_answer,
+                    web_facts or cached_facts or internal_facts,
+                    evidence_plan.freshness_required,
+                )
                 return {
                     "answer": direct_public_answer,
-                    "confidence": "HIGH" if web_facts else "MEDIUM",
+                    "confidence": "HIGH" if web_facts else ("MEDIUM" if cached_fact else "MEDIUM"),
                     "sources": all_evidence,
-                    "move": "ANSWER_PUBLIC_FACT",
+                    "move": "ANSWER_PUBLIC_FACT_CACHE" if cached_fact and not web_facts else "ANSWER_PUBLIC_FACT",
+                    "evidence_plan": evidence_plan.to_dict(),
+                    "fact_cache_hit": bool(cached_fact),
+                    "contradiction_report": contradiction_report,
                 }
 
             synthesized_public_answer = self._synthesize_public_fact_answer(
@@ -100,11 +169,23 @@ class PersonalBioService:
                 creator_name,
             )
             if synthesized_public_answer:
+                self._cache_public_fact_answer(
+                    creator_id,
+                    entity_subject,
+                    evidence_plan.entity_type or str((resolved_entity or {}).get("type") or ""),
+                    fact_field,
+                    synthesized_public_answer,
+                    web_facts or cached_facts or internal_facts,
+                    evidence_plan.freshness_required,
+                )
                 return {
                     "answer": synthesized_public_answer,
                     "confidence": "HIGH" if web_facts else "MEDIUM",
                     "sources": all_evidence,
                     "move": "ANSWER_PUBLIC_FACT",
+                    "evidence_plan": evidence_plan.to_dict(),
+                    "fact_cache_hit": bool(cached_fact),
+                    "contradiction_report": contradiction_report,
                 }
 
             return {
@@ -112,6 +193,9 @@ class PersonalBioService:
                 "confidence": "LOW",
                 "sources": all_evidence,
                 "move": "DIRECT_TO_OFFICIAL_SOURCE",
+                "evidence_plan": evidence_plan.to_dict(),
+                "fact_cache_hit": bool(cached_fact),
+                "contradiction_report": contradiction_report,
             }
         
         # 3. Confidence Scoring (Basic logic for routing)
@@ -135,6 +219,9 @@ class PersonalBioService:
             topic
         )
         synthesis["move"] = move
+        synthesis["evidence_plan"] = evidence_plan.to_dict()
+        synthesis["fact_cache_hit"] = bool(cached_fact)
+        synthesis["contradiction_report"] = contradiction_report
         
         return synthesis
 
@@ -143,12 +230,22 @@ class PersonalBioService:
         question: str,
         creator_name: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        entity: Optional[Dict[str, Any]] = None,
+        evidence_plan: Optional[Any] = None,
     ) -> str:
-        return build_live_search_query(
+        contextual = build_live_search_query(
             question,
             conversation_history,
             creator_name=creator_name,
         )
+        if len(re.findall(r"[a-z0-9']+", contextual.lower())) < 3:
+            contextual = question
+        entity_name = str((entity or {}).get("name") or "").strip()
+        if entity_name and entity_name.lower() not in contextual.lower():
+            contextual = f"{contextual} {entity_name}".strip()
+        if evidence_plan and getattr(evidence_plan, "primary_world", "") == "live_world":
+            contextual = f"{contextual} current".strip()
+        return contextual
 
     def _is_public_creator_fact_query(
         self,
@@ -230,6 +327,8 @@ class PersonalBioService:
         question: str,
         creator_profile: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        evidence_plan: Optional[Any] = None,
+        resolved_entity: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         lowered_question = str(question or "").lower()
         profile = dict(creator_profile or {})
@@ -237,7 +336,7 @@ class PersonalBioService:
         profile.setdefault("name", creator_name)
         search_engine = SearchDecisionEngine(profile)
 
-        subject_hint = self._extract_subject(question, [])
+        subject_hint = str((resolved_entity or {}).get("name") or self._extract_subject(question, []))
         queries = [question.strip(), f"{creator_name} {question}".strip()]
         if any(token in lowered_question for token in ["book", "published", "publication", "release", "released", "launched", "launch", "come out", "write", "wrote", "written"]):
             queries.append(f"{creator_name} book published".strip())
@@ -259,6 +358,13 @@ class PersonalBioService:
                     queries.append(f'site:amazon.com "{term}"')
                     queries.append(f'site:audible.com "{term}"')
                     queries.append(f'site:goodreads.com "{term}"')
+        if evidence_plan and getattr(evidence_plan, "primary_world", "") == "live_world":
+            queries.append(f"{creator_name} {question} current".strip())
+            queries.append(f"{creator_name} latest {question}".strip())
+        for official_url in (resolved_entity or {}).get("official_urls") or []:
+            domain = re.sub(r"^www\.", "", (urlparse(official_url).netloc or "").lower())
+            if domain:
+                queries.append(f"site:{domain} {creator_name} {subject_hint or question}".strip())
 
         results = []
         seen_queries = set()
@@ -305,6 +411,46 @@ class PersonalBioService:
                 "sim": 0.82,
             })
         return normalized
+
+    def _cached_fact_to_evidence(self, cached_fact) -> List[Dict[str, Any]]:
+        if not cached_fact:
+            return []
+        return [
+            {
+                "text": cached_fact.fact_value,
+                "source": "fact_registry",
+                "url": cached_fact.source_url,
+                "title": cached_fact.source_title or cached_fact.entity_subject,
+                "sim": float(cached_fact.confidence or 0.85),
+            }
+        ]
+
+    def _cache_public_fact_answer(
+        self,
+        creator_id: int,
+        entity_subject: str,
+        entity_type: str,
+        fact_field: str,
+        answer_text: str,
+        evidence: List[Dict[str, Any]],
+        freshness_required: str,
+    ) -> None:
+        if not entity_subject or not fact_field or not answer_text:
+            return
+        primary = (evidence or [{}])[0] or {}
+        fact_registry.upsert_fact(
+            creator_id,
+            entity_subject=entity_subject,
+            entity_type=entity_type,
+            fact_field=fact_field,
+            fact_value=answer_text,
+            source_url=str(primary.get("url") or ""),
+            source_title=str(primary.get("title") or ""),
+            source_snippet=str(primary.get("text") or ""),
+            confidence=float(primary.get("sim") or 0.85),
+            freshness=freshness_required or "low",
+            metadata={"cached_from": "personal_bio_service"},
+        )
 
     def _needs_more_evidence(self, facts: List[Dict[str, Any]]) -> bool:
         if not facts: return True
