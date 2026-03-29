@@ -385,39 +385,21 @@ class PersonalBioService:
         profile = dict(creator_profile or {})
         profile.setdefault("id", creator_id)
         profile.setdefault("name", creator_name)
-        search_engine = SearchDecisionEngine(profile)
-
-        subject_hint = str((resolved_entity or {}).get("name") or self._extract_subject(question, []))
-        queries = [question.strip(), f"{creator_name} {question}".strip()]
-        if any(token in lowered_question for token in ["book", "published", "publication", "release", "released", "launched", "launch", "come out", "write", "wrote", "written"]):
-            queries.append(f"{creator_name} book published".strip())
-            queries.append(f"{creator_name} first book".strip())
-            queries.append(f"site:amazon.com {creator_name} book".strip())
-            queries.append(f"site:audible.com {creator_name} book".strip())
-            queries.append(f"site:penguinrandomhouse.com {creator_name} book".strip())
-            queries.append(f"site:goodreads.com {creator_name} book".strip())
-            if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
-                queries.append(f'"{subject_hint}" published')
-                queries.append(f'"{subject_hint}" release date')
-                queries.append(f'site:amazon.com "{subject_hint}"')
-                queries.append(f'site:audible.com "{subject_hint}"')
-                queries.append(f'site:goodreads.com "{subject_hint}"')
-            for term in search_engine.creator_terms:
-                if len(term.split()) >= 2:
-                    queries.append(f'"{term}" published')
-                    queries.append(f'"{term}" release date')
-                    queries.append(f'site:amazon.com "{term}"')
-                    queries.append(f'site:audible.com "{term}"')
-                    queries.append(f'site:goodreads.com "{term}"')
-        if evidence_plan and getattr(evidence_plan, "primary_world", "") == "live_world":
-            queries.append(f"{creator_name} {question} current".strip())
-            queries.append(f"{creator_name} latest {question}".strip())
+        queries = self._build_public_fact_search_queries(
+            question,
+            creator_name,
+            evidence_plan=evidence_plan,
+            resolved_entity=resolved_entity,
+            conversation_history=conversation_history,
+        )
         for official_url in (resolved_entity or {}).get("official_urls") or []:
             domain = re.sub(r"^www\.", "", (urlparse(official_url).netloc or "").lower())
             if domain:
+                subject_hint = str((resolved_entity or {}).get("name") or self._extract_subject(question, []))
                 queries.append(f"site:{domain} {creator_name} {subject_hint or question}".strip())
 
-        results = []
+        best_evidence: List[Dict[str, Any]] = []
+        best_score = 0.0
         seen_queries = set()
         for query in queries:
             normalized_query = re.sub(r"\s+", " ", query).strip()
@@ -431,22 +413,31 @@ class PersonalBioService:
                         profile,
                         conversation_history=conversation_history,
                     ) or {}
-                    results = list(overview.get("results") or [])
+                    evidence = self._normalize_grounded_overview_evidence(overview)
                 elif hasattr(self.researcher, "search_general"):
-                    results = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
+                    raw_results = self.researcher.search_general(normalized_query, creator_id, creator_profile=creator_profile)
+                    evidence = self._normalize_web_evidence(raw_results)
                 else:
-                    results = self.researcher.search(
+                    raw_results = self.researcher.search(
                         normalized_query,
                         profile,
                         resource_type="any",
                         conversation_history=conversation_history,
                     )
+                    evidence = self._normalize_web_evidence(raw_results)
             except Exception as e:
                 logger.error(f"PersonalBioService: Web evidence search failed for query '{normalized_query}': {e}")
                 continue
-            if results:
+            score = self._score_web_evidence_quality(evidence_plan, evidence)
+            if score > best_score:
+                best_score = score
+                best_evidence = evidence
+            if score >= 0.9:
                 break
 
+        return best_evidence
+
+    def _normalize_web_evidence(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized = []
         for result in results or []:
             title = (result.get("title") or "").strip()
@@ -462,6 +453,127 @@ class PersonalBioService:
                 "sim": 0.82,
             })
         return normalized
+
+    def _normalize_grounded_overview_evidence(self, overview: Dict[str, Any]) -> List[Dict[str, Any]]:
+        evidence = self._normalize_web_evidence(list(overview.get("results") or []))
+        response_text = re.sub(r"\s+", " ", str(overview.get("response_text") or "").strip())
+        sources = list(overview.get("sources") or [])
+        if response_text:
+            primary_source = (sources[0] or {}) if sources else {}
+            source_url = str(primary_source.get("url") or "")
+            source_title = str(primary_source.get("title") or "Grounded Web Summary")
+            evidence.insert(
+                0,
+                {
+                    "text": response_text,
+                    "source": "web_grounded_summary",
+                    "url": source_url,
+                    "title": source_title,
+                    "sim": 0.9,
+                },
+            )
+        return evidence
+
+    def _build_public_fact_search_queries(
+        self,
+        question: str,
+        creator_name: str,
+        *,
+        evidence_plan: Optional[Any] = None,
+        resolved_entity: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> List[str]:
+        search_engine = SearchDecisionEngine({"name": creator_name})
+        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+        subject_hint = str((resolved_entity or {}).get("name") or self._extract_subject(question, []))
+        entity_type = str((resolved_entity or {}).get("type") or "").lower()
+        queries = [question.strip(), f"{creator_name} {question}".strip()]
+
+        if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
+            queries.append(f'{creator_name} "{subject_hint}"')
+
+        if query_goal == "timeline_lookup":
+            if subject_hint:
+                queries.extend([
+                    f'"{subject_hint}" publication date',
+                    f'"{subject_hint}" release date',
+                    f'{creator_name} "{subject_hint}" published',
+                    f'{creator_name} "{subject_hint}" released',
+                ])
+            if entity_type == "book":
+                queries.extend([
+                    f"{creator_name} book published",
+                    f"{creator_name} first book release date",
+                    f'site:amazon.com "{subject_hint or creator_name}"',
+                    f'site:audible.com "{subject_hint or creator_name}"',
+                    f'site:goodreads.com "{subject_hint or creator_name}"',
+                    f'site:penguinrandomhouse.com "{subject_hint or creator_name}"',
+                ])
+        elif query_goal == "price_lookup":
+            if subject_hint:
+                queries.extend([
+                    f'{creator_name} "{subject_hint}" price',
+                    f'{creator_name} "{subject_hint}" cost',
+                ])
+        elif query_goal in {"stat_lookup", "current_stat_lookup"}:
+            if subject_hint:
+                queries.append(f'{creator_name} "{subject_hint}" current')
+            queries.append(f"{creator_name} current public stats")
+        elif query_goal in {"availability_lookup", "resource_lookup"} and subject_hint:
+            queries.extend([
+                f'{creator_name} "{subject_hint}" official',
+                f'where to buy "{subject_hint}"',
+            ])
+
+        for term in search_engine.creator_terms:
+            if len(term.split()) >= 2 and query_goal == "timeline_lookup":
+                queries.append(f'"{term}" publication date')
+                queries.append(f'{creator_name} "{term}" published')
+
+        deduped: List[str] = []
+        seen = set()
+        for candidate in queries:
+            cleaned = re.sub(r"\s+", " ", str(candidate or "")).strip()
+            key = cleaned.lower()
+            if cleaned and key not in seen:
+                deduped.append(cleaned)
+                seen.add(key)
+        return deduped
+
+    def _score_web_evidence_quality(self, evidence_plan: Optional[Any], evidence: List[Dict[str, Any]]) -> float:
+        if not evidence:
+            return 0.0
+        blob = self._evidence_blob(evidence)
+        lowered_blob = blob.lower()
+        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+
+        if query_goal == "timeline_lookup":
+            if re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE):
+                return 1.0
+            if re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE):
+                return 0.95
+            if re.search(r"\b(20\d{2}|19\d{2})\b", blob):
+                return 0.9
+            return 0.35
+
+        if query_goal == "price_lookup":
+            if re.search(r"\$\s?\d[\d,]*(?:\.\d{2})?", blob):
+                return 0.95
+            return 0.4
+
+        if query_goal in {"stat_lookup", "current_stat_lookup"}:
+            if re.search(r"\b\d[\d,]*(?:\.\d+)?(?:\s?[kKmM])?\b", blob):
+                return 0.9
+            return 0.35
+
+        if query_goal in {"availability_lookup", "resource_lookup"}:
+            if any(token in lowered_blob for token in ["amazon", "audible", "official", "website", "publisher"]):
+                return 0.85
+            if any(item.get("url") for item in evidence):
+                return 0.75
+            return 0.4
+
+        return 0.6 if evidence else 0.0
 
     def _cached_fact_to_evidence(self, cached_fact) -> List[Dict[str, Any]]:
         if not cached_fact:
