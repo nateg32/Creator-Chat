@@ -485,6 +485,23 @@ class WebSearchTriggerTests(unittest.TestCase):
             answer,
         )
 
+    def test_buy_in_book_title_does_not_trigger_pricing_fallback(self):
+        module, provider = _load_grounded_rag(search_results=[], grounded_results=[], retrieved_chunks=[])
+
+        result = module.grounded_rag_ask(
+            1,
+            "when did u publish buy your time",
+            user_id=1,
+            thread_id="test-thread",
+            conversation_history=[],
+            user_name="Nathan",
+        )
+
+        answer = result.get("answer", "")
+        self.assertNotIn("pricing info", answer.lower(), answer)
+        self.assertNotIn("checkout page", answer.lower(), answer)
+        self.assertTrue("date" in answer.lower() or "publication" in answer.lower() or "amazon" in answer.lower(), answer)
+
 
 if __name__ == "__main__":
     unittest.main()

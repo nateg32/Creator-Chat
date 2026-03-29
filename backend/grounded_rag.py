@@ -1473,7 +1473,20 @@ def _inject_live_web_results(
 
 def _build_public_fact_fallback(question: str, creator_name: str) -> str:
     lowered = (question or "").lower()
-    if "book" in lowered or "published" in lowered or "publication" in lowered or "release" in lowered:
+    if (
+        "book" in lowered
+        or "publish" in lowered
+        or "published" in lowered
+        or "publication" in lowered
+        or "release" in lowered
+        or "released" in lowered
+        or "launch" in lowered
+        or "launched" in lowered
+        or "come out" in lowered
+        or "write" in lowered
+        or "wrote" in lowered
+        or "written" in lowered
+    ):
         return (
             "I want to give you the right date on that. Check my Amazon listing, my official book page, "
             "or the publisher page for the exact publication info. If you want, I can help you narrow the fastest place to verify it."
@@ -1482,7 +1495,21 @@ def _build_public_fact_fallback(question: str, creator_name: str) -> str:
         return (
             "I want to give you the right number on that. Check my live social profiles directly for the current count."
         )
-    if any(token in lowered for token in ["price", "cost", "buy", "course", "program"]):
+    if any(
+        phrase in lowered
+        for phrase in [
+            "price",
+            "cost",
+            "pricing",
+            "where can i buy",
+            "where do i buy",
+            "where can i get",
+            "where can i find",
+            "purchase",
+            "course",
+            "program",
+        ]
+    ):
         return (
             "I want to give you the right pricing info there. Check my website or official checkout page for the current details."
         )
