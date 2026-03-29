@@ -5,8 +5,8 @@ from typing import Optional
 
 # Load env from backend/.env
 BASE_DIR = Path(__file__).resolve().parent
-# override=True ensures values in backend/.env win over any existing environment values
-load_dotenv(BASE_DIR / ".env", override=True)
+# Production/runtime environment variables should win over repo-local .env defaults.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 class Settings:
     BASE_DIR: Path = BASE_DIR

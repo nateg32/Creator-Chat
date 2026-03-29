@@ -21,7 +21,9 @@ from backend.services.search_decision_engine import SearchDecisionEngine
 logger = logging.getLogger(__name__)
 
 MONTH_PATTERN = (
-    r"January|February|March|April|May|June|July|August|September|October|November|December"
+    r"January|Jan(?:uary)?|February|Feb(?:ruary)?|March|Mar(?:ch)?|April|Apr(?:il)?|"
+    r"May|June|Jun(?:e)?|July|Jul(?:y)?|August|Aug(?:ust)?|September|Sept?\.?(?:ember)?|"
+    r"October|Oct(?:ober)?|November|Nov(?:ember)?|December|Dec(?:ember)?"
 )
 
 TIMELINE_TOKENS = ["when", "published", "publication", "release", "released", "launched", "launch", "come out", "what year", "what date", "which month", "write", "wrote", "written"]
@@ -56,6 +58,7 @@ def extract_search_text(result: Any) -> str:
             "text",
             "content",
             "answer",
+            "answer_text",
             "snippet",
             "result",
             "body",
@@ -63,6 +66,8 @@ def extract_search_text(result: Any) -> str:
             "grounding_text",
             "response_text",
             "fact_value",
+            "value",
+            "source_snippet",
         ]:
             val = result.get(field, "")
             if isinstance(val, str) and len(val.strip()) > 10:
@@ -565,7 +570,28 @@ class PersonalBioService:
             logger.info(f"{SEARCH_TRACE_PREFIX} query: {normalized_query}")
             try:
                 raw_result: Any = None
-                if callable(getattr(self.researcher, "grounded_overview", None)):
+                candidate: Optional[StructuredFactCandidate] = None
+                use_fact_lookup = bool(
+                    fact_field
+                    and query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}
+                    and callable(getattr(self.researcher, "lookup_public_fact", None))
+                )
+                if use_fact_lookup:
+                    raw_result = self.researcher.lookup_public_fact(
+                        normalized_query,
+                        profile,
+                        fact_field=fact_field or "",
+                        entity_subject=entity_subject or str((resolved_entity or {}).get("name") or ""),
+                        conversation_history=conversation_history,
+                    ) or {}
+                    logger.info(f"{SEARCH_TRACE_PREFIX} provider_raw: { _preview_text(raw_result) }")
+                    evidence = self._normalize_fact_lookup_evidence(raw_result)
+                    candidate = self._candidate_from_fact_lookup(
+                        raw_result,
+                        fact_field=fact_field,
+                        entity_subject=entity_subject or str((resolved_entity or {}).get("name") or ""),
+                    )
+                elif callable(getattr(self.researcher, "grounded_overview", None)):
                     raw_result = self.researcher.grounded_overview(
                         normalized_query,
                         profile,
@@ -592,12 +618,13 @@ class PersonalBioService:
                 continue
             logger.info(f"{SEARCH_TRACE_PREFIX} query_result_count: query={normalized_query!r} count={len(evidence)}")
             score = self._score_web_evidence_quality(evidence_plan, evidence)
-            candidate = self._extract_structured_fact_candidate(
-                question,
-                evidence,
-                fact_field=fact_field,
-                entity_subject=entity_subject or str((resolved_entity or {}).get("name") or ""),
-            )
+            if candidate is None:
+                candidate = self._extract_structured_fact_candidate(
+                    question,
+                    evidence,
+                    fact_field=fact_field,
+                    entity_subject=entity_subject or str((resolved_entity or {}).get("name") or ""),
+                )
             if candidate:
                 logger.info(
                     f"{SEARCH_TRACE_PREFIX} fact_candidate: query={normalized_query!r} "
@@ -653,6 +680,52 @@ class PersonalBioService:
                 "title": title,
                 "sim": 0.82,
             })
+        return normalized
+
+    def _normalize_fact_lookup_evidence(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return []
+        normalized: List[Dict[str, Any]] = []
+        response_text = re.sub(
+            r"\s+",
+            " ",
+            str(payload.get("response_text") or payload.get("answer_text") or "").strip(),
+        )
+        if response_text:
+            normalized.append(
+                {
+                    "text": response_text,
+                    "source": "web_fact_lookup",
+                    "url": str(payload.get("source_url") or ""),
+                    "title": str(payload.get("source_title") or "Grounded Fact Lookup"),
+                    "sim": float(payload.get("confidence") or 0.92),
+                }
+            )
+
+        result_items = payload.get("results") or payload.get("sources") or []
+        normalized.extend(self._normalize_web_evidence(list(result_items)))
+
+        if not normalized and any(
+            str(payload.get(field) or "").strip()
+            for field in ("source_url", "source_title", "source_snippet")
+        ):
+            normalized.append(
+                {
+                    "text": " | ".join(
+                        part
+                        for part in [
+                            str(payload.get("source_title") or "").strip(),
+                            str(payload.get("source_snippet") or "").strip(),
+                        ]
+                        if part
+                    )[:500],
+                    "source": "web_fact_lookup",
+                    "url": str(payload.get("source_url") or ""),
+                    "title": str(payload.get("source_title") or ""),
+                    "sim": float(payload.get("confidence") or 0.9),
+                }
+            )
+
         return normalized
 
     def _normalize_grounded_overview_evidence(self, overview: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -799,6 +872,30 @@ class PersonalBioService:
             source_url=str(getattr(cached_fact, "source_url", "") or ""),
             source_title=str(getattr(cached_fact, "source_title", "") or ""),
             confidence=float(getattr(cached_fact, "confidence", 0.85) or 0.85),
+        )
+
+    def _candidate_from_fact_lookup(
+        self,
+        payload: Dict[str, Any],
+        *,
+        fact_field: str = "",
+        entity_subject: str = "",
+    ) -> Optional[StructuredFactCandidate]:
+        if not isinstance(payload, dict) or not payload.get("found"):
+            return None
+        value = str(payload.get("value") or "").strip()
+        answer_text = str(payload.get("answer_text") or "").strip()
+        if not value and not answer_text:
+            return None
+        subject = str(entity_subject or payload.get("subject") or "It").strip() or "It"
+        return StructuredFactCandidate(
+            fact_field=str(payload.get("fact_field") or fact_field or "public_fact").strip(),
+            subject=subject,
+            value=value or answer_text,
+            answer_text=answer_text or value,
+            source_url=str(payload.get("source_url") or "").strip(),
+            source_title=str(payload.get("source_title") or "").strip(),
+            confidence=float(payload.get("confidence") or 0.92),
         )
 
     def _cached_fact_to_evidence(self, cached_fact) -> List[Dict[str, Any]]:

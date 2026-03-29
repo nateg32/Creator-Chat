@@ -95,6 +95,46 @@ class WebSearchResultInjectionTests(unittest.TestCase):
         self.assertIn("2023", second.get("answer", ""))
         self.assertEqual(first_call_count, second_call_count)
 
+    def test_structured_fact_lookup_payload_short_circuits_fallback(self):
+        service, provider = _load_personal_bio_service([], grounded_results=[], grounded_response_text="")
+        provider.fact_calls = []
+
+        def lookup_public_fact(query, creator_profile, **kwargs):
+            provider.fact_calls.append((query, kwargs.get("fact_field"), kwargs.get("entity_subject")))
+            return {
+                "found": True,
+                "fact_field": "publication_date",
+                "value": "September 2023",
+                "answer_text": "Buy Back Your Time was published in September 2023.",
+                "confidence": 0.97,
+                "source_url": "https://www.penguinrandomhouse.com/books/123456/buy-back-your-time/",
+                "source_title": "Penguin Random House",
+                "source_snippet": "Buy Back Your Time was published in September 2023.",
+                "results": [],
+                "sources": [],
+                "response_text": "Buy Back Your Time was published in September 2023.",
+            }
+
+        provider.lookup_public_fact = lookup_public_fact
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u write buy back your time",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={
+                "name": "Dan Martell",
+                "identity_fingerprint": 'Author of "Buy Back Your Time".',
+            },
+            allow_web=True,
+        )
+
+        self.assertTrue(provider.fact_calls)
+        self.assertIn("2023", result.get("answer", ""))
+        self.assertEqual(result.get("move"), "ANSWER_STRUCTURED_FACT")
+        self.assertNotIn("check my", result.get("answer", "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

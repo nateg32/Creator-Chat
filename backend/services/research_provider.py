@@ -19,6 +19,17 @@ class ResearchProvider(ABC):
     def search(self, query: str, creator_profile: Dict[str, Any], resource_type: str = "any", conversation_history: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, Any]]:
         pass
 
+    def lookup_public_fact(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        *,
+        fact_field: str = "",
+        entity_subject: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        return {}
+
     def _get_cache(self, creator_id: int, query: str, provider_name: str, cache_salt: str = "") -> Optional[List[Dict[str, Any]]]:
         combined = f"{query.lower().strip()}:{cache_salt}"
         query_hash = hashlib.sha256(combined.encode()).hexdigest()
@@ -692,6 +703,116 @@ Return JSON only:
             "sources": merged_sources,
             "packages": ordered_packages,
         }
+
+    def lookup_public_fact(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        *,
+        fact_field: str = "",
+        entity_subject: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        if not self.enabled:
+            return {}
+
+        creator_name = self._resolve_creator_name(creator_profile)
+        subject = (entity_subject or creator_name or "the creator").strip()
+        fact_label_map = {
+            "publication_date": "publication or release date",
+            "launch_date": "launch or release date",
+            "price": "current price",
+            "followers": "current follower count",
+            "subscribers": "current subscriber count",
+            "students": "current student count",
+            "members": "current member count",
+            "latest_episode": "latest episode or latest release",
+            "valuation": "public valuation",
+            "net_worth": "public net worth",
+        }
+        fact_label = fact_label_map.get((fact_field or "").strip().lower(), fact_field or "public fact")
+        context_preview = json.dumps((conversation_history or [])[-4:])
+
+        prompt = f"""
+You are verifying one public fact about {creator_name}.
+
+User question: {query}
+Target subject: {subject}
+Target fact to verify: {fact_label}
+Recent context: {context_preview}
+
+Use Google Search grounding and return JSON only.
+
+Rules:
+- Prefer official creator-owned sources, publisher/product listings, retailer listings, or high-authority public records.
+- For books, prioritize publisher pages, Amazon, Audible, Goodreads, and official creator pages.
+- If you can verify the fact, return:
+  {{
+    "found": true,
+    "fact_field": "{(fact_field or 'public_fact').strip()}",
+    "value": "the exact fact value",
+    "answer_text": "one factual sentence answering the question directly",
+    "confidence": 0.0,
+    "source_url": "https://...",
+    "source_title": "source title",
+    "source_snippet": "supporting source snippet"
+  }}
+- If you cannot verify it, return the same shape with found=false and empty strings.
+- Do not hedge. Do not tell the user to check a listing if the fact is already found.
+"""
+
+        raw = self._call_gemini_rest(prompt, search_enabled=True)
+        package = self._extract_grounding_package(raw)
+        text = self._extract_text_from_response(raw).strip()
+        parsed = self._parse_json(text) if text else None
+        grounded_results = list(package.get("grounded_results") or [])
+        primary = grounded_results[0] if grounded_results else {}
+        source_url = str(primary.get("url") or "")
+        source_title = str(primary.get("title") or "")
+        source_snippet = str(primary.get("snippet") or "")
+
+        result: Dict[str, Any] = {
+            "found": False,
+            "fact_field": (fact_field or "public_fact").strip(),
+            "value": "",
+            "answer_text": "",
+            "confidence": 0.0,
+            "source_url": source_url,
+            "source_title": source_title,
+            "source_snippet": source_snippet,
+            "results": grounded_results,
+            "sources": grounded_results,
+            "citations": package.get("citations") or [],
+            "response_text": "",
+        }
+        if isinstance(parsed, dict):
+            result.update(
+                {
+                    "found": bool(parsed.get("found")),
+                    "fact_field": str(parsed.get("fact_field") or result["fact_field"]).strip(),
+                    "value": str(parsed.get("value") or "").strip(),
+                    "answer_text": str(parsed.get("answer_text") or "").strip(),
+                    "confidence": float(parsed.get("confidence") or 0.0),
+                    "source_url": str(parsed.get("source_url") or source_url).strip(),
+                    "source_title": str(parsed.get("source_title") or source_title).strip(),
+                    "source_snippet": str(parsed.get("source_snippet") or source_snippet).strip(),
+                }
+            )
+
+        if result["answer_text"]:
+            result["response_text"] = result["answer_text"]
+        else:
+            result["response_text"] = str(package.get("response_text") or text or "").strip()
+
+        logger.info(
+            "[SEARCH_TRACE] fact_lookup: query=%r found=%s field=%s value=%r confidence=%s",
+            query,
+            result.get("found"),
+            result.get("fact_field"),
+            result.get("value"),
+            result.get("confidence"),
+        )
+        return result
 
     def search(
         self, 
