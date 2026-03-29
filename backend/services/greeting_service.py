@@ -150,7 +150,7 @@ class GreetingService:
         normalized = str(text or "").strip().lower()
         if not normalized:
             return False
-        if normalized.startswith(("what", "where", "how", "which", "who", "why", "when")):
+        if normalized.startswith(("what", "where", "how", "which", "who", "why", "when", "if", "because", "since", "unless")):
             return False
         if len(normalized.split()) > 8:
             return False
@@ -406,6 +406,7 @@ class GreetingService:
             + filler_openers
             + style_signals.get("signature_phrases", [])
         )
+        openers = [item for item in openers if self._looks_like_opening_hook(item)]
         if not openers:
             openers = self._clean_options(self._fallback_openers(energy_bucket, tone_traits))
         return openers

@@ -9,8 +9,13 @@ from backend.services.research_provider import GeminiResearchProvider
 from backend.settings import settings
 
 from backend.services.decision_service import decision_service
+from backend.services.search_decision_engine import SearchDecisionEngine
 
 logger = logging.getLogger(__name__)
+
+MONTH_PATTERN = (
+    r"January|February|March|April|May|June|July|August|September|October|November|December"
+)
 
 class PersonalBioService:
     """
@@ -44,16 +49,48 @@ class PersonalBioService:
         
         # 1. Classification
         q_type, topic, sufficiency = decision_service.classify_question(question, "personal_bio_question")
+        public_fact_query = self._is_public_creator_fact_query(question, creator_name, creator_profile)
         
         # 2. Evidence Gathering
         internal_facts = self._search_internal_knowledge(creator_id, question, creator_profile=creator_profile)
         
         web_facts = []
-        if allow_web and self._needs_more_evidence(internal_facts):
+        if allow_web and (public_fact_query or self._needs_more_evidence(internal_facts)):
             logger.info("PersonalBioService: Internal evidence weak, checking web...")
             web_facts = self._search_web_evidence(creator_id, creator_name, question, creator_profile=creator_profile)
             
         all_evidence = internal_facts + web_facts
+
+        if public_fact_query:
+            direct_public_answer = self._answer_public_creator_fact(question, all_evidence, creator_name)
+            if direct_public_answer:
+                return {
+                    "answer": direct_public_answer,
+                    "confidence": "HIGH" if web_facts else "MEDIUM",
+                    "sources": all_evidence,
+                    "move": "ANSWER_PUBLIC_FACT",
+                }
+
+            synthesized_public_answer = self._synthesize_public_fact_answer(
+                question,
+                all_evidence,
+                voice_profile,
+                creator_name,
+            )
+            if synthesized_public_answer:
+                return {
+                    "answer": synthesized_public_answer,
+                    "confidence": "HIGH" if web_facts else "MEDIUM",
+                    "sources": all_evidence,
+                    "move": "ANSWER_PUBLIC_FACT",
+                }
+
+            return {
+                "answer": self._public_fact_fallback(question, creator_name),
+                "confidence": "LOW",
+                "sources": all_evidence,
+                "move": "DIRECT_TO_OFFICIAL_SOURCE",
+            }
         
         # 3. Confidence Scoring (Basic logic for routing)
         confidence = "LOW"
@@ -78,6 +115,17 @@ class PersonalBioService:
         synthesis["move"] = move
         
         return synthesis
+
+    def _is_public_creator_fact_query(
+        self,
+        question: str,
+        creator_name: str,
+        creator_profile: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        creator_payload = dict(creator_profile or {})
+        creator_payload.setdefault("name", creator_name)
+        decision = SearchDecisionEngine(creator_payload).pre_retrieval_decision(question)
+        return bool(decision.should_search)
 
     def _search_internal_knowledge(self, creator_id: int, question: str, creator_profile: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         emb = rag.create_embedding(question)
@@ -176,6 +224,149 @@ class PersonalBioService:
         max_sim = max(f["sim"] for f in facts) if facts else 0
         if max_sim < 0.75: return True
         return False
+
+    def _evidence_blob(self, evidence: List[Dict[str, Any]]) -> str:
+        return " ".join(str(item.get("text") or "") for item in evidence if item.get("text"))
+
+    def _extract_subject(self, question: str, evidence: List[Dict[str, Any]]) -> str:
+        patterns = [
+            re.compile(r"(?:when|where|what year|what date|which month)\s+(?:was|did)\s+(.+?)\s+(?:published|launch(?:ed)?|release(?:d)?|come out)", re.IGNORECASE),
+            re.compile(r"where can i (?:buy|get|find|purchase)\s+(.+)", re.IGNORECASE),
+        ]
+        normalized_question = re.sub(r"\s+", " ", str(question or "")).strip(" ?!.")
+        for pattern in patterns:
+            match = pattern.search(normalized_question)
+            if match:
+                subject = re.sub(r"\s+", " ", match.group(1)).strip(" \"'")
+                if subject:
+                    return subject
+
+        for item in evidence:
+            title = str(item.get("title") or "").strip()
+            if title:
+                return title
+        return ""
+
+    def _answer_public_creator_fact(self, question: str, evidence: List[Dict[str, Any]], creator_name: str) -> str:
+        blob = self._evidence_blob(evidence)
+        lowered_question = str(question or "").lower()
+        subject = self._extract_subject(question, evidence)
+        subject = subject or "It"
+
+        full_date = re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE)
+        month_year = re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE)
+        year = re.search(r"\b(20\d{2}|19\d{2})\b", blob)
+
+        if any(token in lowered_question for token in ["when", "published", "publication", "release", "released", "launched", "launch", "come out", "what year", "what date", "which month"]):
+            if full_date:
+                return f"{subject} was published on {full_date.group(0)}."
+            if month_year:
+                return f"{subject} was published in {month_year.group(0)}."
+            if year:
+                return f"{subject} was published in {year.group(1)}."
+
+        if any(token in lowered_question for token in ["where can i buy", "where do i buy", "where can i get", "where can i find", "purchase"]):
+            domains = {
+                (item.get("url") or "").lower(): item.get("url")
+                for item in evidence
+                if item.get("url")
+            }
+            mentions_amazon = "amazon" in blob.lower() or any("amazon." in key for key in domains)
+            mentions_audible = "audible" in blob.lower() or any("audible." in key for key in domains)
+            mentions_publisher = any(
+                marker in blob.lower()
+                for marker in ["penguin", "publisher", "harper", "random house", "simon", "press"]
+            )
+            options = []
+            if mentions_amazon:
+                options.append("Amazon")
+            if mentions_audible:
+                options.append("Audible")
+            if mentions_publisher:
+                options.append("the publisher page")
+            if not options:
+                options = ["Amazon", "Audible", "the publisher page"]
+            if len(options) == 1:
+                option_text = options[0]
+            elif len(options) == 2:
+                option_text = f"{options[0]} or {options[1]}"
+            else:
+                option_text = f"{options[0]}, {options[1]}, or {options[2]}"
+            return f"You can get {subject} on {option_text}."
+
+        return ""
+
+    def _synthesize_public_fact_answer(
+        self,
+        question: str,
+        evidence: List[Dict[str, Any]],
+        voice_profile: Dict[str, Any],
+        creator_name: str,
+    ) -> str:
+        if not evidence:
+            return ""
+
+        evidence_text = "\n".join([f"- [{e.get('source', 'unknown')}]: {e.get('text', '')[:300]}" for e in evidence])
+        vp_json = json.dumps(voice_profile, indent=2)
+
+        system_prompt = f"""
+You are {creator_name}.
+
+This is a public factual question about your own public work, products, books, releases, platforms, or stats.
+
+Voice Profile:
+{vp_json}
+
+RULES:
+1. Answer directly from the evidence in 1-2 sentences.
+2. If the evidence contains a date, title, platform, or availability detail, lead with that concrete fact.
+3. Never say "I haven't talked about that publicly" about your own public work.
+4. Never say "I don't have that in front of me" about your own book, product, or release.
+5. Never invent facts. If the evidence is still insufficient, direct the user to a concrete official source.
+
+Return JSON:
+{{
+  "answer": "string"
+}}
+"""
+        user_prompt = f"""
+User Question: {question}
+
+Evidence:
+{evidence_text}
+"""
+        try:
+            resp = rag.generate_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=settings.FINAL_RESPONSE_MODEL,
+                temperature=0.0,
+                json_mode=True,
+            )
+            data = json.loads(resp)
+            return str(data.get("answer") or "").strip()
+        except Exception as e:
+            logger.error(f"Public fact synthesis failed: {e}")
+            return ""
+
+    def _public_fact_fallback(self, question: str, creator_name: str) -> str:
+        lowered = str(question or "").lower()
+        if "book" in lowered or "publish" in lowered or "publication" in lowered or "release" in lowered:
+            return (
+                f"I want to give you the right date on that. Check {creator_name}'s official book listing, "
+                "Amazon, Audible, or the publisher page for the exact publication info."
+            )
+        if any(token in lowered for token in ["where can i buy", "purchase", "course", "program"]):
+            return (
+                f"I want to point you to the right place on that. Check {creator_name}'s official website, "
+                "course page, or verified profile links for the current listing."
+            )
+        return (
+            f"I want to give you the right answer on that. Check {creator_name}'s official website, "
+            "verified profiles, or the primary listing page for the exact current details."
+        )
 
     def _synthesize_answer(
         self, 

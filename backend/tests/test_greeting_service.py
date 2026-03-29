@@ -154,6 +154,25 @@ class GreetingServiceTests(unittest.TestCase):
             greeting.endswith("What should I call you?") or greeting.endswith("What's your name?") or greeting.endswith("Who am I talking to?")
         )
 
+    def test_greeting_rejects_conditional_fragment_openers(self):
+        voice_profile = {
+            "energy": {"bucket": "MID"},
+            "greeting_neutral": ["If you want to get rich", "Alright"],
+            "tone_traits": {"supportive": 0.2, "blunt": 0.6},
+        }
+
+        greeting = greeting_service.generate_greeting(
+            "Nathan",
+            voice_profile,
+            creator_name="Dan",
+            creator_category="business",
+            variation_seed="conditional-fragment-check",
+        )
+
+        self.assertNotIn("If you want to get rich", greeting)
+        self.assertIn("Nathan", greeting)
+        self.assertIn("?", greeting)
+
 
 if __name__ == "__main__":
     unittest.main()

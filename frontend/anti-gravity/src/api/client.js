@@ -161,59 +161,94 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   let finalCards = null;
   let finalCitations = null;
   let finalContent = null;
+  let completed = false;
+
+  const completeStream = () => {
+    const completedAnswer = finalContent || fullAnswer;
+    if (onComplete) {
+      onComplete(completedAnswer, {
+        cards: finalCards || [],
+        citations: finalCitations || [],
+        finalContent,
+      });
+    }
+    completed = true;
+    return { answer: completedAnswer, cards: finalCards || [], citations: finalCitations || [] };
+  };
+
+  const processEventBlock = (part) => {
+    if (!part.startsWith("data: ")) return null;
+
+    const dataStr = part.slice(6);
+    if (dataStr === "[DONE]") {
+      return completeStream();
+    }
+
+    let data;
+    try {
+      data = JSON.parse(dataStr);
+    } catch (e) {
+      console.error("Error parsing stream chunk:", e);
+      return null;
+    }
+
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    if (typeof data.status === "string" && onStatus) {
+      onStatus(data.status);
+    }
+
+    if (Array.isArray(data.cards)) {
+      finalCards = data.cards;
+    }
+
+    if (Array.isArray(data.citations)) {
+      finalCitations = data.citations;
+    }
+
+    if (typeof data.final_content === "string") {
+      finalContent = data.final_content;
+      fullAnswer = data.final_content;
+    }
+
+    if (typeof data.content === "string") {
+      fullAnswer += data.content;
+      if (onToken) onToken(data.content);
+    }
+
+    return null;
+  };
 
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
       const parts = buffer.split("\n\n");
-      buffer = parts.pop();
+      buffer = parts.pop() || "";
 
       for (const part of parts) {
-        if (part.startsWith("data: ")) {
-          const dataStr = part.slice(6);
-          if (dataStr === "[DONE]") {
-            const completedAnswer = finalContent || fullAnswer;
-            if (onComplete) onComplete(completedAnswer, { cards: finalCards || [], citations: finalCitations || [], finalContent });
-            return { answer: completedAnswer, cards: finalCards || [], citations: finalCitations || [] };
-          }
-          let data;
-          try {
-            data = JSON.parse(dataStr);
-          } catch (e) {
-            console.error("Error parsing stream chunk:", e);
-            continue;
-          }
-
-          if (data.error) {
-            throw new Error(data.error);
-          }
-
-          if (typeof data.status === "string" && onStatus) {
-            onStatus(data.status);
-          }
-
-          if (Array.isArray(data.cards)) {
-            finalCards = data.cards;
-          }
-
-          if (Array.isArray(data.citations)) {
-            finalCitations = data.citations;
-          }
-
-          if (typeof data.final_content === "string") {
-            finalContent = data.final_content;
-            fullAnswer = data.final_content;
-          }
-
-          if (data.content) {
-            fullAnswer += data.content;
-            if (onToken) onToken(data.content);
-          }
+        const result = processEventBlock(part);
+        if (result) {
+          return result;
         }
       }
+
+      if (done) {
+        const trailing = buffer.trim();
+        if (trailing) {
+          const result = processEventBlock(trailing);
+          if (result) {
+            return result;
+          }
+        }
+        break;
+      }
+    }
+
+    if (!completed) {
+      return completeStream();
     }
   } catch (err) {
     if (onError) onError(err);
