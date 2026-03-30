@@ -338,6 +338,18 @@ def detect_evidence_contradiction(
                 "web_markers": web_markers,
             }
 
+    # Catalog count contradiction: RAG says N items, web says M items (e.g. "1 book" vs "2 books")
+    if any(token in lowered for token in ("how many", "books", "courses", "programs", "written", "published", "authored")):
+        corpus_markers = _extract_count_markers(corpus_text)
+        web_markers = _extract_count_markers(web_text)
+        if corpus_markers and web_markers and set(corpus_markers).isdisjoint(set(web_markers)):
+            return {
+                "has_contradiction": True,
+                "kind": "catalog_count",
+                "corpus_markers": corpus_markers,
+                "web_markers": web_markers,
+            }
+
     return {"has_contradiction": False, "kind": "none", "corpus_markers": [], "web_markers": []}
 
 

@@ -1945,6 +1945,21 @@ def evaluate_context_sufficiency(
         logger.info("Context Sufficiency: forcing PARTIAL because the question needs fresh public info.")
         return "PARTIAL"
 
+    # Catalog/count queries ("how many books", "what books have you written") should
+    # always verify against the web — RAG chunks may mention only a subset of items.
+    lowered_q = (question or "").lower()
+    is_catalog_count_query = bool(
+        re.search(r"\bhow many\s+(books|courses|programs|podcasts|shows|companies|businesses)\b", lowered_q)
+        or re.search(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", lowered_q)
+        or re.search(r"\bwhich\s+(books|courses|programs|podcasts|shows)\b", lowered_q)
+        or re.search(r"\bhave\s+(?:you|u)\s+(?:written|published|made|created|authored)\b", lowered_q)
+        or re.search(r"\b(?:books|courses|programs|podcasts|shows)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", lowered_q)
+        or re.search(r"\ball\s+(?:your|his|her)\s+books\b", lowered_q)
+    )
+    if is_catalog_count_query and not has_live_web_result:
+        logger.info("Context Sufficiency: forcing PARTIAL because catalog/count query needs web verification.")
+        return "PARTIAL"
+
     prompt = f"""
 Evaluate if the following KNOWLEDGE is sufficient to answer the USER QUESTION accurately.
 

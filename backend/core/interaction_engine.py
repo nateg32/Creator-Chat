@@ -1910,7 +1910,24 @@ STRICT IDENTITY LOCK:
                     "PRIORITIZE the platform that best matches what the user asked for. If needed, share one backup option with a short reason."
                 )
             else:
-                anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Name the best resource naturally in the sentence, say you attached it below, do not output markdown links in the prose, and never output JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
+                # Detect catalog/count questions that need web facts to override RAG
+                _q_lower = (user_msg or "").lower()
+                is_catalog_count = bool(
+                    re.search(r"\bhow many\s+(books|courses|programs|podcasts|shows|companies|businesses)\b", _q_lower)
+                    or re.search(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", _q_lower)
+                    or re.search(r"\bhave\s+(?:you|u)\s+(?:written|published|made|created|authored)\b", _q_lower)
+                    or re.search(r"\b(?:books|courses|programs)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", _q_lower)
+                )
+                if is_catalog_count:
+                    anti_halluc_rule = (
+                        "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. "
+                        "For this factual question about your catalog or output, the web search results are the AUTHORITATIVE source. "
+                        "If the web results list more items (books, courses, etc.) than your other knowledge mentions, TRUST THE WEB RESULTS — "
+                        "your ingested content may only reference some of your work. Give the complete, accurate count and list from the web results. "
+                        "Do not output markdown links in the prose, and never output JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
+                    )
+                else:
+                    anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Name the best resource naturally in the sentence, say you attached it below, do not output markdown links in the prose, and never output JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
 
         return f"""IDENTITY: You are {creator_name}.
 {identity_context}
@@ -2240,7 +2257,24 @@ CURRENT TURN HAS IMAGE CONTEXT:
         
         # If we have web search results, ensure the rule allows them
         if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
-            anti_hallucination_rule = "7. USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Keep it to the best 1-2 resources, prefer the platform the user asked for, tell the user you attached the resource below, and never output markdown links, JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
+            # Detect catalog/count questions that need web facts to override RAG
+            _q_lower = (user_msg or "").lower()
+            is_catalog_count = bool(
+                re.search(r"\bhow many\s+(books|courses|programs|podcasts|shows|companies|businesses)\b", _q_lower)
+                or re.search(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", _q_lower)
+                or re.search(r"\bhave\s+(?:you|u)\s+(?:written|published|made|created|authored)\b", _q_lower)
+                or re.search(r"\b(?:books|courses|programs)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", _q_lower)
+            )
+            if is_catalog_count:
+                anti_hallucination_rule = (
+                    "7. USE LIVE WEB SEARCH RESULTS — AUTHORITATIVE FOR THIS QUESTION. "
+                    "For this factual question about your catalog or output, the web search results are the AUTHORITATIVE source. "
+                    "If the web results list more items (books, courses, etc.) than your other knowledge mentions, TRUST THE WEB RESULTS — "
+                    "your ingested content may only reference some of your work. Give the complete, accurate count and list from the web results. "
+                    "Do not output markdown links, JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
+                )
+            else:
+                anti_hallucination_rule = "7. USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Keep it to the best 1-2 resources, prefer the platform the user asked for, tell the user you attached the resource below, and never output markdown links, JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
 
         # Point 10 is conditional: REDIRECT = hard stop, BRIDGE/IN_DOMAIN = answer through domain lens
         if plan.routing == "REDIRECT":
