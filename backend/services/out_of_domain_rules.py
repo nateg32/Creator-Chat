@@ -120,7 +120,10 @@ _GENERAL_TOPIC_DOMAIN_MAP: Dict[str, Set[str]] = {
 _GENERAL_TOPIC_PATTERNS: Dict[str, List[str]] = {
     "git": [
         r"\bgit\s*(commit|push|pull|merge|clone|branch|rebase|stash|status|log|add|diff|checkout|init|reset|revert|fetch)\b",
+        r"\b(commit|push|pull|merge|clone|branch|rebase|stash|checkout|fetch)\s+(in|with|using|on|to|from|via)\s+git\b",
+        r"\bhow\s+to\s+(commit|push|pull|merge|clone|branch|rebase|stash|checkout|fetch)\b.*\bgit\b",
         r"\bhow\s+to\s+do\s+a\s+git\b",
+        r"\bhow\s+to\s+use\s+git\b",
         r"\bgit\s+workflow\b",
         r"\bversion\s+control\b",
         r"\bgitHub\s+(pull\s+request|repo|repository)\b",
