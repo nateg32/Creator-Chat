@@ -1339,6 +1339,10 @@ Set `grounding.requires_sources: true` and `grounding.video_policy: "one_if_help
 - Asks for a "link", "URL", "source", "site", or "where can I find X".
 - Asks "which video should I watch" or "do you have a video on X".
 - Requests a "resource", "checklist", "template", or "guide".
+- Asks to "recommend" or "suggest" a video, episode, or content.
+- Says "give me the links", "send the link", "share the link", or similar.
+- Mentions "watch", "watching", or "what should I watch".
+- Asks a question that is likely best answered by pointing to a specific piece of content.
 
 Set route to "ROUTE_2_TASK". Output valid JSON InteractionPlan."""
 

@@ -525,7 +525,7 @@ def _support_resource_card_candidates(
     )
     # Only surface sources with meaningful relevance to this specific answer.
     # Prevents unrelated retrieved chunks from showing up as cards.
-    _MIN_CARD_SCORE = 0.52
+    _MIN_CARD_SCORE = 0.40
     return [c for c in selected if float(c.get("score", 0.0) or 0.0) >= _MIN_CARD_SCORE]
 
 
@@ -717,6 +717,51 @@ def _build_response_cards(
         cards.append(card)
 
     return cards
+
+
+def _rescue_cards_from_answer(
+    answer_text: str,
+    support_set: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, str]]:
+    """If the LLM's answer mentions a video title present in the support set,
+    build a card for the best-matching resource so the user gets a clickable link
+    even when the planner didn't activate video_policy."""
+    if not answer_text or not support_set:
+        return []
+
+    answer_lower = answer_text.lower()
+    best_card: Optional[Dict[str, str]] = None
+    best_overlap = 0
+
+    for chunk in support_set:
+        title = (
+            chunk.get("title")
+            or (chunk.get("source_ref") or {}).get("title")
+            or ""
+        ).strip()
+        url = (
+            chunk.get("url")
+            or (chunk.get("source_ref") or {}).get("canonical_url")
+            or ""
+        ).strip()
+        if not title or not url:
+            continue
+        if not _is_viable_resource_url(url):
+            continue
+        # Check if a meaningful portion of the title appears in the answer.
+        title_words = [w for w in re.findall(r"[a-z0-9']+", title.lower()) if len(w) > 2]
+        if not title_words:
+            continue
+        hits = sum(1 for w in title_words if w in answer_lower)
+        overlap = hits / len(title_words)
+        # Require at least 50% word overlap to avoid false positives.
+        if overlap >= 0.50 and hits >= 3 and overlap > best_overlap:
+            card = _preview_card_from_resource(title, url)
+            if card:
+                best_card = card
+                best_overlap = overlap
+
+    return [best_card] if best_card else []
 
 
 def _selected_recommendation_chunks(
@@ -4988,6 +5033,12 @@ Message: {answer_text[:500]}"""
             question=question,
             answer_text=answer,
         )
+
+    # --- Step 9b: Card rescue — if the answer mentions a video title from the
+    # support set but no card was built (e.g. video_policy was "none"), attach it.
+    if not card and not image_turn_active:
+        card = _rescue_cards_from_answer(answer, support_set)
+
     recommendation_event_id = None
     if (rec_result or {}).get("best_candidate"):
         recommendation_event_id = recommendation_feedback_service.log_impression(
@@ -5732,6 +5783,9 @@ async def grounded_rag_stream(
         question=question,
         answer_text=final_stream_text,
     )
+    # Card rescue for streaming path — attach card if answer mentions a known title
+    if not stream_cards:
+        stream_cards = _rescue_cards_from_answer(final_stream_text, support_set)
     if route == "ROUTE_2_TASK" and (rec_result or {}).get("best_candidate"):
         recommendation_feedback_service.log_impression(
             user_id=user_id,
