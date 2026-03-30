@@ -353,7 +353,8 @@ If you genuinely do not have the information needed to answer:
 - Never say "I don't have that in front of me" about your own products, books, or public releases
 - Never fabricate dates, prices, follower counts, or statistics
 - Instead, say you want to give the right answer and direct the user to a concrete place to verify it
-- Give a specific next step such as your website, Amazon listing, publisher page, newsletter archive, or live social profile
+- If you have a URL from YOUR OFFICIAL WEBSITE or YOUR SOCIAL CHANNELS, use it. Otherwise, mention the platform by name (e.g. "check my YouTube channel") WITHOUT outputting a URL
+- NEVER output empty URLs, placeholder URLs, or quotes with nothing inside them (e.g. "" or ''). If you do not have the actual link, do not attempt to write one
 - Never end with a dead-end "I don't know" and nothing else
 """
 
@@ -1870,6 +1871,20 @@ Output ONLY your response."""
         if social_links:
             identity_context += "\nYOUR SOCIAL CHANNELS:\n" + "\n".join(social_links) + "\n"
 
+        # Inject official website domain(s) so the model can reference real URLs
+        official_domains = creator_profile.get("official_domains") or []
+        if isinstance(official_domains, str):
+            try: official_domains = json.loads(official_domains)
+            except: official_domains = []
+        if official_domains:
+            primary_site = official_domains[0] if official_domains else ""
+            if primary_site and not primary_site.startswith("http"):
+                primary_site = f"https://{primary_site}"
+            identity_context += f"\nYOUR OFFICIAL WEBSITE: {primary_site}\n"
+            if len(official_domains) > 1:
+                extras = ", ".join(d if d.startswith("http") else f"https://{d}" for d in official_domains[1:])
+                identity_context += f"Other domains: {extras}\n"
+
         identity_guard = """
 STRICT IDENTITY LOCK:
 1. NEVER reveal you are an AI, a language model, or ChatGPT.
@@ -1887,9 +1902,9 @@ STRICT IDENTITY LOCK:
         if rag_chunks:
             has_links = any(c.get("url") or (c.get("source_ref") or {}).get("canonical_url") for c in rag_chunks)
             
-        anti_halluc_rule = "- FALLBACK: If a fact, title, or link is NOT in Priority 1 or 2, say naturally that you do not have it right now. DO NOT guess, speculate, rename a title, or hallucinate."
+        anti_halluc_rule = "- FALLBACK: If a fact, title, or link is NOT in Priority 1 or 2, say naturally that you do not have it right now. DO NOT guess, speculate, rename a title, or hallucinate. NEVER output empty or placeholder URLs like \"\" or '' in your response."
         if not has_links:
-            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent or rename a title. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice. If the user did NOT ask for a link or video, do not mention missing links at all."
+            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent or rename a title. NEVER output empty or placeholder URLs like \"\" or '' in your response. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice from your knowledge. If the user did NOT ask for a link or video, do not mention missing links at all."
         
         # If we have web search results, ensure the rule allows them
         has_video_links = any(
@@ -2105,6 +2120,29 @@ Output only the response."""
             for k, v in consensus.items():
                 if v and v != "unknown":
                     identity_context += f"- {k.replace('_', ' ').capitalize()}: {v}\n"
+
+        # Inject Social Links (Pass 2)
+        platforms = creator_profile.get("platform_configs") or {}
+        if isinstance(platforms, str):
+            try: platforms = json.loads(platforms)
+            except: platforms = {}
+        social_links = []
+        for p_name, p_cfg in platforms.items():
+            if p_cfg.get("enabled") and p_cfg.get("url"):
+                social_links.append(f"- {p_name.capitalize()}: {p_cfg['url']}")
+        if social_links:
+            identity_context += "\nYOUR SOCIAL CHANNELS:\n" + "\n".join(social_links) + "\n"
+
+        # Inject official website domain(s)
+        official_domains = creator_profile.get("official_domains") or []
+        if isinstance(official_domains, str):
+            try: official_domains = json.loads(official_domains)
+            except: official_domains = []
+        if official_domains:
+            primary_site = official_domains[0]
+            if primary_site and not primary_site.startswith("http"):
+                primary_site = f"https://{primary_site}"
+            identity_context += f"\nYOUR OFFICIAL WEBSITE: {primary_site}\n"
 
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
