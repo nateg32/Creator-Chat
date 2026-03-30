@@ -525,7 +525,7 @@ def _support_resource_card_candidates(
     )
     # Only surface sources with meaningful relevance to this specific answer.
     # Prevents unrelated retrieved chunks from showing up as cards.
-    _MIN_CARD_SCORE = 0.38
+    _MIN_CARD_SCORE = 0.52
     return [c for c in selected if float(c.get("score", 0.0) or 0.0) >= _MIN_CARD_SCORE]
 
 
@@ -1328,14 +1328,21 @@ def _score_support_resource_candidate(
     answer_overlap = _term_overlap_score(answer_text, haystack)
     support_rank_bonus = max(0.0, 0.16 - (chunk_index * 0.02))
     title_verbatim_bonus = _title_verbatim_match_bonus(title, question)
+
+    # If the source has zero overlap with what the user actually asked,
+    # cap its score so it cannot surface as a card regardless of answer overlap.
+    # This prevents hallucinated answers from pulling unrelated cards.
+    question_floor_penalty = -0.18 if (question_overlap < 0.05 and title_verbatim_bonus < 0.10) else 0.0
+
     score = (
         (0.28 if not is_live_web else 0.12)
         + (0.24 if recommended else 0.0)
-        + (title_quality * 0.24)
-        + (question_overlap * 0.14)      # reduced: verbatim bonus handles explicit title refs
-        + (answer_overlap * 0.34)         # increased: primary signal — was this actually used?
+        + (title_quality * 0.22)
+        + (question_overlap * 0.28)      # primary: does this source match what the user asked?
+        + (answer_overlap * 0.20)         # secondary: was it referenced in the response?
         + support_rank_bonus
         + title_verbatim_bonus            # 0.0–0.50 when user quoted the video title
+        + question_floor_penalty
     )
     return round(score, 4)
 
@@ -5804,7 +5811,7 @@ def build_inline_citations(
 
     # Filter to sources that meaningfully contributed to the answer before sorting.
     # Prevents all retrieved chunks from appearing as citations when only 1-2 were used.
-    _MIN_CITATION_SCORE = 0.28
+    _MIN_CITATION_SCORE = 0.42
     ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
     return ranked[:limit]

@@ -1755,6 +1755,7 @@ Output ONLY your response."""
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
 
         source_context = ""
+        available_video_titles: set = set()
         live_web_context = build_live_web_prompt_block(rag_chunks, source_items=context_limits["source_items"])
         if rag_chunks:
             chunks_text = []
@@ -1778,10 +1779,23 @@ Output ONLY your response."""
                     if url:
                         item_text += f"\n(Video Title: {title} | Link: {url})"
                     chunks_text.append(item_text)
+                    if title and title != f"Source {i+1}":
+                        available_video_titles.add(title.strip())
             source_context = "\n".join(chunks_text) if chunks_text else "No specific content retrieved."
         else:
             source_context = "No specific content retrieved. Answer from your general domain expertise."
         has_image_context = any(c.get("is_image_context") for c in (rag_chunks or []))
+
+        # Build a video inventory so the LLM knows exactly which videos it has content from
+        video_inventory_block = ""
+        if available_video_titles:
+            titles_list = ", ".join(f'"{t}"' for t in sorted(available_video_titles))
+            video_inventory_block = (
+                f"\nVIDEO INVENTORY (the ONLY videos you have actual content from right now): {titles_list}\n"
+                "CRITICAL: If the user asks what you said IN a specific video and that video title is NOT in this inventory, "
+                "you MUST say you do not have the transcript for that specific video right now. "
+                "DO NOT guess or fabricate what a video contains. Only describe content you can see above."
+            )
 
         persona_anchor = creator_profile.get("soul_md") or persona or ""
         persona_section = f"\nWHO YOU ARE (Persona Anchor):\n{persona_anchor[:context_limits['persona_chars']]}\n" if persona_anchor else ""
@@ -1936,6 +1950,7 @@ CONTEXT:
 {live_web_context}
 KNOWLEDGE:
 {source_context}
+{video_inventory_block}
 {pref_instructions}
 
 Output ONLY your response to the user."""
@@ -2091,6 +2106,7 @@ Output only the response."""
         # Build context from RAG chunks — these are the creator's actual words
         source_context = ""
         live_web_context = build_live_web_prompt_block(rag_chunks, source_items=context_limits["source_items"])
+        available_video_titles = set()
         if rag_chunks:
             chunks_text = []
             for i, c in enumerate(rag_chunks[:context_limits["source_items"]]):
@@ -2106,9 +2122,23 @@ Output only the response."""
                     if url:
                         item_text += f" (Link: {url})"
                     chunks_text.append(item_text)
+                    if title:
+                        available_video_titles.add(title.strip())
             source_context = "\n".join(chunks_text) if chunks_text else "No specific content retrieved."
         else:
             source_context = "No specific content retrieved. Answer from your general domain expertise."
+
+        # Build a video inventory so the LLM knows exactly which videos it has content from
+        video_inventory_block = ""
+        if available_video_titles:
+            titles_list = ", ".join(f'"{t}"' for t in sorted(available_video_titles))
+            video_inventory_block = (
+                f"\nVIDEO INVENTORY (the ONLY videos you have actual content from right now): {titles_list}\n"
+                "CRITICAL: If the user asks what you said IN a specific video and that video title is NOT in this inventory, "
+                "you MUST say you do not have the transcript for that specific video right now. "
+                "DO NOT guess or fabricate what a video contains. Only describe content you can see above."
+            )
+
         has_image_context = any(c.get("is_image_context") for c in (rag_chunks or []))
 
         # Build persona section using soul_md as priority
@@ -2245,6 +2275,7 @@ CONTEXT:
 
 KNOWLEDGE FROM YOUR CONTENT (use ideas naturally, do NOT quote titles or specific names of your content unless you are sharing the link):
 {source_context}
+{video_inventory_block}
 
 {pref_instructions}
 
