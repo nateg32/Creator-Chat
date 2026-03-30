@@ -522,7 +522,10 @@ def _support_resource_card_candidates(
         ),
         reverse=True,
     )
-    return selected
+    # Only surface sources with meaningful relevance to this specific answer.
+    # Prevents unrelated retrieved chunks from showing up as cards.
+    _MIN_CARD_SCORE = 0.38
+    return [c for c in selected if float(c.get("score", 0.0) or 0.0) >= _MIN_CARD_SCORE]
 
 
 def _support_set_has_linkable_ingested_resource(
@@ -1280,6 +1283,25 @@ def _term_overlap_score(left: str, right: str, limit: int = 5) -> float:
     return min(1.0, hits / max(1, min(len(left_terms[:limit]), limit)))
 
 
+def _title_verbatim_match_bonus(title: str, question: str) -> float:
+    """Returns a bonus [0.0, 0.50] when the source title's words appear in the
+    user's question. Handles explicit references like: 'in your video Give me
+    25 minutes...' — the matching source should dominate all others."""
+    title_words = [w for w in re.findall(r"[a-z0-9]+", (title or "").lower()) if len(w) > 2]
+    q_words = set(re.findall(r"[a-z0-9]+", (question or "").lower()))
+    if len(title_words) < 3 or not q_words:
+        return 0.0
+    hits = sum(1 for w in title_words if w in q_words)
+    ratio = hits / len(title_words)
+    if ratio >= 0.80:
+        return 0.50
+    if ratio >= 0.60:
+        return 0.28
+    if ratio >= 0.40:
+        return 0.10
+    return 0.0
+
+
 def _score_support_resource_candidate(
     title: str,
     url: str,
@@ -1304,13 +1326,15 @@ def _score_support_resource_candidate(
     question_overlap = _term_overlap_score(question, haystack)
     answer_overlap = _term_overlap_score(answer_text, haystack)
     support_rank_bonus = max(0.0, 0.16 - (chunk_index * 0.02))
+    title_verbatim_bonus = _title_verbatim_match_bonus(title, question)
     score = (
         (0.28 if not is_live_web else 0.12)
         + (0.24 if recommended else 0.0)
         + (title_quality * 0.24)
-        + (question_overlap * 0.22)
-        + (answer_overlap * 0.26)
+        + (question_overlap * 0.14)      # reduced: verbatim bonus handles explicit title refs
+        + (answer_overlap * 0.34)         # increased: primary signal — was this actually used?
         + support_rank_bonus
+        + title_verbatim_bonus            # 0.0–0.50 when user quoted the video title
     )
     return round(score, 4)
 
@@ -5705,5 +5729,9 @@ def build_inline_citations(
             }
         )
 
+    # Filter to sources that meaningfully contributed to the answer before sorting.
+    # Prevents all retrieved chunks from appearing as citations when only 1-2 were used.
+    _MIN_CITATION_SCORE = 0.28
+    ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
     return ranked[:limit]

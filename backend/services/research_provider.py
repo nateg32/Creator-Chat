@@ -356,8 +356,14 @@ class ResearchProvider(ABC):
                 if has_creator_name and has_affiliate_marker and (token_hits >= creator_threshold or domain_affiliated):
                     relation = 'AFFILIATED'
                     score = 0.84 if domain_affiliated else 0.78
+                elif candidate.get('is_public_info') and has_creator_name:
+                    # Gemini-grounded public fact result (e.g. Amazon book listing, Wikipedia, Goodreads).
+                    # Gemini already validated this result was returned for a query about this creator.
+                    # Trust it when the creator's name appears in the content.
+                    relation = 'PUBLIC_FACT_VERIFIED'
+                    score = float(candidate.get('confidence') or 0.82)
 
-            if relation in {'SELF', 'AFFILIATED'}:
+            if relation in {'SELF', 'AFFILIATED', 'PUBLIC_FACT_VERIFIED'}:
                 candidate['platform'] = platform
                 candidate['relation'] = relation
                 candidate['ownership_score'] = score
@@ -392,7 +398,24 @@ class GeminiResearchProvider(ResearchProvider):
         creator_name = self._resolve_creator_name(creator_profile)
         queries: List[str] = []
 
+        # Detect bibliographic queries — books, co-authorship, publications, biography facts.
+        # These need to search Amazon, Goodreads, Wikipedia, and publisher/press sites, not just
+        # creator-owned URLs. A co-authored book on Amazon is a public bibliographic record.
+        _BIO_QUERY_WORDS = {
+            'book', 'books', 'written', 'co-wrote', 'cowrite', 'co-author', 'coauthor',
+            'author', 'authored', 'published', 'publication', 'bibliography', 'wrote',
+        }
+        is_bibliographic = bool(_BIO_QUERY_WORDS.intersection(set(re.findall(r'[a-z]+', query.lower()))))
+
         if settings.OPENAI_API_KEY:
+            bio_instruction = (
+                "- For book/publication/authorship queries: include queries targeting Amazon, Goodreads, "
+                "publisher sites, and Wikipedia. Do NOT restrict to creator-owned URLs for bibliographic queries. "
+                "Include a query like: \'\"creator name\" co-author book 2024 Amazon Goodreads\'.\n"
+                "- Co-authored and multi-author books count as the creator\'s own work."
+                if is_bibliographic else
+                "- Prefer creator-owned or official public sources first."
+            )
             planner_prompt = f"""
 You are building a live search plan for creator research.
 Creator: {creator_name}
@@ -401,10 +424,10 @@ Recent context: {json.dumps((conversation_history or [])[-4:])}
 
 Generate 2 to {max_queries} distinct web search queries that together maximize source fidelity.
 Rules:
-- Prefer creator-owned or official public sources first.
 - Include the creator name in every query.
 - Make the queries specific, not vague.
 - Do not include quotation marks around the whole query.
+{bio_instruction}
 
 Return JSON only:
 {{"queries": ["query 1", "query 2"]}}
@@ -611,13 +634,31 @@ Return JSON only:
         )
         logger.info(f"[SEARCH_TRACE] grounded_query_plan: {query_plan}")
 
+        # Detect bibliographic queries once for the prompt adjustment below.
+        _BIO_KEYWORDS = {
+            'book', 'books', 'written', 'co-wrote', 'author', 'authored',
+            'published', 'co-author', 'bibliography', 'wrote',
+        }
+        is_bibliographic_query = bool(_BIO_KEYWORDS.intersection(set(re.findall(r'[a-z]+', query.lower()))))
+
         def run_grounded_query(subquery: str) -> Dict[str, Any]:
+            if is_bibliographic_query:
+                search_instruction = (
+                    "Search Amazon, Goodreads, Wikipedia, publisher/press sites, AND the creator's owned sources. "
+                    "For book authorship and co-authorship records, include third-party bibliographic sources — "
+                    "these are factual public records, not unrelated content. "
+                    "Return all results where the creator is listed as author or co-author."
+                )
+            else:
+                search_instruction = (
+                    "Prefer official creator-owned sources and clearly relevant public records."
+                )
             prompt = (
                 f"Creator: {creator_name}\n"
                 f"Original user question: {query}\n"
                 f"Focused search objective: {subquery}\n\n"
-                "Use Google Search grounding to answer briefly and only from grounded public sources. "
-                "Prefer official creator-owned sources and clearly relevant public records."
+                f"Use Google Search grounding to answer briefly and only from grounded public sources. "
+                f"{search_instruction}"
             )
             raw = self._call_gemini_rest(prompt, search_enabled=True)
             package = self._extract_grounding_package(raw)
