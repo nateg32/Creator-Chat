@@ -947,6 +947,13 @@ export function ChatPanel({
                                   ))}
                                 </div>
                               )}
+                              {renderedCards.length > 0 && (
+                                <div className="msg-cards-row">
+                                  {renderedCards.map((card) => (
+                                    <PreviewCard key={card.id} card={card} />
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           );
                         })()}

@@ -5025,7 +5025,12 @@ Message: {answer_text[:500]}"""
     # --- Step 9: Video Recommendation (ONE ONLY) ---
     card = []
     image_turn_active = bool(images or (image_result and image_result.get("support_chunk")))
-    if plan_obj.grounding.video_policy in ["one_if_helpful", "forced"] and not image_turn_active:
+    _should_try_cards = (
+        plan_obj.grounding.video_policy in ["one_if_helpful", "forced"]
+        or wants_link
+        or is_video_request
+    )
+    if _should_try_cards and not image_turn_active:
         card = _build_response_cards(
             rec_result,
             support_set,

@@ -261,6 +261,13 @@
   gap: 8px;
 }
 
+.msg-cards-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .chat-source-chip {
   display: inline-flex;
   align-items: center;
