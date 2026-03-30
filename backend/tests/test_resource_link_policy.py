@@ -144,6 +144,7 @@ def _load_grounded_rag():
     )
     _stub_module(
         "backend.services.rag_text_matcher",
+        extract_named_resource_fragments=lambda *args, **kwargs: [],
         merge_support_sets=lambda primary, secondary, limit=4: (primary or []) + (secondary or []),
         retrieve_exact_text_matches=lambda *args, **kwargs: [],
     )
@@ -176,6 +177,150 @@ grounded_rag = _load_grounded_rag()
 
 
 class ResourceLinkPolicyTests(unittest.TestCase):
+    def test_resource_prompt_context_marks_post_as_non_video_with_video_alternative(self):
+        support_set = [
+            {
+                "title": "5 Steps to solving 99% of sales issues",
+                "url": "https://x.com/AlexHormozi/status/123",
+                "source_ref": {
+                    "title": "5 Steps to solving 99% of sales issues",
+                    "canonical_url": "https://x.com/AlexHormozi/status/123",
+                    "platform": "twitter",
+                    "content_type": "post",
+                },
+            },
+            {
+                "title": "DM Selling Breakdown",
+                "url": "https://www.youtube.com/watch?v=REALVIDEO01",
+                "source_ref": {
+                    "title": "DM Selling Breakdown",
+                    "canonical_url": "https://www.youtube.com/watch?v=REALVIDEO01",
+                    "platform": "youtube",
+                    "content_type": "video",
+                },
+            },
+        ]
+
+        context = grounded_rag._resource_prompt_context(
+            support_set,
+            "what video should I watch about dm selling",
+        )
+
+        self.assertEqual(context["primary_label"], "post on X")
+        self.assertFalse(context["primary_is_video"])
+        self.assertEqual(context["closest_video_title"], "DM Selling Breakdown")
+
+    def test_resource_prompt_context_labels_tiktok_direct_post_as_video(self):
+        support_set = [
+            {
+                "title": "DM Selling In 30 Seconds",
+                "url": "https://www.tiktok.com/@alexhormozi/video/1234567890",
+                "source_ref": {
+                    "title": "DM Selling In 30 Seconds",
+                    "canonical_url": "https://www.tiktok.com/@alexhormozi/video/1234567890",
+                    "platform": "tiktok",
+                    "content_type": "post",
+                },
+            },
+        ]
+
+        context = grounded_rag._resource_prompt_context(
+            support_set,
+            "what should I watch on tiktok about dm selling",
+        )
+
+        self.assertEqual(context["primary_label"], "TikTok video")
+        self.assertTrue(context["primary_is_video"])
+
+    def test_response_length_instruction_uses_nonvideo_video_request_guidance(self):
+        guidance = grounded_rag.response_length_instruction(
+            "introduce_content",
+            resource_context={
+                "video_requested": True,
+                "primary_is_video": False,
+                "primary_label": "post on X",
+                "closest_video_title": "DM Selling Breakdown",
+            },
+        )
+
+        self.assertIn("did not find an exact video", guidance)
+        self.assertIn("best direct match", guidance)
+        self.assertIn("closest video", guidance)
+
+    def test_recommend_one_content_keeps_post_as_best_match_but_surfaces_video_alternative(self):
+        original_classify = grounded_rag.classify_resource_intent
+        original_build_query = grounded_rag._build_resource_search_query
+        original_get_enabled = grounded_rag.get_enabled_platforms_for_creator
+        original_retrieve = grounded_rag.retrieve_candidates
+        original_aggregate = grounded_rag._aggregate_document_evidence
+        original_filter_platforms = grounded_rag._filter_candidates_for_requested_platforms
+        original_dedup = grounded_rag._get_suggested_resources
+        original_rerank = grounded_rag.rerank_candidates
+        original_skip_llm = grounded_rag._can_skip_llm_rerank
+        original_gate = grounded_rag.calculate_gate_confidence
+        try:
+            grounded_rag.classify_resource_intent = lambda *args, **kwargs: {
+                "needs_resource": True,
+                "request_type": "explicit",
+                "intent_type": "recommend_content",
+                "resource_type": "video",
+                "query": "dm selling",
+            }
+            grounded_rag._build_resource_search_query = lambda *args, **kwargs: "dm selling"
+            grounded_rag.get_enabled_platforms_for_creator = lambda *args, **kwargs: []
+            grounded_rag.retrieve_candidates = lambda *args, **kwargs: [{"document_id": 1}, {"document_id": 2}]
+            grounded_rag._aggregate_document_evidence = lambda *args, **kwargs: [
+                {
+                    "id": "post1",
+                    "title": "5 Steps to solving 99% of sales issues",
+                    "url": "https://x.com/AlexHormozi/status/123",
+                    "platform": "twitter",
+                    "source_ref": {"content_type": "post", "platform": "twitter"},
+                    "rerank_score": 0.91,
+                    "chunks": [{"source_ref": {"title": "5 Steps to solving 99% of sales issues", "canonical_url": "https://x.com/AlexHormozi/status/123", "content_type": "post", "platform": "twitter"}}],
+                },
+                {
+                    "id": "vid1",
+                    "title": "DM Selling Breakdown",
+                    "url": "https://www.youtube.com/watch?v=REALVIDEO01",
+                    "platform": "youtube",
+                    "source_ref": {"content_type": "video", "platform": "youtube"},
+                    "rerank_score": 0.74,
+                    "chunks": [{"source_ref": {"title": "DM Selling Breakdown", "canonical_url": "https://www.youtube.com/watch?v=REALVIDEO01", "content_type": "video", "platform": "youtube"}}],
+                },
+            ]
+            grounded_rag._filter_candidates_for_requested_platforms = lambda candidates, preferred_platforms=None: candidates
+            grounded_rag._get_suggested_resources = lambda *args, **kwargs: {"titles": set(), "urls": set()}
+            grounded_rag.rerank_candidates = lambda candidates, *args, **kwargs: candidates
+            grounded_rag._can_skip_llm_rerank = lambda *args, **kwargs: True
+            grounded_rag.calculate_gate_confidence = lambda *args, **kwargs: 0.92
+
+            result = grounded_rag.recommend_one_content(
+                user_id=1,
+                creator_id=1,
+                user_message="what video should I watch about dm selling",
+                conversation_history=[],
+                creator_row={"platform_configs": {}},
+                q_emb=[0.0],
+            )
+
+            self.assertEqual(result["best_candidate"]["title"], "5 Steps to solving 99% of sales issues")
+            self.assertTrue(result["resource_intent"]["video_request_without_exact_video"])
+            self.assertEqual(result["resource_intent"]["closest_video_title"], "DM Selling Breakdown")
+            self.assertEqual(result["card_limit"], 2)
+            self.assertEqual(result["alternate_candidates"][0]["title"], "DM Selling Breakdown")
+        finally:
+            grounded_rag.classify_resource_intent = original_classify
+            grounded_rag._build_resource_search_query = original_build_query
+            grounded_rag.get_enabled_platforms_for_creator = original_get_enabled
+            grounded_rag.retrieve_candidates = original_retrieve
+            grounded_rag._aggregate_document_evidence = original_aggregate
+            grounded_rag._filter_candidates_for_requested_platforms = original_filter_platforms
+            grounded_rag._get_suggested_resources = original_dedup
+            grounded_rag.rerank_candidates = original_rerank
+            grounded_rag._can_skip_llm_rerank = original_skip_llm
+            grounded_rag.calculate_gate_confidence = original_gate
+
     def test_build_response_cards_prefers_ingested_support_over_live_web(self):
         rec_result = {
             "best_candidate": {

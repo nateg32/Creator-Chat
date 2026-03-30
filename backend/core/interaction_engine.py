@@ -1018,6 +1018,94 @@ class InteractionEngine:
             "If you share the resource, refer to it in the singular and let the attached card carry the link."
         )
 
+    def _resource_type_instruction(self, rag_chunks: List[Dict[str, Any]], user_msg: str) -> str:
+        if not rag_chunks:
+            return ""
+
+        def resource_kind(chunk: Dict[str, Any]) -> str:
+            source_ref = chunk.get("source_ref") or {}
+            raw_kind = str(
+                chunk.get("resource_type")
+                or chunk.get("type")
+                or source_ref.get("content_type")
+                or ""
+            ).strip().lower()
+            url = str(chunk.get("url") or source_ref.get("canonical_url") or "").lower()
+            platform = str(source_ref.get("platform") or "").lower()
+            if raw_kind in {"video", "podcast", "clip", "tutorial", "short", "shorts"}:
+                return "video"
+            if raw_kind == "reel":
+                return "reel"
+            if raw_kind in {"tweet", "status"}:
+                return "status"
+            if raw_kind == "post" and platform == "tiktok":
+                return "video"
+            if raw_kind == "post":
+                return "post"
+            if "youtube.com" in url or "youtu.be" in url or "/watch" in url or "/shorts/" in url:
+                return "video"
+            if "instagram.com/reel/" in url:
+                return "reel"
+            if "tiktok.com/" in url and "/video/" in url:
+                return "video"
+            if "x.com/" in url or "twitter.com/" in url:
+                return "status"
+            if "instagram.com/p/" in url or "linkedin.com/" in url or "facebook.com/" in url:
+                return "post"
+            if platform == "youtube":
+                return "video"
+            if platform == "tiktok":
+                return "video"
+            return "resource"
+
+        def resource_label(kind: str, chunk: Dict[str, Any]) -> str:
+            platform = str((chunk.get("source_ref") or {}).get("platform") or "").lower()
+            if kind == "video":
+                return "TikTok video" if platform == "tiktok" else "video"
+            if kind == "reel":
+                return "Instagram reel" if platform == "instagram" else "reel"
+            if kind == "status":
+                return "post on X" if platform in {"twitter", "x"} else "status post"
+            if kind == "post":
+                if platform == "instagram":
+                    return "Instagram post"
+                if platform == "linkedin":
+                    return "LinkedIn post"
+                return "post"
+            return "resource"
+
+        primary = rag_chunks[0]
+        primary_kind = resource_kind(primary)
+        primary_label = resource_label(primary_kind, primary)
+        wants_video = any(token in (user_msg or "").lower() for token in ["video", "watch", "clip", "tutorial"])
+        closest_video_title = ""
+        if wants_video and primary_kind not in {"video", "reel"}:
+            for chunk in rag_chunks[1:]:
+                kind = resource_kind(chunk)
+                if kind in {"video", "reel"}:
+                    closest_video_title = str(chunk.get("title") or (chunk.get("source_ref") or {}).get("title") or "").strip()
+                    break
+
+        if wants_video and primary_kind not in {"video", "reel"}:
+            if closest_video_title:
+                return (
+                    f"14. RESOURCE TYPE ACCURACY. The best direct match in context is a {primary_label}, not a video. "
+                    "Do not call it a video and do not tell the user to watch it. "
+                    f"Say you did not find an exact video, present the {primary_label} as the best direct match, and mention \"{closest_video_title}\" as the closest watchable option with a short reason."
+                )
+            return (
+                f"14. RESOURCE TYPE ACCURACY. The best direct match in context is a {primary_label}, not a video. "
+                "Do not call it a video and do not tell the user to watch it. "
+                f"Say you did not find an exact video and present the {primary_label} as the best direct match."
+            )
+
+        if primary_kind not in {"video", "reel"}:
+            return (
+                f"14. RESOURCE TYPE ACCURACY. Treat the selected creator resource as a {primary_label}. "
+                "Use verbs that match the medium, like check out, read, or look at, not watch."
+            )
+        return ""
+
     # ──────────────────────────────────────────────────────────
     # STEP 1 — DETERMINISTIC INTENT CLASSIFIER
     # ──────────────────────────────────────────────────────────
@@ -1705,6 +1793,7 @@ Output ONLY your response."""
             max_chars=context_limits["history_chars"],
         )
         resource_lock_instruction = self._resource_lock_instruction(rag_chunks, user_msg)
+        resource_type_instruction = self._resource_type_instruction(rag_chunks, user_msg)
         anti_regurgitation_block = build_anti_regurgitation_block(user_msg, rag_chunks or []) if rag_chunks else ""
 
         memory_section = ""
@@ -1834,6 +1923,7 @@ CORE DIRECTIVE: You are a high-speed interaction engine.
 13. PERSONA HOMEOSTASIS: Keep your stable worldview, cadence, and response moves intact. Do not mutate into generic coach-talk just because the question is broad.
 14. CONCRETE ANCHOR: Every substantial answer must lean on at least one real creator anchor from the genome or knowledge, a recurring belief, decision rule, story, product, public fact, or grounded source. If you cannot anchor a claim, narrow it instead of filling space with generic advice.
 {resource_lock_instruction}
+{resource_type_instruction}
 
 {length_directive}
 {HONEST_FALLBACK_INSTRUCTION}

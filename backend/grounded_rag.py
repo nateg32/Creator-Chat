@@ -266,6 +266,120 @@ def _candidate_title(candidate: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def _candidate_resource_kind(candidate: Optional[Dict[str, Any]]) -> str:
+    if not candidate:
+        return "resource"
+    source_ref = candidate.get("source_ref") or {}
+    raw_kind = str(
+        candidate.get("resource_type")
+        or source_ref.get("content_type")
+        or candidate.get("type")
+        or ""
+    ).strip().lower()
+    platform = _candidate_platform(candidate)
+    url = _candidate_url(candidate).lower()
+
+    if raw_kind in {"video", "podcast", "clip", "short", "shorts", "tutorial"}:
+        return "video"
+    if raw_kind == "reel":
+        return "reel"
+    if raw_kind in {"tweet", "status"}:
+        return "status"
+    if raw_kind == "post" and platform == "twitter":
+        return "status"
+    if raw_kind == "post" and platform == "tiktok":
+        return "video"
+    if raw_kind in {"post", "article", "course_lesson", "lesson", "website", "web"}:
+        return raw_kind
+
+    if "youtube.com" in url or "youtu.be" in url or "/watch" in url or "/shorts/" in url:
+        return "video"
+    if "instagram.com/reel/" in url:
+        return "reel"
+    if "instagram.com/p/" in url:
+        return "post"
+    if "tiktok.com/" in url and "/video/" in url:
+        return "video"
+    if "x.com/" in url or "twitter.com/" in url:
+        return "status"
+    if "linkedin.com/" in url or "facebook.com/" in url:
+        return "post"
+
+    if platform == "youtube":
+        return "video"
+    if platform == "instagram":
+        return "post"
+    if platform == "tiktok":
+        return "video"
+    if platform == "twitter":
+        return "status"
+    return "resource"
+
+
+def _is_video_like_kind(kind: str) -> bool:
+    return str(kind or "").strip().lower() in {"video", "reel"}
+
+
+def _resource_label(kind: str, platform: str = "") -> str:
+    normalized = str(kind or "").strip().lower()
+    normalized_platform = str(platform or "").strip().lower()
+    if normalized == "video":
+        if normalized_platform == "tiktok":
+            return "TikTok video"
+        return "video"
+    if normalized == "reel":
+        return "reel" if normalized_platform != "instagram" else "Instagram reel"
+    if normalized == "status":
+        return "post on X" if normalized_platform in {"twitter", "x"} else "status post"
+    if normalized == "post":
+        if normalized_platform == "instagram":
+            return "Instagram post"
+        if normalized_platform == "linkedin":
+            return "LinkedIn post"
+        if normalized_platform == "facebook":
+            return "Facebook post"
+        return "post"
+    if normalized == "article":
+        return "article"
+    if normalized == "course_lesson":
+        return "lesson"
+    if normalized == "lesson":
+        return "lesson"
+    return "resource"
+
+
+def _resource_prompt_context(
+    support_set: Optional[List[Dict[str, Any]]],
+    user_msg: str,
+) -> Dict[str, Any]:
+    chunks = list(support_set or [])
+    primary = chunks[0] if chunks else {}
+    primary_kind = _candidate_resource_kind(primary)
+    primary_platform = _candidate_platform(primary)
+    primary_title = _candidate_title(primary)
+    wants_video = any(token in (user_msg or "").lower() for token in ["video", "watch", "clip", "tutorial"])
+
+    closest_video_title = ""
+    closest_video_label = ""
+    if wants_video and not _is_video_like_kind(primary_kind):
+        for candidate in chunks[1:]:
+            candidate_kind = _candidate_resource_kind(candidate)
+            if _is_video_like_kind(candidate_kind):
+                closest_video_title = _candidate_title(candidate)
+                closest_video_label = _resource_label(candidate_kind, _candidate_platform(candidate))
+                break
+
+    return {
+        "primary_kind": primary_kind,
+        "primary_label": _resource_label(primary_kind, primary_platform),
+        "primary_title": primary_title,
+        "primary_is_video": _is_video_like_kind(primary_kind),
+        "video_requested": wants_video,
+        "closest_video_title": closest_video_title,
+        "closest_video_label": closest_video_label,
+    }
+
+
 def _normalize_resource_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").lower()).strip()
 
@@ -1966,7 +2080,8 @@ def response_length_instruction(
     mode: str = "ANSWER_NOW", 
     energy_bucket: str = "MID", 
     tone_mirror_limit: int = 0,
-    user_priority_constraints: Optional[Dict[str, Any]] = None
+    user_priority_constraints: Optional[Dict[str, Any]] = None,
+    resource_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Instruction for model response length based on intent, policy mode, energy, and USER PRIORITY."""
     # Compute energy constraints
@@ -2022,6 +2137,21 @@ def response_length_instruction(
     if intent == "deep_strategy":
         return base_dm_rule + f" Provide a detailed, structured strategy session. Even if deep, stay under {min(budget + 50, 250)} words."
     if intent == "introduce_content":
+        primary_label = str((resource_context or {}).get("primary_label") or "resource")
+        if resource_context and resource_context.get("video_requested") and not resource_context.get("primary_is_video"):
+            if resource_context.get("closest_video_title"):
+                return base_dm_rule + (
+                    f" Answer the core question briefly. Be explicit that you did not find an exact video for this. "
+                    f"Recommend the {primary_label} as the best direct match, then offer the closest video as a secondary option and explain why it is the best watchable fit. "
+                    f"Max {budget} words."
+                )
+            return base_dm_rule + (
+                f" Answer the core question briefly. Be explicit that you did not find an exact video for this. "
+                f"Recommend the {primary_label} as the best direct match. If they still want something to watch, invite them to ask for the closest video. "
+                f"Max {budget} words."
+            )
+        if resource_context and not resource_context.get("primary_is_video"):
+            return base_dm_rule + f" Answer core question briefly, then introduce the {primary_label} as the essential next step. Max {budget} words."
         return base_dm_rule + f" Answer core question briefly, then introduce the video as the essential next step. Max {budget} words."
     
     return base_dm_rule + f" Match the creator's natural DM style. Max {budget} words."
@@ -2335,6 +2465,7 @@ def generate_meaning_draft(
     """
     
     intent_guidance = ""
+    resource_context = _resource_prompt_context(support_set, question)
     if mode == "ASK_ONE_QUESTION":
         intent_guidance = """
         IMPORTANT: Your goal is NOT to answer fully. 
@@ -2346,7 +2477,45 @@ def generate_meaning_draft(
     elif intent == "introduce_content":
         # Note: Specific title enforcement is now handled via explicit instructions in the prompt.
         # We rely on Source 1 being the 'Currently Recommended' video as defined in the context.
-        intent_guidance = """
+        if resource_context.get("video_requested") and not resource_context.get("primary_is_video"):
+            primary_label = resource_context.get("primary_label") or "resource"
+            if resource_context.get("closest_video_title"):
+                intent_guidance = f"""
+        IMPORTANT: The best direct match in Source 1 is a {primary_label}, not a video.
+        Your goal is to PLAN a mentorship response that:
+        1. Answers the core question briefly from the Source 1 snippet.
+        2. Says you did not find an exact video for this.
+        3. Recommends the {primary_label} in Source 1 by its FULL TITLE as the best direct match.
+        4. Mentions the closest video alternative, "{resource_context.get("closest_video_title")}", and gives one short reason it is the best watchable fit.
+
+        CRITICAL: Do NOT call Source 1 a video and do NOT tell the user to watch it.
+        Set uncertainty_handling = 'exact_required'.
+        """
+            else:
+                intent_guidance = f"""
+        IMPORTANT: The best direct match in Source 1 is a {primary_label}, not a video.
+        Your goal is to PLAN a mentorship response that:
+        1. Answers the core question briefly from the Source 1 snippet.
+        2. Says you did not find an exact video for this.
+        3. Recommends the {primary_label} in Source 1 by its FULL TITLE as the best direct match.
+
+        CRITICAL: Do NOT call Source 1 a video and do NOT tell the user to watch it.
+        Set uncertainty_handling = 'exact_required'.
+        """
+        elif not resource_context.get("primary_is_video"):
+            primary_label = resource_context.get("primary_label") or "resource"
+            intent_guidance = f"""
+        IMPORTANT: A high-confidence creator resource HAS been found and is provided in Source 1.
+        Your goal is to PLAN a mentorship response that:
+        1. Gives a specific piece of advice or technical answer based on Source 1's snippet.
+        2. Explicitly RECOMMENDS the {primary_label} in Source 1 by its FULL TITLE.
+
+        CRITICAL: Treat Source 1 as a {primary_label}, not a video.
+        Use language that fits the medium.
+        Set uncertainty_handling = 'exact_required'.
+        """
+        else:
+            intent_guidance = """
         IMPORTANT: A high-confidence video/resource HAS been found and is provided in Source 1. 
         Your goal is to PLAN a mentorship response that:
         1. Gives a specific piece of advice or technical answer based on Source 1's snippet.
@@ -2719,11 +2888,46 @@ def generate_grounded_answer(
     )
     stance_packet = identity_packet.get("stance") or {}
     
+    resource_context = _resource_prompt_context(support_set, question)
+
     # Intent-specific length and behavioral guidance
-    len_guidance = response_length_instruction(intent, mode=mode, energy_bucket=energy_bucket, tone_mirror_limit=tone_mirror_limit, user_priority_constraints=mode_constraints)
+    len_guidance = response_length_instruction(
+        intent,
+        mode=mode,
+        energy_bucket=energy_bucket,
+        tone_mirror_limit=tone_mirror_limit,
+        user_priority_constraints=mode_constraints,
+        resource_context=resource_context,
+    )
     intent_specific_rule = ""
     if intent == "introduce_content":
-        intent_specific_rule = """
+        primary_label = resource_context.get("primary_label") or "resource"
+        if resource_context.get("video_requested") and not resource_context.get("primary_is_video"):
+            if resource_context.get("closest_video_title"):
+                intent_specific_rule = f"""
+        7. RESOURCE TYPE ACCURACY: The best direct match in context is a {primary_label}, not a video.
+           Do NOT call it a video and do NOT tell them to watch it.
+           Say clearly that you did not find an exact video for this.
+           Present the {primary_label} in Source 1 by its exact title as the best direct match.
+           Then mention the closest video alternative, "{resource_context.get("closest_video_title")}", and explain why it is the closest watchable fit.
+        """
+            else:
+                intent_specific_rule = f"""
+        7. RESOURCE TYPE ACCURACY: The best direct match in context is a {primary_label}, not a video.
+           Do NOT call it a video and do NOT tell them to watch it.
+           Say clearly that you did not find an exact video for this.
+           Present the {primary_label} in Source 1 by its exact title as the best direct match.
+           If they still want something to watch, invite them to ask for the closest video.
+        """
+        elif not resource_context.get("primary_is_video"):
+            intent_specific_rule = f"""
+        7. SPECIFIC RECOMMENDATION: The Neutral Plan mentions a specific {primary_label} from my context.
+           Mention that {primary_label} literally by its title.
+           Use verbs that match the medium, like check out, read, or look at, not watch.
+           Explain why this exact {primary_label} is the best next step.
+        """
+        else:
+            intent_specific_rule = """
         7. SPECIFIC RECOMMENDATION: The Neutral Plan mentions a specific video/resource title from my context. 
            Your task is to mention this video LITERALLY by its title (e.g. "Check out my video 'Exact Title'"). 
            Explain WHY this specific video is the bridge to their next level.
@@ -3477,6 +3681,7 @@ def recommend_one_content(
     
     # HIGH CONFIDENCE: Pick top 1
     best_one = candidates[0]
+    best_kind = _candidate_resource_kind(best_one)
     alternate_candidates = []
     if wants_multiple:
         for candidate in candidates[1:]:
@@ -3484,6 +3689,22 @@ def recommend_one_content(
                 alternate_candidates.append(candidate)
             if len(alternate_candidates) >= 2:
                 break
+    explicit_video_request = bool(
+        wants_video
+        or str(resource_intent.get("resource_type") or "").strip().lower() == "video"
+    )
+    if explicit_video_request and not _is_video_like_kind(best_kind):
+        for candidate in candidates[1:]:
+            if not _candidate_url(candidate) or not _candidate_title(candidate):
+                continue
+            candidate_kind = _candidate_resource_kind(candidate)
+            if not _is_video_like_kind(candidate_kind):
+                continue
+            candidate_url = (_candidate_url(candidate) or "").strip().lower()
+            existing_urls = {(_candidate_url(item) or "").strip().lower() for item in alternate_candidates}
+            if candidate_url and candidate_url not in existing_urls:
+                alternate_candidates.insert(0, candidate)
+            break
     best_title = _candidate_title(best_one)
     best_url = _candidate_url(best_one)
     best_one["title_quality"] = _resource_title_quality(best_title, best_url)
@@ -3504,6 +3725,18 @@ def recommend_one_content(
             "resource_intent": resource_intent,
             "q_emb": q_emb,
         }
+    resource_intent["matched_resource_kind"] = best_kind
+    resource_intent["matched_resource_label"] = _resource_label(best_kind, _candidate_platform(best_one))
+    resource_intent["video_request_without_exact_video"] = bool(
+        explicit_video_request and not _is_video_like_kind(best_kind)
+    )
+    if alternate_candidates and explicit_video_request and not _is_video_like_kind(best_kind):
+        resource_intent["closest_video_title"] = _candidate_title(alternate_candidates[0])
+
+    card_limit = 1 if not wants_multiple else min(3, 1 + len(alternate_candidates))
+    if explicit_video_request and not _is_video_like_kind(best_kind) and alternate_candidates:
+        card_limit = max(card_limit, 2)
+
     return {
         "recommended": {
             "id": best_one.get("id"),
@@ -3517,7 +3750,7 @@ def recommend_one_content(
         "clarify_question": None,
         "best_candidate": best_one,
         "alternate_candidates": alternate_candidates,
-        "card_limit": 1 if not wants_multiple else min(3, 1 + len(alternate_candidates)),
+        "card_limit": card_limit,
         "resource_intent": resource_intent,
         "q_emb": q_emb
     }

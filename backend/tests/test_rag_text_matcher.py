@@ -42,7 +42,7 @@ class _FakeDb:
 
 
 fake_db = _FakeDb()
-sys.modules.setdefault("backend.db", SimpleNamespace(db=fake_db))
+sys.modules["backend.db"] = SimpleNamespace(db=fake_db)
 matcher = _load_module("rag_text_matcher_tests", "services/rag_text_matcher.py")
 
 
