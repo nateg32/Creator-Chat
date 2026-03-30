@@ -175,6 +175,20 @@ class TextSanitizerTests(unittest.TestCase):
             "I'm Dan Martell. I build and I coach founders.",
         )
 
+    def test_does_not_split_real_words_that_start_with_a(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Amazon is where I sell it."),
+            "Amazon is where I sell it.",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Alex Hormozi said it clearly."),
+            "Alex Hormozi said it clearly.",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Alright, let's get into it."),
+            "Alright, let's get into it.",
+        )
+
     def test_repairs_merged_common_heads(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("Myfirst real business taught me a lot. Youkeep going."),

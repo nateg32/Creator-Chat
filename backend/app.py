@@ -55,13 +55,12 @@ from backend.settings import settings
 from backend.personality_analyzer import PersonalityAnalyzer
 from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
-from backend.services.formatting import clean_response, clean_for_stream_chunk, should_strip_hyphens
+from backend.services.formatting import clean_response, clean_for_stream_chunk, prepare_chat_response, should_strip_hyphens
 from backend.services.rhythm_shaper import rhythm_shaper
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
 from backend.services.prompt_injection_guard import normalize_user_preferences
 from backend.services.regurgitation_guard import score_response_quality
-from backend.services.text_sanitizer import strip_card_attachment_artifacts
 from backend.services.transcript_quality import transcript_needs_recovery
 from backend.services.creator_entity_service import creator_entity_service
 from backend.services.evidence_router import recent_evidence_activity
@@ -2302,9 +2301,13 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         images=images_payload,
                         user_id=current_user["id"],
                     )
-                    full_answer = clean_response(result.get("answer") or "", strip_hyphens=strip_hyphens)
                     cards = merge_preview_cards(result.get("cards") or [], enrich_titles=True)
                     citations = result.get("citations") or []
+                    full_answer = prepare_chat_response(
+                        result.get("answer") or "",
+                        cards=cards,
+                        strip_hyphens=strip_hyphens,
+                    )
                     for token in re.findall(r".{1,120}(?:\s+|$)", full_answer):
                         if token:
                             yield f"data: {json.dumps({'content': token})}\n\n"
@@ -2399,8 +2402,11 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=True)
                 )
                 citations = explicit_citations if explicit_citations else []
-                final_input = strip_card_attachment_artifacts(streamed_answer, cards)
-                full_answer = clean_response(final_input, strip_hyphens=strip_hyphens)
+                full_answer = prepare_chat_response(
+                    streamed_answer,
+                    cards=cards,
+                    strip_hyphens=strip_hyphens,
+                )
                 
                 # P2.3: Apply rhythm shaper before creator integrity 
                 full_answer = rhythm_shaper.apply_rhythm(
@@ -2601,8 +2607,9 @@ def finalize_stream_interaction(
 ):
     """Save the final interaction to DB after stream completion."""
     try:
-        answer = clean_response(
+        answer = prepare_chat_response(
             answer,
+            cards=cards,
             strip_hyphens=should_strip_hyphens(creator_profile or {}),
         )
         user_metadata = user_metadata or {}
@@ -2836,7 +2843,11 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             else merge_preview_cards(extract_preview_cards(answer_text, enrich_titles=True), enrich_titles=True)
         )
         citations = result.get("citations") or []
-        answer_text = clean_response(strip_card_attachment_artifacts(answer_text, cards), strip_hyphens=strip_hyphens)
+        answer_text = prepare_chat_response(
+            answer_text,
+            cards=cards,
+            strip_hyphens=strip_hyphens,
+        )
         quality_report = ((result.get("meta") or {}).get("quality_report") or {})
 
         # Post-Processing: Save Assistant Message & Update Thread

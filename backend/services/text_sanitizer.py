@@ -53,7 +53,11 @@ SPLIT_PREFIX_MERGED_SUFFIX_RE = re.compile(
     r"(?<!')\b([A-Za-z]{2,4})\s+([a-z]{4,}(?:your|the))\b(?=(?:\s+[A-Za-z]{2,}\b|[,.!?;:]|$))",
     re.IGNORECASE,
 )
-MERGED_SINGLE_HEAD_RE = re.compile(r"\b([AI])([a-z]{3,})\b")
+MERGED_SINGLE_HEAD_RE = re.compile(r"\b(I)([a-z]{3,})\b")
+MERGED_ARTICLE_HEAD_RE = re.compile(
+    r"\b(A)(free|few|lot|little|long|short|big|small|new|good|bad|clear|single|simple)\b",
+    re.IGNORECASE,
+)
 MERGED_COMMON_HEAD_RE = re.compile(r"\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b")
 MERGED_TRAILING_COMMON_RE = re.compile(
     r"\b([A-Za-z]{5,})(are|will|were|with|your|this|that|what|when|where|which|have|them|they)\b"
@@ -170,6 +174,7 @@ def _repair_split_word_fragments(text: str) -> str:
 
 def _repair_merged_common_word_pairs(text: str) -> str:
     repaired = MERGED_SINGLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", text)
+    repaired = MERGED_ARTICLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
     repaired = MERGED_COMMON_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
     repaired = MERGED_TRAILING_COMMON_RE.sub(
         lambda m: m.group(0)

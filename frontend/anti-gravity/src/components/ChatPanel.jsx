@@ -4,6 +4,7 @@ import { ask, askStream } from "../api/client";
 import { resizeImage, compressChatImage } from "../utils/image";
 import { formatCreatorName, formatMessageText } from "../utils/format";
 import { buildCreatorWelcomeBody } from "../utils/creatorWelcome";
+import { PreviewCard } from "./PreviewCard";
 import "./ChatPanel.css";
 import { CreatorSettingsModal } from "./CreatorSettingsModal";
 
@@ -786,6 +787,11 @@ export function ChatPanel({
                                   videoId,
                                   platform,
                                   title: cleanCardTitle(card.title || 'External Resource', card.url),
+                                  subtitle: card.subtitle || domain,
+                                  short_snippet: card.short_snippet || "",
+                                  thumbnail_url: card.thumbnail_url || "",
+                                  resource_type: card.resource_type || (isVideo ? "video" : "article"),
+                                  action_label: card.action_label || "Open",
                                 };
                               })
                             : [];
@@ -881,7 +887,12 @@ export function ChatPanel({
                                   isVideo,
                                   videoId,
                                   platform,
-                                  title: linkTitle
+                                  title: linkTitle,
+                                  subtitle: domain,
+                                  short_snippet: "",
+                                  thumbnail_url: "",
+                                  resource_type: isVideo ? "video" : "article",
+                                  action_label: "Open",
                                 });
 
                                 const inlineLabel = rawUrlMatch
@@ -892,11 +903,7 @@ export function ChatPanel({
                                   textParts.push(<span key={`text-link-${match.index}`} className="chat-inline-link">{inlineLabel}</span>);
                                 }
                               } else {
-                                textParts.push(
-                                  <a key={match.index} href={matchUrl} target="_blank" rel="noopener noreferrer" className="chat-link">
-                                    {linkTitle || matchUrl}
-                                  </a>
-                                );
+                                textParts.push(<span key={match.index} className="chat-inline-link">{linkTitle || matchUrl}</span>);
                               }
 
                               lastIndex = regex.lastIndex;
@@ -915,13 +922,23 @@ export function ChatPanel({
                                 const key = (card.url || '').toLowerCase();
                                 return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
                               });
-                          const renderedSources = normalizeSourceEntries(m.citations, renderedCards);
+                          const renderedSources = normalizeSourceEntries(m.citations, []);
 
                           return (
                             <div className="msg-content-wrapper">
                               <div className="msg-text-blocks">
                                 {textParts.length > 0 ? textParts : displayText}
                               </div>
+                              {renderedCards.length > 0 && (
+                                <div className="msg-cards">
+                                  {renderedCards.map((card, idx) => (
+                                    <PreviewCard
+                                      key={`${card.id || card.url || "card"}-${idx}`}
+                                      card={card}
+                                    />
+                                  ))}
+                                </div>
+                              )}
                               {renderedSources.length > 0 && (
                                 <div className="msg-source-row">
                                   {renderedSources.map((source, idx) => (

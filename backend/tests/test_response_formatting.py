@@ -51,6 +51,7 @@ def _load_formatting_module():
 formatting = _load_formatting_module()
 clean_response = formatting.clean_response
 clean_for_stream_chunk = formatting.clean_for_stream_chunk
+prepare_chat_response = formatting.prepare_chat_response
 should_strip_hyphens = formatting.should_strip_hyphens
 
 
@@ -226,6 +227,38 @@ class ResponseFormattingTests(unittest.TestCase):
 
         third = clean_response("💡Great insight from the book")
         self.assertTrue(third.startswith("Great insight"))
+
+
+    def test_prepare_chat_response_rewrites_raw_link_to_attached_card_reference(self):
+        result = prepare_chat_response(
+            "Go to acquisition.com and grab the details there.",
+            cards=[{"url": "https://acquisition.com", "title": "Acquisition.com"}],
+        )
+        self.assertNotRegex(result, r"https?://")
+        self.assertIn('"Acquisition.com"', result)
+        self.assertIn("attached the link below", result.lower())
+
+    def test_prepare_chat_response_breaks_long_prose_into_short_paragraphs(self):
+        raw = (
+            "It's four business playbooks that cover the core levers to scale: leads, sales, pricing, and retention. "
+            "$100M Offers is how to make an offer so good people feel dumb saying no. "
+            "$100M Leads is how to get customers predictably. "
+            "$100M Sales is how to convert more of the leads you already have. "
+            "$100M Money Models is how to structure the business so you keep the money, with pricing, margins, and compounding systems. "
+            "Which one are you struggling with right now?"
+        )
+        result = prepare_chat_response(raw)
+        self.assertIn("\n\n", result)
+        paragraphs = [part for part in result.split("\n\n") if part.strip()]
+        self.assertGreaterEqual(len(paragraphs), 2)
+        self.assertTrue(paragraphs[-1].endswith("?"), result)
+
+    def test_prepare_chat_response_normalizes_list_spacing(self):
+        raw = "1)first thing\n2)second thing\n-keep going"
+        result = prepare_chat_response(raw)
+        self.assertIn("1) first thing", result)
+        self.assertIn("2) second thing", result)
+        self.assertIn("- keep going", result)
 
 
 if __name__ == "__main__":

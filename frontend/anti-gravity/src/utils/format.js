@@ -52,7 +52,8 @@ const splitTailRe = /\b([A-Za-z]{2,})\s+([bcdfghjklmnpqrstvwxyz])\b/gi;
 const splitSuffixRe = /\b([A-Za-z]{3,})\s+(ify|ifies|ified|ifying|ise|ises|ised|ising|ize|izes|ized|izing|ation|ations|ment|ments|ness|less|able|ably|ible|ibly|ally|fully|ously|ship|ships|ward|wards)\b/gi;
 const splitShortSuffixRe = /\b([A-Za-z]{2,4})\s+(ing|ings|ed|er|ers|est|ly)\b(?=\s+[A-Za-z]{2,})/gi;
 const splitPrefixMergedSuffixRe = /(?<!')\b([A-Za-z]{2,4})\s+([a-z]{4,}(?:your|the))\b(?=(?:\s+[A-Za-z]{2,}\b|[,.!?;:]|$))/gi;
-const mergedSingleHeadRe = /\b([AI])([a-z]{3,})\b/g;
+const mergedSingleHeadRe = /\b(I)([a-z]{3,})\b/g;
+const mergedArticleHeadRe = /\b(A)(free|few|lot|little|long|short|big|small|new|good|bad|clear|single|simple)\b/gi;
 const mergedCommonHeadRe = /\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b/g;
 const mergedFocusedSuffixRe = /\b([A-Za-z]{4,})(your|the)\b(?=(?:\s+[A-Za-z]{2,}\b|[,.!?;:]|$))/gi;
 const contractionBoundaryRe = /((?:'s|'re|'ve|'ll|'d|'m))(?=(?:[a-z]{4,}|you|your|the|that|this|it|we|they|he|she|who|what|when|where|why)\b)/gi;
@@ -111,6 +112,7 @@ function repairSplitWordFragments(text) {
 function repairMergedCommonWordPairs(text) {
     return text
         .replace(mergedSingleHeadRe, (_, head, tail) => `${head} ${tail}`)
+        .replace(mergedArticleHeadRe, (_, head, tail) => `${head} ${tail}`)
         .replace(mergedCommonHeadRe, (_, head, tail) => `${head} ${tail}`)
         .replace(mergedFocusedSuffixRe, (match, left, right) => {
             return mergedTrailingBlocklist.has(match.toLowerCase()) ? match : `${left} ${right}`;

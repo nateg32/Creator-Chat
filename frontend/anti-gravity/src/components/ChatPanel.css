@@ -235,10 +235,11 @@
 .msg-text,
 .msg-text-blocks {
   font-size: 15px;
-  line-height: 1.68;
+  line-height: 1.72;
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  text-wrap: pretty;
 }
 
 .msg-user .msg-text,
