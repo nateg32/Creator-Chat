@@ -929,16 +929,6 @@ export function ChatPanel({
                               <div className="msg-text-blocks">
                                 {textParts.length > 0 ? textParts : displayText}
                               </div>
-                              {renderedCards.length > 0 && (
-                                <div className="msg-cards">
-                                  {renderedCards.map((card, idx) => (
-                                    <PreviewCard
-                                      key={`${card.id || card.url || "card"}-${idx}`}
-                                      card={card}
-                                    />
-                                  ))}
-                                </div>
-                              )}
                               {renderedSources.length > 0 && (
                                 <div className="msg-source-row">
                                   {renderedSources.map((source, idx) => (
