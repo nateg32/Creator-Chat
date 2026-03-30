@@ -1329,11 +1329,6 @@ def _score_support_resource_candidate(
     support_rank_bonus = max(0.0, 0.16 - (chunk_index * 0.02))
     title_verbatim_bonus = _title_verbatim_match_bonus(title, question)
 
-    # If the source has zero overlap with what the user actually asked,
-    # cap its score so it cannot surface as a card regardless of answer overlap.
-    # This prevents hallucinated answers from pulling unrelated cards.
-    question_floor_penalty = -0.18 if (question_overlap < 0.05 and title_verbatim_bonus < 0.10) else 0.0
-
     score = (
         (0.28 if not is_live_web else 0.12)
         + (0.24 if recommended else 0.0)
@@ -1342,8 +1337,16 @@ def _score_support_resource_candidate(
         + (answer_overlap * 0.20)         # secondary: was it referenced in the response?
         + support_rank_bonus
         + title_verbatim_bonus            # 0.0–0.50 when user quoted the video title
-        + question_floor_penalty
     )
+
+    # If the source has zero overlap with what the user actually asked,
+    # hard-cap its score below the citation threshold so it never surfaces.
+    # This prevents irrelevant RAG chunks (e.g. AI-tools videos for a books
+    # question) from appearing as citations just because of high base/rank score
+    # or incidental answer-text overlap on shared business vocabulary.
+    if question_overlap < 0.05 and title_verbatim_bonus < 0.10:
+        score = min(score, 0.30)
+
     return round(score, 4)
 
 
@@ -5538,11 +5541,29 @@ async def grounded_rag_stream(
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
         elif fact_search_requested:
-            yield _build_public_fact_fallback(
-                question,
-                creator_row.get("name") or creator_row.get("handle") or "the creator",
-            )
-            return
+            # Before returning the fallback, await any pending speculative web search.
+            # Without this, we'd bail with a canned "check my website" message even
+            # though the actual web results are in-flight and may contain the answer.
+            if speculative_web_task and not speculative_web_task.done():
+                try:
+                    web_results = await speculative_web_task
+                except Exception as exc:
+                    logger.warning("[LATENCY] Speculative web search failed while awaiting for fact: %s", exc)
+                    web_results = []
+            elif speculative_web_task and speculative_web_task.done():
+                try:
+                    web_results = speculative_web_task.result()
+                except Exception:
+                    web_results = []
+            if web_results:
+                support_set = _inject_live_web_results(support_set, web_results)
+                needs_fallback = False
+            else:
+                yield _build_public_fact_fallback(
+                    question,
+                    creator_row.get("name") or creator_row.get("handle") or "the creator",
+                )
+                return
 
         if needs_fallback:
             logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
