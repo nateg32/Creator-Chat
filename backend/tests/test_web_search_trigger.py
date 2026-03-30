@@ -348,7 +348,22 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         "backend.services.rag_text_matcher",
         extract_named_resource_fragments=lambda *args, **kwargs: [],
         merge_support_sets=lambda primary, secondary, limit=4: (primary or []) + (secondary or []),
+        retrieve_sparse_text_matches=lambda *args, **kwargs: [],
         retrieve_exact_text_matches=lambda *args, **kwargs: [],
+    )
+    _stub_module(
+        "backend.services.recommendation_asset_service",
+        recommendation_asset_service=types.SimpleNamespace(
+            get_profile=lambda *args, **kwargs: {},
+            score_fit=lambda *args, **kwargs: 0.5,
+        ),
+    )
+    _stub_module(
+        "backend.services.recommendation_feedback_service",
+        recommendation_feedback_service=types.SimpleNamespace(
+            log_impression=lambda *args, **kwargs: 1,
+            log_event=lambda *args, **kwargs: 1,
+        ),
     )
     _stub_module(
         "backend.services.out_of_domain_rules",

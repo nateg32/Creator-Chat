@@ -99,6 +99,21 @@ class SearchDecisionEngine:
                 seen.add(normalized)
         return cleaned_terms
 
+    def _looks_like_entity_confirmation(self, query: str) -> bool:
+        query_lower = str(query or "").lower().strip()
+        if not query_lower:
+            return False
+        has_entity_term = any(term in query_lower for term in self.creator_terms if len(term) >= 4)
+        if not has_entity_term:
+            return False
+        if re.search(r"\bis\s+.+\b(your|yours)\b", query_lower) and any(
+            token in query_lower for token in ("book", "course", "program", "podcast", "show", "newsletter", "video")
+        ):
+            return True
+        if re.search(r"\bdid you (?:write|make|create|start)\b", query_lower) and has_entity_term:
+            return True
+        return False
+
     def pre_retrieval_decision(
         self,
         query: str,
@@ -143,6 +158,15 @@ class SearchDecisionEngine:
                 )
         except Exception as exc:
             logger.warning("Evidence router pre-retrieval plan failed, falling back to heuristic search rules: %s", exc)
+
+        if self._looks_like_entity_confirmation(query_lower):
+            return SearchDecision(
+                should_search=False,
+                reason="entity_graph_answerable",
+                reason_detail="Known creator-owned entity appears to be answerable without live search",
+                phase="pre_retrieval",
+                confidence=0.9,
+            )
 
         for pattern in _CREATOR_PATTERNS:
             if pattern.search(query_lower):
@@ -226,6 +250,15 @@ class SearchDecisionEngine:
                 )
         except Exception as exc:
             logger.warning("Evidence router post-retrieval plan failed, falling back to heuristic search rules: %s", exc)
+
+        if self._looks_like_entity_confirmation(query):
+            return SearchDecision(
+                should_search=False,
+                reason="entity_graph_answerable",
+                reason_detail="Known creator-owned entity appears to be answerable without live search",
+                phase="post_retrieval",
+                confidence=0.9,
+            )
 
         if not chunks:
             return SearchDecision(

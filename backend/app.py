@@ -29,7 +29,8 @@ from backend.models import (
     CreateCreatorWithConfigRequest, UpdateCreatorRequest, CreatorWithConfigResponse,
     ApproveIngestRequestV2,
     UserSettings, UpdateUserSettingsRequest,
-    CreateThreadRequest, ThreadResponse, MessageResponse, UpdateThreadRequest
+    CreateThreadRequest, ThreadResponse, MessageResponse, UpdateThreadRequest,
+    RecommendationFeedbackRequest,
 )
 from backend.rag import get_persona
 import backend.rag as rag
@@ -65,6 +66,7 @@ from backend.services.transcript_quality import transcript_needs_recovery
 from backend.services.creator_entity_service import creator_entity_service
 from backend.services.evidence_router import recent_evidence_activity
 from backend.services.fact_registry import fact_registry
+from backend.services.recommendation_feedback_service import recommendation_feedback_service
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
     delete_document_corpus,
@@ -2854,6 +2856,12 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
              contradiction_report = ((result.get("meta") or {}).get("contradiction_report") or {})
              if contradiction_report:
                  assistant_metadata["contradiction_report"] = contradiction_report
+             recommendation_feedback_event_id = ((result.get("meta") or {}).get("recommendation_feedback_event_id"))
+             if recommendation_feedback_event_id:
+                 assistant_metadata["recommendation_feedback_event_id"] = recommendation_feedback_event_id
+             recommendation_query_variants = ((result.get("meta") or {}).get("recommendation_query_variants") or [])
+             if recommendation_query_variants:
+                 assistant_metadata["recommendation_query_variants"] = recommendation_query_variants
 
              db.execute_update("""
                 INSERT INTO chat_messages (thread_id, role, content, metadata)
@@ -2885,6 +2893,28 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/recommendations/feedback")
+async def recommendation_feedback_endpoint(
+    request: RecommendationFeedbackRequest,
+    current_user: Dict[str, Any] = Depends(require_auth),
+):
+    ensure_creator_access(request.creator_id, current_user["id"])
+    event_id = recommendation_feedback_service.log_event(
+        event_type=request.event_type,
+        user_id=current_user["id"],
+        creator_id=request.creator_id,
+        thread_id=request.thread_id,
+        query="",
+        candidate_title=request.title or "",
+        candidate_url=request.url or "",
+        metadata={
+            "recommendation_event_id": request.recommendation_event_id,
+            **(request.metadata or {}),
+        },
+    )
+    return {"ok": True, "event_id": event_id}
 
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(request: IngestRequest):

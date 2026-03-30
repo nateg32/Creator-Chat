@@ -170,6 +170,16 @@ class ApproveIngestResponse(BaseModel):
 class HealthResponse(BaseModel):
     ok: bool
 
+
+class RecommendationFeedbackRequest(BaseModel):
+    creator_id: int
+    thread_id: Optional[str] = None
+    recommendation_event_id: Optional[int] = None
+    event_type: Literal["click", "ignore", "followup_positive", "followup_negative", "dismiss"]
+    title: Optional[str] = None
+    url: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
 # Auth models
 class LoginRequest(BaseModel):
     email: str

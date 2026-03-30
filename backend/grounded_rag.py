@@ -58,8 +58,11 @@ from backend.services.search_decision_engine import (
 from backend.services.rag_text_matcher import (
     extract_named_resource_fragments,
     merge_support_sets,
+    retrieve_sparse_text_matches,
     retrieve_exact_text_matches,
 )
+from backend.services.recommendation_asset_service import recommendation_asset_service
+from backend.services.recommendation_feedback_service import recommendation_feedback_service
 from backend.services.out_of_domain_rules import (
     default_bridge_question,
     detect_external_live_fact_topic,
@@ -970,6 +973,176 @@ GUIDELINES:
     except Exception as e:
         logger.error(f"Query rewrite failed: {e}")
         return {"queries": [intent_plan.get("query", "")], "negatives": []}
+
+
+def _build_recommendation_context_features(
+    user_message: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    resource_intent: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    lowered = (user_message or "").lower()
+    request_type = str((resource_intent or {}).get("request_type") or "").lower()
+    specificity = str((resource_intent or {}).get("specificity") or "").lower()
+    intent_type = str((resource_intent or {}).get("intent_type") or "").lower()
+    learning_phase = str((resource_intent or {}).get("learning_phase") or "").lower()
+
+    already_shown_titles = list((_get_suggested_resources(history) or {}).get("titles") or [])
+    return {
+        "wants_video": any(token in lowered for token in ["video", "watch", "clip", "youtube", "tiktok", "reel"]),
+        "wants_post": any(token in lowered for token in ["post", "tweet", "tweets", "x", "twitter", "instagram post", "status"]),
+        "wants_proof": any(token in lowered for token in ["proof", "source", "show me", "where did you", "where do you", "evidence"]),
+        "wants_tactical": any(token in lowered for token in ["how", "steps", "script", "template", "process", "tactic", "tactical", "execute", "fix"]),
+        "wants_mindset": any(token in lowered for token in ["mindset", "belief", "discipline", "confidence", "motivation", "focus"]),
+        "wants_story": any(token in lowered for token in ["story", "journey", "lesson", "lessons", "learned", "mistake", "experience"]),
+        "wants_beginner": any(token in lowered for token in ["start", "starting", "beginner", "beginning", "first", "basics", "foundation"]) or learning_phase == "overview",
+        "wants_advanced": any(token in lowered for token in ["advanced", "scale", "optimize", "refine", "deep dive"]),
+        "needs_exact_match": specificity == "specific" or request_type == "explicit" or bool(extract_named_resource_fragments(user_message)),
+        "is_ambiguous": request_type == "implicit" or intent_type in {"how_to", "recommend_content"} or _is_elliptical_followup(user_message),
+        "learning_phase": learning_phase,
+        "request_type": request_type,
+        "intent_type": intent_type,
+        "already_shown_titles": already_shown_titles,
+    }
+
+
+def _dedupe_queries(queries: List[str], limit: int = 3) -> List[str]:
+    seen = set()
+    ordered: List[str] = []
+    for query in queries or []:
+        clean = re.sub(r"\s+", " ", str(query or "")).strip()
+        key = clean.lower()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(clean)
+        if len(ordered) >= limit:
+            break
+    return ordered
+
+
+def _build_recommendation_query_variants(
+    base_query: str,
+    resource_intent: Dict[str, Any],
+    creator_profile: Optional[Dict[str, Any]] = None,
+    history: Optional[List[Dict[str, str]]] = None,
+    *,
+    allow_llm: bool = False,
+    limit: int = 3,
+) -> List[str]:
+    queries = [base_query]
+    creator_name = str((creator_profile or {}).get("name") or "").strip()
+    named_fragments = extract_named_resource_fragments(base_query)
+    must_terms = [str(item).strip() for item in (resource_intent.get("must_terms") or []) if str(item or "").strip()]
+    resource_type = str(resource_intent.get("resource_type") or "").strip().lower()
+    implicit_goal = str(resource_intent.get("implicit_goal") or "").strip()
+    task_axis = str(resource_intent.get("task_axis") or "").strip()
+
+    if named_fragments:
+        fragment = named_fragments[0]
+        queries.append(fragment if not creator_name else f"{fragment} {creator_name}")
+    elif must_terms:
+        query = " ".join(must_terms[:4])
+        queries.append(query if not creator_name else f"{query} {creator_name}")
+
+    if resource_type in {"video", "article", "course_lesson"}:
+        medium_hint = "video" if resource_type == "video" else resource_type.replace("_", " ")
+        queries.append(f"{base_query} {medium_hint}".strip())
+    elif task_axis:
+        queries.append(f"{base_query} {task_axis}".strip())
+
+    if allow_llm:
+        rewritten = rewrite_queries(
+            {
+                "query": base_query,
+                "intent_type": resource_intent.get("intent_type"),
+                "implicit_goal": implicit_goal,
+                "task_axis": task_axis,
+                "help_criteria": resource_intent.get("help_criteria") or [],
+                "resource_type": resource_type or "any",
+                "topic_entities": named_fragments or must_terms,
+                "learning_phase": resource_intent.get("learning_phase"),
+            },
+            creator_profile=creator_profile or {},
+        )
+        queries.extend(rewritten.get("queries") or [])
+
+    contextualized = []
+    for query in queries:
+        contextualized.append(build_search_query(query, history))
+    return _dedupe_queries(contextualized + queries, limit=limit)
+
+
+def _annotate_retrieval_chunks(
+    chunks: List[Dict[str, Any]],
+    *,
+    retrieval_mode: str,
+    query_variant: str,
+) -> List[Dict[str, Any]]:
+    annotated: List[Dict[str, Any]] = []
+    for rank, chunk in enumerate(chunks or [], start=1):
+        item = dict(chunk)
+        item["retrieval_mode"] = retrieval_mode
+        item["query_variant"] = query_variant
+        item["retrieval_rank"] = rank
+        item["retrieval_rrf"] = 1.0 / (60.0 + rank)
+        annotated.append(item)
+    return annotated
+
+
+def _hybrid_retrieve_recommendation_chunks(
+    creator_id: int,
+    query_variants: List[str],
+    *,
+    enabled_platforms: Optional[List[str]] = None,
+    k_dense: int = 18,
+    k_sparse: int = 10,
+    base_query: str = "",
+    base_embedding: Optional[List[float]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    from backend.rag import get_client
+
+    all_chunks: List[Dict[str, Any]] = []
+    debug_payload: Dict[str, Any] = {"queries": []}
+    for query in _dedupe_queries(query_variants, limit=3):
+        dense_chunks: List[Dict[str, Any]] = []
+        sparse_chunks: List[Dict[str, Any]] = []
+        try:
+            if base_embedding and base_query and query.strip().lower() == base_query.strip().lower():
+                q_emb = base_embedding
+            else:
+                emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=query)
+                q_emb = emb_resp.data[0].embedding
+            dense_chunks = retrieve_candidates(
+                creator_id,
+                q_emb,
+                k_retrieve=k_dense,
+                enabled_platforms=enabled_platforms,
+            )
+            dense_chunks = _annotate_retrieval_chunks(dense_chunks, retrieval_mode="dense", query_variant=query)
+        except Exception as exc:
+            logger.warning("Recommendation dense retrieval failed for '%s': %s", query, exc)
+
+        try:
+            sparse_chunks = retrieve_sparse_text_matches(
+                creator_id,
+                query,
+                limit=k_sparse,
+                enabled_platforms=enabled_platforms,
+            )
+            sparse_chunks = _annotate_retrieval_chunks(sparse_chunks, retrieval_mode="sparse", query_variant=query)
+        except Exception as exc:
+            logger.warning("Recommendation sparse retrieval failed for '%s': %s", query, exc)
+
+        debug_payload["queries"].append(
+            {
+                "query": query,
+                "dense_count": len(dense_chunks),
+                "sparse_count": len(sparse_chunks),
+            }
+        )
+        all_chunks.extend(dense_chunks)
+        all_chunks.extend(sparse_chunks)
+    return all_chunks, debug_payload
 
 def retrieve_candidates(
     creator_id: int,
@@ -2280,22 +2453,54 @@ def _aggregate_document_evidence(chunks: List[Dict[str, Any]], sim_threshold: fl
                 "url": c["source_ref"].get("canonical_url"),
                 "thumbnail": c["source_ref"].get("thumbnail"), # assuming thumbnail might be there
                 "platform": c["source_ref"].get("platform"),
-                "chunks": []
+                "chunks": [],
+                "retrieval_signals": {
+                    "query_variants": set(),
+                    "retrieval_modes": set(),
+                    "rrf_total": 0.0,
+                    "sparse_hits": 0,
+                    "dense_hits": 0,
+                },
             }
         
         # Distance to Similarity conversion for metrics
-        sim = max(0.0, 1.0 - (c["distance"] / 1.15))
+        lexical_score = float(c.get("lexical_score") or 0.0)
+        sim = max(0.0, 1.0 - (float(c.get("distance") or 1.15) / 1.15))
+        if lexical_score > 0.0:
+            sim = max(sim, min(0.95, 0.35 + min(lexical_score, 12.0) * 0.05))
         c["sim"] = sim
         docs[doc_id]["chunks"].append(c)
+        retrieval_signals = docs[doc_id]["retrieval_signals"]
+        query_variant = str(c.get("query_variant") or "").strip().lower()
+        if query_variant:
+            retrieval_signals["query_variants"].add(query_variant)
+        retrieval_mode = str(c.get("retrieval_mode") or "").strip().lower()
+        if retrieval_mode:
+            retrieval_signals["retrieval_modes"].add(retrieval_mode)
+            if retrieval_mode == "sparse":
+                retrieval_signals["sparse_hits"] += 1
+            elif retrieval_mode == "dense":
+                retrieval_signals["dense_hits"] += 1
+        retrieval_signals["rrf_total"] += float(c.get("retrieval_rrf") or 0.0)
         
     aggregated = []
     for d_id, d in docs.items():
-        sorted_chunks = sorted(d["chunks"], key=lambda x: x["sim"], reverse=True)
+        sorted_chunks = sorted(
+            d["chunks"],
+            key=lambda x: (
+                float(x.get("sim") or 0.0),
+                float(x.get("lexical_score") or 0.0),
+                float(x.get("retrieval_rrf") or 0.0),
+            ),
+            reverse=True,
+        )
         top5 = sorted_chunks[:5]
         
         max_sim = top5[0]["sim"] if top5 else 0.0
         mean_top3 = sum(c["sim"] for c in top5[:3]) / min(len(top5), 3) if top5 else 0.0
         density = len([c for c in sorted_chunks if c["sim"] >= sim_threshold])
+        retrieval_signals = d["retrieval_signals"]
+        query_coverage = len(retrieval_signals["query_variants"])
         
         d["max_chunk_sim"] = max_sim
         d["mean_top3_chunk_sim"] = mean_top3
@@ -2303,10 +2508,19 @@ def _aggregate_document_evidence(chunks: List[Dict[str, Any]], sim_threshold: fl
         d["evidence_metrics"] = {
             "max_sim": max_sim,
             "mean_top3": mean_top3,
-            "density": density
+            "density": density,
+            "query_coverage": query_coverage,
+            "rrf_total": retrieval_signals["rrf_total"],
+            "sparse_hits": retrieval_signals["sparse_hits"],
+            "dense_hits": retrieval_signals["dense_hits"],
         }
-        # Take the top chunk as the primary "snippet" for the document
-        d["content"] = top5[0]["content"] if top5 else ""
+        representative_chunks = []
+        for chunk in top5[:2]:
+            snippet = re.sub(r"\s+", " ", str(chunk.get("content") or "").strip())
+            if snippet:
+                representative_chunks.append(snippet[:240])
+        d["content"] = " ".join(representative_chunks) if representative_chunks else ""
+        d["snippet"] = representative_chunks[0] if representative_chunks else ""
         d["chunk_id"] = top5[0]["chunk_id"] if top5 else ""
         d["distance"] = top5[0]["distance"] if top5 else 1.15
         d["source_ref"] = {
@@ -2314,6 +2528,13 @@ def _aggregate_document_evidence(chunks: List[Dict[str, Any]], sim_threshold: fl
             "canonical_url": d["url"],
             "platform": d["platform"],
             "content_type": top5[0]["source_ref"].get("content_type") if top5 else "unknown"
+        }
+        d["retrieval_signals"] = {
+            "query_coverage": query_coverage,
+            "retrieval_modes": sorted(retrieval_signals["retrieval_modes"]),
+            "rrf_total": retrieval_signals["rrf_total"],
+            "sparse_hits": retrieval_signals["sparse_hits"],
+            "dense_hits": retrieval_signals["dense_hits"],
         }
         
         aggregated.append(d)
@@ -2338,6 +2559,8 @@ def rerank_candidates(
     query: str,
     intent_plan: Dict[str, Any],
     preferred_platforms: Optional[List[str]] = None,
+    creator_id: Optional[int] = None,
+    context_features: Optional[Dict[str, Any]] = None,
     k_final: int = K_FINAL
 ) -> List[Dict[str, Any]]:
     """
@@ -2347,6 +2570,28 @@ def rerank_candidates(
     scored = []
     user_goal = intent_plan.get("intent_type", "how_to")
     preferred = {platform.lower() for platform in (preferred_platforms or []) if platform}
+    context_features = context_features or {}
+    ranker_mode = "default"
+    specificity = str(intent_plan.get("specificity") or "").lower()
+    if specificity == "specific" or context_features.get("needs_exact_match"):
+        ranker_mode = "exact_lookup"
+    elif context_features.get("wants_proof") or str(intent_plan.get("specificity") or "").lower() == "evidence":
+        ranker_mode = "proof_source"
+    elif context_features.get("wants_video") and not context_features.get("needs_exact_match"):
+        ranker_mode = "best_video"
+    elif context_features.get("wants_post") and not context_features.get("needs_exact_match"):
+        ranker_mode = "best_post"
+    elif context_features.get("wants_beginner"):
+        ranker_mode = "beginner_start"
+    weight_map = {
+        "default": {"similarity": 0.28, "density": 0.08, "recency": 0.08, "quality": 0.07, "overlap": 0.06, "compat": 0.08, "platform": 0.06, "title": 0.1, "asset_fit": 0.13, "query_cov": 0.07, "rrf": 0.09},
+        "exact_lookup": {"similarity": 0.18, "density": 0.06, "recency": 0.04, "quality": 0.05, "overlap": 0.1, "compat": 0.08, "platform": 0.04, "title": 0.15, "asset_fit": 0.12, "query_cov": 0.08, "rrf": 0.1},
+        "proof_source": {"similarity": 0.18, "density": 0.06, "recency": 0.06, "quality": 0.08, "overlap": 0.08, "compat": 0.08, "platform": 0.05, "title": 0.08, "asset_fit": 0.14, "query_cov": 0.08, "rrf": 0.11},
+        "best_video": {"similarity": 0.24, "density": 0.08, "recency": 0.08, "quality": 0.07, "overlap": 0.06, "compat": 0.1, "platform": 0.08, "title": 0.08, "asset_fit": 0.13, "query_cov": 0.07, "rrf": 0.11},
+        "best_post": {"similarity": 0.22, "density": 0.07, "recency": 0.08, "quality": 0.06, "overlap": 0.06, "compat": 0.1, "platform": 0.08, "title": 0.09, "asset_fit": 0.14, "query_cov": 0.08, "rrf": 0.12},
+        "beginner_start": {"similarity": 0.2, "density": 0.06, "recency": 0.06, "quality": 0.06, "overlap": 0.05, "compat": 0.08, "platform": 0.06, "title": 0.08, "asset_fit": 0.2, "query_cov": 0.07, "rrf": 0.08},
+    }
+    weights = weight_map[ranker_mode]
     
     for cand in candidates:
         # 1. Base Evidence Score (from Stage 2 Metrics)
@@ -2376,20 +2621,36 @@ def rerank_candidates(
         platform_boost = 0.12 if preferred and _candidate_platform(cand) in preferred else 0.0
         title_quality = _resource_title_quality(_candidate_title(cand), _candidate_url(cand))
         cand["title_quality"] = title_quality
+        if creator_id:
+            cand["asset_profile"] = recommendation_asset_service.get_profile(creator_id, cand)
+        asset_fit = recommendation_asset_service.score_fit(
+            cand.get("asset_profile") or {},
+            query,
+            resource_intent=intent_plan,
+            context_features=context_features,
+        )
+        retrieval_signals = cand.get("retrieval_signals") or {}
+        query_cov = min(1.0, float(retrieval_signals.get("query_coverage") or 0.0) / 3.0)
+        rrf_total = min(1.0, float(retrieval_signals.get("rrf_total") or 0.0) * 12.0)
             
         # Composite score
         score = (
-            0.45 * similarity +
-            0.15 * density_bonus +
-            0.15 * recency +
-            0.10 * quality +
-            0.05 * overlap +
-            0.10 * comp_boost +
-            0.08 * platform_boost +
-            0.12 * title_quality
+            weights["similarity"] * similarity +
+            weights["density"] * density_bonus +
+            weights["recency"] * recency +
+            weights["quality"] * quality +
+            weights["overlap"] * overlap +
+            weights["compat"] * comp_boost +
+            weights["platform"] * platform_boost +
+            weights["title"] * title_quality +
+            weights["asset_fit"] * asset_fit +
+            weights["query_cov"] * query_cov +
+            weights["rrf"] * rrf_total
         )
         
         cand["rerank_score"] = score
+        cand["asset_fit_score"] = asset_fit
+        cand["ranker_mode"] = ranker_mode
         scored.append(cand)
     
     scored.sort(key=lambda x: x["rerank_score"], reverse=True)
@@ -3551,6 +3812,97 @@ Output ONLY a JSON object:
         logger.error(f"llm_rerank failed: {e}")
         return candidates
 
+
+def _pairwise_compare_candidates(
+    left: Dict[str, Any],
+    right: Dict[str, Any],
+    intent_plan: Dict[str, Any],
+) -> str:
+    import backend.rag as rag
+
+    payload = {
+        "user_goal": intent_plan.get("implicit_goal") or intent_plan.get("intent_type"),
+        "task_axis": intent_plan.get("task_axis"),
+        "learning_phase": intent_plan.get("learning_phase"),
+        "left": {
+            "id": left.get("id") or left.get("chunk_id"),
+            "title": left.get("title") or (left.get("source_ref") or {}).get("title"),
+            "summary": ((left.get("asset_profile") or {}).get("summary") or left.get("snippet") or left.get("content") or "")[:320],
+            "mode": (left.get("asset_profile") or {}).get("content_mode"),
+            "audience": (left.get("asset_profile") or {}).get("audience_level"),
+            "format": (left.get("asset_profile") or {}).get("format_label"),
+        },
+        "right": {
+            "id": right.get("id") or right.get("chunk_id"),
+            "title": right.get("title") or (right.get("source_ref") or {}).get("title"),
+            "summary": ((right.get("asset_profile") or {}).get("summary") or right.get("snippet") or right.get("content") or "")[:320],
+            "mode": (right.get("asset_profile") or {}).get("content_mode"),
+            "audience": (right.get("asset_profile") or {}).get("audience_level"),
+            "format": (right.get("asset_profile") or {}).get("format_label"),
+        },
+    }
+    system_prompt = """
+You are a pairwise recommendation judge.
+
+Pick the SINGLE more helpful creator resource for the user's exact need.
+Prefer directness, goal fit, correct medium, and practical usefulness.
+
+Return JSON only:
+{"winner_id": "left-or-right-id", "reason": "short reason"}
+"""
+    try:
+        response_text = rag.generate_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload)},
+            ],
+            model=settings.RERANK_MODEL,
+            temperature=0.0,
+            json_mode=True,
+        )
+        winner_id = str(json.loads(response_text).get("winner_id") or "").strip()
+        return winner_id
+    except Exception as exc:
+        logger.warning("Pairwise candidate comparison failed: %s", exc)
+        return str(left.get("id") or left.get("chunk_id") or "")
+
+
+def pairwise_rerank_if_ambiguous(
+    candidates: List[Dict[str, Any]],
+    intent_plan: Dict[str, Any],
+    *,
+    max_candidates: int = 5,
+) -> List[Dict[str, Any]]:
+    if not candidates or len(candidates) < 2:
+        return candidates
+
+    working = [dict(candidate) for candidate in candidates]
+    top_slice = working[:max_candidates]
+    incumbent = top_slice[0]
+    win_counts = {str(item.get("id") or item.get("chunk_id") or ""): 0 for item in top_slice}
+
+    for challenger in top_slice[1:]:
+        winner_id = _pairwise_compare_candidates(incumbent, challenger, intent_plan)
+        challenger_id = str(challenger.get("id") or challenger.get("chunk_id") or "")
+        if winner_id == challenger_id:
+            incumbent = challenger
+        if winner_id:
+            win_counts[winner_id] = win_counts.get(winner_id, 0) + 1
+
+    for candidate in working:
+        cid = str(candidate.get("id") or candidate.get("chunk_id") or "")
+        candidate["pairwise_wins"] = win_counts.get(cid, 0)
+        candidate["pairwise_score"] = float(candidate.get("rerank_score", 0.0) or 0.0) + (0.05 * candidate["pairwise_wins"])
+
+    return sorted(
+        working,
+        key=lambda item: (
+            float(item.get("pairwise_score") or 0.0),
+            float(item.get("rerank_score") or 0.0),
+        ),
+        reverse=True,
+    )
+
 def calculate_gate_confidence(candidates: List[Dict[str, Any]], temperature: float = 0.1) -> float:
     """
     Stage 5: ONE-PICK decision policy (confidence gate).
@@ -3595,7 +3947,12 @@ def _can_skip_llm_rerank(
             return False
     if resource_intent.get("needs_resource") and title_quality >= 0.65 and top_score >= 0.55 and gap >= 0.12:
         return True
-    if resource_intent.get("request_type") in {"video", "resource"} and title_quality >= 0.6 and top_score >= 0.5 and gap >= 0.1:
+    if (
+        str(resource_intent.get("resource_type") or "").lower() in {"video", "article", "course_lesson", "any"}
+        and title_quality >= 0.6
+        and top_score >= 0.5
+        and gap >= 0.1
+    ):
         return True
     return False
         
@@ -3615,6 +3972,7 @@ def recommend_one_content(
     # Stage 0: Request parsing + creator context
     resource_intent = classify_resource_intent(user_message, conversation_history, creator_row)
     q_search = _build_resource_search_query(user_message, resource_intent, conversation_history)
+    context_features = _build_recommendation_context_features(user_message, conversation_history, resource_intent)
     preferred_platforms = extract_requested_platforms(user_message, conversation_history)
     resource_intent["preferred_platforms"] = preferred_platforms
     seen_resources = _get_suggested_resources(conversation_history)
@@ -3636,9 +3994,24 @@ def recommend_one_content(
             logger.error(f"Embedding failed: {e}")
             return {"answer": "I'm having trouble searching my content right now.", "recommended": None}
 
-    # Broad Vector Search
     enabled_platforms = get_enabled_platforms_for_creator(creator_id)
-    raw_chunks = retrieve_candidates(creator_id, q_emb, K_RETRIEVE * 2, enabled_platforms=enabled_platforms)
+    query_variants = _build_recommendation_query_variants(
+        q_search,
+        resource_intent,
+        creator_profile=creator_row,
+        history=conversation_history,
+        allow_llm=False,
+        limit=2,
+    )
+    raw_chunks, retrieval_debug = _hybrid_retrieve_recommendation_chunks(
+        creator_id,
+        query_variants,
+        enabled_platforms=enabled_platforms,
+        k_dense=K_RETRIEVE,
+        k_sparse=max(8, K_RETRIEVE // 2),
+        base_query=q_search,
+        base_embedding=q_emb,
+    )
     
     # Platform Preference: YouTube if user wants to "watch"
     wants_video = "video" in user_message.lower() or "watch" in user_message.lower()
@@ -3654,14 +4027,68 @@ def recommend_one_content(
         candidates = deduped_candidates
     
     # Stage 3: Goal/Intent compatibility + Contradiction handling
-    # (Incorporated into rerank_candidates)
-    candidates = rerank_candidates(candidates, q_search, resource_intent, preferred_platforms=preferred_platforms)
+    candidates = rerank_candidates(
+        candidates,
+        q_search,
+        resource_intent,
+        preferred_platforms=preferred_platforms,
+        creator_id=creator_id,
+        context_features=context_features,
+    )
+
+    initial_confidence = calculate_gate_confidence(candidates)
+    should_expand_queries = bool(
+        context_features.get("is_ambiguous")
+        or context_features.get("needs_exact_match")
+        or len(candidates) < 3
+        or initial_confidence < 0.72
+    )
+    if should_expand_queries:
+        expanded_variants = _build_recommendation_query_variants(
+            q_search,
+            resource_intent,
+            creator_profile=creator_row,
+            history=conversation_history,
+            allow_llm=True,
+            limit=3,
+        )
+        if len(expanded_variants) > len(query_variants):
+            raw_chunks, retrieval_debug = _hybrid_retrieve_recommendation_chunks(
+                creator_id,
+                expanded_variants,
+                enabled_platforms=enabled_platforms,
+                k_dense=K_RETRIEVE,
+                k_sparse=max(10, K_RETRIEVE // 2),
+                base_query=q_search,
+                base_embedding=q_emb,
+            )
+            candidates = _aggregate_document_evidence(raw_chunks)
+            candidates = _filter_candidates_for_requested_platforms(candidates, preferred_platforms)
+            deduped_candidates = [
+                candidate for candidate in candidates
+                if not _is_recent_duplicate_candidate(candidate, seen_resources)
+            ]
+            if deduped_candidates:
+                candidates = deduped_candidates
+            candidates = rerank_candidates(
+                candidates,
+                q_search,
+                resource_intent,
+                preferred_platforms=preferred_platforms,
+                creator_id=creator_id,
+                context_features=context_features,
+            )
+            query_variants = expanded_variants
     
     # Stage 4: Helpfulness rerank (LLM) only when the heuristic top pick is ambiguous.
     if _can_skip_llm_rerank(candidates, resource_intent, preferred_platforms=preferred_platforms):
         logger.info("Recommender: Skipping LLM rerank for strong top candidate.")
     else:
         candidates = llm_rerank(candidates, resource_intent)
+    if len(candidates) > 1:
+        top_gap = float(candidates[0].get("rerank_score", 0.0) or 0.0) - float(candidates[1].get("rerank_score", 0.0) or 0.0)
+        if top_gap < 0.08:
+            candidates = pairwise_rerank_if_ambiguous(candidates, resource_intent, max_candidates=5)
     
     # Stage 5: ONE-PICK decision policy (Confidence Gate)
     confidence = calculate_gate_confidence(candidates)
@@ -3676,7 +4103,9 @@ def recommend_one_content(
             "clarify_question": cl_question,
             "candidates": candidates[:1], # Pass top 1 for context
             "resource_intent": resource_intent,
-            "q_emb": q_emb
+            "q_emb": q_emb,
+            "query_variants": query_variants,
+            "retrieval_debug": retrieval_debug,
         }
     
     # HIGH CONFIDENCE: Pick top 1
@@ -3724,6 +4153,8 @@ def recommend_one_content(
             "card_limit": 1 if not wants_multiple else min(3, 1 + len(alternate_candidates)),
             "resource_intent": resource_intent,
             "q_emb": q_emb,
+            "query_variants": query_variants,
+            "retrieval_debug": retrieval_debug,
         }
     resource_intent["matched_resource_kind"] = best_kind
     resource_intent["matched_resource_label"] = _resource_label(best_kind, _candidate_platform(best_one))
@@ -3752,7 +4183,9 @@ def recommend_one_content(
         "alternate_candidates": alternate_candidates,
         "card_limit": card_limit,
         "resource_intent": resource_intent,
-        "q_emb": q_emb
+        "q_emb": q_emb,
+        "query_variants": query_variants,
+        "retrieval_debug": retrieval_debug,
     }
 
 def grounded_rag_ask(
@@ -4454,6 +4887,20 @@ Message: {answer_text[:500]}"""
             question=question,
             answer_text=answer,
         )
+    recommendation_event_id = None
+    if (rec_result or {}).get("best_candidate"):
+        recommendation_event_id = recommendation_feedback_service.log_impression(
+            user_id=user_id,
+            creator_id=creator_id,
+            thread_id=thread_id,
+            query=question,
+            best_candidate=(rec_result or {}).get("best_candidate"),
+            alternate_candidates=(rec_result or {}).get("alternate_candidates") or [],
+            resource_intent=(rec_result or {}).get("resource_intent") or {},
+            confidence=(rec_result or {}).get("confidence"),
+            query_variants=(rec_result or {}).get("query_variants") or [],
+            retrieval_debug=(rec_result or {}).get("retrieval_debug") or {},
+        )
 
     # --- Step 10: Persist + Return ---
     logger.info("Pipeline Step 10: Finalizing Output...")
@@ -4472,6 +4919,10 @@ Message: {answer_text[:500]}"""
     except Exception as e:
         logger.error(f"Background memory update failed: {e}")
 
+    gen_debug["recommendation_feedback_event_id"] = recommendation_event_id
+    gen_debug["recommendation_query_variants"] = (rec_result or {}).get("query_variants") if rec_result else None
+    gen_debug["recommendation_retrieval_debug"] = (rec_result or {}).get("retrieval_debug") if rec_result else None
+
     return apply_final_polish({
         "answer": answer,
         "retrieved": support_set,
@@ -4489,6 +4940,9 @@ Message: {answer_text[:500]}"""
             "quality_report": quality_report,
             "evidence_plan": evidence_plan_post.to_dict() if 'evidence_plan_post' in locals() and evidence_plan_post else (evidence_plan.to_dict() if 'evidence_plan' in locals() and evidence_plan else None),
             "contradiction_report": contradiction_report if 'contradiction_report' in locals() else None,
+            "recommendation_feedback_event_id": recommendation_event_id,
+            "recommendation_query_variants": (rec_result or {}).get("query_variants") if rec_result else None,
+            "recommendation_retrieval_debug": (rec_result or {}).get("retrieval_debug") if rec_result else None,
         }
     }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=plan_obj)
 
@@ -5127,6 +5581,19 @@ async def grounded_rag_stream(
         question=question,
         answer_text=final_stream_text,
     )
+    if route == "ROUTE_2_TASK" and (rec_result or {}).get("best_candidate"):
+        recommendation_feedback_service.log_impression(
+            user_id=user_id,
+            creator_id=creator_id,
+            thread_id=thread_id,
+            query=question,
+            best_candidate=(rec_result or {}).get("best_candidate"),
+            alternate_candidates=(rec_result or {}).get("alternate_candidates") or [],
+            resource_intent=(rec_result or {}).get("resource_intent") or {},
+            confidence=(rec_result or {}).get("confidence"),
+            query_variants=(rec_result or {}).get("query_variants") or [],
+            retrieval_debug=(rec_result or {}).get("retrieval_debug") or {},
+        )
     if stream_cards:
         yield f"__CARDS__{json.dumps(stream_cards)}"
     stream_citations = build_inline_citations(

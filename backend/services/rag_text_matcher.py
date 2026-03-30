@@ -277,6 +277,53 @@ def retrieve_exact_text_matches(
     return chunks
 
 
+def retrieve_sparse_text_matches(
+    creator_id: int,
+    question: str,
+    limit: int = 8,
+    enabled_platforms: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    General-purpose sparse retrieval for recommendation and title-aware lookup.
+
+    Unlike retrieve_exact_text_matches(), this still runs for normal recommendation
+    queries so exact title and transcript keywords can compete with semantic hits.
+    """
+    platform_hints = detect_platform_hints(question)
+    enabled = [str(value).lower() for value in (enabled_platforms or []) if value]
+    if enabled:
+        if platform_hints:
+            platform_hints = [platform for platform in platform_hints if platform in enabled]
+        else:
+            platform_hints = enabled
+
+    quoted_fragments = extract_quoted_fragments(question)
+    named_resource_fragments = extract_named_resource_fragments(question)
+    combined_fragments: List[str] = []
+    seen_fragments = set()
+    for fragment in quoted_fragments + named_resource_fragments:
+        key = fragment.lower()
+        if key in seen_fragments:
+            continue
+        seen_fragments.add(key)
+        combined_fragments.append(fragment)
+
+    keywords = normalize_query_terms(question)
+    if not combined_fragments and not keywords:
+        return []
+
+    rows = _run_match_query(creator_id, platform_hints, combined_fragments, keywords, limit)
+    if not rows and platform_hints and wants_exact_social_post(question):
+        rows = _run_showcase_query(creator_id, platform_hints or enabled, limit)
+
+    chunks: List[Dict[str, Any]] = []
+    for row in rows or []:
+        chunk = _row_to_chunk(row, row.get("lexical_score") or 0.0)
+        chunk["retrieval_mode"] = "sparse"
+        chunks.append(chunk)
+    return chunks
+
+
 def merge_support_sets(primary: List[Dict[str, Any]], supplemental: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
     merged: List[Dict[str, Any]] = []
     seen = set()
