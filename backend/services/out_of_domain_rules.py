@@ -105,8 +105,8 @@ def default_bridge_question(creator_category: str = "general") -> str:
 
 # Map: broad topic key → set of creator domain keywords that legitimately allow the topic
 _GENERAL_TOPIC_DOMAIN_MAP: Dict[str, Set[str]] = {
-    "git": {"programming", "tech", "software", "devops", "development", "engineering", "saas"},
-    "coding": {"programming", "tech", "software", "development", "engineering", "saas"},
+    "git": {"programming", "tech", "software", "devops", "development", "engineering"},
+    "coding": {"programming", "tech", "software", "development", "engineering"},
     "cooking": {"cooking", "food", "nutrition", "health", "lifestyle", "wellness", "chef"},
     "geography": {"education", "travel", "history", "language", "culture"},
     "grammar": {"education", "writing", "content", "copywriting", "journalism", "language"},
@@ -136,6 +136,14 @@ _GENERAL_TOPIC_PATTERNS: Dict[str, List[str]] = {
         r"\bsorting\s+algorithm\b",
         r"\btime\s+complexity\b",
         r"\brecursion\s+example\b",
+        r"\b(python|javascript|java|c\+\+|ruby|php|swift|kotlin|typescript|go|rust)\s+(reverse|reversal|loop|function|class|method|array|list|string|variable|dictionary|tuple|set|object|module|import|exception|error|syntax|operator|recursion|iteration|lambda|generator|decorator|closure|regex|parse|sort|search|filter|map|reduce)\b",
+        r"\b(reverse|reversal|loop|iterate|parse|sort|filter|map|reduce)\s+(a\s+|the\s+|in\s+|with\s+)?(python|javascript|java|c\+\+|ruby|php|typescript|go|rust)\b",
+        r"\bhow\s+to\s+\w+\s+(a\s+)?(list|string|array|dict|dictionary|tuple|set|file|object|number|int|float|variable)\s+(in|with|using)\s+(python|javascript|java|c\+\+|ruby|php|swift|kotlin|typescript|go|rust)\b",
+        r"\bhow\s+to\s+\w+\s+(in|with|using)\s+(python|javascript|java|c\+\+|ruby|php|swift|kotlin|typescript|go|rust)\b",
+        r"\b(python|javascript|java|typescript)\s+(code|script|snippet)\s+(for|to|that)\b",
+        r"\bwrite\s+(a|me|the)\s+(python|javascript|java|typescript|code|script|function|program)\b",
+        r"\b(for\s+loop|while\s+loop|if\s+else|try\s+except|switch\s+case)\s+(in\s+)?(python|javascript|java)?\b",
+        r"\bhow\s+to\s+do\s+a?\s*(python|javascript|java|c\+\+|ruby|php|swift|kotlin|typescript|go|rust)\b",
     ],
     "cooking": [
         r"\b(recipe|ingredient)\s+(for|to\s+make)\b",

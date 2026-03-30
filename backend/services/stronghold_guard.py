@@ -93,7 +93,9 @@ Constraints:
 - {handoff_instruction}
 - {pivot_instruction}
 - Do not say you lack access, cannot browse, or cannot provide live information.
-- Do not dump facts about the out of scope topic.
+- CRITICAL: DO NOT answer the question. DO NOT provide any instructions, steps, code, commands, recipes, formulas, or factual answers about the out of scope topic. Not even a brief summary. Not even "the simple version is." Zero teaching on the topic.
+- Your ONLY job is to decline naturally and redirect to your own lane.
+- If you catch yourself starting to explain the topic, STOP.
 
 Creator Persona:
 {persona}
