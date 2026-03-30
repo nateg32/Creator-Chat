@@ -156,7 +156,7 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("Dan Martell's", answer)
         self.assertTrue(answer.startswith("I "), answer)
 
-    def test_public_book_question_forces_web_when_caller_disables_it(self):
+    def test_public_book_question_does_not_use_web_when_caller_disables_it(self):
         service, provider = _load_personal_bio_service(
             [
                 {
@@ -179,9 +179,8 @@ class PersonalBioServiceTests(unittest.TestCase):
         )
 
         answer = result.get("answer", "")
-        self.assertTrue(provider.grounded_calls or provider.calls)
-        self.assertTrue("September" in answer or "2023" in answer, answer)
-        self.assertNotIn("I haven't really talked about that publicly", answer)
+        self.assertFalse(provider.grounded_calls or provider.calls)
+        self.assertFalse("September" in answer or "2023" in answer, answer)
 
     def test_public_book_question_prefers_gemini_grounded_overview(self):
         grounded_results = [

@@ -217,6 +217,14 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         ):
             profile = dict(creator_profile or {})
             profile.setdefault("name", creator_name)
+            if not allow_web:
+                return {
+                    "answer": "I don't have that in my ingested content right now.",
+                    "confidence": "LOW",
+                    "sources": [],
+                    "move": "NO_WEB_INGESTED_ONLY",
+                }
+
             if callable(getattr(provider, "grounded_overview", None)):
                 overview = provider.grounded_overview(question, profile, conversation_history=None)
                 results = list(overview.get("results") or [])
@@ -338,6 +346,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
 
     _stub_module(
         "backend.services.rag_text_matcher",
+        extract_named_resource_fragments=lambda *args, **kwargs: [],
         merge_support_sets=lambda primary, secondary, limit=4: (primary or []) + (secondary or []),
         retrieve_exact_text_matches=lambda *args, **kwargs: [],
     )
@@ -546,6 +555,33 @@ class WebSearchTriggerTests(unittest.TestCase):
         self.assertNotIn("pricing info", answer.lower(), answer)
         self.assertNotIn("checkout page", answer.lower(), answer)
         self.assertTrue("date" in answer.lower() or "publication" in answer.lower() or "amazon" in answer.lower(), answer)
+
+    def test_ingested_only_mode_never_calls_web_search(self):
+        search_results = [
+            {
+                "title": "Buy Back Your Time",
+                "url": "https://www.penguinrandomhouse.com/books/123456/buy-back-your-time/",
+                "snippet": "Buy Back Your Time was published in September 2023.",
+                "platform": "web",
+            }
+        ]
+        module, provider = _load_grounded_rag(
+            search_results=search_results,
+            retrieved_chunks=[],
+            search_mode="ingested",
+        )
+
+        result = module.grounded_rag_ask(
+            1,
+            "when was Buy Back Your Time published",
+            user_id=1,
+            thread_id="test-thread",
+            conversation_history=[],
+            user_name="Nathan",
+        )
+
+        self.assertFalse(provider.calls, "Web search should stay off in ingested-only mode")
+        self.assertEqual(result.get("answer"), "I don't have that in my ingested content right now.")
 
 
 if __name__ == "__main__":

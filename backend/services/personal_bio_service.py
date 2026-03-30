@@ -254,7 +254,10 @@ class PersonalBioService:
         if evidence_plan.query_goal == "entity_catalog_lookup":
             public_fact_query = False
         researcher_enabled = bool(getattr(self.researcher, "enabled", True))
-        effective_allow_web = bool(allow_web or (public_fact_query and researcher_enabled))
+        # Respect creator retrieval mode strictly. When the caller disables web
+        # (for "ingested only"), this service must stay inside ingested content,
+        # soul_md, and creator profile data without silently re-enabling search.
+        effective_allow_web = bool(allow_web and researcher_enabled)
         fact_field = fact_registry.infer_fact_field(resolved_question, evidence_plan.entity_type)
         entity_subject = self._derive_entity_subject(
             resolved_question,

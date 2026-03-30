@@ -20,6 +20,12 @@ SOCIAL_EXACT_TERMS = {
     "writing", "said", "caption", "line", "lines", "favorite", "favourite", "best",
 }
 
+NAMED_RESOURCE_PATTERNS = (
+    re.compile(r"\bfrom your (?:video|podcast|episode|post|reel|short|lesson)\s+([^,\.\?\!\n]{4,140})", re.IGNORECASE),
+    re.compile(r"\bin your (?:video|podcast|episode|post|reel|short|lesson)\s+([^,\.\?\!\n]{4,140})", re.IGNORECASE),
+    re.compile(r"\b(?:video|podcast|episode|post|reel|short|lesson)\s+(?:called|titled)\s+([^,\.\?\!\n]{4,140})", re.IGNORECASE),
+)
+
 GENERIC_QUERY_TERMS = {
     "what", "which", "your", "about", "from", "that", "this", "have", "with", "would",
     "could", "should", "posted", "post", "posts", "tweet", "tweets", "quote", "quotes",
@@ -60,6 +66,23 @@ def extract_quoted_fragments(question: str) -> List[str]:
             continue
         seen.add(key)
         ordered.append(clean)
+    return ordered[:3]
+
+
+def extract_named_resource_fragments(question: str) -> List[str]:
+    text = question or ""
+    seen = set()
+    ordered: List[str] = []
+    for pattern in NAMED_RESOURCE_PATTERNS:
+        for fragment in pattern.findall(text):
+            clean = re.sub(r"\s+", " ", str(fragment or "")).strip(" .,:;!?\"'")
+            if len(clean) < 4:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(clean)
     return ordered[:3]
 
 
@@ -229,13 +252,22 @@ def retrieve_exact_text_matches(
             platform_hints = enabled
 
     quoted_fragments = extract_quoted_fragments(question)
+    named_resource_fragments = extract_named_resource_fragments(question)
+    combined_fragments: List[str] = []
+    seen_fragments = set()
+    for fragment in quoted_fragments + named_resource_fragments:
+        key = fragment.lower()
+        if key in seen_fragments:
+            continue
+        seen_fragments.add(key)
+        combined_fragments.append(fragment)
     keywords = normalize_query_terms(question)
     exact_social = wants_exact_social_post(question)
 
-    if not exact_social and not quoted_fragments:
+    if not exact_social and not combined_fragments:
         return []
 
-    rows = _run_match_query(creator_id, platform_hints, quoted_fragments, keywords, limit)
+    rows = _run_match_query(creator_id, platform_hints, combined_fragments, keywords, limit)
     if not rows and exact_social:
         rows = _run_showcase_query(creator_id, platform_hints or enabled, limit)
 

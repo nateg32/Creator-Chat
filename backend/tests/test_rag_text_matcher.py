@@ -66,6 +66,16 @@ class RagTextMatcherTests(unittest.TestCase):
         self.assertEqual(results[0]["source_ref"]["platform"], "twitter")
         self.assertEqual(results[0]["source_ref"]["canonical_url"], "https://x.com/AlexHormozi/status/1888")
 
+    def test_named_video_reference_triggers_exact_match(self):
+        results = matcher.retrieve_exact_text_matches(
+            creator_id=1,
+            question="what about from your video 26 harsh lessons i learned in 2025, what are some harsh lessons?",
+            limit=3,
+            enabled_platforms=None,
+        )
+        self.assertEqual(len(results), 1)
+        self.assertIn("source_ref", results[0])
+
     def test_merge_support_sets_prefers_supplemental(self):
         primary = [{
             "chunk_id": "vec_1",

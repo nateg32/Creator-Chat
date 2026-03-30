@@ -55,7 +55,11 @@ from backend.services.search_decision_engine import (
     SearchDecisionEngine,
     log_search_decision,
 )
-from backend.services.rag_text_matcher import merge_support_sets, retrieve_exact_text_matches
+from backend.services.rag_text_matcher import (
+    extract_named_resource_fragments,
+    merge_support_sets,
+    retrieve_exact_text_matches,
+)
 from backend.services.out_of_domain_rules import (
     default_bridge_question,
     detect_external_live_fact_topic,
@@ -1244,6 +1248,8 @@ def _should_run_exact_text_match(
     if not q:
         return False
     if wants_resource or needs_links(question):
+        return True
+    if extract_named_resource_fragments(question):
         return True
     if any(token in q for token in ['"', "“", "”"]):
         return True
