@@ -1837,20 +1837,31 @@ def _inject_entity_graph_support(
 
 def _build_public_fact_fallback(question: str, creator_name: str) -> str:
     lowered = (question or "").lower()
-    if (
-        "book" in lowered
-        or "publish" in lowered
-        or "published" in lowered
-        or "publication" in lowered
-        or "release" in lowered
-        or "released" in lowered
-        or "launch" in lowered
-        or "launched" in lowered
-        or "come out" in lowered
-        or "write" in lowered
-        or "wrote" in lowered
-        or "written" in lowered
-    ):
+    is_catalog_question = bool(
+        re.search(r"\bhow many\s+(books|courses|programs|podcasts|shows)\b", lowered)
+        or re.search(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", lowered)
+        or re.search(r"\bwhich\s+(books|courses|programs|podcasts|shows)\b", lowered)
+        or re.search(r"\bhave\s+(?:you|u)\s+(?:written|published|made|created)\b", lowered)
+        or re.search(r"\b(?:books|courses|programs|podcasts|shows)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", lowered)
+    )
+    is_timeline_question = bool(
+        any(token in lowered for token in ["publish", "published", "publication", "release", "released", "launch", "launched", "come out", "what year", "what date", "which month"])
+        or (
+            any(token in lowered for token in ["write", "wrote", "written"])
+            and any(token in lowered for token in ["when", "what year", "what date", "which month"])
+        )
+    )
+    if is_catalog_question:
+        if "book" in lowered:
+            return (
+                "I want to point you to the full current list. Check my Amazon author page or my official website "
+                "for the most up-to-date catalog."
+            )
+        return (
+            "I want to point you to the full current list. Check my official website or verified profile links "
+            "for the latest catalog."
+        )
+    if is_timeline_question:
         return (
             "I want to give you the right date on that. Check my Amazon listing, my official book page, "
             "or the publisher page for the exact publication info. If you want, I can help you narrow the fastest place to verify it."

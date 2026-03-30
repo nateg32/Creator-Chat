@@ -31,6 +31,14 @@ SEARCH_TRACE_PREFIX = "[SEARCH_TRACE]"
 HOT_FACT_CACHE_TTL = 3600.0
 _hot_fact_cache: Dict[str, Dict[str, Any]] = {}
 
+CATALOG_HINT_PATTERNS = [
+    re.compile(r"\bhow many\s+(books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
+    re.compile(r"\bwhich\s+(books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
+    re.compile(r"\bhave\s+(?:you|u)\s+(?:written|published|made|created)\b", re.IGNORECASE),
+    re.compile(r"\b(?:books|courses|programs|podcasts|shows)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", re.IGNORECASE),
+]
+
 
 @dataclass
 class StructuredFactCandidate:
@@ -106,6 +114,39 @@ def extract_search_text(result: Any) -> str:
         extracted = str(result).strip()
     logger.info(f"{SEARCH_TRACE_PREFIX} extraction: raw_type={type(result).__name__} extracted_len={len(extracted)}")
     return extracted
+
+
+def _looks_like_catalog_question(question: str, query_goal: str = "") -> bool:
+    lowered = str(question or "").lower()
+    if query_goal == "entity_catalog_lookup":
+        return True
+    return any(pattern.search(lowered) for pattern in CATALOG_HINT_PATTERNS)
+
+
+def _looks_like_timeline_question(question: str, query_goal: str = "") -> bool:
+    lowered = str(question or "").lower()
+    if query_goal == "timeline_lookup":
+        return True
+    explicit_date_tokens = (
+        "publish",
+        "published",
+        "publication",
+        "release",
+        "released",
+        "launch",
+        "launched",
+        "come out",
+        "what year",
+        "what date",
+        "which month",
+    )
+    if any(token in lowered for token in explicit_date_tokens):
+        return True
+    if any(token in lowered for token in ("write", "wrote", "written")) and any(
+        token in lowered for token in ("when", "what year", "what date", "which month")
+    ):
+        return True
+    return False
 
 
 def _preview_text(value: Any, limit: int = 500) -> str:
@@ -325,6 +366,7 @@ class PersonalBioService:
                         merged_catalog,
                         creator_name,
                         evidence_plan.entity_type,
+                        question=resolved_question,
                     ),
                     "confidence": "HIGH" if web_catalog else "MEDIUM",
                     "sources": self._catalog_sources(merged_catalog),
@@ -596,14 +638,19 @@ class PersonalBioService:
         entities: List[Dict[str, Any]],
         creator_name: str,
         entity_type: str,
+        *,
+        question: str = "",
     ) -> str:
         names = [str(entity.get("name") or "").strip() for entity in entities if str(entity.get("name") or "").strip()]
+        count_requested = bool(re.search(r"\bhow many\b", str(question or "").lower()))
         if not names:
             if entity_type == "book":
-                return "Yeah, I have written books."
+                return "Yeah, I've written books."
             return "Yeah, I do."
         if len(names) == 1:
             if entity_type == "book":
+                if count_requested:
+                    return f"I've written 1 book: {names[0]}."
                 return f"Yeah. I've written {names[0]}."
             return f"Yeah. I've got {names[0]}."
 
@@ -613,10 +660,16 @@ class PersonalBioService:
             joined = ", ".join(names[:-1]) + f", and {names[-1]}"
 
         if entity_type == "book":
+            if count_requested:
+                return f"I've written {len(names)} books: {joined}."
             return f"Yeah. I've written {joined}."
         if entity_type == "podcast":
+            if count_requested:
+                return f"I've got {len(names)} main podcasts or shows: {joined}."
             return f"Yeah. The main ones are {joined}."
         if entity_type == "course":
+            if count_requested:
+                return f"I've got {len(names)} main programs: {joined}."
             return f"Yeah. The main programs are {joined}."
         return f"Yeah. I've got {joined}."
 
@@ -1453,7 +1506,19 @@ Evidence:
         query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
         official_urls = [str(url or "").strip() for url in ((entity or {}).get("official_urls") or []) if str(url or "").strip()]
 
-        if query_goal == "timeline_lookup" or any(token in lowered for token in ["publish", "publication", "release", "released", "launch", "launched", "come out", "write", "wrote", "written"]):
+        if _looks_like_catalog_question(lowered, query_goal):
+            if query_goal == "entity_catalog_lookup" and official_urls:
+                return f"I want to point you to the full current list. Start here: {official_urls[0]}"
+            if "book" in lowered:
+                return (
+                    "I want to point you to the full current list. Check my Amazon author page or my official website "
+                    "for the most up-to-date catalog."
+                )
+            return (
+                "I want to point you to the full current list. Check my official website or verified profile links "
+                "for the latest catalog."
+            )
+        if _looks_like_timeline_question(lowered, query_goal):
             return (
                 "I want to give you the right date on that. Check my Amazon listing, Audible, "
                 "or the publisher page for the exact publication info."

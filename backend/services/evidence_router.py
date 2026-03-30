@@ -93,6 +93,9 @@ _OVERVIEW_PATTERNS = [
 ]
 _CATALOG_PATTERNS = [
     re.compile(r"\bhave (?:you|u) (?:written|published)\s+any\s+books\b", re.IGNORECASE),
+    re.compile(r"\bhow many\s+books\s+(?:have\s+)?(?:you|u)\s+(?:written|published)\b", re.IGNORECASE),
+    re.compile(r"\bhow many\s+(?:books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
+    re.compile(r"\b(?:books|courses|programs|podcasts|shows)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", re.IGNORECASE),
     re.compile(r"\bwhat\s+books\b", re.IGNORECASE),
     re.compile(r"\bwhich\s+books\b", re.IGNORECASE),
     re.compile(r"\bany\s+books\b", re.IGNORECASE),

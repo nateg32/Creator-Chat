@@ -407,6 +407,63 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertIn("$100M Money Models", answer)
         self.assertEqual(result.get("move"), "ANSWER_ENTITY_CATALOG")
 
+    def test_how_many_books_query_returns_count_and_titles_instead_of_date_fallback(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            entity_lookup_result={
+                "entities": [
+                    {"name": "$100M Offers", "type": "book", "official_urls": ["https://www.amazon.com/offers"]},
+                    {"name": "$100M Leads", "type": "book", "official_urls": ["https://www.amazon.com/leads"]},
+                    {"name": "$100M Money Models", "type": "book", "official_urls": ["https://www.amazon.com/money-models"]},
+                ],
+                "response_text": "",
+                "sources": [],
+            },
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="how many books u written?",
+            voice_profile={},
+            creator_name="Alex Hormozi",
+            decision_policy={},
+            creator_profile={"name": "Alex Hormozi"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.entity_calls)
+        self.assertIn("3", answer)
+        self.assertIn("$100M Offers", answer)
+        self.assertIn("$100M Leads", answer)
+        self.assertIn("$100M Money Models", answer)
+        self.assertNotIn("right date", answer.lower())
+        self.assertNotIn("amazon listing", answer.lower())
+        self.assertEqual(result.get("move"), "ANSWER_ENTITY_CATALOG")
+
+    def test_book_catalog_fallback_does_not_turn_into_publication_date_prompt(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            entity_lookup_result={"entities": [], "response_text": "", "sources": []},
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="how many books u written?",
+            voice_profile={},
+            creator_name="Alex Hormozi",
+            decision_policy={},
+            creator_profile={"name": "Alex Hormozi"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertNotIn("right date", answer.lower())
+        self.assertNotIn("publication info", answer.lower())
+        self.assertNotIn("amazon listing", answer.lower())
+
     def test_followup_write_question_uses_recent_book_title_not_creator_name(self):
         service, provider = _load_personal_bio_service(
             [],
