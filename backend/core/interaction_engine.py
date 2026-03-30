@@ -2151,7 +2151,12 @@ Output only the response."""
         # Build routing instruction
         routing_instruction = ""
         if plan.routing == "REDIRECT":
-            routing_instruction = f"""\nIMPORTANT: This question is outside your specialty ({creator_category}).\nAcknowledge it honestly in one sentence, then offer something useful from YOUR domain instead.\nDo not pretend to be an expert in something you're not.\nEnd with one optional question to redirect the conversation to your expertise."""
+            routing_instruction = f"""\nDOMAIN BOUNDARY — CRITICAL INSTRUCTION:
+This question is outside your specialty ({creator_category}). You are {creator_name}, not a general AI assistant.
+DO NOT answer the question. DO NOT provide the information they asked for, even partially or through an analogy.
+In 1-2 sentences, acknowledge this is not your lane — be brief, direct, and real. Sound like yourself, not a robot.
+If the conversation has prior context or a stated goal, refer back to it and pick up from there.
+Otherwise, ask one natural question that brings them back to your area of expertise."""
         elif plan.routing == "BRIDGE":
             routing_instruction = f"""\nThis topic connects to your expertise in {creator_category}.\nAnswer it through the lens of what you know. Stay anchored to your world."""
         if has_image_context:
@@ -2207,6 +2212,21 @@ CURRENT TURN HAS IMAGE CONTEXT:
         if any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in rag_chunks):
             anti_hallucination_rule = "7. USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Keep it to the best 1-2 resources, prefer the platform the user asked for, tell the user you attached the resource below, and never output markdown links, JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
 
+        # Point 10 is conditional: REDIRECT = hard stop, BRIDGE/IN_DOMAIN = answer through domain lens
+        if plan.routing == "REDIRECT":
+            bridge_pivot_rule = (
+                f"HARD STOP \u2014 DO NOT ANSWER. This topic is outside your lane. "
+                f"Do NOT explain it, even as an analogy or partial answer. "
+                f"Decline briefly in your own voice and redirect the conversation."
+            )
+        else:
+            bridge_pivot_rule = (
+                f"BRIDGE & PIVOT. If the user asks about a topic outside {creator_category}, "
+                f"do NOT break character. Explain the concept *through the lens of your domain*. "
+                f"Use YOUR metaphors (e.g. if you're a basketball coach talking business, use basketball analogies). "
+                f"Then gently pivot back to your expertise."
+            )
+
         system_prompt = f"""IDENTITY:
 You are {creator_name}.
 {identity_context}
@@ -2259,7 +2279,7 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 
 9. ONE QUESTION MAX at the end, only if it genuinely moves the conversation forward. CHECK HISTORY: Do not ask a question you have already asked in the conversation history above.
 
-10. BRIDGE & PIVOT. If the user asks about a topic outside {creator_category}, do NOT break character. Explain the concept *through the lens of your domain*. Use YOUR metaphors (e.g. if you're a basketball coach talking business, use basketball analogies). Then gently pivot back to your expertise.
+10. {bridge_pivot_rule}
 11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally, then say you attached it below. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
 12. PERSONA HOMEOSTASIS. Preserve your stable worldview, cadence, and response moves. Do not flatten into generic motivational or assistant language.
 13. CONCRETE ANCHOR. Every substantial answer must rely on at least one real creator anchor from the genome or knowledge, a recurring belief, decision rule, story, product, public fact, or grounded source. If you cannot ground it, narrow the claim instead of sounding generic.

@@ -67,6 +67,7 @@ from backend.services.out_of_domain_rules import (
     default_bridge_question,
     detect_external_live_fact_topic,
     recent_bridge_topic,
+    should_redirect_general_knowledge,
     should_soft_decline_external_live_fact,
 )
 from backend.services.regurgitation_guard import (
@@ -4383,6 +4384,46 @@ Message: {answer_text[:500]}"""
                 "bridge_topic": bridge_topic,
             },
         }, creator_row.get("rhythm_profile_json"), csm, mvc_score=0, plan=None)
+
+    # --- Step 2.6: General Knowledge Redirect ---
+    # Prevents the bot from acting as a generic ChatGPT wrapper.
+    # If the question is a generic how-to / tutorial outside the creator's domains,
+    # decline in character and pivot back to the conversation or creator's domain.
+    if should_redirect_general_knowledge(
+        question,
+        stronghold_config.get("primary_domains", []),
+        stronghold_config.get("secondary_domains", []),
+    ):
+        logger.info("General knowledge question outside creator domain. Triggering in-character redirect.")
+        bridge_topic = recent_bridge_topic(conversation_history, question)
+        answer = stronghold_guard.generate_boundary_message(
+            creator_row.get("name") or creator_row.get("handle") or "the creator",
+            persona,
+            stronghold_config,
+            question,
+            recent_topic=bridge_topic,
+            creator_focus=creator_focus,
+            allow_handoff=False,
+        )
+        if not bridge_topic and "?" not in answer:
+            answer = f"{answer} {default_bridge_question(creator_focus)}"
+        csm.state["last_router_meta"] = {
+            "mode": "BOUNDARY",
+            "domain_action": "GENERAL_KNOWLEDGE_REDIRECT",
+            "user_state": user_state,
+        }
+        csm.save_state()
+        return apply_final_polish({
+            "answer": answer,
+            "retrieved": [],
+            "sources": [],
+            "cards": [],
+            "meta": {
+                "domain_action": "GENERAL_KNOWLEDGE_REDIRECT",
+                "suggested_mode": "BRIDGE",
+                "bridge_topic": bridge_topic,
+            },
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=0, plan=None)
     
     # Calculate MVC Score
     mvc_score = user_priority_service.calculate_mvc_score(user_state, csm.state.get("memory_loop", {}))
@@ -5156,6 +5197,38 @@ async def grounded_rag_stream(
                 answer = f"{answer} {default_bridge_question(creator_focus)}"
             yield answer
             return
+
+    # --- General Knowledge Redirect (streaming path) ---
+    # Prevents the bot from acting as a generic ChatGPT wrapper for off-domain how-to questions.
+    from backend.services.out_of_domain_rules import detect_general_knowledge_topic
+    if detect_general_knowledge_topic(question):
+        creator_row = creator_row or await creator_task
+        if creator_row:
+            _sc = creator_row.get("stronghold_json") or {}
+            if isinstance(_sc, str):
+                _sc = json.loads(_sc)
+            _persona = creator_row.get("soul_md") or ""
+            _focus = creator_row.get("creator_category") or "general"
+            if should_redirect_general_knowledge(
+                question,
+                _sc.get("primary_domains", []),
+                _sc.get("secondary_domains", []),
+            ):
+                bridge_topic = recent_bridge_topic(conversation_history, question)
+                answer = await asyncio.to_thread(
+                    stronghold_guard.generate_boundary_message,
+                    creator_row.get("name") or creator_row.get("handle") or "the creator",
+                    _persona,
+                    _sc,
+                    question,
+                    bridge_topic,
+                    _focus,
+                    False,
+                )
+                if not bridge_topic and "?" not in answer:
+                    answer = f"{answer} {default_bridge_question(_focus)}"
+                yield answer
+                return
 
     route_evidence_plan = None
     route_personal_via_evidence = False
