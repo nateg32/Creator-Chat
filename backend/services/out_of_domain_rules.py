@@ -114,6 +114,13 @@ _GENERAL_TOPIC_DOMAIN_MAP: Dict[str, Set[str]] = {
     "medical_general": {"health", "wellness", "fitness", "medicine", "biology", "nursing"},
     "math_science": {"education", "engineering", "science", "math", "finance", "data"},
     "automotive": {"automotive", "cars", "motorsport", "lifestyle", "mechanics"},
+    "sports": {"sports", "fitness", "athletics", "coaching", "health"},
+    "entertainment": {"entertainment", "music", "art", "media", "content", "film"},
+    "music_instrument": {"music", "instrument", "entertainment", "art", "audio"},
+    "language_learning": {"education", "language", "travel", "culture", "linguistics"},
+    "gaming": {"gaming", "esports", "entertainment", "tech", "content"},
+    "history_trivia": {"education", "history", "writing", "culture"},
+    "how_to_general": set(),  # empty set — always redirects unless creator has an explicit domain match
 }
 
 # Regex patterns per topic — order matters, checked top-to-bottom
@@ -147,10 +154,11 @@ _GENERAL_TOPIC_PATTERNS: Dict[str, List[str]] = {
     ],
     "cooking": [
         r"\b(recipe|ingredient)\s+(for|to\s+make)\b",
-        r"\bhow\s+to\s+(bake|fry|boil|grill|roast|steam|poach)\b",
+        r"\bhow\s+to\s+(bake|fry|boil|grill|roast|steam|poach|cook|saut[eé]|braise|simmer|blanch|marinate|smoke|barbecue|bbq)\b",
         r"\boven\s+temperature\s+for\b",
         r"\bwhat\s+to\s+cook\s+for\b",
         r"\bdinner\s+(idea|recipe)\b",
+        r"\bhow\s+to\s+make\s+(a\s+)?(cake|bread|pizza|pasta|soup|stew|salad|sandwich|omelette|pancake|cookie|pie|steak|burger|smoothie|juice)\b",
     ],
     "geography": [
         r"\bcapital\s+(of|city\s+of)\s+\w+",
@@ -183,6 +191,47 @@ _GENERAL_TOPIC_PATTERNS: Dict[str, List[str]] = {
     "automotive": [
         r"\bhow\s+to\s+(change|replace|fix)\s+(a\s+)?(oil|tire|spark\s+plug|brake|battery|transmission)\b",
         r"\bcar\s+(maintenance|repair)\s+(guide|tips|how\s+to)\b",
+    ],
+    "sports": [
+        r"\bhow\s+to\s+play\s+(soccer|football|basketball|baseball|tennis|golf|hockey|cricket|volleyball|rugby|badminton|lacrosse|handball|pickleball|ping\s*pong|table\s*tennis|squash|bowling|softball|water\s*polo)\b",
+        r"\brules\s+of\s+(soccer|football|basketball|baseball|tennis|golf|hockey|cricket|volleyball|rugby|badminton|boxing|wrestling|mma|karate|judo|swimming|lacrosse|handball|pickleball)\b",
+        r"\bhow\s+to\s+(kick|throw|shoot|dribble|serve|volley|tackle|block|spike|punt|swing|pitch)\s+(a\s+)?(ball|puck|shuttlecock)?\b",
+        r"\b(soccer|football|basketball|baseball|tennis|golf|hockey|cricket|volleyball|rugby|badminton|boxing|wrestling|mma|karate|judo)\s+(basics|rules|tutorial|technique|drill|strategy|play|position|formation|offense|defense)\b",
+        r"\bhow\s+to\s+(swim|surf|ski|snowboard|skate|skateboard|run|sprint|marathon|cycle|hike|climb|kayak|row|sail|dive|box|wrestle|fence)\b",
+    ],
+    "entertainment": [
+        r"\bhow\s+to\s+(sing|dance|draw|paint|sculpt|act|perform|juggle|knit|crochet|sew|embroider)\b",
+        r"\b(movie|film|show|tv|series|anime|manga|novel|book)\s+recommendation\b",
+        r"\brecommend\s+(a|me|some)\s+(movie|film|show|tv|book|novel|anime|manga|game|song)\b",
+        r"\bwhat\s+(movie|show|series|anime|book|novel|game)\s+should\s+I\s+(watch|read|play)\b",
+    ],
+    "music_instrument": [
+        r"\bhow\s+to\s+play\s+(guitar|piano|drums|bass|violin|ukulele|flute|saxophone|trumpet|clarinet|cello|harmonica|banjo|mandolin|keyboard|organ)\b",
+        r"\b(chord|scale|key|tempo|rhythm|melody|harmony)\s+(progression|theory|lesson|chart)\b",
+        r"\bmusic\s+theory\b",
+        r"\bhow\s+to\s+(read|write)\s+(sheet\s+)?music\b",
+        r"\bhow\s+to\s+tune\s+(a\s+)?(guitar|piano|violin|ukulele)\b",
+    ],
+    "language_learning": [
+        r"\bhow\s+to\s+(speak|learn|say|translate|pronounce)\s+(spanish|french|german|japanese|chinese|korean|arabic|italian|portuguese|russian|hindi|mandarin|cantonese|swahili|dutch|swedish|norwegian|polish|turkish|thai|vietnamese|greek|hebrew|latin)\b",
+        r"\btranslate\s+.+\s+to\s+(spanish|french|german|japanese|chinese|korean|arabic|italian|portuguese|russian|hindi|english)\b",
+        r"\bhow\s+do\s+you\s+say\s+.+\s+in\s+(spanish|french|german|japanese|chinese|korean|arabic|italian|portuguese|russian|hindi)\b",
+    ],
+    "gaming": [
+        r"\bhow\s+to\s+(play|beat|win|complete|finish)\s+(minecraft|fortnite|valorant|league\s+of\s+legends|roblox|gta|zelda|elden\s+ring|destiny|cod|call\s+of\s+duty|overwatch|apex|dota|smash|mario|pokemon|fifa|madden|nba\s+2k|chess|checkers|monopoly|uno|poker|blackjack)\b",
+        r"\b(fortnite|minecraft|valorant|roblox|gta|zelda|elden\s+ring|apex|overwatch)\s+(tips|guide|tutorial|strategy|build|loadout|walkthrough)\b",
+    ],
+    "history_trivia": [
+        r"\bwho\s+(was|is|were)\s+(the\s+)?(first|last|oldest|youngest|tallest|shortest|fastest|biggest|smallest)\b",
+        r"\bwhen\s+(was|did|were)\s+(the\s+)?(world\s+war|civil\s+war|revolution|declaration|constitution|moon\s+landing)\b",
+        r"\bwhat\s+(year|century|decade)\s+(was|did|were)\b.{5,}",
+    ],
+    "how_to_general": [
+        r"\bhow\s+to\s+(tie|fold|iron|sew|knit|crochet|braid|plait)\s+(a\s+)?(tie|shirt|napkin|paper|bow|knot|blanket|scarf)\b",
+        r"\bhow\s+to\s+(ride|drive|fly|sail|operate)\s+(a\s+)?(bike|bicycle|motorcycle|car|boat|plane|drone|tractor|forklift)\b",
+        r"\bhow\s+to\s+(clean|wash|dry|bleach|polish|wax|scrub|disinfect|sanitize)\b",
+        r"\bhow\s+to\s+(plant|grow|garden|prune|harvest|compost|mulch|fertilize)\b",
+        r"\bhow\s+to\s+(train|groom|feed|walk|bathe)\s+(a\s+)?(dog|cat|puppy|kitten|pet|horse|fish|bird|hamster|rabbit)\b",
     ],
 }
 

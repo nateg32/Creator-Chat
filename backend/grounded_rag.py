@@ -4520,6 +4520,40 @@ Message: {answer_text[:500]}"""
             },
         }, creator_row.get("rhythm_profile_json"), csm, mvc_score=0, plan=None)
     
+    # --- Step 2.7: LLM-based Off-Domain Redirect ---
+    # Catches everything the regex missed. The classifier already flagged off_domain_flag.
+    if user_state.get("flags", {}).get("off_domain_flag") and intent != "greeting_only":
+        logger.info("Classifier off_domain_flag=True. Triggering domain boundary redirect.")
+        bridge_topic = recent_bridge_topic(conversation_history, question)
+        answer = stronghold_guard.generate_boundary_message(
+            creator_row.get("name") or creator_row.get("handle") or "the creator",
+            persona,
+            stronghold_config,
+            question,
+            recent_topic=bridge_topic,
+            creator_focus=creator_focus,
+            allow_handoff=False,
+        )
+        if not bridge_topic and "?" not in answer:
+            answer = f"{answer} {default_bridge_question(creator_focus)}"
+        csm.state["last_router_meta"] = {
+            "mode": "BOUNDARY",
+            "domain_action": "OFF_DOMAIN_LLM_REDIRECT",
+            "user_state": user_state,
+        }
+        csm.save_state()
+        return apply_final_polish({
+            "answer": answer,
+            "retrieved": [],
+            "sources": [],
+            "cards": [],
+            "meta": {
+                "domain_action": "OFF_DOMAIN_LLM_REDIRECT",
+                "suggested_mode": "BRIDGE",
+                "bridge_topic": bridge_topic,
+            },
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=0, plan=None)
+
     # Calculate MVC Score
     mvc_score = user_priority_service.calculate_mvc_score(user_state, csm.state.get("memory_loop", {}))
     logger.info(f"MVC Score: {mvc_score}")
@@ -5362,6 +5396,56 @@ async def grounded_rag_stream(
                     answer = f"{answer} {default_bridge_question(_focus)}"
                 yield answer
                 return
+
+    # --- LLM-based Off-Domain Check (streaming path) ---
+    # Catches off-domain questions that regex patterns missed.
+    # Only runs for ROUTE_2_TASK (skips greetings/small talk).
+    if route == "ROUTE_2_TASK":
+        creator_row = creator_row if (creator_row is not None) else (await creator_task if creator_task else None)
+        if creator_row:
+            _sc = creator_row.get("stronghold_json") or {}
+            if isinstance(_sc, str):
+                _sc = json.loads(_sc)
+            _focus = creator_row.get("creator_category") or "general"
+            if _focus != "general":
+                _name = creator_row.get("name") or creator_row.get("handle") or "the creator"
+                _primary = _sc.get("primary_domains", []) or []
+                _secondary = _sc.get("secondary_domains", []) or []
+                _domain_list = ", ".join(list(_primary) + list(_secondary) + [_focus])
+                try:
+                    _check_prompt = (
+                        f"Creator: {_name}\n"
+                        f"Expertise domains: {_domain_list}\n"
+                        f"User question: \"{question}\"\n\n"
+                        "Does this question fall WITHIN or DIRECTLY RELATE to the creator's expertise domains?\n"
+                        "Rules:\n"
+                        "- YES only if the question is clearly about one of the listed domains.\n"
+                        "- NO if it is a generic how-to, tutorial, trivia, or factual question unrelated to those domains.\n"
+                        "- Greetings and personal questions about the creator = YES.\n"
+                        "- When in doubt, answer NO.\n"
+                        "Answer YES or NO only."
+                    )
+                    _check_resp = await asyncio.to_thread(
+                        rag.generate_chat_completion,
+                        messages=[{"role": "user", "content": _check_prompt}],
+                        model=settings.MODEL_CLASSIFICATION,
+                        temperature=0.0,
+                        max_tokens=5,
+                    )
+                    if _check_resp.strip().upper().startswith("NO"):
+                        logger.info("Streaming LLM domain check: off-domain. Triggering redirect.")
+                        _persona = creator_row.get("soul_md") or ""
+                        bridge_topic = recent_bridge_topic(conversation_history, question)
+                        answer = await asyncio.to_thread(
+                            stronghold_guard.generate_boundary_message,
+                            _name, _persona, _sc, question, bridge_topic, _focus, False,
+                        )
+                        if not bridge_topic and "?" not in answer:
+                            answer = f"{answer} {default_bridge_question(_focus)}"
+                        yield answer
+                        return
+                except Exception as e:
+                    logger.warning(f"Streaming off-domain LLM check failed (non-blocking): {e}")
 
     route_evidence_plan = None
     route_personal_via_evidence = False

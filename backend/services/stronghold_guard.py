@@ -44,11 +44,10 @@ class StrongholdGuardService:
         if detected_domain in out_of_scope:
             return "DECLINE_HANDOFF"
 
-        focus_score = stronghold_config.get("focus_score", 0.8)
-        if focus_score > 0.9:
-            return "DECLINE_HANDOFF"
-
-        return "BRIDGE"
+        # Default: if the detected domain doesn't match any configured domain,
+        # treat it as off-domain and decline. This prevents the bot from acting
+        # as a generic AI wrapper for topics the creator doesn't specialize in.
+        return "DECLINE_HANDOFF"
 
     def generate_boundary_message(
         self,

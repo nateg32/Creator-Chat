@@ -24,6 +24,7 @@ class ClassifiersService:
         """
         history_str = "\n".join([f"{m['role']}: {m['content']}" for m in history[-5:]])
         
+        creator_category = creator_profile.get('creator_category', 'general')
         system_prompt = f"""
         You are a Conversation Router. 
         Analyze the user's latest message in context of the history.
@@ -31,6 +32,7 @@ class ClassifiersService:
         CREATOR CONTEXT:
         Name: {creator_profile.get('name', 'The Creator')}
         Handle: {creator_profile.get('handle', '')}
+        Category/Expertise: {creator_category}
         
         OUTPUT FORMAT: Strict JSON only.
         
@@ -51,9 +53,10 @@ class ClassifiersService:
            - safety_highstakes_flag: bool (medical, legal, or extreme financial advice)
            - greeting_only_flag: bool (True ONLY if the message is JUST a greeting/small talk with NO request)
            - needs_clarification_flag: bool
+           - off_domain_flag: bool — CRITICAL. Set to true if the user's question is clearly OUTSIDE the creator's area of expertise ({creator_category}). A question is off-domain if a generic AI assistant could answer it equally well and it has nothing to do with the creator's specialty. Examples for a business creator: "how to play soccer" = true, "how to cook pasta" = true, "what's the capital of France" = true. Examples that are NOT off-domain: "how to scale a business" = false, casual greetings = false, questions about the creator personally = false, follow-ups on a prior in-domain topic = false. When in doubt, set to true — it is better to redirect than to answer off-topic.
         12. suggested_mode: GREETING|DISCOVERY|ONRAMP|EXPLAIN|RECOMMEND|COACH|DEEP
         
-        STRICT RULE: If the user says "hello" or equivalent, do NOT look for hidden meaning. The intent is "greeting" and request_type is "casual".
+        STRICT RULE: If the user says "hello" or equivalent, do NOT look for hidden meaning. The intent is "greeting" and request_type is "casual". off_domain_flag MUST be false for greetings.
         """
 
         user_prompt = f"History:\n{history_str}\n\nLast Message: {message}"
@@ -84,7 +87,8 @@ class ClassifiersService:
                     "personal_question_flag": False,
                     "safety_highstakes_flag": False,
                     "greeting_only_flag": False,
-                    "needs_clarification_flag": False
+                    "needs_clarification_flag": False,
+                    "off_domain_flag": False,
                 },
                 "suggested_mode": "EXPLAIN"
             }
