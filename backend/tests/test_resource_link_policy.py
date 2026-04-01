@@ -169,6 +169,7 @@ def _load_grounded_rag():
         default_bridge_question=lambda *args, **kwargs: "",
         detect_external_live_fact_topic=lambda *args, **kwargs: False,
         recent_bridge_topic=lambda *args, **kwargs: "",
+        should_redirect_general_knowledge=lambda *args, **kwargs: False,
         should_soft_decline_external_live_fact=lambda *args, **kwargs: False,
     )
     regurgitation_guard_path = BACKEND_ROOT / "services" / "regurgitation_guard.py"
@@ -193,6 +194,32 @@ grounded_rag = _load_grounded_rag()
 
 
 class ResourceLinkPolicyTests(unittest.TestCase):
+    def test_force_resource_fallback_when_no_safe_link_exists(self):
+        self.assertTrue(
+            grounded_rag._should_force_resource_fallback(
+                "I don't have a specific video I'd feel good sending you right now.",
+                wants_link=True,
+                has_linkable_ingested_resource=False,
+                web_results=[],
+            )
+        )
+        self.assertFalse(
+            grounded_rag._should_force_resource_fallback(
+                "I don't have a specific video I'd feel good sending you right now.",
+                wants_link=True,
+                has_linkable_ingested_resource=True,
+                web_results=[],
+            )
+        )
+
+    def test_detects_placeholder_link_artifacts(self):
+        broken = (
+            'For my best productivity videos, start on my official site at "" and head to the section '
+            'with my video content. If you want my books too, my books page is ""/books.'
+        )
+        self.assertTrue(grounded_rag._contains_placeholder_link_artifacts(broken))
+        self.assertFalse(grounded_rag._contains_placeholder_link_artifacts("Check the video I attached below."))
+
     def test_resource_prompt_context_marks_post_as_non_video_with_video_alternative(self):
         support_set = [
             {

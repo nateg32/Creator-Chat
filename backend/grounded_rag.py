@@ -1486,6 +1486,31 @@ def _build_not_online_fallback(question: str, creator_name: str, history: Option
     return "I don't have a public source for that I'd trust enough to send you right now. I can still answer it directly here, or help narrow exactly what you want sourced."
 
 
+def _contains_placeholder_link_artifacts(text: str) -> bool:
+    cleaned = str(text or "")
+    if not cleaned:
+        return False
+    return bool(
+        re.search(r'(?<!\\w)""(?:/[^\s"]*)?', cleaned)
+        or re.search(r"(?<!\\w)''(?:/[^\\s']*)?", cleaned)
+    )
+
+
+def _should_force_resource_fallback(
+    no_online_fallback: Optional[str],
+    *,
+    wants_link: bool,
+    has_linkable_ingested_resource: bool,
+    web_results: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    return bool(
+        no_online_fallback
+        and wants_link
+        and not has_linkable_ingested_resource
+        and not (web_results or [])
+    )
+
+
 def needs_links(user_msg: str) -> bool:
     """
     True if the user is asking for links/sources/proof, or asking for a video recommendation.
@@ -4947,6 +4972,31 @@ Message: {answer_text[:500]}"""
             support_set = [image_result["support_chunk"], *support_set]
         support_set = shape_support_set(question, support_set, limit=4)
 
+    if _should_force_resource_fallback(
+        no_online_fallback,
+        wants_link=wants_link if 'wants_link' in locals() else False,
+        has_linkable_ingested_resource=has_linkable_ingested_resource if 'has_linkable_ingested_resource' in locals() else False,
+        web_results=web_results if 'web_results' in locals() else [],
+    ):
+        logger.info("Using deterministic resource fallback with no safe link to attach.")
+        answer = no_online_fallback
+        csm.state["last_router_meta"] = {
+            "mode": "RESOURCE_FALLBACK",
+            "domain_action": "NO_LINKABLE_RESOURCE",
+            "user_state": user_state,
+        }
+        csm.save_state()
+        return apply_final_polish({
+            "answer": answer,
+            "retrieved": support_set,
+            "sources": [],
+            "cards": [],
+            "meta": {
+                "resource_fallback": True,
+                "reason": "no_linkable_resource",
+            },
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
+
     # --- Step 7: PASS 1 - Interaction Planning (UCR Classifier + Planner) ---
 
     logger.info("Pipeline Step 7: UCR Classification + Interaction Planning...")
@@ -4976,7 +5026,9 @@ Message: {answer_text[:500]}"""
         history=conversation_history or [],
         user_preferences=user_preferences
     )
-    if 'no_online_fallback' in locals() and no_online_fallback and not (answer or '').strip():
+    if 'no_online_fallback' in locals() and no_online_fallback and (
+        not (answer or '').strip() or _contains_placeholder_link_artifacts(answer)
+    ):
         answer = no_online_fallback
     
     # Log the turn
@@ -5712,6 +5764,16 @@ async def grounded_rag_stream(
             )
         support_set = shape_support_set(question, support_set, limit=4)
 
+        if _should_force_resource_fallback(
+            no_online_fallback,
+            wants_link=wants_link,
+            has_linkable_ingested_resource=has_linkable_ingested_resource,
+            web_results=web_results,
+        ):
+            logger.info("Streaming deterministic resource fallback with no safe link to attach.")
+            yield no_online_fallback
+            return
+
     else:
         # Greeting/Small-talk Route: No Embeddings needed for TTFT
         # Just await metadata
@@ -5781,6 +5843,8 @@ async def grounded_rag_stream(
             yield content
 
     final_stream_text = "".join(streamed_parts)
+    if no_online_fallback and _contains_placeholder_link_artifacts(final_stream_text):
+        final_stream_text = no_online_fallback
     stream_cards = _build_response_cards(
         rec_result if route == "ROUTE_2_TASK" else None,
         support_set,

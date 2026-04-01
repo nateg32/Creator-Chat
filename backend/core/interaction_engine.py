@@ -8,6 +8,7 @@ from functools import lru_cache
 import random
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 from pydantic import BaseModel, Field, validator
 import backend.rag as rag
 from backend.settings import settings
@@ -343,6 +344,39 @@ def finalize_visible_text(text: str, creator_profile: Optional[Dict[str, Any]] =
         (text or "").strip(),
         strip_hyphens=should_strip_hyphens(creator_profile or {}),
     )
+
+
+def _normalize_public_url(value: Any) -> str:
+    raw = str(value or "").strip().strip("\"'")
+    if not raw or raw in {"http://", "https://"} or raw.startswith("/"):
+        return ""
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.IGNORECASE):
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    host = (parsed.netloc or "").strip().lower()
+    if not host or "." not in host:
+        return ""
+    return raw.rstrip("/")
+
+
+def _normalized_public_urls(values: Any) -> List[str]:
+    raw_values = values or []
+    if isinstance(raw_values, str):
+        try:
+            raw_values = json.loads(raw_values)
+        except Exception:
+            raw_values = [raw_values]
+    if not isinstance(raw_values, list):
+        raw_values = [raw_values]
+
+    normalized: List[str] = []
+    seen = set()
+    for value in raw_values:
+        cleaned = _normalize_public_url(value)
+        if cleaned and cleaned not in seen:
+            normalized.append(cleaned)
+            seen.add(cleaned)
+    return normalized
 
 
 HONEST_FALLBACK_INSTRUCTION = """
@@ -1869,24 +1903,20 @@ Output ONLY your response."""
         
         social_links = []
         for p_name, p_cfg in platforms.items():
-            if p_cfg.get("enabled") and p_cfg.get("url"):
-                social_links.append(f"- {p_name.capitalize()}: {p_cfg['url']}")
+            social_url = _normalize_public_url(p_cfg.get("url"))
+            if p_cfg.get("enabled") and social_url:
+                social_links.append(f"- {p_name.capitalize()}: {social_url}")
         
         if social_links:
             identity_context += "\nYOUR SOCIAL CHANNELS:\n" + "\n".join(social_links) + "\n"
 
         # Inject official website domain(s) so the model can reference real URLs
-        official_domains = creator_profile.get("official_domains") or []
-        if isinstance(official_domains, str):
-            try: official_domains = json.loads(official_domains)
-            except: official_domains = []
+        official_domains = _normalized_public_urls(creator_profile.get("official_domains"))
         if official_domains:
             primary_site = official_domains[0] if official_domains else ""
-            if primary_site and not primary_site.startswith("http"):
-                primary_site = f"https://{primary_site}"
             identity_context += f"\nYOUR OFFICIAL WEBSITE: {primary_site}\n"
             if len(official_domains) > 1:
-                extras = ", ".join(d if d.startswith("http") else f"https://{d}" for d in official_domains[1:])
+                extras = ", ".join(official_domains[1:])
                 identity_context += f"Other domains: {extras}\n"
 
         identity_guard = """
@@ -2133,20 +2163,16 @@ Output only the response."""
             except: platforms = {}
         social_links = []
         for p_name, p_cfg in platforms.items():
-            if p_cfg.get("enabled") and p_cfg.get("url"):
-                social_links.append(f"- {p_name.capitalize()}: {p_cfg['url']}")
+            social_url = _normalize_public_url(p_cfg.get("url"))
+            if p_cfg.get("enabled") and social_url:
+                social_links.append(f"- {p_name.capitalize()}: {social_url}")
         if social_links:
             identity_context += "\nYOUR SOCIAL CHANNELS:\n" + "\n".join(social_links) + "\n"
 
         # Inject official website domain(s)
-        official_domains = creator_profile.get("official_domains") or []
-        if isinstance(official_domains, str):
-            try: official_domains = json.loads(official_domains)
-            except: official_domains = []
+        official_domains = _normalized_public_urls(creator_profile.get("official_domains"))
         if official_domains:
             primary_site = official_domains[0]
-            if primary_site and not primary_site.startswith("http"):
-                primary_site = f"https://{primary_site}"
             identity_context += f"\nYOUR OFFICIAL WEBSITE: {primary_site}\n"
 
         creator_category = creator_profile.get("creator_category", "general")
