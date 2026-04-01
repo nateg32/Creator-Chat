@@ -7,20 +7,89 @@ from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 
 _client = None
 _async_client = None
+_chat_client = None
+_async_chat_client = None
+_openai_chat_client = None
+_openai_async_chat_client = None
+
+
+def _client_kwargs(*, api_key: str, base_url: str = "") -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return kwargs
+
+
+def _is_xai_model(model: Optional[str]) -> bool:
+    return str(model or "").lower().startswith("grok")
 
 def get_client():
-    """Lazy initialization of OpenAI client to avoid import-time errors"""
+    """Lazy initialization of embedding/default OpenAI client to avoid import-time errors"""
     global _client
     if _client is None:
-        _client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        _client = openai.OpenAI(
+            **_client_kwargs(
+                api_key=settings.EMBEDDING_API_KEY or settings.OPENAI_API_KEY,
+                base_url=settings.EMBEDDING_BASE_URL,
+            )
+        )
     return _client
 
 def get_async_client():
-    """Lazy initialization of AsyncOpenAI client"""
+    """Lazy initialization of async embedding/default OpenAI client."""
     global _async_client
     if _async_client is None:
-        _async_client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        _async_client = openai.AsyncOpenAI(
+            **_client_kwargs(
+                api_key=settings.EMBEDDING_API_KEY or settings.OPENAI_API_KEY,
+                base_url=settings.EMBEDDING_BASE_URL,
+            )
+        )
     return _async_client
+
+
+def get_chat_client(model: Optional[str] = None):
+    """Return a chat/completions client appropriate for the requested model family."""
+    global _chat_client, _openai_chat_client
+    if _is_xai_model(model):
+        if _chat_client is None:
+            _chat_client = openai.OpenAI(
+                **_client_kwargs(
+                    api_key=settings.XAI_API_KEY,
+                    base_url=settings.XAI_BASE_URL,
+                )
+            )
+        return _chat_client
+    if _openai_chat_client is None:
+        _openai_chat_client = openai.OpenAI(
+            **_client_kwargs(
+                api_key=settings.OPENAI_API_KEY or settings.EMBEDDING_API_KEY,
+                base_url=settings.OPENAI_BASE_URL,
+            )
+        )
+    return _openai_chat_client
+
+
+def get_async_chat_client(model: Optional[str] = None):
+    """Return an async chat/completions client appropriate for the requested model family."""
+    global _async_chat_client, _openai_async_chat_client
+    if _is_xai_model(model):
+        if _async_chat_client is None:
+            _async_chat_client = openai.AsyncOpenAI(
+                **_client_kwargs(
+                    api_key=settings.XAI_API_KEY,
+                    base_url=settings.XAI_BASE_URL,
+                )
+            )
+        return _async_chat_client
+    if _openai_async_chat_client is None:
+        _openai_async_chat_client = openai.AsyncOpenAI(
+            **_client_kwargs(
+                api_key=settings.OPENAI_API_KEY or settings.EMBEDDING_API_KEY,
+                base_url=settings.OPENAI_BASE_URL,
+            )
+        )
+    return _openai_async_chat_client
 
 
 def create_embedding(text: str, model: str = settings.EMBEDDING_MODEL) -> List[float]:
@@ -79,7 +148,7 @@ def generate_chat_completion(
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        response = get_client().chat.completions.create(**kwargs)
+        response = get_chat_client(model).chat.completions.create(**kwargs)
         if stream:
             return response
             
@@ -92,7 +161,7 @@ def generate_chat_completion(
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON from {model}. Escalating to {settings.MODEL_FALLBACK_SMART}...")
                 kwargs["model"] = settings.MODEL_FALLBACK_SMART
-                fallback_response = get_client().chat.completions.create(**kwargs)
+                fallback_response = get_chat_client(fallback_model).chat.completions.create(**kwargs)
                 return fallback_response.choices[0].message.content.strip()
                 
         return content
@@ -137,7 +206,7 @@ async def generate_chat_completion_async(
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        response = await get_async_client().chat.completions.create(**kwargs)
+        response = await get_async_chat_client(model).chat.completions.create(**kwargs)
         if stream:
             return response
             
@@ -149,7 +218,7 @@ async def generate_chat_completion_async(
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON from {model}. Escalating to {settings.MODEL_FALLBACK_SMART}...")
                 kwargs["model"] = settings.MODEL_FALLBACK_SMART
-                fallback_response = await get_async_client().chat.completions.create(**kwargs)
+                fallback_response = await get_async_chat_client(fallback_model).chat.completions.create(**kwargs)
                 return fallback_response.choices[0].message.content.strip()
                 
         return content

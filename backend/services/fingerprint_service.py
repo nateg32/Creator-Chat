@@ -9,7 +9,7 @@ from backend.personality_analyzer import PersonalityAnalyzer
 from backend.services.research_provider import GeminiResearchProvider
 from backend.services.corpus_state import compute_creator_corpus_checksum
 from backend.settings import settings
-from backend.rag import get_client, get_async_client
+from backend.rag import get_chat_client, get_async_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +462,7 @@ def _fallback_openai_dossier(
     if not hits:
         return {}
 
-    client = get_client()
+    client = get_chat_client(settings.MODEL_MEMORY)
     prompt = f"""
 You are building a public-domain investigative dossier for {creator_name}.
 
@@ -691,7 +691,7 @@ APPROVED CONTENT:
 """
 
         try:
-            response = await get_async_client().chat.completions.create(
+            response = await get_async_chat_client(settings.MODEL_CLASSIFICATION).chat.completions.create(
                 model=settings.MODEL_CLASSIFICATION,
                 messages=[
                     {
@@ -1062,7 +1062,7 @@ APPROVED CONTENT SAMPLES:
 {json.dumps((context.get("approved_content") or [])[:6])}
 """
         try:
-            response = await get_async_client().chat.completions.create(
+            response = await get_async_chat_client(settings.MODEL_CLASSIFICATION).chat.completions.create(
                 model=settings.MODEL_CLASSIFICATION,
                 messages=[
                     {
@@ -1207,7 +1207,7 @@ Rules:
                 stage="persona_agent",
                 message=f"Persona agent iteration {iteration}: gathering evidence and checking creator-specific signals.",
             )
-            response = await get_async_client().chat.completions.create(
+            response = await get_async_chat_client(settings.MODEL_CLASSIFICATION).chat.completions.create(
                 model=settings.MODEL_VERIFY,
                 messages=messages,
                 tools=self._fingerprint_agent_tools(),

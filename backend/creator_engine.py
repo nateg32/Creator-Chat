@@ -16,20 +16,17 @@ from backend.db import db
 from backend.settings import settings
 from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
 
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
-
 MAX_HISTORY_MESSAGES = 20
 PLACEHOLDER_PERSONA = "{{CREATOR_PERSONA_TEXT_HERE}}"
 PLACEHOLDER_PRODUCT_RULES = "{{OPTIONAL_PRODUCT_RULES_HERE}}"
 
 
-def _client() -> "OpenAI":
-    if OpenAI is None:
-        raise RuntimeError("openai package is required for creator_engine")
-    return OpenAI(api_key=settings.OPENAI_API_KEY)
+def _embedding_client():
+    return rag.get_client()
+
+
+def _chat_client():
+    return rag.get_chat_client(settings.CHAT_MODEL)
 
 
 def get_creator_profile(creator_id: int) -> Dict[str, Any]:
@@ -113,7 +110,7 @@ def get_vector_memory(
 ) -> tuple[str, List[Dict[str, Any]]]:
     """RAG retrieval over creator content. Returns (sources_xml, retrieved)."""
     try:
-        emb = _client().embeddings.create(
+        emb = _embedding_client().embeddings.create(
             model=settings.EMBEDDING_MODEL,
             input=query,
         )
@@ -135,7 +132,7 @@ def _generate_response(
     messages: List[Dict[str, str]],
     temperature: float = 0.7,
 ) -> str:
-    resp = _client().chat.completions.create(
+    resp = _chat_client().chat.completions.create(
         model=settings.CHAT_MODEL,
         messages=messages,
         temperature=temperature,

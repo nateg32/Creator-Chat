@@ -19,6 +19,17 @@ class Settings:
     
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "")
+
+    # xAI / Grok
+    XAI_API_KEY: str = os.getenv("XAI_API_KEY", "")
+    XAI_BASE_URL: str = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1")
+
+    # Provider-specific fallbacks for features xAI does not fully replace here
+    EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", OPENAI_API_KEY)
+    EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", OPENAI_BASE_URL)
+    TRANSCRIPTION_API_KEY: str = os.getenv("TRANSCRIPTION_API_KEY", OPENAI_API_KEY)
+    TRANSCRIPTION_BASE_URL: str = os.getenv("TRANSCRIPTION_BASE_URL", OPENAI_BASE_URL)
 
     # Google / Gemini
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
@@ -41,22 +52,22 @@ class Settings:
     TRANSCRIBE_ON_INGEST: bool = os.getenv("TRANSCRIBE_ON_INGEST", "false").lower() == "true"
     
     # Embedding model
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
     # --- Production-Grade Model Router Tiering ---
-    MODEL_CLASSIFICATION: str = "gpt-4o-mini"       # Intent, Emotion, Domain, User State (FAST)
-    MODEL_MEMORY: str = "gpt-4o-mini"               # Memory update & Extraction (FAST)
-    MODEL_SYNTHESIS: str = "gpt-5.1"            # RAG Synthesis
-    MODEL_VERIFY: str = "gpt-4o-mini"               # Web Search & Fact Verify (FAST)
-    MODEL_MAIN_REPLY: str = "gpt-5.2"           # Final Creator Persona Output
+    MODEL_CLASSIFICATION: str = os.getenv("MODEL_CLASSIFICATION", "gpt-4o-mini")       # Intent, Emotion, Domain, User State (FAST)
+    MODEL_MEMORY: str = os.getenv("MODEL_MEMORY", "gpt-4o-mini")               # Memory update & Extraction (FAST)
+    MODEL_SYNTHESIS: str = os.getenv("MODEL_SYNTHESIS", "gpt-5.1")            # RAG Synthesis
+    MODEL_VERIFY: str = os.getenv("MODEL_VERIFY", "gpt-4o-mini")               # Web Search & Fact Verify (FAST)
+    MODEL_MAIN_REPLY: str = os.getenv("MODEL_MAIN_REPLY", "gpt-5.2")           # Final Creator Persona Output
     
     # Fallback models if above fail
-    MODEL_FALLBACK_FAST: str = "gpt-4o-mini"
-    MODEL_FALLBACK_SMART: str = "gpt-4o"
+    MODEL_FALLBACK_FAST: str = os.getenv("MODEL_FALLBACK_FAST", "gpt-4o-mini")
+    MODEL_FALLBACK_SMART: str = os.getenv("MODEL_FALLBACK_SMART", "gpt-4o")
 
     # Legacy settings (mapped for backward compatibility)
     CHAT_MODEL: str = MODEL_MAIN_REPLY
-    VISION_MODEL: str = "gpt-4o"
+    VISION_MODEL: str = os.getenv("VISION_MODEL", "gpt-4o")
     ROUTER_MODEL: str = MODEL_CLASSIFICATION
     REWRITE_MODEL: str = MODEL_MEMORY
     RERANK_MODEL: str = MODEL_CLASSIFICATION

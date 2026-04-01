@@ -32,7 +32,10 @@ def get_client():
     """Lazy initialization of OpenAI client to avoid import-time errors"""
     global _client
     if _client is None:
-        _client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        kwargs = {"api_key": settings.EMBEDDING_API_KEY or settings.OPENAI_API_KEY}
+        if settings.EMBEDDING_BASE_URL:
+            kwargs["base_url"] = settings.EMBEDDING_BASE_URL
+        _client = openai.OpenAI(**kwargs)
     return _client
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 120) -> List[str]:

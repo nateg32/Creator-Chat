@@ -82,8 +82,8 @@ def _looks_like_direct_media_url(url: str) -> bool:
 def transcribe_with_whisper(media_url_or_path: str) -> Optional[str]:
     """Helper to run whisper unconditionally"""
     from backend.settings import settings
-    if not settings.OPENAI_API_KEY:
-        print("OPENAI_API_KEY not set")
+    if not (settings.TRANSCRIPTION_API_KEY or settings.OPENAI_API_KEY):
+        print("TRANSCRIPTION_API_KEY / OPENAI_API_KEY not set")
         return None
         
     try:
@@ -107,7 +107,10 @@ def transcribe_with_whisper(media_url_or_path: str) -> Optional[str]:
             
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+            kwargs = {"api_key": settings.TRANSCRIPTION_API_KEY or settings.OPENAI_API_KEY}
+            if settings.TRANSCRIPTION_BASE_URL:
+                kwargs["base_url"] = settings.TRANSCRIPTION_BASE_URL
+            client = OpenAI(**kwargs)
             with open(tmp_path, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1",

@@ -16,8 +16,8 @@ def transcribe_video(video_url: str) -> Optional[str]:
     Returns:
         Transcript text or None if transcription fails
     """
-    if not settings.OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY is not set")
+    if not (settings.TRANSCRIPTION_API_KEY or settings.OPENAI_API_KEY):
+        raise ValueError("TRANSCRIPTION_API_KEY / OPENAI_API_KEY is not set")
     
     # Skip transcription if it's a platform URL but not a direct media link
     # These URLs return HTML and cause OpenAI "Invalid file format" 400 errors.
@@ -52,7 +52,10 @@ def transcribe_video(video_url: str) -> Optional[str]:
         try:
             # Use OpenAI Whisper API for transcription
             from openai import OpenAI
-            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+            kwargs = {"api_key": settings.TRANSCRIPTION_API_KEY or settings.OPENAI_API_KEY}
+            if settings.TRANSCRIPTION_BASE_URL:
+                kwargs["base_url"] = settings.TRANSCRIPTION_BASE_URL
+            client = OpenAI(**kwargs)
             
             with open(tmp_path, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(

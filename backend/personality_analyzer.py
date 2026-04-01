@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 from backend.db import db
-from backend.rag import get_client
+from backend.rag import get_chat_client
 from backend.settings import settings
 
 
@@ -482,7 +482,7 @@ class PersonalityAnalyzer:
             return _default_fingerprint()
 
         corpus = PersonalityAnalyzer._build_corpus(docs)
-        client = get_client()
+        client = get_chat_client(settings.MODEL_CLASSIFICATION)
         name_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (creator_id,))
         display_name = name_row.get("name") or name_row.get("handle") or "The Creator"
 
