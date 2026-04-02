@@ -48,6 +48,7 @@ from backend.config.platforms import (
     normalize_url,
     extract_handle,
     validate_time_filter,
+    _path_matches_platform,
 )
 from backend.scraper_router import run_search_router, PLATFORM_MAPPERS
 from backend.db import db
@@ -781,51 +782,7 @@ def _is_platform_auth_redirect(platform_key: str, resolved_url: str) -> bool:
 
 def _resolved_path_matches_platform(platform_key: str, resolved_url: str) -> bool:
     parsed = urlparse(resolved_url or "")
-    path = (parsed.path or "").strip("/")
-    query = (parsed.query or "").lower()
-
-    if platform_key in {"youtube", "youtube_shorts"}:
-        segments = [seg for seg in path.split("/") if seg]
-        if not segments:
-            return False
-        first = segments[0]
-        if first.startswith("@"):
-            return len(segments) == 1 or (len(segments) == 2 and segments[1] in {"videos", "shorts", "featured", "streams", "playlists"})
-        return first in {"channel", "user", "c"} and len(segments) == 2
-
-    if platform_key == "instagram":
-        if not path:
-            return False
-        first = path.split("/")[0].lower()
-        return first not in {"reel", "reels", "p", "tv", "stories", "explore", "accounts"}
-
-    if platform_key == "tiktok":
-        segments = [seg for seg in path.split("/") if seg]
-        return len(segments) == 1 and segments[0].startswith("@")
-
-    if platform_key == "twitter":
-        segments = [seg for seg in path.split("/") if seg]
-        return len(segments) == 1 and segments[0].lower() not in {"home", "explore", "search", "i", "settings"}
-
-    if platform_key == "linkedin":
-        segments = [seg for seg in path.split("/") if seg]
-        return len(segments) == 2 and segments[0].lower() in {"in", "company"}
-
-    if platform_key == "reddit":
-        segments = [seg for seg in path.split("/") if seg]
-        return len(segments) == 2 and segments[0].lower() in {"user", "u"}
-
-    if platform_key == "facebook":
-        if parsed.path.lower().startswith("/profile.php"):
-            return "id=" in query
-        segments = [seg for seg in path.split("/") if seg]
-        if not segments:
-            return False
-        if segments[0].lower() in {"watch", "reel", "share", "events", "groups", "marketplace", "gaming"}:
-            return False
-        return len(segments) == 1 or (len(segments) == 2 and segments[0].lower() == "people")
-
-    return True
+    return _path_matches_platform(parsed, platform_key)
 
 
 def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, Any]:

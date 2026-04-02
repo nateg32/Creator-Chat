@@ -27,7 +27,7 @@ PLATFORMS: List[Dict[str, Any]] = [
         "key": "youtube",
         "label": "YouTube Videos",
         "icon": "youtube",
-        "placeholder": "https://youtube.com/@handle/videos or channel URL",
+        "placeholder": "https://youtube.com/@handle or @handle",
         "url_pattern": r"^(https?://(www\.)?(youtube\.com|youtu\.be)/[^\s]+|@?[\w-]+)$",
         "apify_actor": "apidojo/youtube-scraper",
         "supports_since_date": True,
@@ -38,7 +38,7 @@ PLATFORMS: List[Dict[str, Any]] = [
         "key": "youtube_shorts",
         "label": "YouTube Shorts",
         "icon": "youtube",
-        "placeholder": "https://youtube.com/@handle/shorts or channel URL",
+        "placeholder": "https://youtube.com/@handle or @handle",
         "url_pattern": r"^(https?://(www\.)?(youtube\.com|youtu\.be)/[^\s]+|@?[\w-]+)$",
         "apify_actor": "apidojo/youtube-scraper",
         "supports_since_date": True,
@@ -49,7 +49,7 @@ PLATFORMS: List[Dict[str, Any]] = [
         "key": "twitter",
         "label": "Twitter / X",
         "icon": "twitter",
-        "placeholder": "https://twitter.com/username or https://x.com/username",
+        "placeholder": "https://x.com/username or @username",
         "url_pattern": r"^(https?://(www\.)?(twitter|x)\.com/[\w]+/?|@?[\w]+)$",
         "apify_actor": "kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest",
         "supports_since_date": True,
@@ -71,7 +71,7 @@ PLATFORMS: List[Dict[str, Any]] = [
         "key": "facebook",
         "label": "Facebook",
         "icon": "facebook",
-        "placeholder": "https://facebook.com/pagename or /page",
+        "placeholder": "https://facebook.com/pagename",
         "url_pattern": r"^https?://(www\.)?(fb\.com|facebook\.com|m\.facebook\.com)/[\w.]+/?",
         "apify_actor": "apify/facebook-posts-scraper",
         "supports_since_date": True,
@@ -82,8 +82,8 @@ PLATFORMS: List[Dict[str, Any]] = [
         "key": "tiktok",
         "label": "TikTok",
         "icon": "tiktok",
-        "placeholder": "https://www.tiktok.com/@username",
-        "url_pattern": r"^https?://((www|m)\.)?tiktok\.com/@[\w.-]+/?$",
+        "placeholder": "https://www.tiktok.com/@username or @username",
+        "url_pattern": r"^(https?://((www|m)\.)?tiktok\.com/@[\w.-]+/?|@?[\w.]+)$",
         "apify_actor": "thenetaji/tiktok-post-scraper",
         "supports_since_date": False,
         "default_max_items": 20,
@@ -113,8 +113,8 @@ def get_platform(key: str) -> Optional[Dict[str, Any]]:
 def _strip_tracking(u: str) -> str:
     try:
         parsed = urlparse(u)
-        # Drop query and fragment for validation/normalization
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+        path = parsed.path.rstrip("/") if parsed.path != "/" else "/"
+        return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
     except Exception:
         return u
 
@@ -149,30 +149,45 @@ def _unwrap_instagram_redirect(u: str) -> str:
 
 
 def normalize_url(url: str, platform_key: str) -> str:
-    """Normalize URL: strip tracking params, enforce https."""
+    """Normalize URL: strip tracking params, enforce https, handle @handle input."""
     if not url or not isinstance(url, str):
         return ""
     u = url.strip()
     if not u:
         return ""
-    
+
     # Custom platform: handle multi-line
     if platform_key == "custom":
         lines = [line.strip() for line in u.split('\n') if line.strip()]
-        # Normalize each line
         norm_lines = []
         for line in lines:
-             if not line.startswith("http"):
-                 line = "https://" + line
-             norm_lines.append(_strip_tracking(line))
+            if not line.startswith("http"):
+                line = "https://" + line
+            norm_lines.append(_strip_tracking(line))
         return "\n".join(norm_lines)
 
-    # Handle @handle for instagram
+    # --- Bare @handle / handle → full URL (per-platform) ---
     if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
         h = u.lstrip("@")
-        return f"https://instagram.com/{h}"
+        return f"https://www.instagram.com/{h}"
+
+    if platform_key in ("youtube", "youtube_shorts") and re.match(r"^@?[\w.-]+$", u):
+        h = u.lstrip("@")
+        suffix = "shorts" if platform_key == "youtube_shorts" else "videos"
+        return f"https://www.youtube.com/@{h}/{suffix}"
+
+    if platform_key == "twitter" and re.match(r"^@?[\w]+$", u):
+        h = u.lstrip("@")
+        return f"https://x.com/{h}"
+
+    if platform_key == "tiktok" and re.match(r"^@?[\w.]+$", u):
+        h = u.lstrip("@")
+        return f"https://www.tiktok.com/@{h}"
+
+    # --- Platform-specific URL fixups ---
     if platform_key == "instagram":
         u = _unwrap_instagram_redirect(u)
+
     if platform_key == "tiktok":
         try:
             parsed = urlparse(u if u.startswith("http") else "https://" + u)
@@ -183,6 +198,37 @@ def normalize_url(url: str, platform_key: str) -> str:
                     return f"https://www.tiktok.com/{first}"
         except Exception:
             pass
+
+    if platform_key == "twitter":
+        # Unify twitter.com → x.com
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            host = (parsed.netloc or "").lower()
+            if "twitter.com" in host:
+                u = urlunparse((
+                    parsed.scheme or "https",
+                    host.replace("twitter.com", "x.com"),
+                    parsed.path, "", "", "",
+                ))
+        except Exception:
+            pass
+
+    if platform_key in ("youtube", "youtube_shorts"):
+        # Ensure @handle URLs have the right tab suffix
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            segments = [seg for seg in path.split("/") if seg]
+            if segments and segments[0].startswith("@"):
+                suffix = "shorts" if platform_key == "youtube_shorts" else "videos"
+                handle_seg = segments[0]
+                if len(segments) == 1:
+                    u = f"https://www.youtube.com/{handle_seg}/{suffix}"
+                elif len(segments) == 2 and segments[1] in {"videos", "shorts", "featured", "streams", "playlists"}:
+                    u = f"https://www.youtube.com/{handle_seg}/{suffix}"
+        except Exception:
+            pass
+
     if not u.startswith("http"):
         u = "https://" + u
     return _strip_tracking(u)
@@ -267,16 +313,19 @@ def extract_handle(url: str, platform_key: str) -> Optional[str]:
     u = url.strip()
     if not u:
         return None
-    
+
     if platform_key == "custom":
         return "custom"
 
+    # Bare @handle input — strip and return directly
+    if re.match(r"^@?[\w.]+$", u) and platform_key in ("instagram", "youtube", "youtube_shorts", "twitter", "tiktok"):
+        return u.lstrip("@")
+
     if platform_key == "instagram":
-        if re.match(r"^@?[\w.]+$", u):
-            return u.lstrip("@")
         from backend.lib.instagram_parser import parse_instagram_url
         p = parse_instagram_url(u)
         return p.get("handle") if p else None
+
     if platform_key == "tiktok":
         try:
             parsed = urlparse(u if u.startswith("http") else "https://" + u)
@@ -287,6 +336,67 @@ def extract_handle(url: str, platform_key: str) -> Optional[str]:
             return first.lstrip("@") if first.startswith("@") else None
         except Exception:
             return None
+
+    if platform_key in ("youtube", "youtube_shorts"):
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            if not path:
+                return None
+            segments = [seg for seg in path.split("/") if seg]
+            if not segments:
+                return None
+            first = segments[0]
+            if first.startswith("@"):
+                return first.lstrip("@")
+            if first in ("channel", "user", "c") and len(segments) >= 2:
+                return segments[1]
+            return None
+        except Exception:
+            return None
+
+    if platform_key == "twitter":
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            if not path:
+                return None
+            segments = [seg for seg in path.split("/") if seg]
+            if len(segments) == 1 and segments[0].lower() not in ("home", "explore", "search", "i", "settings"):
+                return segments[0]
+            return None
+        except Exception:
+            return None
+
+    if platform_key == "linkedin":
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            if not path:
+                return None
+            segments = [seg for seg in path.split("/") if seg]
+            if len(segments) == 2 and segments[0].lower() in ("in", "company"):
+                return segments[1]
+            return None
+        except Exception:
+            return None
+
+    if platform_key == "facebook":
+        try:
+            parsed = urlparse(u if u.startswith("http") else "https://" + u)
+            path = (parsed.path or "").strip("/")
+            if not path:
+                return None
+            segments = [seg for seg in path.split("/") if seg]
+            if len(segments) == 1:
+                return segments[0]
+            if len(segments) == 2 and segments[0].lower() == "people":
+                return segments[1]
+            return None
+        except Exception:
+            return None
+
+    # Fallback for unknown platforms
     try:
         parsed = urlparse(u if u.startswith("http") else "https://" + u)
         path = (parsed.path or "").strip("/")
@@ -307,19 +417,18 @@ def validate_url(url: str, platform_key: str) -> Tuple[bool, Optional[str]]:
     u = (url or "").strip()
     if not u:
         return False, "URL is required"
-    
+
     if platform_key == "custom":
-        # Just check if there's at least one line with a valid-ish URL
         lines = [line.strip() for line in u.split('\n') if line.strip()]
         if not lines:
             return False, "At least one URL is required"
         return True, None
 
-    # @handle for instagram
-    if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
-        return True, None
-    # Normalize before validating (strip query params etc.)
+    # Normalize first — this converts bare @handle → full URL for all platforms
     u = normalize_url(u, platform_key)
+    if not u:
+        return False, "URL is required"
+
     pattern = p.get("url_pattern")
     if pattern and not re.match(pattern, u, re.IGNORECASE):
         return False, f"URL doesn't match {p['label']} format"

@@ -18,20 +18,6 @@ const TIME_MODES = [
   { value: "since", label: "Since date" },
 ];
 
-function normalizeTikTokProfileUrl(url) {
-  const value = String(url || "").trim();
-  if (!value) return null;
-  try {
-    const parsed = new URL(value.startsWith("http") ? value : `https://${value}`);
-    if (!parsed.hostname.toLowerCase().includes("tiktok.com")) return null;
-    const first = (parsed.pathname || "").split("/").filter(Boolean)[0];
-    if (!first || !first.startsWith("@")) return null;
-    return `https://www.tiktok.com/${first}`;
-  } catch {
-    return null;
-  }
-}
-
 export function CreatorSetup({
   onSaveConfig,
   onSearchStart,
@@ -296,24 +282,12 @@ export function CreatorSetup({
     }
 
     let urlToValidate = url;
-    if (key === "tiktok") {
-      const normalizedTikTokUrl = normalizeTikTokProfileUrl(url);
-      if (!normalizedTikTokUrl) {
-        setTestStatus((s) => ({ ...s, [key]: "Enter a valid TikTok profile or video URL" }));
-        return;
-      }
-      urlToValidate = normalizedTikTokUrl;
-      if (normalizedTikTokUrl !== url) {
-        updatePlatformConfig(key, { url: normalizedTikTokUrl });
-      }
-    }
-
-    setTestStatus((s) => ({ ...s, [key]: key === "tiktok" ? "Checking TikTok account..." : "Checking public link..." }));
+    setTestStatus((s) => ({ ...s, [key]: "Checking public link..." }));
     try {
       const res = await validatePlatformUrl(key, urlToValidate);
       if (res.valid) {
         const normalized = res.normalized || urlToValidate;
-        if (normalized !== urlToValidate) {
+        if (normalized !== url) {
           updatePlatformConfig(key, { url: normalized });
         }
         const statusMessage = res.scrape_ready === false
@@ -416,15 +390,6 @@ export function CreatorSetup({
       }
 
       let urlToValidate = value;
-      if (key === "tiktok") {
-        const normalizedTikTokUrl = normalizeTikTokProfileUrl(value);
-        if (!normalizedTikTokUrl) {
-          nextStatuses[key] = "Enter a valid TikTok profile or video URL";
-          invalidMessages.push(platform.label);
-          continue;
-        }
-        urlToValidate = normalizedTikTokUrl;
-      }
 
       try {
         const res = await validatePlatformUrl(key, urlToValidate);
