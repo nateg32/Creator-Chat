@@ -4604,6 +4604,12 @@ Message: {answer_text[:500]}"""
 
     # Prioritize soul_md from creators table over legacy persona document
     persona = creator_row.get("soul_md") or rag.get_persona(creator_id)
+    style_fingerprint = creator_row.get("style_fingerprint") or {}
+    if isinstance(style_fingerprint, str):
+        try:
+            style_fingerprint = json.loads(style_fingerprint)
+        except Exception:
+            style_fingerprint = {}
     enabled_platforms = get_enabled_platforms_for_creator(creator_id)
     
     # Ensure thread_id is available
@@ -5727,6 +5733,12 @@ async def grounded_rag_stream(
             return
             
         persona = creator_row.get("soul_md") or ""
+        style_fingerprint = creator_row.get("style_fingerprint") or {}
+        if isinstance(style_fingerprint, str):
+            try:
+                style_fingerprint = json.loads(style_fingerprint)
+            except Exception:
+                style_fingerprint = {}
         
         q_emb = embedding_resp.data[0].embedding
 
