@@ -161,7 +161,7 @@ def generate_chat_completion(
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON from {model}. Escalating to {settings.MODEL_FALLBACK_SMART}...")
                 kwargs["model"] = settings.MODEL_FALLBACK_SMART
-                fallback_response = get_chat_client(fallback_model).chat.completions.create(**kwargs)
+                fallback_response = get_chat_client(settings.MODEL_FALLBACK_SMART).chat.completions.create(**kwargs)
                 return fallback_response.choices[0].message.content.strip()
                 
         return content
@@ -218,7 +218,7 @@ async def generate_chat_completion_async(
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON from {model}. Escalating to {settings.MODEL_FALLBACK_SMART}...")
                 kwargs["model"] = settings.MODEL_FALLBACK_SMART
-                fallback_response = await get_async_chat_client(fallback_model).chat.completions.create(**kwargs)
+                fallback_response = await get_async_chat_client(settings.MODEL_FALLBACK_SMART).chat.completions.create(**kwargs)
                 return fallback_response.choices[0].message.content.strip()
                 
         return content

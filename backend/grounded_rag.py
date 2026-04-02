@@ -1951,6 +1951,9 @@ def _build_public_fact_fallback(question: str, creator_name: str) -> str:
     )
     is_timeline_question = bool(
         any(token in lowered for token in ["publish", "published", "publication", "release", "released", "launch", "launched", "come out", "what year", "what date", "which month"])
+        or re.search(r"\bwhen\s+did\b", lowered)
+        or re.search(r"\bhow\s+long\s+(?:ago|have)\b", lowered)
+        or re.search(r"\bwhen\s+(?:was|were|did)\s+.+\s*(?:start|begin|first)\b", lowered)
         or (
             any(token in lowered for token in ["write", "wrote", "written"])
             and any(token in lowered for token in ["when", "what year", "what date", "which month"])
@@ -1959,21 +1962,22 @@ def _build_public_fact_fallback(question: str, creator_name: str) -> str:
     if is_catalog_question:
         if "book" in lowered:
             return (
-                "I want to point you to the full current list. Check my Amazon author page or my official website "
-                "for the most up-to-date catalog."
+                "That's a great question. I don't want to give you an outdated number, so "
+                "the best place to see the full current list is my Amazon author page or my official website."
             )
         return (
-            "I want to point you to the full current list. Check my official website or verified profile links "
-            "for the latest catalog."
+            "That's a great question. I don't want to give you an outdated list, so "
+            "check my official website for the latest lineup."
         )
     if is_timeline_question:
         return (
-            "I want to give you the right date on that. Check my Amazon listing, my official book page, "
-            "or the publisher page for the exact publication info. If you want, I can help you narrow the fastest place to verify it."
+            "Good question. I want to make sure I give you the exact date rather than guess wrong. "
+            "You can find that on my official profiles or website."
         )
     if any(token in lowered for token in ["followers", "subscribers", "members"]):
         return (
-            "I want to give you the right number on that. Check my live social profiles directly for the current count."
+            "Those numbers change all the time, so I don't want to give you a stale count. "
+            "Check my profiles directly for the live number."
         )
     if any(
         phrase in lowered
@@ -1991,10 +1995,12 @@ def _build_public_fact_fallback(question: str, creator_name: str) -> str:
         ]
     ):
         return (
-            "I want to give you the right pricing info there. Check my website or official checkout page for the current details."
+            "I want to make sure you get the current pricing. "
+            "Head to my website or official checkout page for the latest details."
         )
     return (
-        "I want to make sure I give you the right info on that. Check my website, official listings, or current public profiles for the most accurate answer."
+        "I want to give you the right answer on that rather than guess. "
+        "My website or official profiles will have the most accurate info."
     )
 
 def evaluate_context_sufficiency(
@@ -2016,6 +2022,19 @@ def evaluate_context_sufficiency(
     has_live_web_result = any("[LIVE WEB SEARCH RESULT]" in (c.get("content") or "") for c in support_set)
     if needs_fresh_public_web_search(question, history) and not has_live_web_result:
         logger.info("Context Sufficiency: forcing PARTIAL because the question needs fresh public info.")
+        return "PARTIAL"
+
+    # Creator timeline / biographical questions need web verification 
+    # e.g. "when did you start", "how long ago", "how old are you"
+    lowered_q = (question or "").lower()
+    _is_creator_timeline = bool(
+        re.search(r"\bwhen\s+did\s+(?:you|u|he|she|they)\b", lowered_q)
+        or re.search(r"\bhow\s+long\s+(?:ago|have)\b", lowered_q)
+        or re.search(r"\bhow\s+old\s+(?:are|is|r)\b", lowered_q)
+        or re.search(r"\bwhen\s+(?:did|was|were)\s+.+\s*(?:start|begin|launch|found|creat|born|marr|mov|first)\b", lowered_q)
+    )
+    if _is_creator_timeline and not has_live_web_result:
+        logger.info("Context Sufficiency: forcing PARTIAL because timeline/biographical question needs web verification.")
         return "PARTIAL"
 
     # Catalog/count queries ("how many books", "what books have you written") should
@@ -3431,6 +3450,7 @@ RULES:
 7. NO LINKS: Do not output any http links manually.
 8. PERSONA PROTECTION: Strictly PURGE all meta-talk like "I don't have enough info" or "Based on my data". NEVER mention being an AI.
 9. VERBOSITY: Strictly stay within the BUDGET. Cut content if necessary.
+10. FORMATTING QUALITY: Write complete, clean sentences. Never split a word across a space. Never drop words mid-sentence. Never leave dangling punctuation or orphaned parentheses. Every sentence must be grammatically complete.
 
 NEUTRAL PLAN:
 {json.dumps(draft, indent=2)}

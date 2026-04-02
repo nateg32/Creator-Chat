@@ -136,7 +136,19 @@ class SearchDecisionEngine:
 
         try:
             plan = self.router.build_plan(query, conversation_history=conversation_history)
-            if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject:
+
+            # Timeline / creator-history questions need web search even if an entity
+            # is recognized — the entity graph rarely has dates or historical facts.
+            _needs_web_for_facts = bool(
+                re.search(r"\bwhen\s+did\b", query_lower)
+                or re.search(r"\bhow\s+long\s+(?:ago|have)\b", query_lower)
+                or re.search(r"\bhow\s+old\b", query_lower)
+                or re.search(r"\bwhat\s+year\b", query_lower)
+                or re.search(r"\bwhere\s+(?:are|is|r)\s+(?:you|u|he|she|they)\s+from\b", query_lower)
+                or re.search(r"\bwhen\s+(?:was|were|did)\b", query_lower)
+            )
+
+            if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject and not _needs_web_for_facts:
                 return SearchDecision(
                     should_search=False,
                     reason="entity_graph_answerable",

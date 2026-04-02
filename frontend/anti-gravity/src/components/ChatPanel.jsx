@@ -922,7 +922,7 @@ export function ChatPanel({
                                 const key = (card.url || '').toLowerCase();
                                 return key && arr.findIndex((item) => (item.url || '').toLowerCase() === key) === idx;
                               });
-                          const renderedSources = normalizeSourceEntries(m.citations, []);
+                          const renderedSources = normalizeSourceEntries(m.citations, renderedCards);
 
                           return (
                             <div className="msg-content-wrapper">
@@ -944,13 +944,6 @@ export function ChatPanel({
                                       <span className="chat-source-chip-title">{source.title}</span>
                                       <span className="chat-source-chip-domain">{source.domain || source.platform}</span>
                                     </a>
-                                  ))}
-                                </div>
-                              )}
-                              {renderedCards.length > 0 && (
-                                <div className="msg-cards-row">
-                                  {renderedCards.map((card) => (
-                                    <PreviewCard key={card.id} card={card} />
                                   ))}
                                 </div>
                               )}
