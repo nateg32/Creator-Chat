@@ -899,6 +899,7 @@ Rules:
 - Prefer official creator-owned sources, publisher/product pages, Amazon, Audible, Goodreads, and authoritative public sources.
 - Return every clearly supported item you can verify, not just one.
 - Do not include entities owned by someone else.
+- CRITICAL: Only include items you can verify with a specific source URL. If you cannot find a direct link confirming the item exists (e.g. Amazon listing, publisher page, official website), do NOT include it. Never guess or infer entity names.
 
 Return JSON:
 {{

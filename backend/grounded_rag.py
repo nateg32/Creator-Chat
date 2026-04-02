@@ -1729,7 +1729,6 @@ def _should_speculate_live_search(
         or re.search(r"\bwho\s+(is|are|was|were|did|does)\b", lowered)
         or re.search(r"\b(net worth|followers|subscribers|valuation|founded|revenue)\b", lowered)
         or re.search(r"\b(married|wife|husband|spouse|children|kids|family|born|age|hometown)\b", lowered)
-        or re.search(r"\b(started|began|launched|released|published|created)\b", lowered)
     )
     if _factual_signal:
         return True
@@ -5601,44 +5600,51 @@ async def grounded_rag_stream(
                 _sc = json.loads(_sc)
             _focus = creator_row.get("creator_category") or "general"
             if _focus != "general":
-                _name = creator_row.get("name") or creator_row.get("handle") or "the creator"
-                _primary = _sc.get("primary_domains", []) or []
-                _secondary = _sc.get("secondary_domains", []) or []
-                _domain_list = ", ".join(list(_primary) + list(_secondary) + [_focus])
-                try:
-                    _check_prompt = (
-                        f"Creator: {_name}\n"
-                        f"Expertise domains: {_domain_list}\n"
-                        f"User question: \"{question}\"\n\n"
-                        "Does this question fall WITHIN or DIRECTLY RELATE to the creator's expertise domains?\n"
-                        "Rules:\n"
-                        "- YES only if the question is clearly about one of the listed domains.\n"
-                        "- NO if it is a generic how-to, tutorial, trivia, or factual question unrelated to those domains.\n"
-                        "- Greetings and personal questions about the creator = YES.\n"
-                        "- When in doubt, answer NO.\n"
-                        "Answer YES or NO only."
-                    )
-                    _check_resp = await asyncio.to_thread(
-                        rag.generate_chat_completion,
-                        messages=[{"role": "user", "content": _check_prompt}],
-                        model=settings.MODEL_CLASSIFICATION,
-                        temperature=0.0,
-                        max_tokens=5,
-                    )
-                    if _check_resp.strip().upper().startswith("NO"):
-                        logger.info("Streaming LLM domain check: off-domain. Triggering redirect.")
-                        _persona = creator_row.get("soul_md") or ""
-                        bridge_topic = recent_bridge_topic(conversation_history, question)
-                        answer = await asyncio.to_thread(
-                            stronghold_guard.generate_boundary_message,
-                            _name, _persona, _sc, question, bridge_topic, _focus, False,
+                # Skip expensive LLM domain check for questions obviously about the creator
+                _q_lower = (question or "").lower()
+                _is_obviously_on_domain = bool(
+                    re.search(r"\b(you|your|u|ur)\b", _q_lower)
+                    or re.search(r"\b(book|course|program|podcast|video|reel|content)\b", _q_lower)
+                )
+                if not _is_obviously_on_domain:
+                    _name = creator_row.get("name") or creator_row.get("handle") or "the creator"
+                    _primary = _sc.get("primary_domains", []) or []
+                    _secondary = _sc.get("secondary_domains", []) or []
+                    _domain_list = ", ".join(list(_primary) + list(_secondary) + [_focus])
+                    try:
+                        _check_prompt = (
+                            f"Creator: {_name}\n"
+                            f"Expertise domains: {_domain_list}\n"
+                            f"User question: \"{question}\"\n\n"
+                            "Does this question fall WITHIN or DIRECTLY RELATE to the creator's expertise domains?\n"
+                            "Rules:\n"
+                            "- YES only if the question is clearly about one of the listed domains.\n"
+                            "- NO if it is a generic how-to, tutorial, trivia, or factual question unrelated to those domains.\n"
+                            "- Greetings and personal questions about the creator = YES.\n"
+                            "- When in doubt, answer NO.\n"
+                            "Answer YES or NO only."
                         )
-                        if not bridge_topic and "?" not in answer:
-                            answer = f"{answer} {default_bridge_question(_focus)}"
-                        yield answer
-                        return
-                except Exception as e:
-                    logger.warning(f"Streaming off-domain LLM check failed (non-blocking): {e}")
+                        _check_resp = await asyncio.to_thread(
+                            rag.generate_chat_completion,
+                            messages=[{"role": "user", "content": _check_prompt}],
+                            model=settings.MODEL_CLASSIFICATION,
+                            temperature=0.0,
+                            max_tokens=5,
+                        )
+                        if _check_resp.strip().upper().startswith("NO"):
+                            logger.info("Streaming LLM domain check: off-domain. Triggering redirect.")
+                            _persona = creator_row.get("soul_md") or ""
+                            bridge_topic = recent_bridge_topic(conversation_history, question)
+                            answer = await asyncio.to_thread(
+                                stronghold_guard.generate_boundary_message,
+                                _name, _persona, _sc, question, bridge_topic, _focus, False,
+                            )
+                            if not bridge_topic and "?" not in answer:
+                                answer = f"{answer} {default_bridge_question(_focus)}"
+                            yield answer
+                            return
+                    except Exception as e:
+                        logger.warning(f"Streaming off-domain LLM check failed (non-blocking): {e}")
 
     route_evidence_plan = None
     route_personal_via_evidence = False
