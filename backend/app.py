@@ -2378,6 +2378,11 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                         except Exception:
                             logger.warning("Failed to parse streamed support payload.")
                         continue
+                    if isinstance(chunk, str) and chunk.startswith("__FINAL_CONTENT__"):
+                        # grounded_rag_stream detected placeholder artifacts and replaced
+                        # the answer with a clean fallback — override assembled text
+                        assembled = [chunk[len("__FINAL_CONTENT__"):]]
+                        continue
 
                     cleaned_chunk = clean_for_stream_chunk(chunk)
                     if cleaned_chunk:

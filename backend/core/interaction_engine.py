@@ -146,6 +146,7 @@ REACTIVE_WORDS = {
     "fr", "facts", "no cap", "ong", "word", "fair", "nice",
     "cool", "ok", "okay", "k", "yeah", "yea", "ya", "lmao",
     "bruh", "bro", "ight", "aight", "tru", "righto", "cheers",
+    "huh", "what", "wut", "hmm", "eh", "meh", "ugh",
 }
 
 EMOTION_WORDS = {
@@ -157,7 +158,8 @@ EMOTION_WORDS = {
 
 SMALL_TALK_PHRASES = {
     "wyd", "how are you", "how's your day", "how's it going",
-    "what's good", "how you doing", "how u doing", "hbu",
+    "what's good", "how you doing", "how u doing", "how u going",
+    "how are u", "how r u", "how you going", "hbu",
     "just chilling", "not much", "same", "im bored",
     "just got home", "at work", "studying", "im tired",
     "just vibing",
@@ -1164,6 +1166,10 @@ class InteractionEngine:
         words = msg.split()
         word_count = len(words)
         word_set = set(words)
+        # Strip trailing punctuation for matching (so "huh?" matches "huh")
+        clean_words = [w.rstrip("?!.,;:") for w in words]
+        clean_word_set = set(clean_words)
+        clean_msg = msg.rstrip("?!.,;:")
 
         # Use word-boundary-safe matching to avoid "hi" matching inside "thinking"
         def phrase_in_msg(phrase_set, text, word_list):
@@ -1171,16 +1177,16 @@ class InteractionEngine:
             # Single-word matches: check against word set
             for phrase in phrase_set:
                 if " " not in phrase:
-                    if phrase in word_set:
+                    if phrase in clean_word_set:
                         return True
                 else:
                     # Multi-word phrases: check as substring but verify word boundaries
-                    if phrase in text:
+                    if phrase in text or phrase in clean_msg:
                         return True
             return False
 
-        is_social = is_greeting(msg) or msg in GREETING_WORDS or phrase_in_msg(GREETING_WORDS, msg, words)
-        is_reactive = msg in REACTIVE_WORDS or (word_count <= 3 and any(w in REACTIVE_WORDS for w in words))
+        is_social = is_greeting(msg) or msg in GREETING_WORDS or clean_msg in GREETING_WORDS or phrase_in_msg(GREETING_WORDS, msg, words)
+        is_reactive = msg in REACTIVE_WORDS or clean_msg in REACTIVE_WORDS or (word_count <= 3 and any(w in REACTIVE_WORDS for w in clean_words))
         is_emotional = phrase_in_msg(EMOTION_WORDS, msg, words)
         is_small_talk_phrase = phrase_in_msg(SMALL_TALK_PHRASES, msg, words)
         has_task_verb = phrase_in_msg(TASK_VERBS, msg, words)
@@ -1207,16 +1213,25 @@ class InteractionEngine:
             return "ROUTE_2_TASK"
 
         # --- ROUTE 0: GREETING (only pure greetings with no substance) ---
-        if is_social and not has_task_verb and word_count <= 4 and not has_question_mark:
+        if is_social and not has_task_verb and word_count <= 7 and not has_question_mark:
             return "ROUTE_0_GREETING"
+
+        # Greeting + small-talk combo (e.g. "hello danny how u going")
+        if is_social and is_small_talk_phrase and not has_task_verb and word_count <= 10:
+            return "ROUTE_0_GREETING"
+
+        # --- ROUTE 1: SMALL TALK (check before TASK to catch reactive short messages) ---
+        # Reactive words like "huh?", "lol", "ok", "nice" with or without "?" are small talk.
+        if is_reactive and word_count <= 3:
+            return "ROUTE_1_SMALL_TALK"
+        if is_small_talk_phrase and not has_task_verb:
+            return "ROUTE_1_SMALL_TALK"
+        if is_emotional and not has_task_verb and word_count <= 6:
+            return "ROUTE_1_SMALL_TALK"
 
         # --- ROUTE 2: TASK (prioritize answering actual questions) ---
         if has_task_verb or has_question_mark or specificity >= 0.4:
             return "ROUTE_2_TASK"
-
-        # --- ROUTE 1: SMALL TALK ---
-        if is_reactive or is_emotional or is_small_talk_phrase:
-            return "ROUTE_1_SMALL_TALK"
 
         # Default: TASK
         return "ROUTE_2_TASK"

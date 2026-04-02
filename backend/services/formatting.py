@@ -114,6 +114,12 @@ def clean_response(text: str, strip_hyphens: bool = False) -> str:
     text = re.sub(r"\.\s*,", ".", text)
     text = re.sub(r",\s*\.", ".", text)
 
+    # Strip empty/placeholder URL artifacts the model may hallucinate (e.g. "" or ""/books)
+    text = re.sub(r'(?:(?:at|to|is|visit|on)\s+)?""(?:/\S*)?', '', text)
+    text = re.sub(r"(?:(?:at|to|is|visit|on)\s+)?''(?:/\S*)?", '', text)
+    # Clean up leftover double spaces from removals
+    text = re.sub(r"[ \t]{2,}", " ", text)
+
     return text.strip()
 
 

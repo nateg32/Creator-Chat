@@ -5929,6 +5929,7 @@ async def grounded_rag_stream(
     final_stream_text = "".join(streamed_parts)
     if no_online_fallback and _contains_placeholder_link_artifacts(final_stream_text):
         final_stream_text = no_online_fallback
+        yield f"__FINAL_CONTENT__{final_stream_text}"
     stream_cards = _build_response_cards(
         rec_result if route == "ROUTE_2_TASK" else None,
         support_set,
