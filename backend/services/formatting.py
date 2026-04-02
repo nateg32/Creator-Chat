@@ -47,6 +47,14 @@ _BARE_DOMAIN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _LIST_LINE_PATTERN = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*", re.MULTILINE)
+# Split on sentence-ending punctuation but protect common abbreviations
+# like e.g., i.e., etc., vs., Dr., Mr., Mrs., St. from being treated as
+# sentence boundaries.
+_ABBREV_PLACEHOLDER = "\x00ABBR\x00"
+_ABBREVIATIONS_RE = re.compile(
+    r"\b(e\.g|i\.e|etc|vs|Dr|Mr|Mrs|Ms|St|Jr|Sr|Prof|Inc|Corp|Ltd|Vol|No|approx)\.\s",
+    re.IGNORECASE,
+)
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _GENERIC_CARD_LABELS = {
     "external resource",
@@ -239,7 +247,23 @@ def _paragraphize_prose(text: str) -> str:
 
         prose = " ".join(lines)
         prose = re.sub(r"\s+", " ", prose).strip()
-        sentences = [segment.strip() for segment in _SENTENCE_SPLIT_PATTERN.split(prose) if segment.strip()]
+
+        # Protect abbreviations like e.g., i.e., etc. from sentence splitting
+        abbrev_map = {}
+        def _protect_abbrev(m):
+            key = f"{_ABBREV_PLACEHOLDER}{len(abbrev_map)}{_ABBREV_PLACEHOLDER}"
+            abbrev_map[key] = m.group(0)
+            return key
+        protected_prose = _ABBREVIATIONS_RE.sub(_protect_abbrev, prose)
+        sentences = [segment.strip() for segment in _SENTENCE_SPLIT_PATTERN.split(protected_prose) if segment.strip()]
+        # Restore abbreviations
+        if abbrev_map:
+            restored = []
+            for s in sentences:
+                for k, v in abbrev_map.items():
+                    s = s.replace(k, v)
+                restored.append(s)
+            sentences = restored
 
         if len(sentences) <= 2 and len(prose) <= 260:
             rebuilt_blocks.append(prose)

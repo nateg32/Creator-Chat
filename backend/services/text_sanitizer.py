@@ -89,6 +89,18 @@ MERGEABLE_COMMON_WORDS = COMMON_SHORT_WORDS | {
     "when", "where", "which", "while", "who", "why", "will", "with", "without",
     "would",
 }
+# Words commonly merged with the pronoun "I" in streaming (e.g. "Ithink", "Iwant").
+# Only these suffixes trigger the I-prefix split; proper nouns like Instagram are safe.
+_I_SPLIT_WORDS = MERGEABLE_COMMON_WORDS | {
+    "think", "want", "know", "love", "need", "like", "feel", "believe",
+    "remember", "understand", "mean", "see", "hear", "hope", "wish",
+    "guess", "got", "get", "really", "also", "always", "actually",
+    "agree", "had", "may", "might", "said", "say", "told", "tell",
+    "tried", "try", "used", "usually", "went", "made", "make",
+    "talk", "talked", "thought", "found", "keep", "kept", "left",
+    "live", "lived", "look", "looked", "met", "moved", "play",
+    "read", "run", "saw", "started", "took", "work", "worked",
+}
 MERGEABLE_CONNECTOR_SUFFIXES = ("and",)
 MERGED_TOKEN_BLOCKLIST = {
     "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
@@ -173,7 +185,10 @@ def _repair_split_word_fragments(text: str) -> str:
 
 
 def _repair_merged_common_word_pairs(text: str) -> str:
-    repaired = MERGED_SINGLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", text)
+    repaired = MERGED_SINGLE_HEAD_RE.sub(
+        lambda m: f"{m.group(1)} {m.group(2)}" if m.group(2).lower() in _I_SPLIT_WORDS else m.group(0),
+        text,
+    )
     repaired = MERGED_ARTICLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
     repaired = MERGED_COMMON_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
     repaired = MERGED_TRAILING_COMMON_RE.sub(
