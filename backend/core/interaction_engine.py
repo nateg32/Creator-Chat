@@ -588,6 +588,18 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
     if not parts:
         return "Speak naturally and conversationally in your own authentic voice."
 
+    # Final enforcement block: make the voice instructions actionable
+    sig_phrases = list(lexical_rules.get("signature_phrases") or [])[:4]
+    high_words = list(lexical_rules.get("high_signal_words") or [])[:4]
+    if sig_phrases or high_words:
+        lock_lines = ["PERSONA LOCK (non-negotiable):"]
+        if sig_phrases:
+            lock_lines.append(f"- Weave in at least 1 of these phrases per response when natural: {', '.join(sig_phrases)}")
+        if high_words:
+            lock_lines.append(f"- Prefer these words over generic synonyms: {', '.join(high_words)}")
+        lock_lines.append("- If a sentence could come from any generic expert, rewrite it in YOUR voice before outputting.")
+        parts.append("\n".join(lock_lines))
+
     return "\n\n".join(parts)
 
 
@@ -977,7 +989,7 @@ class InteractionEngine:
             return {
                 "source_items": 0,
                 "source_chars": 0,
-                "persona_chars": 700,
+                "persona_chars": 1000,
                 "history_limit": 4,
                 "history_chars": 90,
             }
@@ -2068,9 +2080,18 @@ Output ONLY your response to the user."""
             return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
         except Exception as e:
             logger.error(f"Greeting render failed: {e}")
+            # Use creator-specific opener if available
+            sig_openings = []
+            try:
+                sig_openings = list(
+                    (style_fingerprint.get("speech_mechanics") or {}).get("signature_openings") or []
+                )[:2]
+            except Exception:
+                pass
+            opener = sig_openings[0] if sig_openings else "Hey"
             if known_user_name:
-                return f"Hey {known_user_name}. {plan.next_question}"
-            return "Hi. What's your name?"
+                return f"{opener} {known_user_name}. {plan.next_question}"
+            return f"{opener}. What's your name?"
 
     def _render_small_talk(
         self,
@@ -2088,6 +2109,26 @@ Output ONLY your response to the user."""
         safety_block = build_prompt_safety_block(current_message=user_msg, custom_preferences=normalized_prefs.get("custom", ""))
         known_user_name = (user_name or "").strip()
 
+        # Extract deep identity signals for richer small talk personality
+        sfp = _coerce_profile_dict(creator_profile.get("style_fingerprint"))
+        lexical = sfp.get("lexical_rules") or {}
+        sig_phrases = list(lexical.get("signature_phrases") or [])[:4]
+        high_words = list(lexical.get("high_signal_words") or [])[:4]
+        identity_sig = sfp.get("identity_signature") or {}
+        power_pos = identity_sig.get("power_position") or ""
+        anti = sfp.get("anti_persona") or {}
+        forbidden = list(anti.get("forbidden_generic_coach_lines") or [])[:3]
+
+        persona_anchors = ""
+        if sig_phrases:
+            persona_anchors += f"\nSIGNATURE PHRASES (weave in naturally): {', '.join(sig_phrases)}"
+        if high_words:
+            persona_anchors += f"\nVOCABULARY: Prefer these words: {', '.join(high_words)}"
+        if power_pos:
+            persona_anchors += f"\nPOWER POSITION: {power_pos}"
+        if forbidden:
+            persona_anchors += f"\nNEVER SAY: {', '.join(forbidden)}"
+
         question_instruction = f"Mirror their energy briefly, then ask this question in your own words: \"{plan.next_question}\""
         if not known_user_name:
             question_instruction = "Mirror their energy briefly, then ask their name naturally before moving the conversation forward."
@@ -2096,6 +2137,7 @@ Output ONLY your response to the user."""
 
 YOUR VOICE:
 {voice_instructions}
+{persona_anchors}
 {pref_instructions}
 {safety_block}
 
@@ -2125,9 +2167,18 @@ Output only the response."""
             return self._enforce_small_talk_limits(response.strip(), creator_profile=creator_profile)
         except Exception as e:
             logger.error(f"Small talk render failed: {e}")
+            # Use a creator-flavored acknowledgment if available
+            ack = "Got you"
+            try:
+                _st = _coerce_profile_dict(creator_profile.get("style_fingerprint"))
+                _hl = list((_st.get("lexical_rules") or {}).get("signature_phrases") or [])
+                if _hl:
+                    ack = _hl[0]
+            except Exception:
+                pass
             if known_user_name:
-                return f"Got you, {known_user_name}. {plan.next_question}"
-            return "Got you. What's your name?"
+                return f"{ack}, {known_user_name}. {plan.next_question}"
+            return f"{ack}. What's your name?"
 
     def _render_task(
         self,

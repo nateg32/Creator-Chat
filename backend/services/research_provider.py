@@ -2380,3 +2380,23 @@ def get_research_provider() -> ResearchProvider:
         return SerpApiResearchProvider()
     return GeminiResearchProvider()
 
+
+def get_fallback_research_provider() -> Optional[ResearchProvider]:
+    """Return a secondary search provider different from the primary one.
+
+    Used when the primary provider returns no results so we can retry with
+    an alternative backend before falling through to a dead-end fallback.
+    Returns None if no secondary provider is available.
+    """
+    primary = get_research_provider()
+    primary_type = type(primary).__name__
+
+    # Try providers in order, skipping the one already in use
+    if primary_type != "SerpApiResearchProvider" and settings.SEARCH_API_KEY:
+        return SerpApiResearchProvider()
+    if primary_type != "OpenAIResearchProvider" and settings.OPENAI_API_KEY:
+        return OpenAIResearchProvider()
+    if primary_type != "GeminiResearchProvider" and settings.GOOGLE_API_KEY:
+        return GeminiResearchProvider()
+    return None
+

@@ -248,6 +248,21 @@ class GreetingService:
             "pacing": pacing,
             "sentence_length": sentence_length,
             "tone_traits": tone_traits,
+            # Deep identity signals for richer greetings
+            "identity_signature": self._coerce_dict(style_fingerprint.get("identity_signature")),
+            "mode_greeting_rules": self._coerce_dict(
+                (style_fingerprint.get("mode_matrix") or {}).get("greeting")
+            ),
+            "worldview_beliefs": list(
+                (self._coerce_dict(style_fingerprint.get("worldview")).get("core_beliefs") or [])
+            )[:3],
+            "signature_moves": list(
+                (style_fingerprint.get("signature_moves") or style_fingerprint.get("rhetorical_moves") or [])
+            )[:3],
+            "anti_persona_lines": list(
+                (self._coerce_dict(style_fingerprint.get("anti_persona")).get("forbidden_generic_coach_lines") or [])
+            )[:3],
+            "power_position": self._coerce_dict(style_fingerprint.get("identity_signature")).get("power_position", ""),
         }
 
     def _fallback_openers(self, signals: Dict[str, Any], returning: bool) -> List[str]:
@@ -286,26 +301,62 @@ class GreetingService:
         hype = float(tone.get("hype", 0.0) or 0.0)
 
         if not know_name:
+            # Use power_position to flavor even the name ask
+            power = str(signals.get("power_position") or "").lower()
+            if "peer" in power or "equal" in power:
+                return ["What should I call you?", "What's your name?", "Who am I talking to?"]
+            if "coach" in power or "mentor" in power or "authority" in power:
+                return ["What's your name?", "Who do I have here?", "What should I call you?"]
             return ["What should I call you?", "What's your name?", "Who am I talking to?"]
 
-        if returning:
-            if supportive >= 0.7:
-                return ["What's been on your mind lately?", "What are you working through right now?", "Where do you want to pick this up?"]
-            if hype >= 0.65 or energy == "high":
-                return ["What's the move right now?", "What are you pushing on right now?", "What are you working on?"]
-            if blunt >= 0.65:
-                return ["What are we solving?", "Where do you want to start?", "What's the real thing on your plate?"]
-            return ["What's moving right now?", "What are you working on?", "Where do you want to start?"]
+        # Check if mode_greeting_rules has specific question guidance
+        greeting_rules = signals.get("mode_greeting_rules") or {}
+        greeting_question_hint = (
+            greeting_rules.get("opening_question")
+            or greeting_rules.get("first_question")
+            or greeting_rules.get("opener_question")
+        )
+        # If the creator's style fingerprint defines a preferred opening question pattern,
+        # surface it as first option (but keep fallbacks)
+        rule_questions: List[str] = []
+        if greeting_question_hint and isinstance(greeting_question_hint, str) and len(greeting_question_hint) < 80:
+            cleaned = self._clean_text(greeting_question_hint).rstrip(" ?!.") + "?"
+            if cleaned and len(cleaned.split()) <= 12:
+                rule_questions.append(cleaned)
 
+        # Use worldview beliefs to color the question toward the creator's domain
+        beliefs = signals.get("worldview_beliefs") or []
+        if beliefs and str(creator_category or "").strip().lower() in {"fitness", "health", "wellness"}:
+            rule_questions.append("What are you training for right now?")
+        elif beliefs and str(creator_category or "").strip().lower() in {"business", "ecommerce", "creator", "marketing"}:
+            rule_questions.append("What are you building right now?")
+        elif beliefs and str(creator_category or "").strip().lower() in {"relationship", "life", "mindset", "self-help"}:
+            rule_questions.append("What's weighing on you right now?")
+
+        if returning:
+            base = []
+            if supportive >= 0.7:
+                base = ["What's been on your mind lately?", "What are you working through right now?", "Where do you want to pick this up?"]
+            elif hype >= 0.65 or energy == "high":
+                base = ["What's the move right now?", "What are you pushing on right now?", "What are you working on?"]
+            elif blunt >= 0.65:
+                base = ["What are we solving?", "Where do you want to start?", "What's the real thing on your plate?"]
+            else:
+                base = ["What's moving right now?", "What are you working on?", "Where do you want to start?"]
+            return (rule_questions + base)[:3] if rule_questions else base
+
+        base = []
         if supportive >= 0.7 or energy == "calm" or energy == "low":
-            return ["What's on your mind?", "What are you working through?", "Where do you want to start?"]
-        if hype >= 0.65 or energy == "high":
-            return ["What are you working on?", "What's the move?", "What are you building?"]
-        if blunt >= 0.65:
-            return ["What are you working on?", "What's the real thing you want to solve?", "Where do you want to start?"]
-        if str(creator_category or "").strip().lower() in {"business", "ecommerce", "creator", "marketing"}:
-            return ["What are you working on?", "What are you building right now?", "Where do you want to start?"]
-        return ["What's on your mind?", "What are you working on?", "Where do you want to start?"]
+            base = ["What's on your mind?", "What are you working through?", "Where do you want to start?"]
+        elif hype >= 0.65 or energy == "high":
+            base = ["What are you working on?", "What's the move?", "What are you building?"]
+        elif blunt >= 0.65:
+            base = ["What are you working on?", "What's the real thing you want to solve?", "Where do you want to start?"]
+        elif str(creator_category or "").strip().lower() in {"business", "ecommerce", "creator", "marketing"}:
+            base = ["What are you working on?", "What are you building right now?", "Where do you want to start?"]
+        else:
+            base = ["What's on your mind?", "What are you working on?", "Where do you want to start?"]
+        return (rule_questions + base)[:3] if rule_questions else base
 
     def _anchor_lines(self, signals: Dict[str, Any], returning: bool) -> List[str]:
         energy = signals.get("energy", "medium")

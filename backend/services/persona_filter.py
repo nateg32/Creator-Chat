@@ -19,8 +19,11 @@ def _enforce_distinctiveness(
     markers = style_fingerprint.get("disambiguation_markers") or {}
     contrastive = style_fingerprint.get("contrastive_identity") or {}
     golden = style_fingerprint.get("golden_replies") or {}
+    lexical = style_fingerprint.get("lexical_rules") or {}
+    sig_phrases = list(lexical.get("signature_phrases") or [])[:6]
+    high_words = list(lexical.get("high_signal_words") or [])[:6]
 
-    if not any([markers, anti, contrastive, golden]):
+    if not any([markers, anti, contrastive, golden, sig_phrases]):
         return clean_response(text)
 
     system_prompt = f"""
@@ -32,6 +35,7 @@ DISTINCTIVENESS RULES:
 - Reward worldview specificity, believable emotional posture, and creator specific response moves.
 - Penalize generic coach language, safe filler, and anything that could belong to a dozen creators.
 - Keep the same meaning. Do not add facts.
+- When rewriting, use the creator's SIGNATURE PHRASES and HIGH-SIGNAL WORDS naturally.
 
 OUTPUT JSON WITH EXACTLY THESE KEYS:
 {{
@@ -45,6 +49,8 @@ OUTPUT JSON WITH EXACTLY THESE KEYS:
 
     user_prompt = f"""
 CREATOR: {creator_name}
+SIGNATURE PHRASES: {json.dumps(sig_phrases)}
+HIGH-SIGNAL VOCABULARY: {json.dumps(high_words)}
 MUST SHOW: {json.dumps((contrastive.get('must_show') or markers.get('must_show') or [])[:8])}
 MUST AVOID: {json.dumps((contrastive.get('must_avoid') or markers.get('must_avoid') or [])[:8])}
 CONFUSION RISKS: {json.dumps((contrastive.get('confusion_risks') or [])[:5])}
@@ -87,9 +93,19 @@ def apply_persona_surface_filter(
     style_fingerprint: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Final polish step to ensure responses sound human and distinctly creator specific."""
-    anti = (style_fingerprint or {}).get("anti_persona") or {}
-    markers = (style_fingerprint or {}).get("disambiguation_markers") or {}
-    contrastive = (style_fingerprint or {}).get("contrastive_identity") or {}
+    sfp = style_fingerprint or {}
+    anti = sfp.get("anti_persona") or {}
+    markers = sfp.get("disambiguation_markers") or {}
+    contrastive = sfp.get("contrastive_identity") or {}
+
+    # Deep lexical/voice DNA for concrete vocabulary anchoring
+    lexical = sfp.get("lexical_rules") or {}
+    sig_phrases = list(lexical.get("signature_phrases") or [])[:6]
+    high_words = list(lexical.get("high_signal_words") or [])[:6]
+    banned_frames = list(lexical.get("banned_frames") or [])[:4]
+    identity_sig = sfp.get("identity_signature") or {}
+    power_pos = identity_sig.get("power_position") or ""
+    self_concept = identity_sig.get("self_concept") or ""
 
     vp_str = ""
     if voice_profile:
@@ -98,6 +114,17 @@ CREATOR STYLE CONTEXT:
 - Vocabulary: {voice_profile.get('signature_phrases', [])}
 - Bluntness: {(voice_profile.get('attitude') or {}).get('bluntness', 'balanced')}
 - Energy: {(voice_profile.get('energy') or {}).get('bucket', 'MID')}
+"""
+
+    lexical_str = ""
+    if sig_phrases or high_words:
+        lexical_str = f"""
+LEXICAL DNA (the creator's actual vocabulary):
+- SIGNATURE PHRASES to weave in: {sig_phrases}
+- HIGH-SIGNAL WORDS to prefer: {high_words}
+{f'- BANNED FRAMES (never use): {banned_frames}' if banned_frames else ''}
+{f'- SELF-CONCEPT: {self_concept}' if self_concept else ''}
+{f'- POWER POSITION: {power_pos}' if power_pos else ''}
 """
 
     differential_str = f"""
@@ -125,7 +152,9 @@ CRITICAL: Your only goal is to purge all system voice and AI identity leaks. The
 - Keep the creator worldview and emotional posture intact.
 - If the message sounds like anyone could have said it, sharpen it.
 - Add 1 subtle differentiating tell only if it fits naturally.
+- Use the creator's actual vocabulary from LEXICAL DNA when possible.
 {vp_str}
+{lexical_str}
 {differential_str}
 
 3. HARD BLOCKS

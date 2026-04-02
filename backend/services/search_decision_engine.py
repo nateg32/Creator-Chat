@@ -119,6 +119,24 @@ class SearchDecisionEngine:
             return True
         return False
 
+    def _needs_web_for_facts(self, query: str) -> bool:
+        """Return True if the query asks for factual/biographical/timeline info
+        that the entity graph or RAG corpus is unlikely to have."""
+        q = str(query or "").lower().strip()
+        return bool(
+            re.search(r"\bwhen\s+did\b", q)
+            or re.search(r"\bhow\s+long\s+(?:ago|have)\b", q)
+            or re.search(r"\bhow\s+old\b", q)
+            or re.search(r"\bwhat\s+year\b", q)
+            or re.search(r"\bwhere\s+(?:are|is|r)\s+(?:you|u|he|she|they)\s+from\b", q)
+            or re.search(r"\bwhen\s+(?:was|were|did)\b", q)
+            or re.search(r"\b(married|wife|husband|spouse|children|kids|born|age|birthday)\b", q)
+            or re.search(r"\b(net worth|salary|income|revenue|followers|subscribers)\b", q)
+            or re.search(r"\bwho\s+(?:is|are|was)\s+(?:your|his|her|their)\b", q)
+            or re.search(r"\b(started|began|founded|launched|created)\b", q)
+            or re.search(r"\bwhere\s+(?:do|does|did)\s+(?:you|he|she|they)\s+live\b", q)
+        )
+
     def pre_retrieval_decision(
         self,
         query: str,
@@ -137,16 +155,10 @@ class SearchDecisionEngine:
         try:
             plan = self.router.build_plan(query, conversation_history=conversation_history)
 
-            # Timeline / creator-history questions need web search even if an entity
-            # is recognized — the entity graph rarely has dates or historical facts.
-            _needs_web_for_facts = bool(
-                re.search(r"\bwhen\s+did\b", query_lower)
-                or re.search(r"\bhow\s+long\s+(?:ago|have)\b", query_lower)
-                or re.search(r"\bhow\s+old\b", query_lower)
-                or re.search(r"\bwhat\s+year\b", query_lower)
-                or re.search(r"\bwhere\s+(?:are|is|r)\s+(?:you|u|he|she|they)\s+from\b", query_lower)
-                or re.search(r"\bwhen\s+(?:was|were|did)\b", query_lower)
-            )
+            # Timeline / creator-history / biographical questions need web search
+            # even if an entity is recognized — the entity graph rarely has
+            # dates, personal facts, or historical details.
+            _needs_web_for_facts = self._needs_web_for_facts(query_lower)
 
             if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject and not _needs_web_for_facts:
                 return SearchDecision(
@@ -239,13 +251,14 @@ class SearchDecisionEngine:
                 retrieved_chunks=chunks,
             )
             if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject:
-                return SearchDecision(
-                    should_search=False,
-                    reason="entity_graph_answerable",
-                    reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject}",
-                    phase="post_retrieval",
-                    confidence=0.96,
-                )
+                if not self._needs_web_for_facts(query):
+                    return SearchDecision(
+                        should_search=False,
+                        reason="entity_graph_answerable",
+                        reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject}",
+                        phase="post_retrieval",
+                        confidence=0.96,
+                    )
             if plan.query_goal == "availability_lookup" and not plan.should_search_web and plan.entity_subject:
                 return SearchDecision(
                     should_search=False,

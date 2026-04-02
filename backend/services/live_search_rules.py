@@ -135,9 +135,8 @@ def needs_fresh_public_web_search(
         if any(phrase in prior_text for phrase in TIME_SENSITIVE_PHRASES):
             return True
 
-    # Creator public-fact / timeline questions that should trigger web search
-    # e.g. "when did you start content creation", "how long ago u start content",
-    # "when did u get married", "how old are you", "where are you from"
+    # Creator public-fact / timeline / biographical questions that should
+    # trigger web search. Covers dates, personal facts, stats, and history.
     CREATOR_FACT_PATTERNS = (
         r"\bwhen\s+did\s+(?:you|u|he|she|they)\b",
         r"\bhow\s+long\s+(?:ago|have)\b",
@@ -147,6 +146,13 @@ def needs_fresh_public_web_search(
         r"\bhow\s+long\s+.+(?:been|doing|creating|making|running)\b",
         r"\bwhat\s+year\b",
         r"\bwhat\s+age\b",
+        r"\b(?:married|wife|husband|spouse|partner|girlfriend|boyfriend)\b",
+        r"\b(?:children|kids|son|daughter|baby|family)\b",
+        r"\b(?:born|birthday|birth\s?place|hometown|grew\s+up|raised)\b",
+        r"\b(?:net\s+worth|salary|income|revenue|earn)\b",
+        r"\bwho\s+(?:is|are|was)\s+(?:your|his|her|their)\b",
+        r"\bwhere\s+(?:do|does|did)\s+(?:you|he|she|they)\s+live\b",
+        r"\b(?:founded|co.?found|started\s+(?:the|a|his|her|their))\b",
     )
     if any(re.search(pat, current) for pat in CREATOR_FACT_PATTERNS):
         return True

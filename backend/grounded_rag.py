@@ -1477,8 +1477,50 @@ def _recent_discussion_topic(question: str, history: Optional[List[Dict[str, str
     return " ".join(terms[:4])
 
 
-def _build_not_online_fallback(question: str, creator_name: str, history: Optional[List[Dict[str, str]]] = None, kind: str = "source") -> str:
+def _build_not_online_fallback(
+    question: str,
+    creator_name: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    kind: str = "source",
+    style_fingerprint: Optional[Dict[str, Any]] = None,
+) -> str:
     topic = _recent_discussion_topic(question, history)
+    sfp = style_fingerprint or {}
+    lexical = sfp.get("lexical_rules") or {}
+    sig_phrases = list(lexical.get("signature_phrases") or [])[:3]
+    mode_matrix = sfp.get("mode_matrix") or {}
+    boundary_rules = mode_matrix.get("boundary") or {}
+
+    # Try LLM micro-call if we have voice data
+    if sig_phrases or boundary_rules:
+        try:
+            resource_type = "video" if kind == "video" else "public source"
+            voice_hint = ""
+            if sig_phrases:
+                voice_hint = f"Use phrases like: {', '.join(sig_phrases[:2])}. "
+            if boundary_rules:
+                bt = boundary_rules.get("tone") or boundary_rules.get("approach")
+                if bt:
+                    voice_hint += f"Boundary tone: {bt}. "
+            mini_prompt = (
+                f"You are {creator_name}. A fan asked for a {resource_type} about \"{topic}\". "
+                f"You don't have one you'd feel good sending right now. "
+                f"Write 1-2 sentences saying that honestly and offering to answer directly or narrow what they want. "
+                f"VOICE RULES: {voice_hint}"
+                f"Max 35 words. No URLs. No markdown. Sound like yourself."
+            )
+            result = rag.generate_chat_completion(
+                messages=[{"role": "user", "content": mini_prompt}],
+                model=settings.ROUTER_MODEL,
+                temperature=0.5,
+                max_tokens=60,
+            )
+            if result and len(result.strip()) > 10:
+                return result.strip().strip('"')
+        except Exception as e:
+            logger.debug("Persona-flavored not-online fallback failed: %s", e)
+
+    # Template fallback
     if kind == "video":
         if topic != "this":
             return f"I don't have a specific video on {topic} I'd feel good sending you right now. I can still answer it directly here, or help narrow what kind of clip you want."
@@ -1675,6 +1717,22 @@ def _should_speculate_live_search(
         return True
     if (explicit_link_request or context_needs_video) and not should_run_recommender:
         return True
+    # Proactively speculate on any factual / creator-world question so web
+    # results are ready by the time the pipeline needs them.  This runs in
+    # parallel with RAG and adds zero latency if the results aren't needed.
+    lowered = (question or "").lower()
+    _factual_signal = bool(
+        re.search(r"\bwhen\s+(did|was|were|is)\b", lowered)
+        or re.search(r"\bwhat\s+(year|date|month|day)\b", lowered)
+        or re.search(r"\bhow\s+(much|many|old|long|tall)\b", lowered)
+        or re.search(r"\bwhere\s+(is|are|was|were|did|does|do)\b", lowered)
+        or re.search(r"\bwho\s+(is|are|was|were|did|does)\b", lowered)
+        or re.search(r"\b(net worth|followers|subscribers|valuation|founded|revenue)\b", lowered)
+        or re.search(r"\b(married|wife|husband|spouse|children|kids|family|born|age|hometown)\b", lowered)
+        or re.search(r"\b(started|began|launched|released|published|created)\b", lowered)
+    )
+    if _factual_signal:
+        return True
     return False
 
 
@@ -1825,38 +1883,70 @@ def _run_live_web_search(
     from backend.services.research_provider import get_research_provider
 
     rp = get_research_provider()
-    if _should_use_gemini_grounded_search(
-        rp,
-        question,
-        conversation_history,
-        is_video_request=is_video_request,
-        intent_metadata=intent_metadata,
-    ):
-        web_results = _run_gemini_grounded_search(
+    web_results: List[Dict[str, Any]] = []
+
+    # --- Primary provider ---
+    try:
+        if _should_use_gemini_grounded_search(
             rp,
             question,
-            creator_row,
-            conversation_history=conversation_history,
-        )
-    else:
-        web_query = build_live_search_query(
-            question,
             conversation_history,
-            creator_name=creator_row.get("name") or creator_row.get("handle"),
-            preferred_platforms=preferred_platforms,
+            is_video_request=is_video_request,
+            intent_metadata=intent_metadata,
+        ):
+            web_results = _run_gemini_grounded_search(
+                rp,
+                question,
+                creator_row,
+                conversation_history=conversation_history,
+            )
+        else:
+            web_query = build_live_search_query(
+                question,
+                conversation_history,
+                creator_name=creator_row.get("name") or creator_row.get("handle"),
+                preferred_platforms=preferred_platforms,
+                require_video=is_video_request,
+            )
+            web_results = rp.search(
+                web_query,
+                creator_row,
+                conversation_history=conversation_history,
+                intent_metadata=intent_metadata,
+            )
+        web_results = _filter_live_web_results(
+            web_results,
+            question,
             require_video=is_video_request,
         )
-        web_results = rp.search(
-            web_query,
-            creator_row,
-            conversation_history=conversation_history,
-            intent_metadata=intent_metadata,
-        )
-    web_results = _filter_live_web_results(
-        web_results,
-        question,
-        require_video=is_video_request,
-    )
+    except Exception as primary_exc:
+        logger.warning("[SEARCH_TRACE] Primary search provider failed: %s", primary_exc)
+        web_results = []
+
+    # --- Fallback provider if primary returned nothing ---
+    if not web_results:
+        try:
+            from backend.services.research_provider import get_fallback_research_provider
+            fallback_rp = get_fallback_research_provider()
+            if fallback_rp and fallback_rp is not rp:
+                creator_name = creator_row.get("name") or creator_row.get("handle") or ""
+                fallback_query = f"{creator_name} {question}".strip()
+                logger.info("[SEARCH_TRACE] Trying fallback search provider for: %s", fallback_query[:80])
+                web_results = fallback_rp.search(
+                    fallback_query,
+                    creator_row,
+                    conversation_history=conversation_history,
+                    intent_metadata=intent_metadata,
+                )
+                web_results = _filter_live_web_results(
+                    web_results,
+                    question,
+                    require_video=is_video_request,
+                )
+        except Exception as fallback_exc:
+            logger.warning("[SEARCH_TRACE] Fallback search provider failed: %s", fallback_exc)
+
+    # --- Dedup & platform filter ---
     seen_resources = _get_suggested_resources(conversation_history)
     if seen_resources:
         deduped_web_results = []
@@ -1940,8 +2030,32 @@ def _inject_entity_graph_support(
     return merge_support_sets(list(support_set or []), entity_chunks, limit=4), entity
 
 
-def _build_public_fact_fallback(question: str, creator_name: str) -> str:
+def _build_public_fact_fallback(
+    question: str,
+    creator_name: str,
+    style_fingerprint: Optional[Dict[str, Any]] = None,
+) -> str:
     lowered = (question or "").lower()
+    sfp = style_fingerprint or {}
+
+    # Extract creator-specific vocabulary for flavoring
+    lexical = sfp.get("lexical_rules") or {}
+    sig_phrases = list(lexical.get("signature_phrases") or [])[:4]
+    high_words = list(lexical.get("high_signal_words") or [])[:4]
+    mode_matrix = sfp.get("mode_matrix") or {}
+    uncertainty_rules = mode_matrix.get("uncertainty") or {}
+    boundary_rules = mode_matrix.get("boundary") or {}
+
+    # Build a short voice hint so the template sounds like the creator
+    voice_cues: List[str] = []
+    if sig_phrases:
+        voice_cues.append(f"Use phrases like: {', '.join(sig_phrases[:2])}")
+    if uncertainty_rules:
+        unc_tone = uncertainty_rules.get("tone") or uncertainty_rules.get("approach")
+        if unc_tone:
+            voice_cues.append(f"When uncertain, your tone is: {unc_tone}")
+    voice_hint = ". ".join(voice_cues) if voice_cues else ""
+
     is_catalog_question = bool(
         re.search(r"\bhow many\s+(books|courses|programs|podcasts|shows)\b", lowered)
         or re.search(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", lowered)
@@ -1959,6 +2073,42 @@ def _build_public_fact_fallback(question: str, creator_name: str) -> str:
             and any(token in lowered for token in ["when", "what year", "what date", "which month"])
         )
     )
+
+    # If we have voice cues, use an LLM micro-call to rewrite the fallback in
+    # the creator's voice.  Falls back to templates if no style data present.
+    if voice_hint or sig_phrases:
+        # Determine the factual category for the prompt
+        if is_catalog_question:
+            fact_category = "a catalog/list question (how many books, courses, etc.)"
+        elif is_timeline_question:
+            fact_category = "a timeline/date question (when something happened)"
+        elif any(t in lowered for t in ["followers", "subscribers", "members"]):
+            fact_category = "a live stats question (follower count, subscribers)"
+        elif any(t in lowered for t in ["price", "cost", "pricing", "purchase", "course", "program"]):
+            fact_category = "a pricing/availability question"
+        else:
+            fact_category = "a factual question where the exact answer could be outdated"
+
+        try:
+            mini_prompt = (
+                f"You are {creator_name}. A fan asked you {fact_category}: \"{question}\"\n"
+                f"You don't have the exact current answer. Write 1-2 sentences admitting that honestly "
+                f"and directing them to your official website or profiles for the latest info.\n"
+                f"VOICE RULES: {voice_hint}\n"
+                f"Sound like yourself, not like a search engine. Max 40 words. No URLs. No markdown."
+            )
+            result = rag.generate_chat_completion(
+                messages=[{"role": "user", "content": mini_prompt}],
+                model=settings.ROUTER_MODEL,
+                temperature=0.5,
+                max_tokens=80,
+            )
+            if result and len(result.strip()) > 10:
+                return result.strip().strip('"')
+        except Exception as e:
+            logger.debug("Persona-flavored fallback failed, using template: %s", e)
+
+    # Template fallback (no style data or LLM failed)
     if is_catalog_question:
         if "book" in lowered:
             return (
@@ -2035,6 +2185,20 @@ def evaluate_context_sufficiency(
     )
     if _is_creator_timeline and not has_live_web_result:
         logger.info("Context Sufficiency: forcing PARTIAL because timeline/biographical question needs web verification.")
+        return "PARTIAL"
+
+    # Biographical / personal fact questions that the RAG corpus rarely covers
+    # well — always verify against the web before trusting stale chunks.
+    _is_biographical = bool(
+        re.search(r"\b(married|wife|husband|spouse|partner|girlfriend|boyfriend|engaged|divorced)\b", lowered_q)
+        or re.search(r"\b(children|kids|son|daughter|baby|family)\b", lowered_q)
+        or re.search(r"\b(born|birthday|birth\s?place|hometown|grew up|raised)\b", lowered_q)
+        or re.search(r"\b(net worth|salary|income|revenue|earn|making)\b", lowered_q)
+        or re.search(r"\bwhere\s+(?:are|is|r)\s+(?:you|u|he|she|they)\s+from\b", lowered_q)
+        or re.search(r"\bwho\s+(?:is|are|was)\s+(?:your|his|her|their)\b", lowered_q)
+    )
+    if _is_biographical and not has_live_web_result:
+        logger.info("Context Sufficiency: forcing PARTIAL because biographical question needs web verification.")
         return "PARTIAL"
 
     # Catalog/count queries ("how many books", "what books have you written") should
@@ -3428,7 +3592,8 @@ STEERING: {steering_move} ({steering_guidance})
 
 {memory_guidance}
 
-{persona if intent not in ["greeting", "greeting_only", "small_talk", "vague_request"] else f"I am {creator_name or 'the creator'}. I am greeting a user. I will be warm, welcoming, and direct. I will NOT talk about business, plans, or advice."}
+{persona}
+{f"GREETING CONSTRAINT: You are greeting a user. Stay in your unique voice and personality but do NOT provide advice, plans, or business topics. Keep it brief, warm, and conversational." if intent in ["greeting", "greeting_only", "small_talk", "vague_request"] else ""}
 
 MISSION:
 Rewrite the NEUTRAL CONTENT PLAN below into your unique voice and style.
@@ -4947,9 +5112,16 @@ Message: {answer_text[:500]}"""
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
         elif fact_search_requested:
+            _sfp = creator_row.get("style_fingerprint") or {}
+            if isinstance(_sfp, str):
+                try:
+                    _sfp = json.loads(_sfp)
+                except Exception:
+                    _sfp = {}
             fallback_answer = _build_public_fact_fallback(
                 question,
                 creator_row.get("name") or creator_row.get("handle") or "the creator",
+                style_fingerprint=_sfp,
             )
             return apply_final_polish({
                 "answer": fallback_answer,
@@ -5013,13 +5185,14 @@ Message: {answer_text[:500]}"""
             if web_results:
                 support_set = _inject_live_web_results(support_set, web_results)
             elif wants_link:
-                no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if (is_video_request if 'is_video_request' in locals() else False) else "source")
+                no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if (is_video_request if 'is_video_request' in locals() else False) else "source", style_fingerprint=style_fingerprint)
         elif wants_link and not has_recommendable_ingested_resource:
             no_online_fallback = _build_not_online_fallback(
                 question,
                 creator_row.get("name") or creator_row.get("handle") or "the creator",
                 conversation_history,
                 kind="video" if is_video_request else "source",
+                style_fingerprint=style_fingerprint,
             )
 
         if image_result and image_result.get("support_chunk"):
@@ -5771,9 +5944,16 @@ async def grounded_rag_stream(
                 support_set = _inject_live_web_results(support_set, web_results)
                 needs_fallback = False
             else:
+                _sfp_s = creator_row.get("style_fingerprint") or {}
+                if isinstance(_sfp_s, str):
+                    try:
+                        _sfp_s = json.loads(_sfp_s)
+                    except Exception:
+                        _sfp_s = {}
                 yield _build_public_fact_fallback(
                     question,
                     creator_row.get("name") or creator_row.get("handle") or "the creator",
+                    style_fingerprint=_sfp_s,
                 )
                 return
 
@@ -5858,13 +6038,14 @@ async def grounded_rag_stream(
         if needs_fallback and web_results:
             support_set = _inject_live_web_results(support_set, web_results)
         elif needs_fallback and wants_link:
-            no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if is_video_request else "source")
+            no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if is_video_request else "source", style_fingerprint=style_fingerprint)
         elif wants_link and not has_recommendable_ingested_resource:
             no_online_fallback = _build_not_online_fallback(
                 question,
                 creator_row.get("name") or creator_row.get("handle") or "the creator",
                 conversation_history,
                 kind="video" if is_video_request else "source",
+                style_fingerprint=style_fingerprint,
             )
         support_set = shape_support_set(question, support_set, limit=4)
 
