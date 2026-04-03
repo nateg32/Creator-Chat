@@ -5117,37 +5117,10 @@ Message: {answer_text[:500]}"""
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
         elif fact_search_requested:
-            _sfp = creator_row.get("style_fingerprint") or {}
-            if isinstance(_sfp, str):
-                try:
-                    _sfp = json.loads(_sfp)
-                except Exception:
-                    _sfp = {}
-            fallback_answer = _build_public_fact_fallback(
-                question,
-                creator_row.get("name") or creator_row.get("handle") or "the creator",
-                style_fingerprint=_sfp,
-            )
-            return apply_final_polish({
-                "answer": fallback_answer,
-                "retrieved": support_set,
-                "sources": build_source_list(support_set),
-                "citations": build_inline_citations(
-                    support_set,
-                    question=question,
-                    answer_text=fallback_answer,
-                ),
-                "cards": [],
-                "debug": {
-                    "search_decision": (post_search_decision.__dict__ if post_search_decision else pre_search_decision.__dict__),
-                    "web_results_count": 0,
-                    "evidence_plan": evidence_plan_post.to_dict() if evidence_plan_post else (evidence_plan.to_dict() if evidence_plan else None),
-                },
-                "meta": {
-                    "search_decision": (post_search_decision.__dict__ if post_search_decision else pre_search_decision.__dict__),
-                    "evidence_plan": evidence_plan_post.to_dict() if evidence_plan_post else (evidence_plan.to_dict() if evidence_plan else None),
-                },
-            }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
+            # No web results found. Instead of returning a generic fallback
+            # immediately, let the main LLM handle the question — it has
+            # domain lock rules and RAG context to answer or redirect properly.
+            logger.info("[LATENCY] fact_search_requested but no web results in sync path; falling through to main LLM.")
 
         if needs_fallback and not web_results:
             logger.info("Triggering live web search fallback for explicit live/source request.")
@@ -5962,18 +5935,10 @@ async def grounded_rag_stream(
                 support_set = _inject_live_web_results(support_set, web_results)
                 needs_fallback = False
             else:
-                _sfp_s = creator_row.get("style_fingerprint") or {}
-                if isinstance(_sfp_s, str):
-                    try:
-                        _sfp_s = json.loads(_sfp_s)
-                    except Exception:
-                        _sfp_s = {}
-                yield _build_public_fact_fallback(
-                    question,
-                    creator_row.get("name") or creator_row.get("handle") or "the creator",
-                    style_fingerprint=_sfp_s,
-                )
-                return
+                # No web results found. Instead of returning a generic fallback
+                # immediately, let the main LLM handle the question — it has
+                # domain lock rules and RAG context to answer or redirect properly.
+                logger.info("[LATENCY] fact_search_requested but no web results; falling through to main LLM.")
 
         if needs_fallback:
             logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
