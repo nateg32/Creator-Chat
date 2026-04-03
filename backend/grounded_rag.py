@@ -5509,6 +5509,25 @@ async def grounded_rag_stream(
     rule_intent = classify_intent(question)
     route_q_type, route_topic, _ = decision_service.classify_question(question, rule_intent, conversation_history)
 
+    # LATENCY: Launch embedding early for ROUTE_2_TASK so it runs in parallel
+    # with domain checks instead of waiting for them to finish first.
+    early_embedding_task = None
+    if route == "ROUTE_2_TASK":
+        question_for_search = question
+        if conversation_history:
+            last_msg = ""
+            for m in reversed(conversation_history):
+                if m and m.get("role") != "user":
+                    last_msg = m.get("content", "")
+                    break
+            if len(question.split()) < 10 and last_msg:
+                last_snippet = " ".join(last_msg.split()[:30])
+                question_for_search = f"Context: {last_snippet} | Query: {question}"
+        early_embedding_task = rag.get_async_client().embeddings.create(
+            input=question_for_search,
+            model="text-embedding-3-small"
+        )
+
     if detect_external_live_fact_topic(question):
         creator_row = await creator_task
         if not creator_row:
@@ -5583,7 +5602,10 @@ async def grounded_rag_stream(
                 _q_lower = (question or "").lower()
                 _is_obviously_on_domain = bool(
                     re.search(r"\b(you|your|u|ur)\b", _q_lower)
-                    or re.search(r"\b(book|course|program|podcast|video|reel|content)\b", _q_lower)
+                    or re.search(r"\b(book|course|program|podcast|video|reel|content|channel)\b", _q_lower)
+                    or re.search(r"\b(recommend|advice|tip|help|opinion|thought|think)\b", _q_lower)
+                    or re.search(r"\b(how do i|what should i|can i|should i|where do i)\b", _q_lower)
+                    or re.search(r"\b(struggling|stuck|confused|lost|nervous|anxious|scared|motivated)\b", _q_lower)
                 )
                 if not _is_obviously_on_domain:
                     _name = creator_row.get("name") or creator_row.get("handle") or "the creator"
@@ -5678,25 +5700,24 @@ async def grounded_rag_stream(
     
     if route == "ROUTE_2_TASK":
         # Full RAG Route: Needs Embeddings
-        # Expand question with context if needed
-        question_for_search = question
-        if conversation_history:
-            last_msg = ""
-            for m in reversed(conversation_history):
-                if m and m.get("role") != "user":
-                    last_msg = m.get("content", "")
-                    break
-            if len(question.split()) < 10 and last_msg:
-                # Truncate last output to 30 words to avoid muddying the embedding too much
-                last_snippet = " ".join(last_msg.split()[:30])
-                question_for_search = f"Context: {last_snippet} | Query: {question}"
+        # Use the early-launched embedding task instead of creating a new one
+        embedding_task = early_embedding_task
+        if embedding_task is None:
+            question_for_search = question
+            if conversation_history:
+                last_msg = ""
+                for m in reversed(conversation_history):
+                    if m and m.get("role") != "user":
+                        last_msg = m.get("content", "")
+                        break
+                if len(question.split()) < 10 and last_msg:
+                    last_snippet = " ".join(last_msg.split()[:30])
+                    question_for_search = f"Context: {last_snippet} | Query: {question}"
+            embedding_task = rag.get_async_client().embeddings.create(
+                input=question_for_search,
+                model="text-embedding-3-small"
+            )
 
-        # Launch embedding task
-        embedding_task = rag.get_async_client().embeddings.create(
-            input=question_for_search,
-            model="text-embedding-3-small"
-        )
-        
         # Await metadata while embedding is in flight
         creator_row, embedding_resp = await asyncio.gather(
             creator_task, embedding_task

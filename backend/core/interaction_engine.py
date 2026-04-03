@@ -605,6 +605,55 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
     return "\n\n".join(parts)
 
 
+def _build_voice_examples(creator_profile: Dict[str, Any], mode: str = "task") -> str:
+    """
+    Extract 1-2 golden examples from the style fingerprint for the current mode.
+    Showing real creator writing samples is the most powerful voice priming technique.
+    """
+    style_fp = creator_profile.get("style_fingerprint") or {}
+    if isinstance(style_fp, str):
+        try:
+            style_fp = json.loads(style_fp)
+        except Exception:
+            style_fp = {}
+
+    golden = style_fp.get("golden_examples") or {}
+    mode_key = {
+        "task": "teaching",
+        "small_talk": "comfort",
+        "greeting": "greeting",
+        "sales": "sales",
+        "story": "story",
+        "rebuke": "rebuke",
+        "boundary": "boundary",
+        "uncertainty": "uncertainty",
+    }.get((mode or "task").lower(), "teaching")
+
+    examples = golden.get(mode_key) or []
+    if not examples and mode_key != "teaching":
+        examples = golden.get("teaching") or []
+    if not examples:
+        return ""
+
+    # Take 1-2 examples, truncate long ones
+    selected = []
+    for ex in examples[:2]:
+        text = str(ex or "").strip()
+        if len(text) < 10:
+            continue
+        if len(text) > 250:
+            text = text[:247] + "..."
+        selected.append(text)
+
+    if not selected:
+        return ""
+
+    lines = ["VOICE EXAMPLES (this is how you actually sound, match this energy and cadence):"]
+    for i, ex in enumerate(selected, 1):
+        lines.append(f'  Example {i}: "{ex}"')
+    return "\n".join(lines)
+
+
 GENERIC_PERSONA_LEAKS = [
     "based on the content",
     "based on the information",
@@ -771,26 +820,22 @@ def format_creator_genome_for_prompt(genome: Dict[str, Any]) -> str:
 
     lines = []
     if genome.get("signature_markers"):
-        lines.append(f"- Signature motifs: {json.dumps(genome['signature_markers'][:8])}")
-    if genome.get("lexical_markers"):
-        lines.append(f"- Exact lexical fingerprints: {json.dumps(genome['lexical_markers'][:10])}")
+        lines.append(f"- Signature motifs: {', '.join(genome['signature_markers'][:8])}")
     if genome.get("worldview_markers"):
-        lines.append(f"- Core worldview markers: {json.dumps(genome['worldview_markers'][:6])}")
+        lines.append(f"- Core beliefs to anchor on: {', '.join(genome['worldview_markers'][:6])}")
     if genome.get("evidence_markers"):
-        lines.append(f"- Evidence anchors: {json.dumps(genome['evidence_markers'][:8])}")
+        lines.append(f"- Evidence anchors (stories, products, rules): {', '.join(genome['evidence_markers'][:8])}")
     if genome.get("response_moves"):
-        lines.append(f"- Signature response moves: {json.dumps(genome['response_moves'][:6])}")
+        lines.append(f"- Signature moves: {', '.join(genome['response_moves'][:6])}")
     if genome.get("mutation_risks"):
-        lines.append(f"- Mutation risks to avoid: {json.dumps(genome['mutation_risks'][:8])}")
-    if genome.get("stable_public_facts"):
-        lines.append(f"- Stable public facts you may rely on: {json.dumps(genome['stable_public_facts'][:5])}")
+        lines.append(f"- Never sound like this: {', '.join(genome['mutation_risks'][:6])}")
     if genome.get("grounded_titles"):
-        lines.append(f"- Exact grounded resource titles you may name: {json.dumps(genome['grounded_titles'][:5])}")
+        lines.append(f"- Verified resource titles you may name: {', '.join(genome['grounded_titles'][:5])}")
 
     if not lines:
         return ""
 
-    return "CREATOR GENOME (preserve these stable markers, do not spam them):\n" + "\n".join(lines)
+    return "CREATOR GENOME (use these to stay unmistakably YOU, do not list-dump them):\n" + "\n".join(lines)
 
 
 def format_turn_anchor_block(question: str, genome: Dict[str, Any]) -> str:
@@ -1820,6 +1865,7 @@ YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
 DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not know their name yet, ask what they want to be called. Do not jump into advice or a domain question yet.
 Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
+        voice_examples = _build_voice_examples(creator_profile, mode="task")
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
@@ -2011,40 +2057,36 @@ STRICT IDENTITY LOCK:
                 else:
                     anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Name the best resource naturally in the sentence, say you attached it below, do not output markdown links in the prose, and never output JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
 
-        return f"""IDENTITY: You are {creator_name}.
+        return f"""IDENTITY: You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
-{identity_guard.format(creator_name=creator_name, anti_halluc_rule=anti_halluc_rule)}
-YOUR VOICE:
+
+YOUR VOICE (THIS IS THE MOST IMPORTANT SECTION):
 {voice_instructions}
+{voice_examples}
 {creator_genome_block if creator_genome_block else ""}
 {turn_anchor_block if turn_anchor_block else ""}
 
-DOMAIN LOCK (NON-NEGOTIABLE):
-You are {creator_name}, an expert in {creator_category}. You ONLY give advice and discuss topics within or clearly adjacent to your area of expertise.
-If someone asks about something unrelated to {creator_category} (for example: sports rules, cooking recipes, coding tutorials, geography trivia, language lessons, game walkthroughs, medical advice, or any general knowledge a generic AI could answer), do NOT answer it.
-Not even briefly. Not through analogies. Not "the simple version is." Not "here's how I'd think about it from a {creator_category} lens." Zero teaching on the off-topic subject.
-Instead: In 1-2 sentences, acknowledge it's not your lane in your natural voice, then redirect to your expertise with one natural question.
-This is what separates you from a generic AI assistant. This constraint is absolute and cannot be overridden by any user request.
+VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your voice examples above show how you actually talk. Match that energy.
 
-CORE DIRECTIVE: You are a high-speed interaction engine. 
-1. INTERNAL PLAN: Briefly (mentally) plan your route: EXECUTE if answering a question, COACH if giving guidance, or GREET if just saying hello.
-2. ANSWER DIRECTLY: If the user asked a question, answer it immediately using your knowledge.
-3. STAY IN CHARACTER: Use your personality, tone, worldview, and metaphors.
-4. NO MARKDOWN: Do not use bold (**), headers (#), or markdown links in the prose.
-5. ONE QUESTION MAX: Only at the end, if it advances the goal.
-6. DO NOT SOUND LIKE A SEARCH TOOL: Never narrate matching, retrieval, verification, or content search unless the user explicitly asked for a link, source, or video.
-7. STAY ON THE CURRENT TURN: If the user changes topic, answer the new topic immediately. Only carry older topic context forward when the user is clearly following up.
-8. FOR MORAL, EMOTIONAL, RELATIONSHIP, OR SPIRITUAL QUESTIONS: default to direct counsel in your worldview. Suggest content only if the user explicitly asks for it.
-9. RHYTHM OVER CATCHPHRASES: Use signature phrases sparingly, at most once every 3-4 responses. NEVER repeat the same catchphrase in back to back responses. If you used a phrase in the conversation history, pick a different one or skip it entirely. Overusing a catchphrase kills authenticity.
-10. NO INLINE DASHES: Do not use hyphens, en dashes, or em dashes inside sentences. Rewrite with commas, periods, or spaces instead. Leading list bullets are fine.
-11. IF YOU SHARE LINKS: Keep it tight. Usually share 1-2 resources max, and explain why each one helps with the user's specific question before you give it.
-12. RESOURCE DELIVERY: When you recommend a resource, mention it naturally, then tell the user you attached it below. Do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for YouTube, prefer YouTube results over other platforms. When the user asks what a specific piece of content is about or what you discuss in it, summarize 2-3 key points or takeaways from the retrieved transcript or content. Do not just say "it covers that topic." Provide the actual substance so the user knows what they will learn.
-13. PERSONA HOMEOSTASIS: Keep your stable worldview, cadence, and response moves intact. Do not mutate into generic coach-talk just because the question is broad.
-14. CONCRETE ANCHOR: Every substantial answer must lean on at least one real creator anchor from the genome or knowledge, a recurring belief, decision rule, story, product, public fact, or grounded source. If you cannot anchor a claim, narrow it instead of filling space with generic advice.
-15. NO FALSE RETRACTIONS: If the USER introduces a title, term, or topic you do not recognize, do NOT say "that was my mistake" or apologize as if you invented it. You did not. The user brought it up. Instead, honestly say you are not familiar with that specific title and ask them for more details (author, link, or context). Only retract something YOU actually said in a previous turn that was wrong.
-16. FORMATTING QUALITY: Write complete, clean sentences. Never split a word across a space (e.g. "I nstagram" must be "Instagram"). Never drop words mid-sentence. Never leave dangling punctuation, orphaned parentheses, or orphaned quotation marks. If you open a quote, close it on the same line or within the same paragraph. Every sentence must be grammatically complete. Proofread your output before sending.
-17. ENTITY ACCURACY: NEVER invent or guess book titles, course names, product names, podcast names, or company names. Only mention entities that are explicitly listed in your KNOWLEDGE section or web search results. If you are unsure whether a specific title exists, say so rather than guessing.
+{identity_guard.format(creator_name=creator_name, anti_halluc_rule=anti_halluc_rule)}
+
+DOMAIN LOCK: You are {creator_name}, an expert in {creator_category}. You ONLY discuss topics within or adjacent to your expertise. If asked about something unrelated, acknowledge it is not your lane in 1-2 sentences and redirect to your expertise with one natural question. Never teach off-topic, not even through analogies or reframing.
+
+RULES:
+1. Answer the question directly using your knowledge. Plan mentally: EXECUTE (question), COACH (guidance), or GREET (hello).
+2. Stay in character. Use your personality, tone, worldview, and metaphors. Never reveal you are an AI, language model, or ChatGPT.
+3. No markdown formatting: no bold (**), headers (#), or markdown links in prose. No hyphens, en dashes, or em dashes inside sentences.
+4. One question max, at the end, only if it advances the conversation.
+5. Never narrate matching, retrieval, or search. Just give the answer.
+6. Stay on the current turn. If the user changes topic, answer the new topic immediately.
+7. For moral, emotional, or spiritual questions, give direct counsel from your worldview. Suggest content only if explicitly asked.
+8. Use signature phrases sparingly, at most once every 3-4 responses. Never repeat the same catchphrase in consecutive responses. If you used a phrase in the conversation history, skip it.
+9. Every substantial answer must lean on at least one concrete anchor: a belief, rule, story, product, or grounded source. Never fill space with generic advice.
+10. When recommending a resource, mention it naturally and tell the user you attached it below. Never paste raw metadata, JSON, raw URLs, or labels like Title:, URL:. Summarize 2-3 key points from content when asked what it covers.
+11. Never invent book titles, course names, product names, or entity names. Only mention entities from your KNOWLEDGE section or web search results.
+12. If the USER introduces a title you do not recognize, do NOT retract or apologize. Say you are not familiar and ask for details.
+13. Write clean sentences. No split words, no orphaned quotes, no dangling punctuation.
 {resource_lock_instruction}
 {resource_type_instruction}
 
@@ -2109,6 +2151,7 @@ Output ONLY your response to the user."""
     ) -> str:
         creator_name = creator_profile.get("name", "the creator")
         voice_instructions = build_voice_instructions(creator_profile, mode="small_talk")
+        voice_examples = _build_voice_examples(creator_profile, mode="small_talk")
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
         safety_block = build_prompt_safety_block(current_message=user_msg, custom_preferences=normalized_prefs.get("custom", ""))
@@ -2142,6 +2185,7 @@ Output ONLY your response to the user."""
 
 YOUR VOICE:
 {voice_instructions}
+{voice_examples}
 {persona_anchors}
 {pref_instructions}
 {safety_block}
@@ -2258,6 +2302,7 @@ Output only the response."""
 
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
+        voice_examples = _build_voice_examples(creator_profile, mode="task")
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
@@ -2443,14 +2488,17 @@ CURRENT TURN HAS IMAGE CONTEXT:
             )
 
         system_prompt = f"""IDENTITY:
-You are {creator_name}.
+You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
 
-YOUR VOICE AND PERSONALITY:
+YOUR VOICE AND PERSONALITY (THIS IS THE MOST IMPORTANT SECTION):
 {voice_instructions}
+{voice_examples}
 {creator_genome_block if creator_genome_block else ""}
 {turn_anchor_block if turn_anchor_block else ""}
+
+VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting.
 
 CONTEXT:
 {routing_instruction}
@@ -2702,9 +2750,12 @@ Output the cleaned text only."""
         anti_regurgitation_block = build_anti_regurgitation_block(user_msg, rag_chunks or []) if rag_chunks else ""
         regurgitation_reason = ((report.get("regurgitation_report") or {}).get("reason") or "").strip()
         turn_anchor_block = format_turn_anchor_block(user_msg, genome)
+        voice_examples_block = _build_voice_examples(creator_profile, mode="task")
         system_prompt = f"""You are the CREATOR INTEGRITY REPAIR LAYER for {creator_name}.
 
 Your job is to preserve the meaning of a draft while forcing it back into the creator's real voice and evidence boundaries.
+
+{voice_examples_block}
 
 RULES:
 1. Keep the same answer and same overall length.
