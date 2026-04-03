@@ -6114,14 +6114,18 @@ async def grounded_rag_stream(
     if no_online_fallback and _contains_placeholder_link_artifacts(final_stream_text):
         final_stream_text = no_online_fallback
         yield f"__FINAL_CONTENT__{final_stream_text}"
-    stream_cards = _build_response_cards(
-        rec_result if route == "ROUTE_2_TASK" else None,
-        support_set,
-        preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms") if route == "ROUTE_2_TASK" else None,
-        question=question,
-        answer_text=final_stream_text,
-    )
-    # Card rescue for streaming path — attach card if answer mentions a known title
+    # Only build cards when the user asked for resources or the recommender ran
+    _user_wanted_resource = route == "ROUTE_2_TASK" and locals().get("should_run_recommender", False)
+    stream_cards = []
+    if _user_wanted_resource:
+        stream_cards = _build_response_cards(
+            rec_result if route == "ROUTE_2_TASK" else None,
+            support_set,
+            preferred_platforms=(rec_result.get("resource_intent", {}) or {}).get("preferred_platforms") if route == "ROUTE_2_TASK" else None,
+            question=question,
+            answer_text=final_stream_text,
+        )
+    # Card rescue — attach card only if the LLM answer explicitly mentions a known title
     if not stream_cards:
         stream_cards = _rescue_cards_from_answer(final_stream_text, support_set)
     if route == "ROUTE_2_TASK" and (rec_result or {}).get("best_candidate"):
