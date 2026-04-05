@@ -902,24 +902,59 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
 
     title = _extract_html_title(response.text or "")
 
-    for marker in invalid_markers.get(platform_key, []):
-        if marker in body:
-            return {
-                "exists": False,
-                "error": "Link invalid",
-                "checked_via": "page_content",
-                "resolved_url": final_url,
-            }
-
-    if platform_key == "youtube":
+    # YouTube channel pages often contain "video unavailable" for individual
+    # video thumbnails even when the channel itself is perfectly valid.
+    # Check positive profile signals BEFORE invalid markers for @handle URLs.
+    if platform_key in ("youtube", "youtube_shorts"):
         path = (urlparse(final_url).path or "").strip("/")
-        if path.startswith("@") and "channel" not in body and "videos" not in body and "subscribers" not in body:
+        has_positive = any(s in body for s in ("channel", "videos", "subscribers"))
+        if path.startswith("@"):
+            if has_positive:
+                return {
+                    "exists": True,
+                    "checked_via": "page_content",
+                    "resolved_url": final_url,
+                }
+            # No positive signals – soft pass (could be bot-blocked page)
             return {
                 "exists": True,
                 "checked_via": "page_content_soft",
                 "resolved_url": final_url,
                 "warning": "Valid channel path. Live content signals were inconclusive.",
             }
+        # Non-@handle YouTube URL (e.g. /c/ or /channel/) – still skip
+        # "video unavailable" marker when the page has positive signals.
+        if has_positive:
+            safe_markers = [m for m in invalid_markers.get(platform_key, [])
+                            if m != "video unavailable"]
+            for marker in safe_markers:
+                if marker in body:
+                    return {
+                        "exists": False,
+                        "error": "Link invalid",
+                        "checked_via": "page_content",
+                        "resolved_url": final_url,
+                    }
+            return {
+                "exists": True,
+                "checked_via": "page_content",
+                "resolved_url": final_url,
+            }
+
+    # TikTok pages often contain generic error strings ("couldn't find this
+    # account", "page not available") even for valid profiles.  Skip the
+    # generic marker check and fall through to verify_tiktok_profile instead.
+    if platform_key == "tiktok":
+        pass   # handled below
+    else:
+        for marker in invalid_markers.get(platform_key, []):
+            if marker in body:
+                return {
+                    "exists": False,
+                    "error": "Link invalid",
+                    "checked_via": "page_content",
+                    "resolved_url": final_url,
+                }
 
     if platform_key == "tiktok":
         tiktok_result = verify_tiktok_profile(
