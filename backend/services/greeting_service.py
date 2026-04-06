@@ -163,6 +163,12 @@ class GreetingService:
             if part
         ) or "default"
 
+    # Prepositions that create semantic confusion when a user name is appended
+    # e.g. "Let's talk about" + "Nathan" → reads as Nathan being the topic
+    _DANGLING_PREPS = frozenset({
+        "about", "with", "to", "for", "from", "at", "of", "by", "on",
+    })
+
     def _looks_like_safe_opener(self, text: str) -> bool:
         normalized = self._clean_text(text)
         if not normalized:
@@ -178,6 +184,12 @@ class GreetingService:
         if normalized.lower().startswith(("what", "where", "how", "which", "why", "when", "if", "because", "since", "unless")):
             return False
         if len(normalized.split()) > 7:
+            return False
+        # Reject openers whose last word is a dangling preposition —
+        # appending a user name would make the name the object of the
+        # preposition instead of the addressee.
+        last_word = normalized.split()[-1].lower().rstrip(".,!?")
+        if last_word in self._DANGLING_PREPS:
             return False
         return True
 
