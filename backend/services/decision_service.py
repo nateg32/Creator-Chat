@@ -164,6 +164,17 @@ class DecisionService:
 
         return any(pattern.search(lowered) for pattern in ADVICE_REQUEST_PATTERNS) or "?" in str(question or "")
 
+    # Terms that signal the question is about business growth / strategy,
+    # not purely personal life.  When these dominate, don't divert to the
+    # personal-bio path even if a relationship/family word co-occurs.
+    _STRONG_BUSINESS_ACTION_TERMS = {
+        "grow", "grew", "growing", "growth", "scale", "scaled", "scaling",
+        "acquisition", "acquire", "acquired", "launch", "launched",
+        "build", "built", "building", "start", "started", "starting",
+        "revenue", "profit", "sales", "monetize", "hire", "hiring",
+        "company", "business", "brand", "agency", "fund", "funding",
+    }
+
     def is_creator_personal_fact_question(self, question: str) -> bool:
         lowered = self._normalized_followup(question)
         words = set(self._words(question))
@@ -177,6 +188,14 @@ class DecisionService:
             "income", "rich", "earn",
         }
         if not (words & sensitive_terms):
+            return False
+
+        # If the question carries strong business-action language, the sensitive
+        # term is likely incidental context ("...while being in a relationship")
+        # rather than the core question.  Let normal RAG handle it.
+        business_hits = words & self._STRONG_BUSINESS_ACTION_TERMS
+        sensitive_hits = words & sensitive_terms
+        if business_hits and len(business_hits) >= len(sensitive_hits):
             return False
 
         if words & CREATOR_REF_TERMS:
@@ -321,10 +340,15 @@ class DecisionService:
         
         # 1. Topic Identification
         topic = "general"
+        words_set = set(self._words(question))
+        _has_strong_biz = bool(words_set & self._STRONG_BUSINESS_ACTION_TERMS)
         if self.is_user_relationship_business_question(question):
             topic = "general"
         elif any(word in q for word in ["wife", "husband", "married", "dating", "girlfriend", "boyfriend", "relationship", "partner"]):
-            topic = "relationship"
+            # If the user also mentions strong business terms, the personal word
+            # is likely incidental context ("...while being in a relationship"),
+            # so keep topic as general to avoid personal-bio diversion.
+            topic = "general" if _has_strong_biz else "relationship"
         elif any(word in q for word in ["kids", "children", "son", "daughter", "parents", "family", "mom", "dad", "siblings"]):
             topic = "family"
         elif any(word in q for word in ["old are you", "age", "birthday", "born", "birth"]):
