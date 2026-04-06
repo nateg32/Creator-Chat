@@ -1,8 +1,15 @@
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
 from backend.db import db
+from backend.services.title_resolver import (
+    build_fuzzy_sql_patterns,
+    resolve_title_reference,
+)
+
+logger = logging.getLogger(__name__)
 
 
 PLATFORM_ALIASES = {
@@ -162,12 +169,27 @@ def _run_match_query(
 
     for fragment in quoted_fragments[:3]:
         pattern = f"%{fragment.lower()}%"
+        # Generate fuzzy patterns for special character handling
+        fuzzy_patterns = build_fuzzy_sql_patterns(fragment)
+
+        # Exact fragment match (highest score)
         select_clauses.append("CASE WHEN LOWER(COALESCE(d.content, '')) LIKE %s THEN 12 ELSE 0 END")
         select_params.append(pattern)
         select_clauses.append("CASE WHEN LOWER(COALESCE(d.title, '')) LIKE %s THEN 6 ELSE 0 END")
         select_params.append(pattern)
         match_clauses.append("LOWER(COALESCE(d.content, '')) LIKE %s OR LOWER(COALESCE(d.title, '')) LIKE %s")
         match_params.extend([pattern, pattern])
+
+        # Fuzzy patterns (slightly lower score, but catches symbol mismatches)
+        for fp in fuzzy_patterns:
+            if fp == pattern:
+                continue  # Skip if identical to exact
+            select_clauses.append("CASE WHEN LOWER(COALESCE(d.title, '')) LIKE %s THEN 5 ELSE 0 END")
+            select_params.append(fp)
+            select_clauses.append("CASE WHEN LOWER(COALESCE(d.content, '')) LIKE %s THEN 4 ELSE 0 END")
+            select_params.append(fp)
+            match_clauses.append("LOWER(COALESCE(d.title, '')) LIKE %s OR LOWER(COALESCE(d.content, '')) LIKE %s")
+            match_params.extend([fp, fp])
 
     for keyword in keywords[:8]:
         pattern = f"%{keyword.lower()}%"
@@ -271,9 +293,21 @@ def retrieve_exact_text_matches(
     if not rows and exact_social:
         rows = _run_showcase_query(creator_id, platform_hints or enabled, limit)
 
+    # Title resolver fallback: if fragments were detected but no rows matched,
+    # use fuzzy title resolution to catch symbol/abbreviation mismatches
+    if not rows and combined_fragments:
+        for fragment in combined_fragments[:2]:
+            resolved = resolve_title_reference(creator_id, fragment, limit=limit, threshold=0.45)
+            if resolved:
+                logger.info(f"Title resolver matched '{fragment}' → {resolved[0].get('title', '')[:80]} "
+                            f"(score={resolved[0].get('title_match_score', 0):.2f})")
+                rows = resolved
+                break
+
     chunks: List[Dict[str, Any]] = []
     for row in rows or []:
-        chunks.append(_row_to_chunk(row, row.get("lexical_score") or 0.0))
+        score = row.get("lexical_score") or row.get("title_match_score", 0) * 10 or 0.0
+        chunks.append(_row_to_chunk(row, score))
     return chunks
 
 
@@ -316,9 +350,20 @@ def retrieve_sparse_text_matches(
     if not rows and platform_hints and wants_exact_social_post(question):
         rows = _run_showcase_query(creator_id, platform_hints or enabled, limit)
 
+    # Title resolver fallback
+    if not rows and combined_fragments:
+        for fragment in combined_fragments[:2]:
+            resolved = resolve_title_reference(creator_id, fragment, limit=limit, threshold=0.45)
+            if resolved:
+                logger.info(f"Sparse title resolver matched '{fragment}' → {resolved[0].get('title', '')[:80]} "
+                            f"(score={resolved[0].get('title_match_score', 0):.2f})")
+                rows = resolved
+                break
+
     chunks: List[Dict[str, Any]] = []
     for row in rows or []:
-        chunk = _row_to_chunk(row, row.get("lexical_score") or 0.0)
+        score = row.get("lexical_score") or row.get("title_match_score", 0) * 10 or 0.0
+        chunk = _row_to_chunk(row, score)
         chunk["retrieval_mode"] = "sparse"
         chunks.append(chunk)
     return chunks
