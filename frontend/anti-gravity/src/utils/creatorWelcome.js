@@ -67,13 +67,19 @@ function extractGreetingExamples(styleFingerprint = {}) {
     ...(speech.signature_openings || []),
     modeGreeting.opening_move,
   ]);
+
+  // Only accept question_style if it's a real question (ends with ?) and isn't
+  // a style description like "Bring me the real question, the messy version..."
+  const rawQS = String(modeGreeting.question_style || "").trim();
+  const questionStyleValid = rawQS.endsWith("?") && rawQS.split(" ").length <= 15;
+
   const questionCandidates = cleanOptions(
     greetingExamples
       .map((item) => {
         const match = String(item || "").match(/([^?]{4,120}\?)/);
         return match ? cleanText(match[1]) : "";
       })
-      .concat(modeGreeting.question_style ? [modeGreeting.question_style] : [])
+      .concat(questionStyleValid ? [rawQS] : [])
   );
 
   return {
@@ -102,32 +108,33 @@ function pickTemplate(vibe, seed, templateMap) {
 }
 
 function buildTopicQuestion(vibe, topic, seed) {
-  const cleaned = cleanText(topic);
+  // Strip trailing punctuation and normalize casing for natural sentence embedding
+  const cleaned = cleanText(topic).replace(/[.!?,;:]+$/, "").toLowerCase();
   if (!cleaned) return "";
   const bank = {
     energetic: [
-      `What's the play with ${cleaned} right now?`,
-      `Where are you pushing ${cleaned} next?`,
+      `What are you building with ${cleaned} right now?`,
+      `Where are you pushing ${cleaned}?`,
     ],
     supportive: [
-      `What feels heaviest around ${cleaned} right now?`,
-      `Where does ${cleaned} feel hardest at the moment?`,
+      `What's weighing on you around ${cleaned}?`,
+      `Where does ${cleaned} feel hardest right now?`,
     ],
     direct: [
-      `Where is ${cleaned} breaking right now?`,
-      `What part of ${cleaned} needs tightening?`,
+      `Where are you stuck with ${cleaned}?`,
+      `What's the bottleneck with ${cleaned}?`,
     ],
     analytical: [
-      `What part of ${cleaned} needs a cleaner decision?`,
-      `Where is ${cleaned} getting muddy right now?`,
+      `What part of ${cleaned} needs a decision right now?`,
+      `Where is ${cleaned} getting complicated?`,
     ],
     reflective: [
-      `What feels true but unresolved around ${cleaned} right now?`,
+      `What feels unresolved around ${cleaned}?`,
       `Where does ${cleaned} feel most important right now?`,
     ],
     general: [
-      `What part of ${cleaned} feels most important right now?`,
-      `Where are you getting stuck with ${cleaned}?`,
+      `What are you working on with ${cleaned}?`,
+      `Where are you at with ${cleaned}?`,
     ],
   };
   const options = bank[vibe] || bank.general;
@@ -136,61 +143,61 @@ function buildTopicQuestion(vibe, topic, seed) {
 
 const STARTER_TEMPLATES = {
   energetic: [
-    "I'm {name}. Let's get after it.",
-    "I'm {name}. Bring me the big swing.",
-    "I'm {name}. Let's build some momentum.",
+    "I'm {name}. What are you building right now?",
+    "I'm {name}. What's the move?",
+    "I'm {name}. What are you working on?",
   ],
   supportive: [
-    "I'm {name}. Tell me what's been weighing on you.",
-    "I'm {name}. Bring me the messy version.",
-    "I'm {name}. Tell me what you need help carrying.",
+    "I'm {name}. What's on your mind?",
+    "I'm {name}. What are you working through?",
+    "I'm {name}. What do you need help with?",
   ],
   direct: [
-    "I'm {name}. Bring me the real question.",
-    "I'm {name}. Let's get straight to the problem.",
-    "I'm {name}. Give me the part that's actually stuck.",
+    "I'm {name}. What do you need?",
+    "I'm {name}. What are you trying to figure out?",
+    "I'm {name}. What's the question?",
   ],
   analytical: [
-    "I'm {name}. Give me the problem and we'll break it down.",
-    "I'm {name}. Bring me the puzzle, not the polished version.",
-    "I'm {name}. Let's sort the signal from the noise.",
+    "I'm {name}. What are you trying to solve?",
+    "I'm {name}. What's the problem?",
+    "I'm {name}. What decision are you sitting on?",
   ],
   reflective: [
-    "I'm {name}. Tell me where your head is at.",
-    "I'm {name}. Bring me what feels heavy or unclear.",
-    "I'm {name}. Tell me what you're trying to make sense of.",
+    "I'm {name}. What's on your mind?",
+    "I'm {name}. What are you thinking about?",
+    "I'm {name}. What's weighing on you?",
   ],
   general: [
-    "I'm {name}. Bring me the question you've got.",
-    "I'm {name}. Tell me what needs a clearer next move.",
-    "I'm {name}. Bring me what's actually stuck.",
+    "I'm {name}. What are you working on?",
+    "I'm {name}. What do you need help with?",
+    "I'm {name}. What's on your mind?",
   ],
 };
 
 const BODY_TEMPLATES = {
   energetic: [
-    "Bring me the goal, the bottleneck, or the wild idea. We'll get moving fast.",
-    "Come in with the big ambition or the ugly blocker. We'll turn it into a next move.",
+    "What are you working on right now?",
+    "What's the goal right now?",
   ],
   supportive: [
-    "Bring the unfinished thought. We can unpack ideas, hard decisions, and whatever feels tangled.",
-    "You do not need the polished version. Start where you are and we'll work from there.",
+    "What's on your mind?",
+    "What are you working through right now?",
   ],
   direct: [
-    "Skip the fluff. I can help pressure-test ideas, decisions, and the next move that actually matters.",
-    "Bring me the hard question, the blocker, or the thing you keep avoiding. We'll deal with it head on.",
+    "What do you need help with?",
+    "What are you trying to figure out?",
   ],
   analytical: [
-    "Give me the raw problem. I can help break it down, inspect it, and find the clearest next step.",
-    "Bring the messy inputs. We'll sort the pattern, the leverage point, and the next decision.",
+    "What problem are you trying to solve?",
+    "What decision are you sitting on right now?",
   ],
   reflective: [
-    "Bring the question beneath the question. We can work through meaning, direction, and what feels true.",
-    "If something feels foggy, heavy, or important, start there. We'll make sense of it together.",
+    "What's on your mind right now?",
+    "What are you trying to figure out?",
   ],
   general: [
-    "Ask about their content, a decision you're making, or the thing you're trying to understand better.",
-    "Bring me the real question, the messy version, or the thing that keeps snagging your attention.",
+    "What are you working on?",
+    "What do you need help with?",
   ],
 };
 
@@ -219,8 +226,29 @@ export function buildCreatorStarterMessage(creatorName = "Creator", styleFingerp
 export function buildCreatorWelcomeBody(styleFingerprint = {}, creatorName = "Creator") {
   const vibe = inferCreatorVibe(styleFingerprint);
   const seed = `${creatorName}|body|${JSON.stringify(styleFingerprint || {})}`;
+  const greetingExamples = extractGreetingExamples(styleFingerprint);
+
+  // Priority 1: Use the creator's own question from golden examples / mode_matrix
+  // but only if it's actually a question (ends with ?) and isn't a style description
+  const validQuestions = (greetingExamples.questions || []).filter((q) => {
+    const trimmed = q.trim();
+    if (!trimmed.endsWith("?")) return false;
+    if (trimmed.split(" ").length > 15) return false;
+    // Reject style descriptions masquerading as questions
+    if (/\b(the messy version|the real question|bring me|give me the|skip the fluff|unpack|unfinished thought)\b/i.test(trimmed)) return false;
+    return true;
+  });
+  if (validQuestions.length) {
+    return validQuestions[stableIndex(seed, validQuestions.length)];
+  }
+
+  // Priority 2: Build a topic-seeded question if topics exist
   const topics = extractTopicSeeds(styleFingerprint);
-  const topicLine = buildTopicQuestion(vibe, topics[0], `${seed}|topic`);
-  const template = pickTemplate(vibe, seed, BODY_TEMPLATES);
-  return topicLine ? `${template} ${topicLine}` : template;
+  if (topics.length) {
+    const topicLine = buildTopicQuestion(vibe, topics[0], `${seed}|topic`);
+    if (topicLine) return topicLine;
+  }
+
+  // Priority 3: Short natural template
+  return pickTemplate(vibe, seed, BODY_TEMPLATES);
 }

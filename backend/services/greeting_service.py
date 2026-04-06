@@ -393,11 +393,15 @@ class GreetingService:
             or greeting_rules.get("opener_question")
         )
         # If the creator's style fingerprint defines a preferred opening question pattern,
-        # surface it as first option (but keep fallbacks)
+        # surface it as first option — but only if it's genuinely a question, not a
+        # style description like "Bring me the real question..."
         rule_questions: List[str] = []
         if greeting_question_hint and isinstance(greeting_question_hint, str) and len(greeting_question_hint) < 80:
             cleaned = self._clean_text(greeting_question_hint).rstrip(" ?!.") + "?"
-            if cleaned and len(cleaned.split()) <= 12:
+            if cleaned and len(cleaned.split()) <= 12 and not re.search(
+                r"\b(bring me|give me the|skip the|the messy|the real question|unpack|unfinished)\b",
+                cleaned, re.IGNORECASE,
+            ):
                 rule_questions.append(cleaned)
 
         # Use worldview beliefs to color the question toward the creator's domain

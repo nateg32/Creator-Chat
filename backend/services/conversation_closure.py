@@ -461,8 +461,11 @@ class ConversationPulseEngine:
         # Priority 1: Creator's actual question style from fingerprint
         qs = (gr.get("question_style") or "").strip()
         if qs and len(qs) > 8:
-            # It might be a full question or a style description
-            return qs
+            # Only use it if it looks like an actual question, not a style description.
+            # Style descriptions often read as imperative prose ("Bring me the real question...")
+            # rather than genuine questions ("What are you working on?")
+            if qs.rstrip().endswith("?") and len(qs.split()) <= 15:
+                return qs
 
         # Priority 2: Domain-specific default
         cat = (profile.get("creator_category") or "general").lower().strip()
