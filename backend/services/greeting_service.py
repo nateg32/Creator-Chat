@@ -223,6 +223,9 @@ class GreetingService:
         )
         openers = [item for item in openers if self._looks_like_safe_opener(item)]
 
+        # Extract golden greeting examples as full greetings (not just openers)
+        golden_greetings = self._extract_golden_greeting_patterns(style_fingerprint)
+
         address = self._clean_text(
             interaction.get("how_they_address_audience")
             or interaction.get("audience_address")
@@ -240,14 +243,25 @@ class GreetingService:
         sentence_length = str(sentence_structure.get("avg_sentence_length") or "").strip().lower()
         tone_traits = self._coerce_dict(voice_profile.get("tone_traits"))
 
+        # Extract signature landings for question style
+        sig_landings = self._clean_options(
+            list(speech_mechanics.get("signature_landings") or [])
+        )
+
+        # Extract humor profile for greeting tone
+        humor = self._coerce_dict(speech_mechanics.get("humor_profile"))
+
         return {
             "openers": openers,
+            "golden_greetings": golden_greetings,
             "creator_phrases": [item for item in creator_phrases if self._looks_like_safe_opener(item)],
             "address": address,
             "energy": energy,
             "pacing": pacing,
             "sentence_length": sentence_length,
             "tone_traits": tone_traits,
+            "signature_landings": sig_landings,
+            "humor_profile": humor,
             # Deep identity signals for richer greetings
             "identity_signature": self._coerce_dict(style_fingerprint.get("identity_signature")),
             "mode_greeting_rules": self._coerce_dict(
@@ -265,6 +279,26 @@ class GreetingService:
             "power_position": self._coerce_dict(style_fingerprint.get("identity_signature")).get("power_position", ""),
         }
 
+    def _extract_golden_greeting_patterns(self, style_fingerprint: Dict[str, Any]) -> List[str]:
+        """
+        Extract full greeting patterns from golden_examples.
+        These are the creator's own words for how they greet people.
+        """
+        style_fingerprint = self._coerce_dict(style_fingerprint)
+        golden = self._coerce_dict(style_fingerprint.get("golden_examples"))
+        examples = list(golden.get("greeting") or [])
+        patterns: List[str] = []
+        for ex in examples:
+            text = str(ex or "").strip()
+            if not text or len(text) < 5:
+                continue
+            # Take up to first 2 sentences as the greeting pattern
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            pattern = " ".join(sentences[:2]).strip()
+            if pattern and len(pattern.split()) <= 20 and self._looks_human(pattern):
+                patterns.append(pattern)
+        return self._clean_options(patterns)
+
     def _fallback_openers(self, signals: Dict[str, Any], returning: bool) -> List[str]:
         energy = signals.get("energy", "medium")
         tone = signals.get("tone_traits", {})
@@ -272,12 +306,34 @@ class GreetingService:
         supportive = float(tone.get("supportive", 0.0) or 0.0)
         hype = float(tone.get("hype", 0.0) or 0.0)
 
+        # Prioritize golden greeting patterns from the creator's own voice
+        golden = signals.get("golden_greetings") or []
+        creator_phrases = signals.get("creator_phrases") or []
+
+        # Build a voice-colored pool, starting with real creator signals
+        pool: List[str] = []
+        for g in golden[:3]:
+            opener = re.split(r'[.!?]', g)[0].strip()
+            if opener and self._looks_like_safe_opener(opener):
+                pool.append(opener)
+
+        for p in creator_phrases[:2]:
+            if self._looks_like_safe_opener(p):
+                pool.append(p)
+
         if returning:
+            if pool:
+                # Add voice-colored returning variants
+                pool.extend(["Good to see you again", "Glad you're back"])
+                return pool[:5]
             if supportive >= 0.7:
                 return ["Good to hear from you again", "Glad you're back", "Good to see you again"]
             if hype >= 0.65 or energy == "high":
                 return ["Back at it", "Good, you're back", "Let's get back into it"]
             return ["Good to see you again", "Glad you're back", "Alright, good to have you back"]
+
+        if pool:
+            return pool[:5]
 
         if hype >= 0.65 or energy == "high":
             return ["Let's go", "Alright", "Good, you're here"]
@@ -301,11 +357,19 @@ class GreetingService:
         hype = float(tone.get("hype", 0.0) or 0.0)
 
         if not know_name:
-            # Use power_position to flavor even the name ask
+            # Use power_position and energy to flavor the name ask
             power = str(signals.get("power_position") or "").lower()
+            energy = signals.get("energy", "medium")
+            tone = signals.get("tone_traits", {})
+            blunt = float(tone.get("blunt", 0.0) or 0.0)
+            hype = float(tone.get("hype", 0.0) or 0.0)
+            if blunt >= 0.65 or "authority" in power:
+                return ["Who do I have here?", "What's your name?", "Who am I talking to?"]
+            if hype >= 0.65 or energy == "high":
+                return ["What's your name?", "Who am I talking to?", "What should I call you?"]
             if "peer" in power or "equal" in power:
                 return ["What should I call you?", "What's your name?", "Who am I talking to?"]
-            if "coach" in power or "mentor" in power or "authority" in power:
+            if "coach" in power or "mentor" in power:
                 return ["What's your name?", "Who do I have here?", "What should I call you?"]
             return ["What should I call you?", "What's your name?", "Who am I talking to?"]
 

@@ -4624,6 +4624,12 @@ Message: {answer_text[:500]}"""
     if isinstance(stronghold_config, str): stronghold_config = json.loads(stronghold_config)
 
     # --- Step 2: Classify + Route (GPT-4.1) ---
+    # Launch embedding early (runs in parallel with classify_all)
+    import concurrent.futures as _cf
+    _early_emb_query = build_search_query(question, conversation_history)
+    _early_emb_executor = _cf.ThreadPoolExecutor(max_workers=1)
+    _early_emb_future = _early_emb_executor.submit(rag.create_embedding, _early_emb_query)
+
     logger.info("Pipeline Step 2: Classifying User Input...")
     user_state = classifiers.classify_all(question, conversation_history or [], creator_row)
     
@@ -4970,15 +4976,26 @@ Message: {answer_text[:500]}"""
                     intent_metadata={"intent": "PUBLIC_CREATOR_FACT"},
                 )
         if should_run_recommender:
+            # Resolve pre-launched embedding for the recommender
+            _pre_emb = None
+            try:
+                _pre_emb = _early_emb_future.result(timeout=5)
+            except Exception as _emb_err:
+                logger.warning(f"Early embedding failed, recommender will create its own: {_emb_err}")
+            finally:
+                _early_emb_executor.shutdown(wait=False)
             rec_result = recommend_one_content(
                 user_id=user_id,
                 creator_id=creator_id,
                 user_message=question,
                 conversation_history=conversation_history,
-                creator_row=creator_row
+                creator_row=creator_row,
+                q_emb=_pre_emb,
             )
             preferred_platforms = rec_result.get("resource_intent", {}).get("preferred_platforms") or preferred_platforms
         else:
+            # Clean up early embedding executor when recommender is skipped
+            _early_emb_executor.shutdown(wait=False)
             rec_result = {
                 "best_candidate": None,
                 "q_emb": None,
@@ -5006,6 +5023,12 @@ Message: {answer_text[:500]}"""
         elif not support_set:
             # Fallback to standard RAG if no recommendation
             q_emb = rec_result.get("q_emb")
+            if not q_emb:
+                # Use pre-launched embedding if available
+                try:
+                    q_emb = _early_emb_future.result(timeout=0.1)
+                except Exception:
+                    pass
             if not q_emb:
                 try:
                     fallback_query = build_search_query(question, conversation_history)
@@ -5600,12 +5623,22 @@ async def grounded_rag_stream(
             if _focus != "general":
                 # Skip expensive LLM domain check for questions obviously about the creator
                 _q_lower = (question or "").lower()
+                _word_count = len(_q_lower.split())
                 _is_obviously_on_domain = bool(
                     re.search(r"\b(you|your|u|ur)\b", _q_lower)
-                    or re.search(r"\b(book|course|program|podcast|video|reel|content|channel)\b", _q_lower)
-                    or re.search(r"\b(recommend|advice|tip|help|opinion|thought|think)\b", _q_lower)
-                    or re.search(r"\b(how do i|what should i|can i|should i|where do i)\b", _q_lower)
-                    or re.search(r"\b(struggling|stuck|confused|lost|nervous|anxious|scared|motivated)\b", _q_lower)
+                    or re.search(r"\b(book|course|program|podcast|video|reel|content|channel|product|service|offer|coaching)\b", _q_lower)
+                    or re.search(r"\b(recommend|advice|tip|help|opinion|thought|think|suggest|strategy|plan|approach)\b", _q_lower)
+                    or re.search(r"\b(how do i|what should i|can i|should i|where do i|how can i|how to|what do you)\b", _q_lower)
+                    or re.search(r"\b(struggling|stuck|confused|lost|nervous|anxious|scared|motivated|overwhelmed|frustrated)\b", _q_lower)
+                    or re.search(r"\b(best|worst|top|first|beginner|start|starting|getting started)\b", _q_lower)
+                    or re.search(r"\b(routine|workout|diet|nutrition|training|bulk|cut|macro|calorie|protein|cardio|lift|squat|deadlift|bench)\b", _q_lower)
+                    or re.search(r"\b(trade|trading|stock|option|crypto|forex|market|invest|portfolio|position|entry|exit)\b", _q_lower)
+                    or re.search(r"\b(business|revenue|income|money|profit|sales|client|customer|funnel|launch|brand|niche|scale)\b", _q_lower)
+                    or re.search(r"\b(mindset|discipline|consistency|goals|habits|accountability|focus|confidence)\b", _q_lower)
+                    # Short messages (<=6 words) that aren't trivia-like are almost always in-domain follow-ups
+                    or (_word_count <= 6 and not re.search(r"\b(capital|president|who invented|what year|which country|population)\b", _q_lower))
+                    # Conversational continuation signals
+                    or bool(conversation_history and _word_count <= 12 and not re.search(r"\b(how to cook|recipe|weather|score|game)\b", _q_lower))
                 )
                 if not _is_obviously_on_domain:
                     _name = creator_row.get("name") or creator_row.get("handle") or "the creator"

@@ -27,6 +27,12 @@ from backend.services.prompt_injection_guard import (
     normalize_user_preferences,
     sanitize_for_prompt_context,
 )
+from backend.services.voice_dna import (
+    build_voice_dna_block,
+    apply_vocabulary_resonance,
+    score_voice_fidelity,
+    ConversationVoiceTracker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1013,11 +1019,34 @@ def response_needs_quality_tightening(quality_report: Dict[str, Any]) -> bool:
 class InteractionEngine:
     def __init__(self):
         self._turn_log_available: Optional[bool] = None
+        self._voice_trackers: Dict[str, ConversationVoiceTracker] = {}
+        self._voice_tracker_max = 500  # cap to prevent unbounded growth
         try:
             self.memory = MemoryIntegration()
         except:
             self.memory = None
             logger.error("Failed to init memory integration in engine")
+
+    def _get_voice_tracker(self, thread_id: str) -> ConversationVoiceTracker:
+        """Get or create a ConversationVoiceTracker for a thread."""
+        if thread_id not in self._voice_trackers:
+            # Evict oldest entries if we hit the cap
+            if len(self._voice_trackers) >= self._voice_tracker_max:
+                oldest_key = next(iter(self._voice_trackers))
+                del self._voice_trackers[oldest_key]
+            self._voice_trackers[thread_id] = ConversationVoiceTracker()
+        return self._voice_trackers[thread_id]
+
+    def _record_voice_turn(self, thread_id: str, response: str, creator_profile: Dict[str, Any]) -> None:
+        """Record a completed turn in the voice tracker for phrase-repetition avoidance."""
+        try:
+            tracker = self._get_voice_tracker(thread_id)
+            sfp = _coerce_profile_dict(creator_profile.get("style_fingerprint"))
+            lexical = sfp.get("lexical_rules") or {}
+            sig_phrases = list(lexical.get("signature_phrases") or [])[:10]
+            tracker.record_turn(response, sig_phrases)
+        except Exception:
+            pass  # never break response delivery for tracking
 
     def store_interaction(self, creator_id: str, user_id: str, thread_id: str, user_msg: str, bot_msg: str):
         """Store user message in memory (facts)."""
@@ -1687,7 +1716,8 @@ Generate InteractionPlan JSON."""
         if plan.route == "ROUTE_0_GREETING":
             raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences, history=history)
             cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
-            return self._apply_creator_integrity_guard(
+            cleaned = apply_vocabulary_resonance(cleaned, creator_profile)
+            result = self._apply_creator_integrity_guard(
                 cleaned,
                 creator_profile,
                 [],
@@ -1695,11 +1725,14 @@ Generate InteractionPlan JSON."""
                 allow_links=allow_links,
                 persona=persona,
             )
+            self._record_voice_turn(thread_id, result, creator_profile)
+            return result
 
         if plan.route == "ROUTE_1_SMALL_TALK":
-            raw = self._render_small_talk(plan, creator_profile, user_msg, user_name, persona, user_preferences)
+            raw = self._render_small_talk(plan, creator_profile, user_msg, user_name, persona, user_preferences, thread_id=thread_id)
             cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
-            return self._apply_creator_integrity_guard(
+            cleaned = apply_vocabulary_resonance(cleaned, creator_profile)
+            result = self._apply_creator_integrity_guard(
                 cleaned,
                 creator_profile,
                 [],
@@ -1707,9 +1740,12 @@ Generate InteractionPlan JSON."""
                 allow_links=allow_links,
                 persona=persona,
             )
+            self._record_voice_turn(thread_id, result, creator_profile)
+            return result
 
         raw = self._render_task(plan, creator_profile, rag_chunks, creator_id, user_id, thread_id, user_name, user_msg, persona, history or [], user_preferences)
-        return self._apply_creator_integrity_guard(
+        raw = apply_vocabulary_resonance(raw, creator_profile)
+        result = self._apply_creator_integrity_guard(
             raw,
             creator_profile,
             rag_chunks,
@@ -1717,6 +1753,8 @@ Generate InteractionPlan JSON."""
             allow_links=allow_links,
             persona=persona,
         )
+        self._record_voice_turn(thread_id, result, creator_profile)
+        return result
 
     def render_combined_pass_stream(
         self,
@@ -1850,15 +1888,22 @@ Generate InteractionPlan JSON."""
 
         if route == "ROUTE_0_GREETING":
             dm_rule = "This is a one to one DM. Never address the user as everyone, team, guys, friends, family, or chat."
+            greeting_voice_dna = build_voice_dna_block(creator_profile, mode="greeting", conversation_tracker=self._get_voice_tracker(thread_id))
             if user_name:
                 domain_q = DOMAIN_GREETING_QUESTIONS.get(creator_category, "What are you working on today?")
-                return f"""IDENTITY: You are {creator_name}.
+                return f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
+
+{greeting_voice_dna}
+
 YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
 {pref_instructions}
 {safety_block}
 DIRECTIVE: {dm_rule} Greet the user concisely and in character. Use their name, {user_name}, once naturally. Then ask one simple question: {domain_q}
 Output ONLY your response."""
-            return f"""IDENTITY: You are {creator_name}.
+            return f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
+
+{greeting_voice_dna}
+
 YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
 {pref_instructions}
 {safety_block}
@@ -1866,6 +1911,7 @@ DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not
 Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
+        voice_dna_block = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
@@ -2061,13 +2107,15 @@ STRICT IDENTITY LOCK:
 {identity_context}
 {persona_section}
 
+{voice_dna_block}
+
 YOUR VOICE (THIS IS THE MOST IMPORTANT SECTION):
 {voice_instructions}
 {voice_examples}
 {creator_genome_block if creator_genome_block else ""}
 {turn_anchor_block if turn_anchor_block else ""}
 
-VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your voice examples above show how you actually talk. Match that energy.
+VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your Voice Imprint above shows how you actually talk. Match that energy, rhythm, and word choice exactly.
 
 {identity_guard.format(creator_name=creator_name, anti_halluc_rule=anti_halluc_rule)}
 
@@ -2148,10 +2196,12 @@ Output ONLY your response to the user."""
         user_name: Optional[str] = None,
         persona: Optional[str] = None,
         user_preferences: Optional[Dict[str, Any]] = None,
+        thread_id: str = "new",
     ) -> str:
         creator_name = creator_profile.get("name", "the creator")
         voice_instructions = build_voice_instructions(creator_profile, mode="small_talk")
         voice_examples = _build_voice_examples(creator_profile, mode="small_talk")
+        small_talk_voice_dna = build_voice_dna_block(creator_profile, mode="small_talk", conversation_tracker=self._get_voice_tracker(thread_id))
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
         safety_block = build_prompt_safety_block(current_message=user_msg, custom_preferences=normalized_prefs.get("custom", ""))
@@ -2182,6 +2232,8 @@ Output ONLY your response to the user."""
             question_instruction = "Mirror their energy briefly, then ask their name naturally before moving the conversation forward."
 
         system_prompt = f"""You are {creator_name}. You're having a casual one to one conversation in DMs.
+
+{small_talk_voice_dna}
 
 YOUR VOICE:
 {voice_instructions}
@@ -2303,6 +2355,7 @@ Output only the response."""
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
+        legacy_voice_dna = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
@@ -2492,13 +2545,15 @@ You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
 
+{legacy_voice_dna}
+
 YOUR VOICE AND PERSONALITY (THIS IS THE MOST IMPORTANT SECTION):
 {voice_instructions}
 {voice_examples}
 {creator_genome_block if creator_genome_block else ""}
 {turn_anchor_block if turn_anchor_block else ""}
 
-VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting.
+VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your Voice Imprint above shows how you actually talk. Match that energy, rhythm, and word choice exactly.
 
 CONTEXT:
 {routing_instruction}
@@ -2650,17 +2705,31 @@ Output only the response text."""
         else:
             cleaned = strip_all_markdown(draft, allow_lists=False, allow_links=allow_links)
 
-        # Count question marks — if more than 1, use LLM to pick the best one
+        # Count question marks — if more than 1, keep only the last question (CPU-based, no LLM)
         q_count = cleaned.count("?")
-        
-        # If no lists allowed, we skip LLM unless multiple questions
-        if q_count <= 1 and not allow_lists:
+
+        if q_count > 1 and not allow_lists:
+            # CPU-based question reduction: keep only the LAST question sentence
+            sentences = re.split(r'(?<=[.!?])\s+', cleaned)
+            question_indices = [i for i, s in enumerate(sentences) if '?' in s]
+            if len(question_indices) > 1:
+                # Keep only the last question; convert earlier questions to statements
+                last_q_idx = question_indices[-1]
+                result_sentences = []
+                for i, s in enumerate(sentences):
+                    if '?' in s and i != last_q_idx:
+                        # Convert question to statement: remove "?" and rephrase minimally
+                        result_sentences.append(s.rstrip('?').rstrip() + '.')
+                    else:
+                        result_sentences.append(s)
+                cleaned = ' '.join(result_sentences)
             return cleaned
 
-        # Prepare formatting instruction for reduction model
-        # Prepare formatting instruction for reduction model
-        if allow_lists:
-            reduction_prompt = """You are a List Formatter. The user explicitly requested bullet points.
+        if not allow_lists:
+            return cleaned
+
+        # Lists requested — use lightweight model for list formatting only
+        reduction_prompt = """You are a List Formatter. The user explicitly requested bullet points.
 Your JOB is to convert implied lists into Markdown Bullet Lists.
 
 EXAMPLE INPUT:
@@ -2683,13 +2752,6 @@ RULES:
 5. Do not change paragraphs that are clearly not lists.
 
 Fix the formatting of the following text:"""
-        else:
-             reduction_prompt = """You are a formatting filter. You do NOT remove helpful content. You only fix two things:
-1. QUESTION LIMIT: If there are multiple questions, keep only the single best question at the very end. Remove all other question marks by rephrasing those sentences as statements.
-2. CLEAN FORMAT: If any markdown artifacts remain (asterisks, hashtags, bullet characters, numbered lists), convert them to natural flowing text.
-
-Do NOT shorten the response. Do NOT remove useful information. Do NOT add anything new.
-Output the cleaned text only."""
 
         try:
             reduced = rag.generate_chat_completion(
@@ -2697,7 +2759,7 @@ Output the cleaned text only."""
                     {"role": "system", "content": reduction_prompt},
                     {"role": "user", "content": cleaned}
                 ],
-                model=settings.MODEL_MAIN_REPLY,
+                model=settings.MODEL_CLASSIFICATION,
                 temperature=0.0
             )
 
@@ -2741,6 +2803,42 @@ Output the cleaned text only."""
         if not report.get("needs_rewrite") and not response_needs_quality_tightening(quality_report):
             return cleaned
 
+        # ── SOFT FIX: If only minor voice issues, fix with CPU (no LLM call) ──
+        # Conditions for soft fix: no invented titles, no URL leaks, low issue count,
+        # and quality tightening is the only need (not a hard rewrite).
+        findings_list = report.get("findings") or []
+        is_soft_fixable = (
+            not report.get("needs_rewrite")
+            and response_needs_quality_tightening(quality_report)
+            and not report.get("invented_titles")
+            and not report.get("raw_url_leak")
+            and report.get("issue_count", 0) <= 2
+        )
+        if is_soft_fixable:
+            soft_fixed = apply_vocabulary_resonance(cleaned, creator_profile)
+            soft_report = evaluate_creator_integrity(
+                soft_fixed, creator_profile, rag_chunks=rag_chunks,
+                allow_links=allow_links, persona=persona, user_msg=user_msg,
+            )
+            soft_quality = score_response_quality(
+                user_msg, soft_fixed, rag_chunks or [],
+                creator_markers=quality_markers,
+            )
+            if not soft_report.get("needs_rewrite") and not response_needs_quality_tightening(soft_quality):
+                logger.info("Integrity guard: soft fix via vocabulary resonance succeeded (skipped LLM rewrite)")
+                return soft_fixed
+
+        # Voice fidelity scoring — gives the rewrite LLM targeted guidance
+        voice_fidelity = score_voice_fidelity(cleaned, creator_profile)
+        voice_fidelity_notes = []
+        if voice_fidelity.get("ai_phrase_penalty", 0) > 0:
+            voice_fidelity_notes.append(f"Contains {voice_fidelity['ai_phrase_penalty']} AI-assistant phrases to purge")
+        if voice_fidelity.get("signature_hit_rate", 1) < 0.3:
+            voice_fidelity_notes.append("Missing creator signature phrases")
+        if voice_fidelity.get("banned_word_penalty", 0) > 0:
+            voice_fidelity_notes.append(f"Uses {voice_fidelity['banned_word_penalty']} banned/forbidden words")
+        voice_fidelity_line = f"VOICE FIDELITY: {', '.join(voice_fidelity_notes)}" if voice_fidelity_notes else ""
+
         creator_name = (creator_profile.get("name") or "The Creator").strip() or "The Creator"
         rewrite_model = getattr(settings, "REWRITE_MODEL", settings.MODEL_MAIN_REPLY)
         quality_flags = [f"quality:{penalty}" for penalty in (quality_report.get("penalties") or [])]
@@ -2777,6 +2875,7 @@ RULES:
 ISSUES TO REPAIR: {findings}
 QUALITY SIGNALS: {quality_notes}
 REGURGITATION SIGNAL: {regurgitation_reason or "none"}
+{voice_fidelity_line}
 
 OUTPUT ONLY THE REPAIRED MESSAGE.
 """
