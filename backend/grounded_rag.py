@@ -4943,6 +4943,26 @@ Message: {answer_text[:500]}"""
                 metadata={"service": "grounded_rag_sync", "phase": "pre_retrieval"},
             )
         search_question = (evidence_plan.resolved_query if evidence_plan and evidence_plan.resolved_query else question)
+
+        # ── follow-up context resolution (non-streaming) ──
+        if (conversation_history and len(search_question.split()) < 10
+                and search_question == question):
+            _prev_user = ""
+            _prev_asst = ""
+            for _m in reversed(conversation_history):
+                if not _prev_asst and (_m.get("role") or "") == "assistant":
+                    _prev_asst = (_m.get("content") or _m.get("text") or "").strip()
+                elif _prev_asst and (_m.get("role") or "") == "user":
+                    _prev_user = (_m.get("content") or _m.get("text") or "").strip()
+                    break
+            if _prev_user and _prev_asst:
+                _ctx_snippet = (
+                    " ".join(_prev_user.split()[:15])
+                    + " "
+                    + " ".join(_prev_asst.split()[:25])
+                )
+                search_question = f"{_ctx_snippet.strip()} {search_question}"
+
         search_engine = SearchDecisionEngine(creator_row)
         pre_search_decision = (
             search_engine.pre_retrieval_decision(question, conversation_history=conversation_history)
@@ -5794,6 +5814,30 @@ async def grounded_rag_stream(
                 metadata={"service": "grounded_rag_stream", "phase": "pre_retrieval"},
             )
         search_question = (evidence_plan.resolved_query if evidence_plan and evidence_plan.resolved_query else question)
+
+        # Contextualize short follow-up queries with the previous exchange so
+        # that sparse text matching and web search see the conversational topic.
+        # The early embedding already gets this context (question_for_search),
+        # but search_question was left bare — causing retrieval to miss the
+        # referent.  e.g. "who was the lucky one" after discussing relationship
+        # needs the relationship context to avoid retrieving "luck in business".
+        if (
+            conversation_history
+            and len(search_question.split()) < 10
+            and search_question == question  # not already rewritten
+        ):
+            _prev_user = ""
+            _prev_asst = ""
+            for _m in reversed(conversation_history):
+                if not _prev_asst and (_m.get("role") or "") == "assistant":
+                    _prev_asst = (_m.get("content") or _m.get("text") or "").strip()
+                elif _prev_asst and (_m.get("role") or "") == "user":
+                    _prev_user = (_m.get("content") or _m.get("text") or "").strip()
+                    break
+            if _prev_user and _prev_asst:
+                _ctx_snippet = " ".join(_prev_user.split()[:15]) + " " + " ".join(_prev_asst.split()[:25])
+                search_question = f"{_ctx_snippet.strip()} {search_question}"
+
         search_engine = SearchDecisionEngine(creator_row)
         pre_search_decision = (
             search_engine.pre_retrieval_decision(question, conversation_history=conversation_history)
