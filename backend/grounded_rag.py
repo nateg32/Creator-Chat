@@ -70,6 +70,7 @@ from backend.services.out_of_domain_rules import (
     should_redirect_general_knowledge,
     should_soft_decline_external_live_fact,
 )
+from backend.services.conversation_closure import get_bridge_question
 from backend.services.regurgitation_guard import (
     build_anti_regurgitation_block,
     check_for_regurgitation,
@@ -4657,7 +4658,7 @@ Message: {answer_text[:500]}"""
             allow_handoff=False,
         )
         if not bridge_topic and "?" not in answer:
-            answer = f"{answer} {default_bridge_question(creator_focus)}"
+            answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
         csm.state["last_router_meta"] = {
             "mode": "BOUNDARY",
             "domain_action": "OUT_OF_DOMAIN_REDIRECT",
@@ -4697,7 +4698,7 @@ Message: {answer_text[:500]}"""
             allow_handoff=False,
         )
         if not bridge_topic and "?" not in answer:
-            answer = f"{answer} {default_bridge_question(creator_focus)}"
+            answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
         csm.state["last_router_meta"] = {
             "mode": "BOUNDARY",
             "domain_action": "GENERAL_KNOWLEDGE_REDIRECT",
@@ -4731,7 +4732,7 @@ Message: {answer_text[:500]}"""
             allow_handoff=False,
         )
         if not bridge_topic and "?" not in answer:
-            answer = f"{answer} {default_bridge_question(creator_focus)}"
+            answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
         csm.state["last_router_meta"] = {
             "mode": "BOUNDARY",
             "domain_action": "OFF_DOMAIN_LLM_REDIRECT",
@@ -5574,7 +5575,7 @@ async def grounded_rag_stream(
                 False,
             )
             if not bridge_topic and "?" not in answer:
-                answer = f"{answer} {default_bridge_question(creator_focus)}"
+                answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
             yield answer
             return
 
@@ -5606,7 +5607,7 @@ async def grounded_rag_stream(
                     False,
                 )
                 if not bridge_topic and "?" not in answer:
-                    answer = f"{answer} {default_bridge_question(_focus)}"
+                    answer = f"{answer} {get_bridge_question(creator_row, _focus)}"
                 yield answer
                 return
 
@@ -5674,7 +5675,7 @@ async def grounded_rag_stream(
                                 _name, _persona, _sc, question, bridge_topic, _focus, False,
                             )
                             if not bridge_topic and "?" not in answer:
-                                answer = f"{answer} {default_bridge_question(_focus)}"
+                                answer = f"{answer} {get_bridge_question(creator_row, _focus)}"
                             yield answer
                             return
                     except Exception as e:

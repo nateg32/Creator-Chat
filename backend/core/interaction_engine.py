@@ -33,6 +33,10 @@ from backend.services.voice_dna import (
     score_voice_fidelity,
     ConversationVoiceTracker,
 )
+from backend.services.conversation_closure import (
+    compute_closure,
+    get_greeting_question,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1890,7 +1894,7 @@ Generate InteractionPlan JSON."""
             dm_rule = "This is a one to one DM. Never address the user as everyone, team, guys, friends, family, or chat."
             greeting_voice_dna = build_voice_dna_block(creator_profile, mode="greeting", conversation_tracker=self._get_voice_tracker(thread_id))
             if user_name:
-                domain_q = DOMAIN_GREETING_QUESTIONS.get(creator_category, "What are you working on today?")
+                domain_q = get_greeting_question(creator_profile)
                 return f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
 
 {greeting_voice_dna}
@@ -2103,6 +2107,16 @@ STRICT IDENTITY LOCK:
                 else:
                     anti_halluc_rule = "- PRIORITY OVERRIDE: USE LIVE WEB SEARCH RESULTS. You have fresh information from a live search. Use these facts and links to answer the user accurately. Name the best resource naturally in the sentence, say you attached it below, do not output markdown links in the prose, and never output JSON, raw URLs, platform labels, or labels like Title:, URL:, or Summary:."
 
+        # ── Conversation Pulse: compute closure directive ──
+        _closure = compute_closure(
+            history=history or [],
+            creator_profile=creator_profile,
+            intent="task",
+            mode="task",
+            user_message=user_msg,
+        )
+        closure_rule = _closure.prompt_instruction
+
         return f"""IDENTITY: You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
@@ -2125,7 +2139,7 @@ RULES:
 1. Answer the question directly using your knowledge. Plan mentally: EXECUTE (question), COACH (guidance), or GREET (hello).
 2. Stay in character. Use your personality, tone, worldview, and metaphors. Never reveal you are an AI, language model, or ChatGPT.
 3. No markdown formatting: no bold (**), headers (#), or markdown links in prose. No hyphens, en dashes, or em dashes inside sentences.
-4. One question max, at the end, only if it advances the conversation.
+4. {closure_rule}
 5. Never narrate matching, retrieval, or search. Just give the answer.
 6. Stay on the current turn. If the user changes topic, answer the new topic immediately.
 7. For moral, emotional, or spiritual questions, give direct counsel from your worldview. Suggest content only if explicitly asked.
@@ -2540,6 +2554,16 @@ CURRENT TURN HAS IMAGE CONTEXT:
                 f"Do NOT provide instructions, steps, rules, explanations, or factual answers about the off-topic subject."
             )
 
+        # ── Conversation Pulse: compute closure directive ──
+        _closure = compute_closure(
+            history=history or [],
+            creator_profile=creator_profile,
+            intent="task",
+            mode="task",
+            user_message=user_msg,
+        )
+        closure_rule = _closure.prompt_instruction
+
         system_prompt = f"""IDENTITY:
 You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
@@ -2602,7 +2626,7 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 
 8. {conversational_rule}
 
-9. ONE QUESTION MAX at the end, only if it genuinely moves the conversation forward. CHECK HISTORY: Do not ask a question you have already asked in the conversation history above.
+9. {closure_rule}
 
 10. {bridge_pivot_rule}
 11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally, then say you attached it below. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
@@ -2866,7 +2890,7 @@ RULES:
 6. Do not add new facts, new resources, or new personal claims.
 7. Preserve paragraph or list structure when present.
 8. If the draft is too close to retrieved transcript language, rewrite it into a conversational personal take. Do not mirror numbered stages, transcript labels, timestamps, or source ordering.
-9. If the reply is substantive and it does not already land naturally, end with one short follow-up question that this creator would realistically ask in a DM.
+9. Preserve the ending style of the draft. If it ends with a question, keep a question. If it ends with a statement, keep a statement. Only change the ending if the draft's ending feels robotic or assistant-like.
 
 {format_creator_genome_for_prompt(genome) or "CREATOR GENOME: No extra genome markers available."}
 {turn_anchor_block}
@@ -2931,7 +2955,7 @@ Rules:
 1. Keep it concise and conversational.
 2. Use the creator's exact lexical fingerprints and anchors when natural.
 3. Remove generic filler and interchangeable coach language.
-4. If the message is substantive, end with one natural follow-up question.
+4. Preserve the ending style. If it ends with a question, keep a question. If it ends with a statement, keep a statement. Do not add or remove a closing question.
 5. Do not add new facts, new resources, or raw URLs.
 6. Do not mirror transcript structure or list order from sources.
 
