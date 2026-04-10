@@ -38,6 +38,7 @@ from backend.services.web_verify import web_verify
 from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 from backend.services.image_identity_service import image_identity_service
+from backend.services.voice_dna import build_voice_echo_block
 from backend.services.live_search_rules import (
     build_live_search_query,
     extract_requested_platforms,
@@ -3601,6 +3602,8 @@ Strictly adhere to the STYLE DNA constraints.
 
 {dna_instruction}
 
+{build_voice_echo_block(support_set)}
+
 {identity_fallback_rule}
 
 STRICT RULE: If CONVERSATION MODE is 'GREETING_MODE', you MUST NOT provide advice, plans, or mention any specific business topics. Simply greet and ask one open-ended question.
@@ -3615,7 +3618,8 @@ RULES:
 7. NO LINKS: Do not output any http links manually.
 8. PERSONA PROTECTION: Strictly PURGE all meta-talk like "I don't have enough info" or "Based on my data". NEVER mention being an AI.
 9. VERBOSITY: Strictly stay within the BUDGET. Cut content if necessary.
-10. FORMATTING QUALITY: Write complete, clean sentences. Never split a word across a space. Never drop words mid-sentence. Never leave dangling punctuation or orphaned parentheses. Every sentence must be grammatically complete.
+10. FORMATTING QUALITY: Write complete, clean sentences. Every word must be spelled as one unbroken unit (correct: "mean", wrong: "me an"). Never drop words mid-sentence. Never leave dangling punctuation or orphaned parentheses. Every sentence must be grammatically complete.
+11. FACT GROUNDING: The NEUTRAL PLAN may contain things the creator SAID in their content. Do not adopt a fact as your personal biography unless it explicitly names you or uses first person. If a source says something was "published in 2017", that refers to material you discussed, NOT your timeline, unless it explicitly says YOU started or YOU published. When unsure, say "In one of my videos I mentioned..." rather than "I was..." or "I did...".
 
 NEUTRAL PLAN:
 {json.dumps(draft, indent=2)}

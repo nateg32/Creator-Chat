@@ -29,6 +29,7 @@ from backend.services.prompt_injection_guard import (
 )
 from backend.services.voice_dna import (
     build_voice_dna_block,
+    build_voice_echo_block,
     apply_vocabulary_resonance,
     score_voice_fidelity,
     ConversationVoiceTracker,
@@ -1916,6 +1917,7 @@ Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
         voice_dna_block = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
+        voice_echo_block = build_voice_echo_block(rag_chunks)
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
@@ -2122,6 +2124,7 @@ STRICT IDENTITY LOCK:
 {persona_section}
 
 {voice_dna_block}
+{voice_echo_block}
 
 YOUR VOICE (THIS IS THE MOST IMPORTANT SECTION):
 {voice_instructions}
@@ -2129,7 +2132,7 @@ YOUR VOICE (THIS IS THE MOST IMPORTANT SECTION):
 {creator_genome_block if creator_genome_block else ""}
 {turn_anchor_block if turn_anchor_block else ""}
 
-VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your Voice Imprint above shows how you actually talk. Match that energy, rhythm, and word choice exactly.
+VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your Voice Imprint and Voice Echoes above show how you actually talk. Match that energy, rhythm, and word choice exactly.
 
 {identity_guard.format(creator_name=creator_name, anti_halluc_rule=anti_halluc_rule)}
 
@@ -2148,7 +2151,8 @@ RULES:
 10. When recommending a resource, mention it naturally and tell the user you attached it below. Never paste raw metadata, JSON, raw URLs, or labels like Title:, URL:. Summarize 2-3 key points from content when asked what it covers.
 11. Never invent book titles, course names, product names, or entity names. Only mention entities from your KNOWLEDGE section or web search results.
 12. If the USER introduces a title you do not recognize, do NOT retract or apologize. Say you are not familiar and ask for details.
-13. Write clean sentences. No split words, no orphaned quotes, no dangling punctuation.
+13. Write clean sentences. Every word must be one unbroken unit (correct: "Welcome", wrong: "We lcome"). No orphaned quotes, no dangling punctuation.
+14. FACT GROUNDING: Your KNOWLEDGE section contains things you SAID in your content. Do not adopt a fact as your personal biography unless it explicitly names you or uses first person. If a chunk says something was "published in 2017", that refers to material you discussed, NOT your personal timeline, unless it explicitly says YOU started or YOU published. When unsure, say "In one of my videos I mentioned..." rather than "I was..." or "I did...".
 {resource_lock_instruction}
 {resource_type_instruction}
 
@@ -2370,6 +2374,7 @@ Output only the response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
         legacy_voice_dna = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
+        legacy_voice_echo = build_voice_echo_block(rag_chunks)
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)
@@ -2570,6 +2575,7 @@ You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {persona_section}
 
 {legacy_voice_dna}
+{legacy_voice_echo}
 
 YOUR VOICE AND PERSONALITY (THIS IS THE MOST IMPORTANT SECTION):
 {voice_instructions}
@@ -2577,7 +2583,7 @@ YOUR VOICE AND PERSONALITY (THIS IS THE MOST IMPORTANT SECTION):
 {creator_genome_block if creator_genome_block else ""}
 {turn_anchor_block if turn_anchor_block else ""}
 
-VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your Voice Imprint above shows how you actually talk. Match that energy, rhythm, and word choice exactly.
+VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, not like any generic expert could have. If you catch yourself writing something interchangeable, rewrite it with your cadence, your words, your worldview before outputting. Your Voice Imprint and Voice Echoes above show how you actually talk. Match that energy, rhythm, and word choice exactly.
 
 CONTEXT:
 {routing_instruction}

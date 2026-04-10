@@ -757,6 +757,97 @@ class ConversationVoiceTracker:
 
 
 # ---------------------------------------------------------------------------
+# Layer 7 — VOICE ECHO (real-time vocabulary from current RAG chunks)
+# ---------------------------------------------------------------------------
+
+# Common filler / generic sentences to skip when extracting echoes
+_ECHO_SKIP_STARTS = frozenset([
+    "subscribe", "like and subscribe", "hit the bell", "check out",
+    "click the link", "follow me", "leave a comment", "thanks for watching",
+    "welcome back", "what's up", "hey guys", "hey everyone",
+])
+
+
+def extract_voice_echoes(
+    rag_chunks: Optional[List[Dict[str, Any]]],
+    max_phrases: int = 10,
+) -> List[str]:
+    """
+    Mine the retrieved RAG chunks for short, distinctive creator sentences.
+    These are the creator's ACTUAL words on the current topic — injected
+    into the prompt so the LLM echoes their real vocabulary and cadence
+    instead of paraphrasing into generic language.
+
+    Selection criteria:
+      - 4-20 words (short enough to be distinctive, long enough to carry voice)
+      - Contains first-person or direct address (signals authentic creator speech)
+      - Not YouTube filler ("subscribe", "check out", etc.)
+      - Deduplicated by first 40 chars
+    """
+    if not rag_chunks:
+        return []
+
+    phrases: List[str] = []
+    for chunk in rag_chunks:
+        content = (chunk.get("content") or "").strip()
+        if not content or content.startswith("[LIVE WEB SEARCH"):
+            continue
+        sentences = re.split(r'(?<=[.!?])\s+', content)
+        for s in sentences:
+            s = s.strip()
+            words = s.split()
+            wc = len(words)
+            if wc < 4 or wc > 20:
+                continue
+            lower = s.lower()
+            # Skip YouTube filler
+            if any(lower.startswith(skip) for skip in _ECHO_SKIP_STARTS):
+                continue
+            # Prefer sentences with first-person or direct address
+            if re.search(r"\b(i |i'[a-z]|my |you |your |we |our )\b", lower):
+                phrases.append(s)
+
+    # Deduplicate by first 40 chars, preserve order
+    seen: set = set()
+    unique: List[str] = []
+    for p in phrases:
+        key = p.lower()[:40]
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+        if len(unique) >= max_phrases:
+            break
+
+    return unique
+
+
+def build_voice_echo_block(
+    rag_chunks: Optional[List[Dict[str, Any]]],
+    max_phrases: int = 8,
+) -> str:
+    """
+    Build the VOICE ECHO prompt section from current RAG chunks.
+    Returns empty string if no echoes found.
+    """
+    echoes = extract_voice_echoes(rag_chunks, max_phrases=max_phrases)
+    if not echoes:
+        return ""
+
+    lines = [
+        "VOICE ECHOES (your REAL words from your content on this topic — "
+        "absorb and echo this exact vocabulary, slang, and energy):"
+    ]
+    for echo in echoes:
+        truncated = echo if len(echo) <= 200 else echo[:197] + "..."
+        lines.append(f'  - "{truncated}"')
+    lines.append(
+        "When you can reuse a phrase, word, or sentence structure from "
+        "above, do so. Prefer YOUR real vocabulary over any generic alternative."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API — Build complete voice DNA block
 # ---------------------------------------------------------------------------
 

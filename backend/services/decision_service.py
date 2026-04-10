@@ -245,6 +245,11 @@ class DecisionService:
             rewritten = self._rewrite_clarification_followup(history)
             if rewritten:
                 return rewritten
+        # ── content/video reference follow-up ──
+        if self._looks_like_content_reference(q):
+            title = self._extract_recent_card_title(history)
+            if title:
+                return self._rewrite_content_followup(q, title)
         if self._looks_like_book_followup(q):
             title = self._extract_recent_book_title(history)
             if title:
@@ -301,6 +306,46 @@ class DecisionService:
         if any(token in lower for token in ["write", "wrote", "writing", "written"]):
             return f"When did you write {clean_title}?"
         return f"When was {clean_title} published?"
+
+    # ── content / video reference follow-up helpers ──
+
+    _CONTENT_REF_PATTERN = re.compile(
+        r"\b(?:that|this|the)\s+(?:video|episode|clip|reel|podcast|content|one)\b",
+        re.IGNORECASE,
+    )
+
+    def _looks_like_content_reference(self, question: str) -> bool:
+        """Detect questions like 'what did u talk about in that video?'"""
+        lowered = re.sub(r"\s+", " ", str(question or "").lower()).strip()
+        if not lowered:
+            return False
+        return bool(self._CONTENT_REF_PATTERN.search(lowered))
+
+    def _extract_recent_card_title(self, history: Optional[List[Dict[str, str]]]) -> str:
+        """Pull the most recent card title from the last assistant message metadata."""
+        for msg in reversed(list(history or [])[-6:]):
+            if (msg.get("role") or "").lower() != "assistant":
+                continue
+            cards = msg.get("cards") or []
+            if isinstance(cards, list):
+                for card in cards:
+                    if isinstance(card, dict):
+                        title = (card.get("title") or "").strip()
+                        if title:
+                            return title
+        return ""
+
+    def _rewrite_content_followup(self, question: str, title: str) -> str:
+        """Rewrite a content-reference follow-up with the specific title."""
+        lower = (question or "").lower()
+        clean_title = re.sub(r"\s+", " ", (title or "")).strip()
+        if any(w in lower for w in ("talk about", "cover", "discuss", "say in", "said in", "about")):
+            return f"What did you talk about in your video \"{clean_title}\"?"
+        if any(w in lower for w in ("how long", "length", "duration")):
+            return f"How long is your video \"{clean_title}\"?"
+        if any(w in lower for w in ("when", "date", "upload", "post")):
+            return f"When did you upload \"{clean_title}\"?"
+        return f"Tell me more about your video \"{clean_title}\""
 
     def _looks_like_book_followup(self, question: str) -> bool:
         lowered = re.sub(r"\s+", " ", str(question or "").lower()).strip(" .!?")
