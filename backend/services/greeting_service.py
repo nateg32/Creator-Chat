@@ -169,6 +169,16 @@ class GreetingService:
         "about", "with", "to", "for", "from", "at", "of", "by", "on",
     })
 
+    # YouTube / broadcast filler that should never appear in 1-on-1 chat
+    _BROADCAST_FILLER = (
+        "my channel", "the channel", "this channel",
+        "welcome back to", "back to my",
+        "subscribe", "like and subscribe", "hit the bell",
+        "notification bell", "smash that", "click the link",
+        "thanks for watching", "thanks for tuning",
+        "in today's video", "in this video", "today's episode",
+    )
+
     def _looks_like_safe_opener(self, text: str) -> bool:
         normalized = self._clean_text(text)
         if not normalized:
@@ -181,9 +191,13 @@ class GreetingService:
             return False
         if GENERIC_AI_RE.search(normalized):
             return False
-        if normalized.lower().startswith(("what", "where", "how", "which", "why", "when", "if", "because", "since", "unless")):
+        lower = normalized.lower()
+        if lower.startswith(("what", "where", "how", "which", "why", "when", "if", "because", "since", "unless")):
             return False
         if len(normalized.split()) > 7:
+            return False
+        # Reject broadcast / YouTube filler — not appropriate for 1-on-1 chat
+        if any(filler in lower for filler in self._BROADCAST_FILLER):
             return False
         # Reject openers whose last word is a dangling preposition —
         # appending a user name would make the name the object of the
@@ -303,6 +317,10 @@ class GreetingService:
         for ex in examples:
             text = str(ex or "").strip()
             if not text or len(text) < 5:
+                continue
+            # Skip broadcast / YouTube filler that isn't appropriate for 1-on-1 chat
+            lower = text.lower()
+            if any(filler in lower for filler in self._BROADCAST_FILLER):
                 continue
             # Take up to first 2 sentences as the greeting pattern
             sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -536,6 +554,9 @@ class GreetingService:
         if SPECIFIC_QUESTION_RE.search(lowered):
             return False
         if GENERIC_AI_RE.search(lowered):
+            return False
+        # Reject broadcast / YouTube filler
+        if any(filler in lowered for filler in self._BROADCAST_FILLER):
             return False
         return True
 

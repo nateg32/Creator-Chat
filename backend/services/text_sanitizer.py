@@ -59,6 +59,22 @@ MERGED_ARTICLE_HEAD_RE = re.compile(
     re.IGNORECASE,
 )
 MERGED_COMMON_HEAD_RE = re.compile(r"\b(My|Your|Our|Their|This|That|These|Those|We|You)([a-z]{4,})\b")
+# Real English words that start with these prefixes and must NOT be split
+_MERGED_HEAD_REAL_WORDS: frozenset = frozenset({
+    "welcome", "welcomes", "welcomed", "welcoming",
+    "welfare", "wellbeing",
+    "western", "westbound", "westward",
+    "weather", "wealthy", "weakness", "weapon", "wearing",
+    "yourself", "yourselves",
+    "themselves", "thereby", "therefore", "therein", "thereafter",
+    "their",  # already blocked by regex boundary but safety
+    "these",  # same
+    "those",  # same
+    "otherwise", "thousand",
+    "throughout", "thatched",
+    "myself", "myopic",
+    "ourselves",
+})
 MERGED_TRAILING_COMMON_RE = re.compile(
     r"\b([A-Za-z]{5,})(are|will|were|with|your|this|that|what|when|where|which|have|them|they)\b"
     r"(?=\s+(?:you|your|the|that|this|it|we|they|he|she|who|what|when|where|why|and|or|but|just|to|for|if|because|so|then)\b)",
@@ -190,7 +206,10 @@ def _repair_merged_common_word_pairs(text: str) -> str:
         text,
     )
     repaired = MERGED_ARTICLE_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
-    repaired = MERGED_COMMON_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", repaired)
+    repaired = MERGED_COMMON_HEAD_RE.sub(
+        lambda m: m.group(0) if m.group(0).lower() in _MERGED_HEAD_REAL_WORDS else f"{m.group(1)} {m.group(2)}",
+        repaired,
+    )
     repaired = MERGED_TRAILING_COMMON_RE.sub(
         lambda m: m.group(0)
         if m.group(0).lower() in MERGED_TRAILING_BLOCKLIST

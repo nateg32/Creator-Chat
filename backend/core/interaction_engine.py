@@ -2195,10 +2195,15 @@ Output ONLY your response to the user."""
             logger.error(f"Greeting render failed: {e}")
             # Use creator-specific opener if available
             sig_openings = []
+            _BROADCAST_FILLER = ("my channel", "the channel", "this channel", "welcome back to", "back to my",
+                                 "subscribe", "like and subscribe", "hit the bell", "in today's video", "in this video")
             try:
-                sig_openings = list(
-                    (style_fingerprint.get("speech_mechanics") or {}).get("signature_openings") or []
-                )[:2]
+                sig_openings = [
+                    o for o in list(
+                        (style_fingerprint.get("speech_mechanics") or {}).get("signature_openings") or []
+                    )[:4]
+                    if not any(f in str(o).lower() for f in _BROADCAST_FILLER)
+                ]
             except Exception:
                 pass
             opener = sig_openings[0] if sig_openings else "Hey"
