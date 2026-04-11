@@ -162,14 +162,26 @@ def process_transcript_job(item_id: str, source_url: str, platform: str, caption
     
     try:
         if platform_key in {"youtube", "youtube_shorts"}:
+            # ── Try timestamp-aware extraction first ──
             try:
-                from backend.apify_service import _extract_youtube_transcripts, get_apify_token
-                token = get_apify_token()
-                youtube_transcript = _extract_youtube_transcripts([source_url], token).get(source_url, "")
-                if youtube_transcript:
-                    consider(youtube_transcript, "YOUTUBE_ACTOR")
+                from backend.apify_service import extract_youtube_native_with_timestamps
+                ts_text, ts_timing = extract_youtube_native_with_timestamps(source_url)
+                if ts_text:
+                    consider(ts_text, "YOUTUBE_NATIVE_TS")
+                    if ts_timing:
+                        metadata["transcript_timing_map"] = ts_timing
             except Exception as e:
-                print(f"[TRANSCRIPT] YouTube transcript recovery failed for {source_url}: {e}")
+                print(f"[TRANSCRIPT] Timestamp-aware extraction failed for {source_url}: {e}")
+            # ── Fallback: plain extraction (no timestamps) ──
+            if not transcript_text:
+                try:
+                    from backend.apify_service import _extract_youtube_transcripts, get_apify_token
+                    token = get_apify_token()
+                    youtube_transcript = _extract_youtube_transcripts([source_url], token).get(source_url, "")
+                    if youtube_transcript:
+                        consider(youtube_transcript, "YOUTUBE_ACTOR")
+                except Exception as e:
+                    print(f"[TRANSCRIPT] YouTube transcript recovery failed for {source_url}: {e}")
         elif platform_key in {"instagram", "tiktok"}:
             try:
                 from backend.apify_service import _extract_social_transcripts, get_apify_token

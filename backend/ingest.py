@@ -89,24 +89,61 @@ def chunk_text_structured(
     document_id: int | None = None,
     chunk_size: int = 800,
     overlap: int = 120,
+    timing_map: list | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Chunk text and return a list of dicts like:
-      {"index": int, "text": str, "creator_id": optional[int], "document_id": optional[int]}
+      {"index": int, "text": str, "creator_id": optional[int], "document_id": optional[int],
+       "start_time_sec": optional[float], "end_time_sec": optional[float]}
 
-    This keeps the original `chunk_text()` API intact while supporting the approve_ingest pipeline.
+    If *timing_map* (from _flatten_transcript_with_timestamps) is provided,
+    each chunk gets approximate video timestamps computed from character offsets.
     """
     chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     out: List[Dict[str, Any]] = []
+    # Pre-compute character offsets of each chunk in the full text
+    char_offsets: List[tuple] = []
+    search_start = 0
+    for t in chunks:
+        # Find the chunk's position in the original text (skip overlap re-use)
+        idx_in_text = text.find(t[:80], search_start)
+        if idx_in_text == -1:
+            idx_in_text = search_start
+        char_offsets.append((idx_in_text, idx_in_text + len(t)))
+        # Advance past the start of this chunk for next search
+        search_start = max(search_start, idx_in_text + 1)
+
     for idx, t in enumerate(chunks):
-        out.append(
-            {
-                "index": idx,
-                "text": t,
-                "creator_id": creator_id,
-                "document_id": document_id,
-            }
-        )
+        entry: Dict[str, Any] = {
+            "index": idx,
+            "text": t,
+            "creator_id": creator_id,
+            "document_id": document_id,
+        }
+
+        # Map chunk character range → video timestamps
+        if timing_map and char_offsets:
+            chunk_start_char, chunk_end_char = char_offsets[idx]
+            start_sec = None
+            end_sec = None
+            for seg in timing_map:
+                seg_start_char = seg.get("char_start", 0)
+                seg_end_char = seg.get("char_end", 0)
+                # Check if segment overlaps with this chunk
+                if seg_end_char > chunk_start_char and seg_start_char < chunk_end_char:
+                    if "start" in seg:
+                        if start_sec is None:
+                            start_sec = seg["start"]
+                        if "end" in seg:
+                            end_sec = seg["end"]
+                        elif "start" in seg:
+                            end_sec = seg["start"]
+            if start_sec is not None:
+                entry["start_time_sec"] = round(start_sec, 1)
+            if end_sec is not None:
+                entry["end_time_sec"] = round(end_sec, 1)
+
+        out.append(entry)
     return out
 
 def get_embedding(text: str) -> List[float]:

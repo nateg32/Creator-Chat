@@ -39,6 +39,7 @@ from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 from backend.services.image_identity_service import image_identity_service
 from backend.services.voice_dna import build_voice_echo_block
+from backend.utils.url_health import check_url_alive_sync
 from backend.services.live_search_rules import (
     build_live_search_query,
     extract_requested_platforms,
@@ -633,6 +634,10 @@ def _preview_card_from_resource(title: str, url: str) -> Optional[Dict[str, str]
     title = (title or "").strip()
     url = (url or "").strip()
     if not url:
+        return None
+    # ── URL health-check: skip dead links ──
+    if not check_url_alive_sync(url):
+        logger.info("Dead link filtered from card: %s", url)
         return None
     if _resource_title_quality(title, url) < 0.45:
         title = ""
@@ -1274,19 +1279,29 @@ def retrieve_candidates(
         content_type = chunk_meta.get("type") or chunk_meta.get("content_type") or "unknown"
         published_at = chunk_meta.get("published_at") or doc_meta.get("published_at")
 
+        # ── Video timestamps from chunk metadata (if preserved during ingestion) ──
+        start_time_sec = chunk_meta.get("start_time_sec")
+        end_time_sec = chunk_meta.get("end_time_sec")
+
+        source_ref_dict = {
+            "platform": platform,
+            "content_id": content_id,
+            "canonical_url": source_url,
+            "title": r.get("document_title") or "",
+            "published_at": published_at,
+            "content_type": content_type,
+        }
+        if start_time_sec is not None:
+            source_ref_dict["start_time_sec"] = start_time_sec
+        if end_time_sec is not None:
+            source_ref_dict["end_time_sec"] = end_time_sec
+
         cand = {
             "chunk_id": r["chunk_id"],
             "chunk_index": r["chunk_index"],
             "distance": float(r["distance"]),
             "content": r["chunk_text"],
-            "source_ref": {
-                "platform": platform,
-                "content_id": content_id,
-                "canonical_url": source_url,
-                "title": r.get("document_title") or "",
-                "published_at": published_at,
-                "content_type": content_type,
-            },
+            "source_ref": source_ref_dict,
             "document_id": r["document_id"],
         }
         candidates.append(cand)
@@ -1306,6 +1321,23 @@ def retrieve_candidates(
                 "retrieval_debug chunk_id=%s creator_id=%s platform=%s canonical_url=%s",
                 c["chunk_id"], creator_id, ref.get("platform"), ref.get("canonical_url"),
             )
+
+    # ── Enrich with total_chunks per document (for positional estimation) ──
+    doc_ids = list({c["document_id"] for c in candidates if c.get("document_id")})
+    doc_chunk_counts: Dict[Any, int] = {}
+    if doc_ids:
+        try:
+            placeholders = ",".join(["%s"] * len(doc_ids))
+            rows = db.execute_query(
+                f"SELECT document_id, COUNT(*) AS cnt FROM chunks WHERE document_id IN ({placeholders}) GROUP BY document_id",
+                tuple(doc_ids),
+            )
+            for row in (rows or []):
+                doc_chunk_counts[row["document_id"]] = int(row["cnt"])
+        except Exception as e:
+            logger.debug("total_chunks enrichment failed: %s", e)
+    for c in candidates:
+        c["total_chunks"] = doc_chunk_counts.get(c.get("document_id"), 0)
 
     return candidates
 
@@ -3355,24 +3387,63 @@ def generate_grounded_answer(
     scorer = StyleScorer(style_fingerprint)
     
     # --- Context Construction ---
-    # Build context from support set
+    # Build context from support set with rich source provenance
     context_parts = []
     for i, chunk in enumerate(support_set):
-        source = chunk["source_ref"]
+        source = chunk.get("source_ref") or {}
         platform = source.get("platform", "unknown")
         title = source.get("title", "")
-        
+        content_type = source.get("content_type", "")
+        published_at = source.get("published_at", "")
+        canonical_url = source.get("canonical_url", "")
+
         # Add origin tag to help model distinguish between creator voice and public info
         origin = "Ingested"
         if chunk.get("is_research"):
             origin = "Creator-Verified Research"
         elif chunk.get("is_public_info"):
             origin = "Public Info (General Knowledge)"
-            
-        context_parts.append(
-            f"[Source {i+1} - {platform} - {origin}" + (f": {title}" if title else "") + "]:\n"
-            + chunk["content"]
-        )
+
+        # ── Build rich provenance header ──
+        header_parts = [f"Source {i+1}", platform, origin]
+        if title:
+            header_parts.append(f'Title: "{title}"')
+        if content_type and content_type not in ("unknown",):
+            header_parts.append(f"Type: {content_type}")
+        if published_at:
+            try:
+                dt = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+                header_parts.append(f"Published: {dt.strftime('%b %d, %Y')}")
+            except Exception:
+                pass
+
+        # ── Video timestamp context (if available) ──
+        start_sec = source.get("start_time_sec")
+        end_sec = source.get("end_time_sec")
+        if start_sec is not None:
+            def _fmt_ts(secs):
+                m, s = divmod(int(secs), 60)
+                h, m = divmod(m, 60)
+                return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+            ts_str = f"Video timestamp: ~{_fmt_ts(start_sec)}"
+            if end_sec is not None and end_sec > start_sec:
+                ts_str += f" – {_fmt_ts(end_sec)}"
+            header_parts.append(ts_str)
+        elif chunk.get("chunk_index") is not None and content_type in ("video", "short"):
+            # Rough positional estimate for chunks without exact timestamps
+            total_chunks = chunk.get("total_chunks")
+            idx = chunk.get("chunk_index", 0)
+            if total_chunks and total_chunks > 2:
+                ratio = idx / (total_chunks - 1)
+                if ratio < 0.25:
+                    header_parts.append("Position: early in the video")
+                elif ratio < 0.55:
+                    header_parts.append("Position: around the middle of the video")
+                else:
+                    header_parts.append("Position: towards the end of the video")
+
+        header = "[" + " | ".join(header_parts) + "]"
+        context_parts.append(header + ":\n" + chunk["content"])
     context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
     live_web_chunks = sum(1 for chunk in support_set if _is_live_web_chunk(chunk))
     logger.info(f"[SEARCH_TRACE] prompt_context: support_chunks={len(support_set)} live_web_chunks={live_web_chunks} context_len={len(context)}")
@@ -4563,7 +4634,63 @@ def grounded_rag_ask(
     if resolved_question != question:
         logger.info("Resolved short follow-up '%s' to '%s'", question, resolved_question)
         question = resolved_question
-    
+
+    def _verify_source_grounding(answer_text: str, support_set: List[Dict[str, Any]]) -> str:
+        """Remove fabricated video/content title mentions that don't match any
+        retrieved chunk.  Keeps the rest of the answer intact.
+
+        Strategy: extract quoted titles from the LLM output (patterns like
+        "in my video …" or "I covered this in …") and check each against the
+        support set titles.  If a title is completely ungrounded, redact the
+        specific mention while preserving the surrounding advice.
+        """
+        if not answer_text or not support_set:
+            return answer_text
+
+        # Collect all actual titles from the support set
+        real_titles: Set[str] = set()
+        for chunk in support_set:
+            ref = chunk.get("source_ref") or {}
+            t = (ref.get("title") or chunk.get("title") or "").strip().lower()
+            if t and len(t) > 3:
+                real_titles.add(t)
+
+        if not real_titles:
+            return answer_text
+
+        # Find title-like mentions in the LLM output
+        # Patterns: "in my video [title]", "in [title]", etc.
+        _TITLE_MENTION_RE = re.compile(
+            r'(?:in\s+(?:my\s+)?(?:video|episode|clip)\s+["""]([^"""\n]{5,120})["""]'
+            r'|["""]([^"""\n]{5,120})["""])',
+            re.IGNORECASE,
+        )
+
+        def _is_grounded(mentioned_title: str) -> bool:
+            mt = mentioned_title.strip().lower()
+            for rt in real_titles:
+                # Fuzzy: if >60% of words overlap, consider it grounded
+                mt_words = set(re.findall(r"\w+", mt))
+                rt_words = set(re.findall(r"\w+", rt))
+                if not mt_words:
+                    return False
+                overlap = len(mt_words & rt_words)
+                if overlap / max(len(mt_words), 1) > 0.55:
+                    return True
+                if mt in rt or rt in mt:
+                    return True
+            return False
+
+        result = answer_text
+        for m in _TITLE_MENTION_RE.finditer(answer_text):
+            title = m.group(1) or m.group(2) or ""
+            if title and not _is_grounded(title):
+                logger.warning("Source grounding: redacting ungrounded title '%s'", title)
+                # Replace the fabricated title with a generic reference
+                result = result.replace(m.group(0), "in one of my videos")
+
+        return result
+
     def apply_final_polish(result_dict: Dict[str, Any], profile: Dict[str, Any], state_mgr: Any, mvc_score: int = 0, plan: Optional[InteractionPlan] = None) -> Dict[str, Any]:
         if "answer" in result_dict:
             answer = _unwrap_structured_answer(result_dict["answer"])
@@ -4577,6 +4704,13 @@ def grounded_rag_ask(
             allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none" if plan else False
             result_dict["answer"] = strip_all_markdown(answer.strip(), allow_links=allow_links)
             
+            # ── Source-grounding guard: verify cited titles against actual support set ──
+            if not is_light_route:
+                result_dict["answer"] = _verify_source_grounding(
+                    result_dict["answer"],
+                    result_dict.get("retrieved") or [],
+                )
+
             if is_light_route:
                 logger.info(f"apply_final_polish: Light route {plan.route} — strip only")
                 state_mgr.save_state()
@@ -6379,20 +6513,41 @@ def build_inline_citations(
             chunk_index=idx,
         )
         preview = snippet or re.sub(r"\s+", " ", content.replace("[LIVE WEB SEARCH RESULT]", "").strip())
-        ranked.append(
-            {
-                "title": title[:160],
-                "url": url,
-                "platform": platform,
-                "snippet": preview[:220],
-                "is_live_web": is_live_web,
-                "score": score,
-            }
-        )
+
+        # ── Rich provenance metadata ──
+        content_type = str(ref.get("content_type") or "").strip()
+        published_at = ref.get("published_at")
+        start_time_sec = ref.get("start_time_sec")
+        end_time_sec = ref.get("end_time_sec")
+
+        citation_entry: Dict[str, Any] = {
+            "title": title[:160],
+            "url": url,
+            "platform": platform,
+            "snippet": preview[:220],
+            "is_live_web": is_live_web,
+            "score": score,
+            "content_type": content_type or ("web" if is_live_web else "unknown"),
+        }
+        if published_at:
+            citation_entry["published_at"] = str(published_at)
+        if start_time_sec is not None:
+            citation_entry["start_time_sec"] = start_time_sec
+        if end_time_sec is not None:
+            citation_entry["end_time_sec"] = end_time_sec
+
+        ranked.append(citation_entry)
 
     # Filter to sources that meaningfully contributed to the answer before sorting.
     # Prevents all retrieved chunks from appearing as citations when only 1-2 were used.
     _MIN_CITATION_SCORE = 0.42
     ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
-    return ranked[:limit]
+    # ── URL health-check: drop dead links from citations ──
+    alive_ranked: List[Dict[str, Any]] = []
+    for cit in ranked:
+        if check_url_alive_sync(cit.get("url") or ""):
+            alive_ranked.append(cit)
+        else:
+            logger.info("Dead link filtered from citation: %s", cit.get("url"))
+    return alive_ranked[:limit]

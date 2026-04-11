@@ -3,7 +3,7 @@ import json
 import html
 import re
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 from backend.settings import settings
@@ -610,6 +610,64 @@ def _flatten_transcript_segments(payload: Any) -> str:
     return str(payload).strip()
 
 
+def _flatten_transcript_with_timestamps(payload: Any) -> Tuple[str, List[Dict[str, Any]]]:
+    """Flatten transcript segments AND preserve per-segment timing data.
+
+    Returns:
+        (flat_text, timing_map)
+        where timing_map is a list of dicts:
+        [{"start": 0.0, "end": 2.5, "char_start": 0, "char_end": 45}, ...]
+    """
+    if not payload:
+        return "", []
+    if isinstance(payload, str):
+        return payload.strip(), []
+    if not isinstance(payload, list):
+        return str(payload).strip(), []
+
+    parts: List[str] = []
+    timing_map: List[Dict[str, Any]] = []
+    char_offset = 0
+
+    for segment in payload:
+        if isinstance(segment, dict):
+            text = str(segment.get("text") or "").strip()
+            start = segment.get("start")
+            duration = segment.get("duration") or segment.get("dur")
+        else:
+            text = str(segment).strip()
+            start = None
+            duration = None
+
+        if not text:
+            continue
+
+        # Account for the space separator between segments
+        if parts:
+            char_offset += 1  # for the " " join separator
+
+        char_start = char_offset
+        char_end = char_offset + len(text)
+
+        entry: Dict[str, Any] = {
+            "char_start": char_start,
+            "char_end": char_end,
+        }
+        if start is not None:
+            try:
+                entry["start"] = float(start)
+                if duration is not None:
+                    entry["end"] = float(start) + float(duration)
+            except (ValueError, TypeError):
+                pass
+
+        timing_map.append(entry)
+        parts.append(text)
+        char_offset = char_end
+
+    return " ".join(parts).strip(), timing_map
+
+
 def _extract_youtube_native_transcripts(video_urls: List[str], max_workers: Optional[int] = None) -> Dict[str, str]:
     # Pull public YouTube captions directly before slower actor-based recovery.
     if not video_urls:
@@ -711,6 +769,81 @@ def _extract_youtube_native_transcripts(video_urls: List[str], max_workers: Opti
     if resolved:
         print(f"[YOUTUBE] Native captions recovered {len(resolved)}/{len(video_urls)} transcripts")
     return resolved
+
+
+def extract_youtube_native_with_timestamps(video_url: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """Fetch a single YouTube video transcript with per-segment timing data.
+
+    Returns:
+        (flat_text, timing_map) — timing_map entries carry 'start', 'end',
+        'char_start', 'char_end' so downstream chunking can map chunks to
+        approximate video timestamps.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except Exception:
+        return "", []
+
+    video_id = extract_content_id(video_url, "youtube")
+    if not video_id:
+        return "", []
+
+    preferred_languages = [
+        ["en", "en-US", "en-GB", "en-AU", "en-CA"],
+        ["en"],
+    ]
+
+    transcript_list = None
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+    except Exception:
+        pass
+
+    def _try_fetch(transcript_obj):
+        segments = transcript_obj.fetch()
+        text, tmap = _flatten_transcript_with_timestamps(segments)
+        return (text, tmap) if text else (None, None)
+
+    if transcript_list is not None:
+        for languages in preferred_languages:
+            try:
+                text, tmap = _try_fetch(transcript_list.find_transcript(languages))
+                if text:
+                    return text, tmap
+            except Exception:
+                pass
+            try:
+                text, tmap = _try_fetch(transcript_list.find_generated_transcript(languages))
+                if text:
+                    return text, tmap
+            except Exception:
+                pass
+        try:
+            for tr in transcript_list:
+                text, tmap = _try_fetch(tr)
+                if text:
+                    return text, tmap
+        except Exception:
+            pass
+
+    for languages in preferred_languages:
+        try:
+            segments = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+            text, tmap = _flatten_transcript_with_timestamps(segments)
+            if text:
+                return text, tmap
+        except Exception:
+            pass
+
+    try:
+        segments = YouTubeTranscriptApi.get_transcript(video_id)
+        text, tmap = _flatten_transcript_with_timestamps(segments)
+        if text:
+            return text, tmap
+    except Exception:
+        pass
+
+    return "", []
 
 
 def batch_extract_all_transcripts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

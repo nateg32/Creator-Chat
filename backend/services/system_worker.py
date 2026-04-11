@@ -515,9 +515,53 @@ def handle_ingest(job_id: str, payload: dict):
                 (creator_id, document_id)
             )
 
-            chunks = chunk_text_structured(text=text_content, creator_id=creator_id, document_id=document_id, chunk_size=800, overlap=120)
+            # ── Retrieve timing map from scrape_items metadata (if YouTube) ──
+            item_meta = item.get("metadata") or {}
+            if isinstance(item_meta, str):
+                try:
+                    item_meta = json.loads(item_meta)
+                except Exception:
+                    item_meta = {}
+            timing_map = item_meta.get("transcript_timing_map") if isinstance(item_meta, dict) else None
+
+            chunks = chunk_text_structured(
+                text=text_content,
+                creator_id=creator_id,
+                document_id=document_id,
+                chunk_size=800,
+                overlap=120,
+                timing_map=timing_map,
+            )
             chunk_ids = []
             for chunk in chunks:
+                chunk_meta = {
+                    "platform": platform,
+                    "type": item.get("content_type", "unknown"),
+                    "creator_handle": item.get("creator_handle"),
+                    "source_url": source_url,
+                    "content_id": content_id,
+                    "canonical_url": source_url,
+                    "title": title,
+                    "search_run_id": search_id,
+                    "transcript_status": transcript_status,
+                    "published_at": item.get("published_at"),
+                    "source_ref": {
+                        "platform": platform,
+                        "content_id": content_id,
+                        "canonical_url": source_url,
+                        "title": title,
+                        "published_at": item.get("published_at"),
+                        "content_type": item.get("content_type", "unknown"),
+                    },
+                }
+                # ── Inject chunk-level video timestamps ──
+                if chunk.get("start_time_sec") is not None:
+                    chunk_meta["start_time_sec"] = chunk["start_time_sec"]
+                    chunk_meta["source_ref"]["start_time_sec"] = chunk["start_time_sec"]
+                if chunk.get("end_time_sec") is not None:
+                    chunk_meta["end_time_sec"] = chunk["end_time_sec"]
+                    chunk_meta["source_ref"]["end_time_sec"] = chunk["end_time_sec"]
+
                 c_id = db.execute_insert(
                     """
                     INSERT INTO chunks (creator_id, document_id, chunk_index, chunk_text, metadata)
@@ -533,29 +577,7 @@ def handle_ingest(job_id: str, payload: dict):
                         document_id,
                         chunk["index"],
                         chunk["text"],
-                        json.dumps(
-                            {
-                                "platform": platform,
-                                "type": item.get("content_type", "unknown"),
-                                "creator_handle": item.get("creator_handle"),
-                                "source_url": source_url,
-                                "content_id": content_id,
-                                "canonical_url": source_url,
-                                "title": title,
-                                "search_run_id": search_id,
-                                "transcript_status": transcript_status,
-                                "published_at": item.get("published_at"),
-                                "source_ref": {
-                                    "platform": platform,
-                                    "content_id": content_id,
-                                    "canonical_url": source_url,
-                                    "title": title,
-                                    "published_at": item.get("published_at"),
-                                    "content_type": item.get("content_type", "unknown"),
-                                },
-                            },
-                            default=str,
-                        ),
+                        json.dumps(chunk_meta, default=str),
                     ),
                 )
                 if c_id:
