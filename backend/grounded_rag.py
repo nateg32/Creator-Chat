@@ -761,8 +761,8 @@ def _rescue_cards_from_answer(
             continue
         hits = sum(1 for w in title_words if w in answer_lower)
         overlap = hits / len(title_words)
-        # Require at least 50% word overlap to avoid false positives.
-        if overlap >= 0.50 and hits >= 3 and overlap > best_overlap:
+        # Require at least 35% word overlap to avoid false positives.
+        if overlap >= 0.35 and hits >= 2 and overlap > best_overlap:
             card = _preview_card_from_resource(title, url)
             if card:
                 best_card = card
@@ -1411,6 +1411,7 @@ def _score_support_resource_candidate(
     score = (
         (0.28 if not is_live_web else 0.12)
         + (0.24 if recommended else 0.0)
+        + (0.12 if (not recommended and not is_live_web) else 0.0)  # ingested content bonus
         + (title_quality * 0.22)
         + (question_overlap * 0.28)      # primary: does this source match what the user asked?
         + (answer_overlap * 0.20)         # secondary: was it referenced in the response?
@@ -5500,10 +5501,20 @@ Message: {answer_text[:500]}"""
     # --- Step 9: Video Recommendation (ONE ONLY) ---
     card = []
     image_turn_active = bool(images or (image_result and image_result.get("support_chunk")))
+    # Check if RAG support_set has substantive ingested content (not live web)
+    _has_substantive_rag = bool(
+        support_set
+        and any(
+            not str(c.get("content") or "").startswith("[LIVE WEB SEARCH RESULT]")
+            and (c.get("url") or (c.get("source_ref") or {}).get("canonical_url"))
+            for c in (support_set or [])[:6]
+        )
+    )
     _should_try_cards = (
         plan_obj.grounding.video_policy in ["one_if_helpful", "forced"]
         or wants_link
         or is_video_request
+        or _has_substantive_rag
     )
     if _should_try_cards and not image_turn_active:
         card = _build_response_cards(
@@ -6397,8 +6408,20 @@ async def grounded_rag_stream(
     if no_online_fallback and _contains_placeholder_link_artifacts(final_stream_text):
         final_stream_text = no_online_fallback
         yield f"__FINAL_CONTENT__{final_stream_text}"
-    # Only build cards when the user asked for resources or the recommender ran
-    _user_wanted_resource = route == "ROUTE_2_TASK" and locals().get("should_run_recommender", False)
+    # Build cards when the user asked for resources, the recommender ran,
+    # OR the response is grounded in substantive ingested content.
+    _has_substantive_rag_stream = bool(
+        support_set
+        and any(
+            not str(c.get("content") or "").startswith("[LIVE WEB SEARCH RESULT]")
+            and (c.get("url") or (c.get("source_ref") or {}).get("canonical_url"))
+            for c in (support_set or [])[:6]
+        )
+    )
+    _user_wanted_resource = (
+        (route == "ROUTE_2_TASK" and locals().get("should_run_recommender", False))
+        or _has_substantive_rag_stream
+    )
     stream_cards = []
     if _user_wanted_resource:
         stream_cards = _build_response_cards(
@@ -6540,7 +6563,7 @@ def build_inline_citations(
 
     # Filter to sources that meaningfully contributed to the answer before sorting.
     # Prevents all retrieved chunks from appearing as citations when only 1-2 were used.
-    _MIN_CITATION_SCORE = 0.42
+    _MIN_CITATION_SCORE = 0.34
     ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
     # ── URL health-check: drop dead links from citations ──
