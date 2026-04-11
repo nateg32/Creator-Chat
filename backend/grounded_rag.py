@@ -6177,16 +6177,26 @@ async def grounded_rag_stream(
                 except Exception:
                     style_fingerprint = {}
 
-            greeting_text = greeting_service.generate_greeting(
-                user_name,
-                voice_profile if isinstance(voice_profile, dict) else {},
-                include_question=True,
-                creator_name=creator_row.get("name") or creator_row.get("handle"),
-                creator_category=creator_row.get("creator_category"),
-                style_fingerprint=style_fingerprint if isinstance(style_fingerprint, dict) else {},
-                conversation_history=conversation_history or [],
-                creator_profile=creator_row,
+            # Use the interaction engine's LLM-based greeting for creator voice
+            from backend.services.conversation_closure import get_greeting_question
+            _greeting_plan = InteractionPlan(
+                route="ROUTE_0_GREETING",
+                next_question=get_greeting_question(creator_row),
             )
+            greeting_text = await asyncio.to_thread(
+                interaction_engine._render_greeting,
+                _greeting_plan,
+                creator_row,
+                question,
+                user_name,
+                None,
+                user_preferences,
+                conversation_history or [],
+                thread_id or "new",
+            )
+            greeting_text = strip_all_markdown(greeting_text, creator_profile=creator_row)
+            from backend.services.voice_dna import apply_vocabulary_resonance
+            greeting_text = apply_vocabulary_resonance(greeting_text, creator_row)
             yield greeting_text
             return
 

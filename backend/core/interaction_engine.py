@@ -1719,7 +1719,7 @@ Generate InteractionPlan JSON."""
         allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none"
 
         if plan.route == "ROUTE_0_GREETING":
-            raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences, history=history)
+            raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences, history=history, thread_id=thread_id)
             cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
             cleaned = apply_vocabulary_resonance(cleaned, creator_profile)
             result = self._apply_creator_integrity_guard(
@@ -2172,44 +2172,132 @@ KNOWLEDGE:
 
 Output ONLY your response to the user."""
 
-    def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None, history: Optional[List[Dict[str, str]]] = None) -> str:
+    def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None, history: Optional[List[Dict[str, str]]] = None, thread_id: str = "new") -> str:
         creator_name = creator_profile.get("name", "the creator")
         creator_category = creator_profile.get("creator_category", "general")
         known_user_name = (user_name or "").strip()
         voice_profile = _coerce_profile_dict(creator_profile.get("voice_profile"))
         style_fingerprint = _coerce_profile_dict(creator_profile.get("style_fingerprint"))
 
+        # ── Build voice signals for LLM-based greeting ──
+        greeting_voice_dna = build_voice_dna_block(
+            creator_profile, mode="greeting",
+            conversation_tracker=self._get_voice_tracker(thread_id),
+        )
+        voice_instructions = build_voice_instructions(creator_profile, mode="greeting")
+        voice_examples = _build_voice_examples(creator_profile, mode="greeting")
+
+        # Extract persona anchors from the fingerprint
+        lexical = (style_fingerprint.get("lexical_rules") or {})
+        sig_phrases = list(lexical.get("signature_phrases") or [])[:4]
+        high_words = list(lexical.get("high_signal_words") or [])[:4]
+        identity_sig = style_fingerprint.get("identity_signature") or {}
+        power_pos = identity_sig.get("power_position") or ""
+        anti = style_fingerprint.get("anti_persona") or {}
+        forbidden = list(anti.get("forbidden_generic_coach_lines") or [])[:3]
+
+        persona_anchors = ""
+        if sig_phrases:
+            persona_anchors += f"\nSIGNATURE PHRASES (weave in naturally if it fits): {', '.join(sig_phrases)}"
+        if high_words:
+            persona_anchors += f"\nVOCABULARY: Prefer these words: {', '.join(high_words)}"
+        if power_pos:
+            persona_anchors += f"\nPOWER POSITION: {power_pos}"
+        if forbidden:
+            persona_anchors += f"\nNEVER SAY: {', '.join(forbidden)}"
+
+        # Determine the question to ask
+        domain_q = get_greeting_question(creator_profile)
+        returning = bool(history and len(history) > 2)
+
+        normalized_prefs = self._normalize_user_preferences(user_preferences)
+        pref_instructions = self._build_user_pref_instructions(normalized_prefs)
+        safety_block = build_prompt_safety_block(
+            current_message=user_msg,
+            custom_preferences=normalized_prefs.get("custom", ""),
+        )
+
+        # Build the name instruction
+        if known_user_name:
+            name_instruction = f"The user's name is {known_user_name}. Use it naturally once."
+            question_instruction = f"Then ask this question in your own words: \"{domain_q}\""
+        else:
+            name_instruction = "You don't know their name yet."
+            question_instruction = "Ask what they want to be called. Do not jump into advice or a domain question yet."
+
+        returning_note = ""
+        if returning:
+            returning_note = "This is a returning user. Acknowledge that naturally (e.g. 'good to have you back') but keep it brief."
+
+        system_prompt = f"""You are {creator_name}. You're greeting someone in a one to one DM.
+
+{greeting_voice_dna}
+
+YOUR VOICE:
+{voice_instructions}
+{voice_examples}
+{persona_anchors}
+{pref_instructions}
+{safety_block}
+
+{name_instruction}
+{returning_note}
+{question_instruction}
+
+Rules:
+Max 2 short sentences. Exactly 1 question mark. Max 30 words.
+No advice. No frameworks. No teaching. No lists. Just greet them like YOU would.
+Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.
+No "welcome back to my channel" or any YouTube broadcast language.
+No inline hyphens, en dashes, or em dashes inside sentences. Use commas or periods instead.
+Sound like a real person opening a DM, not a bot or a host.
+
+Output ONLY your response."""
+
         try:
-            direct_greeting = greeting_service.generate_greeting(
-                known_user_name,
-                voice_profile,
-                include_question=True,
-                creator_name=creator_name,
-                creator_category=creator_category,
-                style_fingerprint=style_fingerprint,
-                conversation_history=history or [],
-                creator_profile=creator_profile,
+            response = self._generate_completion_with_compat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                model=self._reply_model_for_route(plan.route),
+                temperature=0.7,
+                max_tokens=60,
             )
-            return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
+            return self._enforce_greeting_limits(response.strip(), creator_profile=creator_profile)
         except Exception as e:
-            logger.error(f"Greeting render failed: {e}")
-            # Use creator-specific opener if available
-            sig_openings = []
-            _BROADCAST_FILLER = ("my channel", "the channel", "this channel", "welcome back to", "back to my",
-                                 "subscribe", "like and subscribe", "hit the bell", "in today's video", "in this video")
+            logger.error(f"LLM greeting failed, falling back to deterministic: {e}")
+            # Fall back to deterministic greeting service
             try:
-                sig_openings = [
-                    o for o in list(
-                        (style_fingerprint.get("speech_mechanics") or {}).get("signature_openings") or []
-                    )[:4]
-                    if not any(f in str(o).lower() for f in _BROADCAST_FILLER)
-                ]
-            except Exception:
-                pass
-            opener = sig_openings[0] if sig_openings else "Hey"
-            if known_user_name:
-                return f"{opener} {known_user_name}. {plan.next_question}"
-            return f"{opener}. What's your name?"
+                direct_greeting = greeting_service.generate_greeting(
+                    known_user_name,
+                    voice_profile,
+                    include_question=True,
+                    creator_name=creator_name,
+                    creator_category=creator_category,
+                    style_fingerprint=style_fingerprint,
+                    conversation_history=history or [],
+                    creator_profile=creator_profile,
+                )
+                return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
+            except Exception as e2:
+                logger.error(f"Deterministic greeting also failed: {e2}")
+                _BROADCAST_FILLER = ("my channel", "the channel", "this channel", "welcome back to", "back to my",
+                                     "subscribe", "like and subscribe", "hit the bell", "in today's video", "in this video")
+                sig_openings = []
+                try:
+                    sig_openings = [
+                        o for o in list(
+                            (style_fingerprint.get("speech_mechanics") or {}).get("signature_openings") or []
+                        )[:4]
+                        if not any(f in str(o).lower() for f in _BROADCAST_FILLER)
+                    ]
+                except Exception:
+                    pass
+                opener = sig_openings[0] if sig_openings else "Hey"
+                if known_user_name:
+                    return f"{opener} {known_user_name}. {plan.next_question}"
+                return f"{opener}. What's your name?"
 
     def _render_small_talk(
         self,
