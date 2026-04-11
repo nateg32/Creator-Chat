@@ -101,6 +101,28 @@ _AI_PURGE = [
     "excellent question",
     "wonderful question",
     "what a great question",
+    "hey there!",
+    "hey there,",
+    "hey there.",
+    "feel free to ask",
+    "feel free to reach out",
+    "don't hesitate to ask",
+    "don't hesitate to reach out",
+    "for more insights",
+    "narrow down what you're looking for",
+    "narrow down what you are looking for",
+    "hope this helps",
+    "hope that helps",
+    "i hope this helps",
+    "i hope that helps",
+    "let me know if you have any other questions",
+    "let me know if you have any questions",
+]
+
+# Regex-based purge patterns (for variable product/program names)
+_AI_PURGE_PATTERNS = [
+    re.compile(r"join\s+the\s+\S+(?:\s+\S+){0,3}\s+for\s+more\s+\w+\.?", re.IGNORECASE),
+    re.compile(r"check\s+out\s+(?:my|the)\s+\S+(?:\s+\S+){0,3}\s+for\s+more\s+\w+\.?", re.IGNORECASE),
 ]
 
 
@@ -584,6 +606,11 @@ def apply_vocabulary_resonance(
             result = before.rstrip() + " " + after.lstrip()
             result = re.sub(r'\s+', ' ', result).strip()
             lower = result.lower()
+
+    # First pass (b): regex-based AI filler removal
+    for pat in _AI_PURGE_PATTERNS:
+        result = pat.sub('', result)
+    result = re.sub(r'\s+', ' ', result).strip()
 
     # Second pass: word-level swaps (whole-word only, preserve case)
     for generic, replacement in vocab_map.items():

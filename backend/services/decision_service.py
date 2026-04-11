@@ -52,7 +52,22 @@ ADVICE_REQUEST_PATTERNS = (
     re.compile(r"\bhow can i\b", re.IGNORECASE),
     re.compile(r"\bany advice\b", re.IGNORECASE),
 )
-
+# Source/attribution meta-question patterns
+# Catches: "where did you get this information", "which videos", "from what video",
+# "what source", "where is that from"
+_SOURCE_META_RE = re.compile(
+    r"\b(?:"
+    r"where (?:did|do) (?:you|u|ya) (?:get|find|pull|take|source)"
+    r"|which (?:video|videos|source|sources|content|episode|clip)"
+    r"|from (?:what|which) (?:video|source|content|episode)"
+    r"|what (?:video|source|content) (?:is|was|did) (?:that|this|it)"
+    r"|where (?:is|was) (?:that|this|it) from"
+    r"|what(?:'s| is) (?:the|your) source"
+    r"|i me(?:an|n) which video"
+    r"|sorry.*which video"
+    r")\b",
+    re.IGNORECASE,
+)
 CLARIFICATION_TITLE_PATTERNS = (
     re.compile(r'(?i)\bwhich one[,:-]?\s*[\"“]?([^?\"\n]+?)[\"”]?\??\s*$'),
     re.compile(r'(?i)\bdo you mean[,:-]?\s*[\"“]?([^?\"\n]+?)[\"”]?\??\s*$'),
@@ -245,6 +260,11 @@ class DecisionService:
             rewritten = self._rewrite_clarification_followup(history)
             if rewritten:
                 return rewritten
+        # ── source / attribution meta-question ──
+        if self._looks_like_source_meta_question(q):
+            rewritten = self._rewrite_source_meta_question(q, history)
+            if rewritten:
+                return rewritten
         # ── content/video reference follow-up ──
         if self._looks_like_content_reference(q):
             title = self._extract_recent_card_title(history)
@@ -346,6 +366,76 @@ class DecisionService:
         if any(w in lower for w in ("when", "date", "upload", "post")):
             return f"When did you upload \"{clean_title}\"?"
         return f"Tell me more about your video \"{clean_title}\""
+
+    # ── source / attribution meta-question helpers ──
+
+    def _looks_like_source_meta_question(self, question: str) -> bool:
+        """Detect 'where did you get this info / which videos' type questions."""
+        lowered = re.sub(r"\s+", " ", str(question or "").lower()).strip()
+        if not lowered:
+            return False
+        return bool(_SOURCE_META_RE.search(lowered))
+
+    def _extract_cited_sources_from_history(self, history: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+        """Extract all video/source titles and URLs mentioned in recent assistant messages."""
+        sources: List[Dict[str, str]] = []
+        seen_titles: set = set()
+        for msg in reversed(list(history or [])[-10:]):
+            if (msg.get("role") or "").lower() != "assistant":
+                continue
+            # Check card metadata
+            cards = msg.get("cards") or []
+            if isinstance(cards, list):
+                for card in cards:
+                    if isinstance(card, dict):
+                        title = (card.get("title") or "").strip()
+                        url = (card.get("url") or "").strip()
+                        if title and title.lower() not in seen_titles:
+                            seen_titles.add(title.lower())
+                            sources.append({"title": title, "url": url})
+            # Check citations metadata
+            citations = msg.get("citations") or []
+            if isinstance(citations, list):
+                for cit in citations:
+                    if isinstance(cit, dict):
+                        title = (cit.get("title") or "").strip()
+                        url = (cit.get("url") or "").strip()
+                        if title and title.lower() not in seen_titles:
+                            seen_titles.add(title.lower())
+                            sources.append({"title": title, "url": url})
+        return sources
+
+    def _identify_topic_from_history(self, history: Optional[List[Dict[str, str]]]) -> str:
+        """Identify the recent discussion topic from user messages."""
+        for msg in reversed(list(history or [])[-6:]):
+            if (msg.get("role") or "").lower() != "user":
+                continue
+            text = (msg.get("content") or msg.get("text") or "").strip()
+            # Skip short meta-questions (the source question itself)
+            if text and len(text.split()) > 3 and not _SOURCE_META_RE.search(text.lower()):
+                return re.sub(r"\s+", " ", text).strip()[:200]
+        return ""
+
+    def _rewrite_source_meta_question(self, question: str, history: Optional[List[Dict[str, str]]]) -> str:
+        """Rewrite a source meta-question to fetch the cited content with context."""
+        sources = self._extract_cited_sources_from_history(history)
+        topic = self._identify_topic_from_history(history)
+
+        if sources:
+            titles = ", ".join(f'"{s["title"]}"' for s in sources[:5])
+            return (
+                f"The user is asking which sources/videos the previous information came from. "
+                f"The following sources were cited in this conversation: {titles}. "
+                f"Tell the user which of these sources the information came from, "
+                f"and briefly explain what each source covers related to the topic."
+            )
+        if topic:
+            return (
+                f"The user wants to know which of your videos or content covers "
+                f"this topic: \"{topic}\". Search your content for videos about this topic "
+                f"and share the relevant ones with links."
+            )
+        return ""
 
     def _looks_like_book_followup(self, question: str) -> bool:
         lowered = re.sub(r"\s+", " ", str(question or "").lower()).strip(" .!?")

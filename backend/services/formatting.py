@@ -55,6 +55,8 @@ _ABBREVIATIONS_RE = re.compile(
     r"\b(e\.g|i\.e|etc|vs|Dr|Mr|Mrs|Ms|St|Jr|Sr|Prof|Inc|Corp|Ltd|Vol|No|approx)\.\s",
     re.IGNORECASE,
 )
+_DECIMAL_PLACEHOLDER = "\x00DEC\x00"
+_DECIMAL_RE = re.compile(r"(\d+\.\d+)")
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _GENERIC_CARD_LABELS = {
     "external resource",
@@ -255,12 +257,23 @@ def _paragraphize_prose(text: str) -> str:
             abbrev_map[key] = m.group(0)
             return key
         protected_prose = _ABBREVIATIONS_RE.sub(_protect_abbrev, prose)
+
+        # Protect decimal numbers like 0.5, 1.2, 100.00 from sentence splitting
+        decimal_map = {}
+        def _protect_decimal(m):
+            key = f"{_DECIMAL_PLACEHOLDER}{len(decimal_map)}{_DECIMAL_PLACEHOLDER}"
+            decimal_map[key] = m.group(0)
+            return key
+        protected_prose = _DECIMAL_RE.sub(_protect_decimal, protected_prose)
+
         sentences = [segment.strip() for segment in _SENTENCE_SPLIT_PATTERN.split(protected_prose) if segment.strip()]
-        # Restore abbreviations
-        if abbrev_map:
+        # Restore abbreviations and decimals
+        if abbrev_map or decimal_map:
             restored = []
             for s in sentences:
                 for k, v in abbrev_map.items():
+                    s = s.replace(k, v)
+                for k, v in decimal_map.items():
                     s = s.replace(k, v)
                 restored.append(s)
             sentences = restored

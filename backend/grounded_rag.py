@@ -1479,6 +1479,30 @@ def _recent_discussion_topic(question: str, history: Optional[List[Dict[str, str
     return " ".join(terms[:4])
 
 
+def _extract_previously_cited_titles(history: Optional[List[Dict[str, str]]]) -> List[str]:
+    """Scan recent assistant messages for video/content titles that were cited."""
+    titles: List[str] = []
+    seen: set = set()
+    for msg in reversed(list(history or [])[-10:]):
+        if (msg.get("role") or "").lower() != "assistant":
+            continue
+        # Check card metadata
+        for card in (msg.get("cards") or []):
+            if isinstance(card, dict):
+                t = (card.get("title") or "").strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    titles.append(t)
+        # Check citation metadata
+        for cit in (msg.get("citations") or []):
+            if isinstance(cit, dict):
+                t = (cit.get("title") or "").strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    titles.append(t)
+    return titles
+
+
 def _build_not_online_fallback(
     question: str,
     creator_name: str,
@@ -1486,6 +1510,18 @@ def _build_not_online_fallback(
     kind: str = "source",
     style_fingerprint: Optional[Dict[str, Any]] = None,
 ) -> str:
+    # ── Self-contradiction guard ──────────────────────────────
+    # If we already cited videos in this conversation, do NOT say
+    # "I don't have a video".  Return empty so the system continues
+    # to the LLM-rendered answer path instead.
+    previously_cited = _extract_previously_cited_titles(history)
+    if previously_cited:
+        logger.debug(
+            "Skipping not-online fallback — %d source(s) already cited in history",
+            len(previously_cited),
+        )
+        return ""
+
     topic = _recent_discussion_topic(question, history)
     sfp = style_fingerprint or {}
     lexical = sfp.get("lexical_rules") or {}
