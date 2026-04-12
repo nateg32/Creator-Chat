@@ -73,6 +73,7 @@ from backend.services.out_of_domain_rules import (
     should_soft_decline_external_live_fact,
 )
 from backend.services.conversation_closure import get_bridge_question
+from backend.services.creator_fact_policy import classify_creator_fact_query
 from backend.services.regurgitation_guard import (
     build_anti_regurgitation_block,
     check_for_regurgitation,
@@ -144,15 +145,8 @@ def _build_evidence_plan(
 
 
 def _is_explicit_creator_timeline_query(question: str) -> bool:
-    lowered = str(question or "").strip().lower()
-    if not lowered:
-        return False
-    return bool(
-        re.search(r"\bwhen\s+(?:did|do|was|were)\s+(?:you|u|he|she|they)\s+(?:start|begin|launch|launched|found|founded|create|created|publish|published|release|released|move|moved|write|wrote|get\s+into|trade|day\s*trad(?:e|ing)|invest|investing)\b", lowered)
-        or re.search(r"\bhow\s+long\s+(?:have|has)\s+(?:you|u|he|she|they)\s+been\b", lowered)
-        or re.search(r"\bwhat\s+(?:year|date|month)\s+did\s+(?:you|u|he|she|they)\b", lowered)
-        or re.search(r"\bwhen\s+did\s+(?:you|u)\s+start\b", lowered)
-    )
+    policy = classify_creator_fact_query(question, query_goal="timeline_lookup")
+    return policy.kind in {"publication_timeline", "creator_start_timeline", "creator_journey"}
 
 
 def _route_personal_via_evidence(route_evidence_plan: Optional[EvidencePlan]) -> bool:

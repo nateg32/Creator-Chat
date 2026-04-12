@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from backend.services.creator_fact_policy import classify_creator_fact_query
 from backend.services.evidence_router import EvidenceRouter
 
 
@@ -108,6 +109,25 @@ class SearchDecisionEngine:
         query_lower = str(query or "").lower().strip()
         if not query_lower:
             return False
+        confirmation_signal = bool(
+            re.search(r"\b(do you know|do you have|have you heard of|is there|is .+ your|tell me about|what is|do you know about)\b", query_lower)
+        )
+        if re.search(r"\bdo you have a\s+(book|course|program|podcast|show|newsletter)\b", query_lower):
+            return True
+        query_words = {
+            word
+            for word in re.findall(r"[a-z0-9']+", query_lower)
+            if len(word) >= 3 and word not in {"your", "with", "that", "this", "about", "book"}
+        }
+        if confirmation_signal and query_words:
+            for term in self.creator_terms:
+                term_words = {
+                    word
+                    for word in re.findall(r"[a-z0-9']+", term)
+                    if len(word) >= 3 and word not in {"your", "with", "that", "this", "about", "book"}
+                }
+                if len(query_words.intersection(term_words)) >= 2:
+                    return True
         has_entity_term = any(term in query_lower for term in self.creator_terms if len(term) >= 4)
         if not has_entity_term:
             return False
@@ -123,6 +143,9 @@ class SearchDecisionEngine:
         """Return True if the query asks for factual/biographical/timeline info
         that the entity graph or RAG corpus is unlikely to have."""
         q = str(query or "").lower().strip()
+        policy = classify_creator_fact_query(q)
+        if policy.requires_web:
+            return True
         return bool(
             re.search(r"\bwhen\s+did\b", q)
             or re.search(r"\bhow\s+long\s+(?:ago|have)\b", q)
@@ -152,6 +175,15 @@ class SearchDecisionEngine:
                 confidence=1.0,
             )
 
+        if self._looks_like_entity_confirmation(query_lower):
+            return SearchDecision(
+                should_search=False,
+                reason="entity_graph_answerable",
+                reason_detail="Known creator-owned entity appears to be answerable without live search",
+                phase="pre_retrieval",
+                confidence=0.9,
+            )
+
         try:
             plan = self.router.build_plan(query, conversation_history=conversation_history)
 
@@ -160,7 +192,15 @@ class SearchDecisionEngine:
             # dates, personal facts, or historical details.
             _needs_web_for_facts = self._needs_web_for_facts(query_lower)
 
-            if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject and not _needs_web_for_facts:
+            if plan.query_goal == "entity_confirmation" and not _needs_web_for_facts:
+                return SearchDecision(
+                    should_search=False,
+                    reason="entity_graph_answerable",
+                    reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject}",
+                    phase="pre_retrieval",
+                    confidence=0.96,
+                )
+            if plan.query_goal == "entity_overview" and plan.entity_subject and not _needs_web_for_facts:
                 return SearchDecision(
                     should_search=False,
                     reason="entity_graph_answerable",
@@ -243,6 +283,14 @@ class SearchDecisionEngine:
         top_score: Optional[float],
         conversation_history: Optional[list] = None,
     ) -> SearchDecision:
+        if self._looks_like_entity_confirmation(query):
+            return SearchDecision(
+                should_search=False,
+                reason="entity_graph_answerable",
+                reason_detail="Known creator-owned entity appears to be answerable without live search",
+                phase="post_retrieval",
+                confidence=0.9,
+            )
         try:
             plan = self.router.build_plan(
                 query,
@@ -250,7 +298,15 @@ class SearchDecisionEngine:
                 top_score=top_score,
                 retrieved_chunks=chunks,
             )
-            if plan.query_goal in {"entity_confirmation", "entity_overview"} and plan.entity_subject:
+            if plan.query_goal == "entity_confirmation" and not self._needs_web_for_facts(query):
+                return SearchDecision(
+                    should_search=False,
+                    reason="entity_graph_answerable",
+                    reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject}",
+                    phase="post_retrieval",
+                    confidence=0.96,
+                )
+            if plan.query_goal == "entity_overview" and plan.entity_subject:
                 if not self._needs_web_for_facts(query):
                     return SearchDecision(
                         should_search=False,

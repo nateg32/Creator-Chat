@@ -490,9 +490,9 @@
 .typing-name-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin-left: 2px;
-  opacity: 0.9;
+  gap: 4px;
+  margin-left: 4px;
+  opacity: 0.82;
   color: inherit;
 }
 
@@ -539,7 +539,7 @@
   height: 4px;
   border-radius: 999px;
   background: currentColor;
-  opacity: 0.28;
+  opacity: 0.32;
   animation: typingDotPulse 1.2s infinite ease-in-out;
 }
 

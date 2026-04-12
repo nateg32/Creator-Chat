@@ -84,6 +84,15 @@ def _load_grounded_rag():
     )
 
     search_decision_path = BACKEND_ROOT / "services" / "search_decision_engine.py"
+    creator_fact_policy_path = BACKEND_ROOT / "services" / "creator_fact_policy.py"
+    creator_fact_policy_spec = importlib.util.spec_from_file_location(
+        "backend.services.creator_fact_policy",
+        creator_fact_policy_path,
+    )
+    creator_fact_policy_module = importlib.util.module_from_spec(creator_fact_policy_spec)
+    assert creator_fact_policy_spec.loader is not None
+    sys.modules["backend.services.creator_fact_policy"] = creator_fact_policy_module
+    creator_fact_policy_spec.loader.exec_module(creator_fact_policy_module)
     search_decision_spec = importlib.util.spec_from_file_location(
         "backend.services.search_decision_engine",
         search_decision_path,
@@ -137,6 +146,8 @@ def _load_grounded_rag():
     _stub_module("backend.services.formatting", clean_response=lambda text, **kwargs: text, clean_for_stream_chunk=lambda text: text, should_strip_hyphens=lambda config: False)
     _stub_module("backend.services.assumption_blocker", assumption_blocker=types.SimpleNamespace())
     _stub_module("backend.services.image_identity_service", image_identity_service=types.SimpleNamespace())
+    _stub_module("backend.services.voice_dna", build_voice_echo_block=lambda *args, **kwargs: "")
+    _stub_module("backend.services.conversation_closure", get_bridge_question=lambda *args, **kwargs: "")
     _stub_module(
         "backend.services.live_search_rules",
         build_live_search_query=lambda *args, **kwargs: "",

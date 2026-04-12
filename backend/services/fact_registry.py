@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from backend.services.creator_fact_policy import classify_creator_fact_query
 
 try:
     from backend.db import db
@@ -134,6 +135,21 @@ class FactRegistryService:
 
     def infer_fact_field(self, question: str, entity_type: str = "") -> str:
         lowered = _clean_value(question).lower()
+        policy = classify_creator_fact_query(question, entity_type=entity_type)
+        if policy.fact_field and policy.fact_field != "public_fact":
+            if policy.kind == "stats":
+                if any(token in lowered for token in ("net worth", "worth")):
+                    return "net_worth"
+                if any(token in lowered for token in ("valuation", "valued at")):
+                    return "valuation"
+                if any(token in lowered for token in ("subscribers", "subscriber")):
+                    return "subscribers"
+                if any(token in lowered for token in ("students", "student")):
+                    return "students"
+                if any(token in lowered for token in ("members", "member")):
+                    return "members"
+                return "followers"
+            return policy.fact_field
         if any(token in lowered for token in ("published", "publication", "release date", "released", "come out", "launch date", "write", "wrote", "written")):
             return "publication_date" if entity_type == "book" else "launch_date"
         if any(token in lowered for token in ("price", "pricing", "cost", "how much")):

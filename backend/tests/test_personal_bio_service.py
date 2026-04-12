@@ -73,6 +73,10 @@ def _load_personal_bio_service(
         pathlib.Path("services") / "creator_entity_service.py",
     )
     _load_module(
+        "backend.services.creator_fact_policy",
+        pathlib.Path("services") / "creator_fact_policy.py",
+    )
+    _load_module(
         "backend.services.fact_registry",
         pathlib.Path("services") / "fact_registry.py",
     )

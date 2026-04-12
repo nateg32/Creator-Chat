@@ -39,6 +39,7 @@ def _load_evidence_router():
     )
     _load_module("backend.services.decision_service", pathlib.Path("services") / "decision_service.py")
     _load_module("backend.services.creator_entity_service", pathlib.Path("services") / "creator_entity_service.py")
+    _load_module("backend.services.creator_fact_policy", pathlib.Path("services") / "creator_fact_policy.py")
     module = _load_module("backend.services.evidence_router", pathlib.Path("services") / "evidence_router.py")
     return module
 

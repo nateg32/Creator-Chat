@@ -20,6 +20,7 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from backend.services.creator_fact_policy import classify_creator_fact_query
 
 try:
     from backend.db import db
@@ -379,6 +380,7 @@ class EvidenceRouter:
 
     def _risk_flags(self, query: str, entity: Optional[Dict[str, Any]]) -> List[str]:
         lowered = str(query or "").lower()
+        policy = classify_creator_fact_query(query, entity_type=str((entity or {}).get("type") or ""))
         flags: List[str] = []
         if entity:
             flags.append("entity_resolved")
@@ -386,13 +388,13 @@ class EvidenceRouter:
                 flags.append("creator_owned_entity")
             if entity.get("name") and entity.get("name", "").lower() in lowered:
                 flags.append("title_match")
-        if any(pattern.search(lowered) for pattern in _FACTUAL_PATTERNS):
+        if any(pattern.search(lowered) for pattern in _FACTUAL_PATTERNS) or policy.requires_web:
             flags.append("public_fact")
-        if any(token in lowered for token in ("published", "publication", "release", "launch", "when did", "what year", "what date", "which month", "start", "started", "begin", "began", "got into", "get into", "how long have you been")):
+        if policy.kind in {"publication_timeline", "creator_start_timeline"} or any(token in lowered for token in ("published", "publication", "release", "launch", "when did", "what year", "what date", "which month", "start", "started", "begin", "began", "got into", "get into", "how long have you been")):
             flags.append("date")
-        if any(token in lowered for token in ("price", "pricing", "cost", "how much", "buy", "purchase")):
+        if policy.kind in {"price", "availability"} or any(token in lowered for token in ("price", "pricing", "cost", "how much", "buy", "purchase")):
             flags.append("pricing")
-        if any(token in lowered for token in ("followers", "subscribers", "members", "students", "ranking", "ranked", "valuation")):
+        if policy.kind == "stats" or any(token in lowered for token in ("followers", "subscribers", "members", "students", "ranking", "ranked", "valuation")):
             flags.append("stats")
         if any(token in lowered for token in ("latest", "newest", "recent", "current", "today", "right now", "currently", "still")):
             flags.append("fresh")
@@ -432,6 +434,17 @@ class EvidenceRouter:
 
     def _query_goal(self, query: str, entity: Optional[Dict[str, Any]], risk_flags: List[str]) -> str:
         lowered = str(query or "").lower()
+        policy = classify_creator_fact_query(query, entity_type=str((entity or {}).get("type") or ""))
+        if policy.kind == "catalog":
+            return "entity_catalog_lookup"
+        if policy.kind in {"publication_timeline", "creator_start_timeline"}:
+            return "timeline_lookup"
+        if policy.kind == "price":
+            return "price_lookup"
+        if policy.kind == "stats":
+            return "current_stat_lookup" if any(pattern.search(lowered) for pattern in _LIVE_PATTERNS) else "stat_lookup"
+        if policy.kind == "availability":
+            return "availability_lookup"
         if any(pattern.search(lowered) for pattern in _CATALOG_PATTERNS) and any(
             token in lowered for token in ("books", "courses", "programs", "podcasts", "shows", "written", "published")
         ):

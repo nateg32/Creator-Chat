@@ -11,6 +11,7 @@ from backend.db import db
 from backend.settings import settings
 import backend.rag as rag
 from backend.services.live_search_rules import needs_fresh_public_web_search
+from backend.services.creator_fact_policy import classify_creator_fact_query
 
 logger = logging.getLogger(__name__)
 
@@ -769,9 +770,14 @@ Return JSON only:
 
         creator_name = self._resolve_creator_name(creator_profile)
         subject = (entity_subject or creator_name or "the creator").strip()
+        policy = classify_creator_fact_query(
+            query,
+            query_goal="timeline_lookup" if (fact_field or "").strip().lower() in {"start_date", "publication_date", "launch_date"} else "",
+        )
         fact_label_map = {
             "publication_date": "publication or release date",
             "launch_date": "launch or release date",
+            "start_date": "when the creator first started that journey or activity",
             "price": "current price",
             "followers": "current follower count",
             "subscribers": "current subscriber count",
@@ -783,6 +789,14 @@ Return JSON only:
         }
         fact_label = fact_label_map.get((fact_field or "").strip().lower(), fact_field or "public fact")
         context_preview = json.dumps((conversation_history or [])[-4:])
+        creator_start_rules = ""
+        if (fact_field or "").strip().lower() == "start_date" or policy.kind == "creator_start_timeline":
+            fact_label = "when the creator first started that journey or activity"
+            creator_start_rules = """
+    - This is a creator journey start-date question, not a book or product release question.
+    - Ignore publication dates, ebook listings, Amazon pages, Audible pages, and retailer release dates unless they explicitly prove when the creator personally started.
+    - Prefer interviews, creator-owned pages, biographies, or reputable profiles that directly say when the creator started, began, or got into the activity.
+    """
 
         prompt = f"""
 You are verifying one public fact about {creator_name}.
@@ -797,6 +811,7 @@ Use Google Search grounding and return JSON only.
 Rules:
 - Prefer official creator-owned sources, publisher/product listings, retailer listings, or high-authority public records.
 - For books, prioritize publisher pages, Amazon, Audible, Goodreads, and official creator pages.
+{creator_start_rules.rstrip()}
 - If you can verify the fact, return:
   {{
     "found": true,

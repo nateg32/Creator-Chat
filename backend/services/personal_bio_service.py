@@ -1,48 +1,64 @@
 
-import logging
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-from backend.db import db
-import backend.rag as rag
-from backend.services.research_provider import GeminiResearchProvider
-from backend.settings import settings
 
+import backend.rag as rag
+from backend.db import db
+from backend.settings import settings
 from backend.services.creator_entity_service import creator_entity_service
+from backend.services.creator_fact_policy import (
+    classify_creator_fact_query,
+    extract_timeline_focus as _policy_extract_timeline_focus,
+    is_creator_journey_question,
+    is_creator_start_timeline_question,
+    is_publication_timeline_question as _policy_is_publication_timeline_question,
+    is_timeline_question as _policy_is_timeline_question,
+    looks_like_catalog_question as _policy_looks_like_catalog_question,
+)
 from backend.services.decision_service import decision_service
 from backend.services.evidence_router import EvidenceRouter, detect_evidence_contradiction, log_evidence_plan
 from backend.services.fact_registry import fact_registry
 from backend.services.live_search_rules import build_live_search_query
 from backend.services.search_decision_engine import SearchDecisionEngine
 
+
 logger = logging.getLogger(__name__)
 
-MONTH_PATTERN = (
-    r"January|Jan(?:uary)?|February|Feb(?:ruary)?|March|Mar(?:ch)?|April|Apr(?:il)?|"
-    r"May|June|Jun(?:e)?|July|Jul(?:y)?|August|Aug(?:ust)?|September|Sept?\.?(?:ember)?|"
-    r"October|Oct(?:ober)?|November|Nov(?:ember)?|December|Dec(?:ember)?"
-)
-
-TIMELINE_TOKENS = [
-    "when", "published", "publication", "release", "released", "launched", "launch", "come out",
-    "what year", "what date", "which month", "write", "wrote", "written", "start", "started",
-    "begin", "began", "get into", "got into", "how long", "been", "trading", "day trading",
-    "investing", "youtube", "business", "company", "podcast", "course", "brand",
-]
 SEARCH_TRACE_PREFIX = "[SEARCH_TRACE]"
-HOT_FACT_CACHE_TTL = 3600.0
+HOT_FACT_CACHE_TTL = 900
+MONTH_PATTERN = (
+    "january|february|march|april|may|june|july|august|september|october|november|december|"
+    "jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+)
+TIMELINE_TOKENS = (
+    "publish",
+    "published",
+    "publication",
+    "release",
+    "released",
+    "launch",
+    "launched",
+    "come out",
+    "what year",
+    "what date",
+    "which month",
+    "write",
+    "wrote",
+    "written",
+    "start",
+    "started",
+    "begin",
+    "began",
+    "get into",
+    "got into",
+    "how long have you been",
+)
 _hot_fact_cache: Dict[str, Dict[str, Any]] = {}
-
-CATALOG_HINT_PATTERNS = [
-    re.compile(r"\bhow many\s+(books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
-    re.compile(r"\bwhat\s+(books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
-    re.compile(r"\bwhich\s+(books|courses|programs|podcasts|shows)\b", re.IGNORECASE),
-    re.compile(r"\bhave\s+(?:you|u)\s+(?:written|published|made|created)\b", re.IGNORECASE),
-    re.compile(r"\b(?:books|courses|programs|podcasts|shows)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", re.IGNORECASE),
-]
 
 
 @dataclass
@@ -57,31 +73,9 @@ class StructuredFactCandidate:
 
 
 def extract_search_text(result: Any) -> str:
-    """
-    Safely extracts text from search provider output without discarding
-    valid grounded summaries or snippets.
-    """
-    if result is None:
-        extracted = ""
-    elif isinstance(result, str):
-        extracted = result.strip()
-    elif isinstance(result, dict):
-        extracted = ""
-        for field in [
-            "text",
-            "content",
-            "answer",
-            "answer_text",
-            "snippet",
-            "result",
-            "body",
-            "summary",
-            "grounding_text",
-            "response_text",
-            "fact_value",
-            "value",
-            "source_snippet",
-        ]:
+    extracted = ""
+    if isinstance(result, dict):
+        for field in ("answer_text", "response_text", "snippet", "text", "value"):
             val = result.get(field, "")
             if isinstance(val, str) and len(val.strip()) > 10:
                 extracted = val.strip()
@@ -122,64 +116,53 @@ def extract_search_text(result: Any) -> str:
 
 
 def _looks_like_catalog_question(question: str, query_goal: str = "") -> bool:
-    lowered = str(question or "").lower()
-    if query_goal == "entity_catalog_lookup":
-        return True
-    return any(pattern.search(lowered) for pattern in CATALOG_HINT_PATTERNS)
+    return _policy_looks_like_catalog_question(question, query_goal=query_goal)
 
 
 def _looks_like_timeline_question(question: str, query_goal: str = "") -> bool:
-    lowered = str(question or "").lower()
-    if query_goal == "timeline_lookup":
-        return True
-    explicit_date_tokens = (
-        "publish",
-        "published",
-        "publication",
-        "release",
-        "released",
-        "launch",
-        "launched",
-        "come out",
-        "what year",
-        "what date",
-        "which month",
-    )
-    if any(token in lowered for token in explicit_date_tokens):
-        return True
-    if any(token in lowered for token in ("start", "started", "begin", "began", "get into", "got into", "how long have you been")):
-        return True
-    if any(token in lowered for token in ("write", "wrote", "written")) and any(
-        token in lowered for token in ("when", "what year", "what date", "which month")
-    ):
-        return True
-    return False
+    return _policy_is_timeline_question(question, query_goal=query_goal)
 
 
 def _is_publication_timeline_question(question: str) -> bool:
-    lowered = str(question or "").lower()
-    return any(token in lowered for token in (
-        "published", "publication", "release", "released", "launch", "launched", "come out", "write", "wrote", "written", "book"
-    ))
+    return _policy_is_publication_timeline_question(question)
 
 
 def _extract_timeline_focus(question: str) -> str:
-    normalized = re.sub(r"\s+", " ", str(question or "")).strip(" ?!.").lower()
-    patterns = [
-        re.compile(r"(?:start|started|begin|began|get into|got into)\s+(.+)$", re.IGNORECASE),
-        re.compile(r"how\s+long\s+(?:have|has)\s+(?:you|u|he|she|they)\s+been\s+(.+)$", re.IGNORECASE),
-    ]
-    for pattern in patterns:
-        match = pattern.search(normalized)
-        if match:
-            focus = re.sub(r"\s+", " ", match.group(1)).strip(" \"'")
-            focus = re.sub(r"^(?:doing|in|into|on)\s+", "", focus)
-            if focus:
-                return focus
-    for candidate in ("day trading", "trading", "investing", "youtube", "dropshipping", "business", "podcast", "content creation"):
-        if candidate in normalized:
-            return candidate
-    return ""
+    return _policy_extract_timeline_focus(question)
+
+
+def _looks_like_bibliographic_timeline_result(blob: str) -> bool:
+    lowered = str(blob or "").lower()
+    if not lowered:
+        return False
+    has_publication_marker = any(
+        token in lowered
+        for token in (
+            "published",
+            "publication date",
+            "release date",
+            "released on",
+            "launched on",
+            "amazon",
+            "audible",
+            "goodreads",
+            "publisher",
+            "ebook",
+            "e book",
+        )
+    )
+    has_start_marker = any(
+        token in lowered
+        for token in (
+            "started",
+            "began",
+            "got into",
+            "first got into",
+            "since",
+            "journey",
+        )
+    )
+    return has_publication_marker and not has_start_marker
 
 
 def _render_timeline_sentence(question: str, *, subject: str = "", value: str = "", is_direct_voice: bool = False) -> str:
@@ -204,7 +187,9 @@ def _preview_text(value: Any, limit: int = 500) -> str:
 
 
 def _hot_cache_key(creator_id: int, entity_subject: str, fact_field: str) -> str:
-    return f"{creator_id}:{re.sub(r'\s+', ' ', str(entity_subject or '').strip().lower())}:{str(fact_field or '').strip().lower()}"
+    normalized_subject = re.sub(r"\s+", " ", str(entity_subject or "").strip().lower())
+    normalized_field = str(fact_field or "").strip().lower()
+    return f"{creator_id}:{normalized_subject}:{normalized_field}"
 
 
 def _get_hot_fact(cache_key: str) -> Optional[StructuredFactCandidate]:
@@ -1052,26 +1037,29 @@ class PersonalBioService:
         query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
         subject_hint = str((resolved_entity or {}).get("name") or self._extract_subject(question, []))
         entity_type = str((resolved_entity or {}).get("type") or "").lower()
+        policy = classify_creator_fact_query(question, entity_type=entity_type, query_goal=query_goal)
+        focus_hint = policy.focus or _extract_timeline_focus(question)
         queries: List[str] = []
 
         if query_goal == "timeline_lookup":
-            focus_hint = _extract_timeline_focus(question)
-            if subject_hint:
+            if policy.kind == "publication_timeline" and subject_hint:
                 queries.extend([
                     f'"{subject_hint}" publication date',
                     f'"{subject_hint}" release date',
                     f'{creator_name} "{subject_hint}" published',
                     f'{creator_name} "{subject_hint}" released',
                 ])
-            if focus_hint:
+            if policy.kind == "creator_start_timeline" and focus_hint:
                 queries.extend([
                     f'{creator_name} when started {focus_hint}',
                     f'{creator_name} started {focus_hint}',
+                    f'{creator_name} when got into {focus_hint}',
+                    f'{creator_name} {focus_hint} since',
                     f'{creator_name} {focus_hint} journey',
                     f'{creator_name} how long has been {focus_hint}',
                     f'{creator_name} first got into {focus_hint}',
                 ])
-            if entity_type == "book":
+            if policy.kind == "publication_timeline" and entity_type == "book":
                 queries.extend([
                     f'site:amazon.com "{subject_hint or creator_name}"',
                     f'site:audible.com "{subject_hint or creator_name}"',
@@ -1083,7 +1071,7 @@ class PersonalBioService:
             queries.append(f'{creator_name} "{subject_hint}"')
 
         if query_goal == "timeline_lookup":
-            if entity_type == "book":
+            if policy.kind == "publication_timeline" and entity_type == "book":
                 queries.extend([
                     f"{creator_name} book published",
                     f"{creator_name} first book release date",
@@ -1105,7 +1093,7 @@ class PersonalBioService:
             ])
 
         for term in search_engine.creator_terms:
-            if len(term.split()) >= 2 and query_goal == "timeline_lookup":
+            if len(term.split()) >= 2 and query_goal == "timeline_lookup" and policy.kind == "publication_timeline":
                 queries.append(f'"{term}" publication date')
                 queries.append(f'{creator_name} "{term}" published')
 
@@ -1127,8 +1115,18 @@ class PersonalBioService:
         blob = self._evidence_blob(evidence)
         lowered_blob = blob.lower()
         query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+        resolved_query = str(getattr(evidence_plan, "resolved_query", "") or "")
+        policy = classify_creator_fact_query(resolved_query, entity_type=str(getattr(evidence_plan, "entity_type", "") or ""), query_goal=query_goal)
 
         if query_goal == "timeline_lookup":
+            if policy.kind == "creator_start_timeline":
+                if _looks_like_bibliographic_timeline_result(blob):
+                    return 0.15
+                if re.search(r"\b(started|began|got into|first got into|since)\b", lowered_blob) and re.search(r"\b(20\d{2}|19\d{2})\b", blob):
+                    return 0.98
+                if re.search(r"\b(20\d{2}|19\d{2})\b", blob):
+                    return 0.72
+                return 0.3
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE):
                 return 1.0
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE):
@@ -1215,14 +1213,19 @@ class PersonalBioService:
         value = str(candidate.value or "").strip()
         existing = _repair_first_person_creator_reference(candidate.answer_text, creator_name)
         lowered_question = str(question or "").lower()
+        policy = classify_creator_fact_query(question, entity_type=entity_type, query_goal="timeline_lookup" if _looks_like_timeline_question(question) else "")
         voice_blob = json.dumps(voice_profile or {}).lower()
         is_direct_voice = any(token in voice_blob for token in ["direct", "punchy", "intense", "high"])
 
-        if fact_field in {"publication_date", "launch_date"} and value:
+        if fact_field in {"publication_date", "launch_date", "start_date"} and value:
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", value, re.IGNORECASE):
                 return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", value, re.IGNORECASE):
                 return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
+            if re.search(r"\b(20\d{2}|19\d{2})\b", value):
+                return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
+
+        if fact_field == "public_fact" and policy.kind == "creator_start_timeline" and value and not _looks_like_bibliographic_timeline_result(value):
             if re.search(r"\b(20\d{2}|19\d{2})\b", value):
                 return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
 
@@ -1340,15 +1343,20 @@ class PersonalBioService:
         source_title = str(primary.get("title") or "")
         subject = str(entity_subject or self._extract_subject(question, evidence) or "It").strip() or "It"
         lowered_question = str(question or "").lower()
+        policy = classify_creator_fact_query(question, query_goal="timeline_lookup" if _looks_like_timeline_question(question) else "")
 
-        if fact_field in {"publication_date", "launch_date", "public_fact"} and any(token in lowered_question for token in TIMELINE_TOKENS):
+        if policy.kind == "creator_start_timeline" and _looks_like_bibliographic_timeline_result(blob):
+            return None
+
+        if fact_field in {"publication_date", "launch_date", "public_fact", "start_date"} and any(token in lowered_question for token in TIMELINE_TOKENS):
             full_date = re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE)
             month_year = re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE)
             year = re.search(r"\b(20\d{2}|19\d{2})\b", blob)
+            candidate_field = "start_date" if policy.kind == "creator_start_timeline" else (fact_field or "publication_date")
             if full_date:
                 value = full_date.group(0)
                 return StructuredFactCandidate(
-                    fact_field=fact_field or "publication_date",
+                    fact_field=candidate_field,
                     subject=subject,
                     value=value,
                     answer_text=_render_timeline_sentence(question, subject=subject, value=value),
@@ -1359,7 +1367,7 @@ class PersonalBioService:
             if month_year:
                 value = month_year.group(0)
                 return StructuredFactCandidate(
-                    fact_field=fact_field or "publication_date",
+                    fact_field=candidate_field,
                     subject=subject,
                     value=value,
                     answer_text=_render_timeline_sentence(question, subject=subject, value=value),
@@ -1370,7 +1378,7 @@ class PersonalBioService:
             if year:
                 value = year.group(1)
                 return StructuredFactCandidate(
-                    fact_field=fact_field or "publication_date",
+                    fact_field=candidate_field,
                     subject=subject,
                     value=value,
                     answer_text=_render_timeline_sentence(question, subject=subject, value=value),
@@ -1464,6 +1472,7 @@ class PersonalBioService:
         subject = str((entity or {}).get("name") or self._extract_subject(question, evidence) or "").strip()
         subject = subject or "It"
         voice_blob = json.dumps(voice_profile or {}).lower()
+        policy = classify_creator_fact_query(question, entity_type=str((entity or {}).get("type") or ""), query_goal="timeline_lookup" if _looks_like_timeline_question(question) else "")
         is_direct_voice = any(token in voice_blob for token in ["direct", "punchy", "intense", "high"])
 
         full_date = re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", blob, re.IGNORECASE)
@@ -1471,6 +1480,8 @@ class PersonalBioService:
         year = re.search(r"\b(20\d{2}|19\d{2})\b", blob)
 
         if any(token in lowered_question for token in TIMELINE_TOKENS):
+            if policy.kind == "creator_start_timeline" and _looks_like_bibliographic_timeline_result(blob):
+                return ""
             if full_date:
                 return _render_timeline_sentence(question, subject=subject, value=full_date.group(0), is_direct_voice=is_direct_voice)
             if month_year:

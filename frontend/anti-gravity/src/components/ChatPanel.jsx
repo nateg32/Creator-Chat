@@ -631,6 +631,18 @@ export function ChatPanel({
                       <div className="msg-sender">
                         {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
                       </div>
+                      {isTypingMessage && m.role === "assistant" && (
+                        <span
+                          className="typing-name-indicator"
+                          role="status"
+                          aria-live="polite"
+                          aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
+                        >
+                          <span className="typing-name-dot" aria-hidden="true"></span>
+                          <span className="typing-name-dot" aria-hidden="true"></span>
+                          <span className="typing-name-dot" aria-hidden="true"></span>
+                        </span>
+                      )}
                       {m.ts && (
                         <span className="msg-timestamp">{new Date(m.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
                       )}
@@ -854,22 +866,6 @@ export function ChatPanel({
                             </div>
                           );
                         })()}
-                      </div>
-                    ) : isTypingMessage ? (
-                      <div
-                        className={`msg-pending-bubble is-${pendingStatus.variant}`}
-                        role="status"
-                        aria-live="polite"
-                        aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
-                      >
-                        <span className="msg-pending-label">
-                          {pendingStatus.variant === "searching" ? "Checking the web" : "Typing"}
-                        </span>
-                        <span className="typing-status-shell" aria-hidden="true">
-                          <span className="typing-name-dot"></span>
-                          <span className="typing-name-dot"></span>
-                          <span className="typing-name-dot"></span>
-                        </span>
                       </div>
                     ) : null}
 

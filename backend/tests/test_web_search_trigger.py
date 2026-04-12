@@ -19,6 +19,7 @@ BASE_DIR = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _load_search_decision_engine():
+    _load_module("backend.services.creator_fact_policy", pathlib.Path("services") / "creator_fact_policy.py")
     module_path = BASE_DIR / "services" / "search_decision_engine.py"
     spec = importlib.util.spec_from_file_location("search_decision_engine_test", module_path)
     module = importlib.util.module_from_spec(spec)
@@ -114,6 +115,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     _stub_package("backend.prompts")
     _stub_package("backend.services")
     _stub_package("backend.core")
+    _stub_package("backend.utils")
     search_engine_module = _load_search_decision_engine()
     sys.modules["backend.services.search_decision_engine"] = search_engine_module
     evidence_router_module = _load_module(
@@ -323,6 +325,9 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     )
     _stub_module("backend.services.assumption_blocker", assumption_blocker=types.SimpleNamespace())
     _stub_module("backend.services.image_identity_service", image_identity_service=types.SimpleNamespace(maybe_answer_from_image=lambda *args, **kwargs: None))
+    _stub_module("backend.services.voice_dna", build_voice_echo_block=lambda *args, **kwargs: "")
+    _stub_module("backend.services.conversation_closure", get_bridge_question=lambda *args, **kwargs: "")
+    _stub_module("backend.utils.url_health", check_url_alive_sync=lambda *args, **kwargs: True)
 
     live_rules_path = BASE_DIR / "services" / "live_search_rules.py"
     live_rules_spec = importlib.util.spec_from_file_location(
@@ -370,6 +375,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         default_bridge_question=lambda *args, **kwargs: "",
         detect_external_live_fact_topic=lambda *args, **kwargs: False,
         recent_bridge_topic=lambda *args, **kwargs: "",
+        should_redirect_general_knowledge=lambda *args, **kwargs: False,
         should_soft_decline_external_live_fact=lambda *args, **kwargs: False,
     )
 
