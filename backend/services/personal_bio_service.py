@@ -342,6 +342,7 @@ class PersonalBioService:
     """
 
     def _structured_candidate_has_journey_reason(
+        self,
         candidate: Optional[StructuredFactCandidate],
         creator_name: str,
         *,
@@ -359,6 +360,7 @@ class PersonalBioService:
             if part
         )
         return bool(_extract_journey_reason(blob, creator_name))
+
     def __init__(self):
         from backend.services.research_provider import get_research_provider
         self.researcher = get_research_provider()
