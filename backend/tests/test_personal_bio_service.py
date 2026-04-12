@@ -236,6 +236,30 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("Dan Martell's", answer)
         self.assertTrue(answer.startswith("I "), answer)
 
+    def test_public_identity_question_answers_from_web_evidence(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            grounded_results=[],
+            grounded_response_text="TJR Trades (Tyler J. Riches) is a trading creator who documents his journey online.",
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="what's your full name?",
+            voice_profile={},
+            creator_name="Tjr",
+            decision_policy={},
+            creator_profile={"name": "Tjr"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls)
+        self.assertIn("Tyler J. Riches", answer)
+        self.assertEqual(answer, "My full name is Tyler J. Riches.")
+        self.assertTrue(result.get("sources"))
+
     def test_public_book_followup_uses_conversation_context_before_web_search(self):
         grounded_results = [
             {

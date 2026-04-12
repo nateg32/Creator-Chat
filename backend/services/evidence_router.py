@@ -54,6 +54,8 @@ _FACTUAL_PATTERNS = [
     re.compile(r"\bwhen (?:did|was|were|is)\b", re.IGNORECASE),
     re.compile(r"\bwhat (?:year|date|month|day)\b", re.IGNORECASE),
     re.compile(r"\bhow (?:many|much)\b", re.IGNORECASE),
+    re.compile(r"\b(?:full|real|legal)\s+name\b", re.IGNORECASE),
+    re.compile(r"\bwhat(?:'s|\s+is)?\s+(?:your|ur|u)\s+last\s+name\b", re.IGNORECASE),
     re.compile(r"\bprice\b|\bcost\b|\bpricing\b", re.IGNORECASE),
     re.compile(r"\bpublish(?:ed|ing)?\b|\bpublication\b|\brelease(?:d)?\b|\blaunch(?:ed)?\b", re.IGNORECASE),
     re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bmembers?\b|\bstudents?\b|\branking\b|\branked\b|\bvaluation\b", re.IGNORECASE),
@@ -116,6 +118,7 @@ _ADVICE_PATTERNS = [
 ]
 _CREATOR_WORLD_HINTS = [
     re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business)\b", re.IGNORECASE),
+    re.compile(r"\b(your|my)\s+(?:full|real|legal|last)\s+name\b", re.IGNORECASE),
     re.compile(r"\bnet worth\b|\bemployees\b|\bfounded\b|\bvaluation\b|\bfollowers?\b|\bsubscribers?\b", re.IGNORECASE),
 ]
 
@@ -420,9 +423,12 @@ class EvidenceRouter:
 
     def _answer_mode(self, query: str, risk_flags: List[str], entity: Optional[Dict[str, Any]]) -> str:
         lowered = str(query or "").lower()
+        policy = classify_creator_fact_query(query, entity_type=str((entity or {}).get("type") or ""))
         if "resource_request" in risk_flags:
             return "resource_recommendation"
         if any(flag in risk_flags for flag in ("date", "pricing", "stats")):
+            return "direct_fact"
+        if policy.kind == "identity":
             return "direct_fact"
         if _is_user_relationship_business_question(query):
             return "creator_take"
@@ -437,6 +443,8 @@ class EvidenceRouter:
         policy = classify_creator_fact_query(query, entity_type=str((entity or {}).get("type") or ""))
         if policy.kind == "catalog":
             return "entity_catalog_lookup"
+        if policy.kind == "identity":
+            return "identity_lookup"
         if policy.kind in {"publication_timeline", "creator_start_timeline"}:
             return "timeline_lookup"
         if policy.kind == "creator_journey":
@@ -498,36 +506,37 @@ class EvidenceRouter:
             return "creator_memory", ["creator_world"], False, True, False, "memory_plus_entity_graph"
 
         if query_goal == "entity_catalog_lookup":
-            return "creator_world", ["creator_memory"], True, True, True, "entity_catalog_plus_web"
+            return "creator_world", [], True, False, True, "entity_catalog_plus_web"
+
+        if query_goal == "identity_lookup":
+            return "creator_world", [], True, False, True, "official_grounded_search"
 
         if query_goal == "availability_lookup":
             has_official_urls = bool((entity or {}).get("official_urls"))
             return (
                 "creator_world",
-                ["creator_memory"],
+                [],
                 not has_official_urls,
-                True,
+                False,
                 not has_official_urls,
                 "official_urls_first" if has_official_urls else "official_grounded_search",
             )
 
         if query_goal == "journey_lookup":
-            return "creator_world", ["creator_memory"], True, True, False, "journey_grounded_search"
+            return "creator_world", [], True, False, False, "journey_grounded_search"
 
         if live_world_signal:
             primary_world = "live_world"
             secondary = ["creator_world"]
-            if answer_mode == "hybrid":
-                secondary.append("creator_memory")
             should_search_web = True
-            should_search_corpus = answer_mode == "hybrid"
+            should_search_corpus = False
             should_verify = True
             search_strategy = "live_grounded_search"
         elif creator_world_signal or factual_signal:
             primary_world = "creator_world"
-            secondary = ["creator_memory"]
+            secondary = []
             should_search_web = True
-            should_search_corpus = answer_mode == "hybrid"
+            should_search_corpus = False
             should_verify = True
             search_strategy = "official_grounded_search"
         else:

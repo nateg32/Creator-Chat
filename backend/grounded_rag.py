@@ -154,6 +154,7 @@ def _route_personal_via_evidence(route_evidence_plan: Optional[EvidencePlan]) ->
         route_evidence_plan
         and (
             route_evidence_plan.query_goal in {
+                "identity_lookup",
                 "entity_confirmation",
                 "entity_overview",
                 "entity_catalog_lookup",
@@ -462,6 +463,33 @@ def _is_live_web_chunk(chunk: Optional[Dict[str, Any]]) -> bool:
     if not chunk:
         return False
     return str(chunk.get("content") or "").startswith("[LIVE WEB SEARCH RESULT]")
+
+
+def _build_voice_support_chunks(*chunk_groups: Optional[List[Dict[str, Any]]], limit: int = 4) -> List[Dict[str, Any]]:
+    voice_chunks: List[Dict[str, Any]] = []
+    seen = set()
+
+    for group in chunk_groups:
+        for chunk in group or []:
+            if not chunk or _is_live_web_chunk(chunk):
+                continue
+            ref = chunk.get("source_ref") or {}
+            title = str(chunk.get("title") or ref.get("title") or "").strip()
+            content_key = re.sub(r"\s+", " ", str(chunk.get("content") or "")).strip().lower()[:120]
+            key = (
+                ref.get("content_id")
+                or ref.get("canonical_url")
+                or chunk.get("document_id")
+                or chunk.get("chunk_id")
+                or f"{_normalize_resource_title(title)}::{content_key}"
+            )
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            voice_chunks.append(chunk)
+            if len(voice_chunks) >= limit:
+                return voice_chunks
+    return voice_chunks
 
 
 def _is_direct_video_resource_url(url: str) -> bool:
@@ -5307,15 +5335,20 @@ Message: {answer_text[:500]}"""
     # Synthesis (Compact Support Pack)
     if intent in ["greeting", "greeting_only", "small_talk"]:
         support_set = []
+        voice_support_set = []
     else:
+        corpus_search_enabled = bool(evidence_plan and evidence_plan.should_search_corpus)
         support_set = (
             _selected_recommendation_chunks(rec_result, preferred_platforms=preferred_platforms)
             if should_run_recommender
             else []
         )
+        voice_support_set = _build_voice_support_chunks(support_set)
         selected_resource_count = max(1, int((rec_result or {}).get("card_limit") or 1)) if should_run_recommender else 0
+        transcript_candidates: List[Dict[str, Any]] = []
         if resource_locked:
             support_set = support_set or []
+            voice_support_set = _build_voice_support_chunks(support_set)
         elif not support_set:
             # Fallback to standard RAG if no recommendation
             q_emb = rec_result.get("q_emb")
@@ -5332,13 +5365,19 @@ Message: {answer_text[:500]}"""
                 except Exception as e:
                     logger.error(f"Fallback embedding build failed: {e}")
                     q_emb = [0.0] * 1536
-            support_set = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
+            transcript_candidates = retrieve_candidates(creator_id, q_emb, 3, enabled_platforms=enabled_platforms)
+            voice_support_set = _build_voice_support_chunks(transcript_candidates)
+            support_set = list(transcript_candidates) if corpus_search_enabled else []
         elif selected_resource_count > 1:
             support_set = support_set[:selected_resource_count]
+            voice_support_set = _build_voice_support_chunks(support_set)
         else:
-            support_set = merge_support_sets(support_set, retrieve_candidates(creator_id, rec_result.get("q_emb"), 3, enabled_platforms=enabled_platforms), limit=4)
+            transcript_candidates = retrieve_candidates(creator_id, rec_result.get("q_emb"), 3, enabled_platforms=enabled_platforms)
+            voice_support_set = _build_voice_support_chunks(support_set, transcript_candidates)
+            if corpus_search_enabled:
+                support_set = merge_support_sets(support_set, transcript_candidates, limit=4)
 
-        if not resource_locked and _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
+        if corpus_search_enabled and not resource_locked and _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
             exact_text_matches = retrieve_exact_text_matches(
                 creator_id,
                 question,
@@ -5347,6 +5386,7 @@ Message: {answer_text[:500]}"""
             )
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
+                voice_support_set = _build_voice_support_chunks(voice_support_set, exact_text_matches)
         support_set, resolved_entity = _inject_entity_graph_support(
             support_set,
             question,
@@ -5550,7 +5590,8 @@ Message: {answer_text[:500]}"""
         user_msg=question,
         persona=persona,
         history=conversation_history or [],
-        user_preferences=user_preferences
+        user_preferences=user_preferences,
+        voice_chunks=voice_support_set,
     )
     if 'no_online_fallback' in locals() and no_online_fallback and (
         not (answer or '').strip() or _contains_placeholder_link_artifacts(answer)
@@ -5990,6 +6031,7 @@ async def grounded_rag_stream(
 
     route_evidence_plan = None
     route_creator_personal = False
+    voice_support_set: List[Dict[str, Any]] = []
     if creator_task:
         try:
             creator_preview = await creator_task
@@ -6199,21 +6241,31 @@ async def grounded_rag_stream(
             rec_result,
             preferred_platforms=preferred_platforms,
         )
+        corpus_search_enabled = bool(evidence_plan and evidence_plan.should_search_corpus)
         support_set = (
             _selected_recommendation_chunks(rec_result, preferred_platforms=preferred_platforms)
             if should_run_recommender
             else []
         )
+        voice_support_set = _build_voice_support_chunks(support_set)
         selected_resource_count = max(1, int((rec_result or {}).get("card_limit") or 1)) if should_run_recommender else 0
         if resource_locked:
             support_set = support_set or []
+            voice_support_set = _build_voice_support_chunks(support_set)
         elif selected_resource_count > 1:
             support_set = support_set[:selected_resource_count]
+            voice_support_set = _build_voice_support_chunks(support_set)
         else:
-            support_set = merge_support_sets(support_set, direct_support, limit=4) if support_set else (direct_support or [])
-        if not support_set:
+            voice_support_set = _build_voice_support_chunks(support_set, direct_support)
+            if support_set:
+                if corpus_search_enabled:
+                    support_set = merge_support_sets(support_set, direct_support, limit=4)
+            else:
+                support_set = list(direct_support or []) if corpus_search_enabled else []
+        if not support_set and corpus_search_enabled:
             support_set = await asyncio.to_thread(retrieve_candidates, creator_id, q_emb, 3)
-        if not resource_locked and _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
+            voice_support_set = _build_voice_support_chunks(voice_support_set, support_set)
+        if corpus_search_enabled and not resource_locked and _should_run_exact_text_match(question, conversation_history, wants_resource=should_run_recommender):
             exact_text_matches = await asyncio.to_thread(
                 retrieve_exact_text_matches,
                 creator_id,
@@ -6223,6 +6275,7 @@ async def grounded_rag_stream(
             )
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
+                voice_support_set = _build_voice_support_chunks(voice_support_set, exact_text_matches)
         support_set, resolved_entity = _inject_entity_graph_support(
             support_set,
             question,
@@ -6492,7 +6545,8 @@ async def grounded_rag_stream(
         history=conversation_history or [],
         user_preferences=user_preferences,
         pre_fetched_memories=mems,
-        route=route
+        route=route,
+        voice_chunks=voice_support_set,
     )
 
     streamed_parts: List[str] = []

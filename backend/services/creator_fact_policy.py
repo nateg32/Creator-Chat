@@ -42,6 +42,13 @@ CATALOG_PATTERNS = [
     re.compile(r"\b(?:books|courses|programs|podcasts|shows)\s+(?:have\s+)?(?:you|u)\s+(?:written|published|made|created)\b", re.IGNORECASE),
 ]
 
+IDENTITY_PATTERNS = [
+    re.compile(r"\b(?:what(?:'s|\s+is)?|whats)\s+(?:your|ur|u)\s+(?:full|real|legal)\s+name\b", re.IGNORECASE),
+    re.compile(r"\b(?:tell\s+me|say)\s+(?:your|ur|u)\s+(?:full|real|legal)\s+name\b", re.IGNORECASE),
+    re.compile(r"\b(?:what(?:'s|\s+is)?|whats)\s+(?:your|ur|u)\s+last\s+name\b", re.IGNORECASE),
+    re.compile(r"\b(?:real|full|legal)\s+name\b", re.IGNORECASE),
+]
+
 
 @dataclass(frozen=True)
 class CreatorFactPolicy:
@@ -104,6 +111,13 @@ def is_creator_journey_question(question: str) -> bool:
     return any(pattern.search(lowered) for pattern in CREATOR_JOURNEY_PATTERNS)
 
 
+def is_creator_identity_question(question: str) -> bool:
+    lowered = str(question or "").strip().lower()
+    if not lowered:
+        return False
+    return any(pattern.search(lowered) for pattern in IDENTITY_PATTERNS)
+
+
 def is_timeline_question(question: str, query_goal: str = "") -> bool:
     lowered = str(question or "").lower()
     if query_goal == "timeline_lookup":
@@ -145,6 +159,16 @@ def classify_creator_fact_query(question: str, *, entity_type: str = "", query_g
 
     if looks_like_catalog_question(question, query_goal=query_goal):
         return CreatorFactPolicy(kind="catalog", requires_web=True, requires_verified_sources=True, is_personal=False, fact_field="public_fact")
+
+    if is_creator_identity_question(question):
+        return CreatorFactPolicy(
+            kind="identity",
+            focus="creator_identity",
+            requires_web=True,
+            requires_verified_sources=True,
+            is_personal=False,
+            fact_field="full_name",
+        )
 
     if is_publication_timeline_question(question) and is_timeline_question(question, query_goal=query_goal):
         return CreatorFactPolicy(

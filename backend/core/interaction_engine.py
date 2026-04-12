@@ -1738,7 +1738,8 @@ Generate InteractionPlan JSON."""
         user_msg: str = "",
         persona: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
-        user_preferences: Optional[Dict[str, Any]] = None
+        user_preferences: Optional[Dict[str, Any]] = None,
+        voice_chunks: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         PASS 2 — PERSONA RENDERER
@@ -1776,7 +1777,20 @@ Generate InteractionPlan JSON."""
             self._record_voice_turn(thread_id, result, creator_profile)
             return result
 
-        raw = self._render_task(plan, creator_profile, rag_chunks, creator_id, user_id, thread_id, user_name, user_msg, persona, history or [], user_preferences)
+        raw = self._render_task(
+            plan,
+            creator_profile,
+            rag_chunks,
+            creator_id,
+            user_id,
+            thread_id,
+            user_name,
+            user_msg,
+            persona,
+            history or [],
+            user_preferences,
+            voice_chunks=voice_chunks,
+        )
         raw = apply_vocabulary_resonance(raw, creator_profile)
         result = self._apply_creator_integrity_guard(
             raw,
@@ -1802,7 +1816,8 @@ Generate InteractionPlan JSON."""
         history: Optional[List[Dict[str, str]]] = None,
         user_preferences: Optional[Dict[str, Any]] = None,
         pre_fetched_memories: Optional[List[str]] = None,
-        route: Optional[str] = None
+        route: Optional[str] = None,
+        voice_chunks: Optional[List[Dict[str, Any]]] = None,
     ):
         """
         HIGH-SPEED COMBINED PASS (Router + Planner + Renderer in one stream).
@@ -1815,7 +1830,8 @@ Generate InteractionPlan JSON."""
             creator_profile, rag_chunks, creator_id, user_id, thread_id, 
             user_name, user_msg, persona, history, user_preferences,
             pre_fetched_memories=pre_fetched_memories,
-            route=route
+            route=route,
+            voice_chunks=voice_chunks,
         )
 
         return self._generate_completion_with_compat(
@@ -1842,7 +1858,8 @@ Generate InteractionPlan JSON."""
         history: Optional[List[Dict[str, str]]] = None,
         user_preferences: Optional[Dict[str, Any]] = None,
         pre_fetched_memories: Optional[List[str]] = None,
-        route: Optional[str] = None
+        route: Optional[str] = None,
+        voice_chunks: Optional[List[Dict[str, Any]]] = None,
     ):
         """Async version of the combined pass."""
         normalized_prefs = self._normalize_user_preferences(user_preferences)
@@ -1852,7 +1869,8 @@ Generate InteractionPlan JSON."""
             creator_profile, rag_chunks, creator_id, user_id, thread_id, 
             user_name, user_msg, persona, history, user_preferences,
             pre_fetched_memories=pre_fetched_memories,
-            route=route
+            route=route,
+            voice_chunks=voice_chunks,
         )
 
         return await self._generate_completion_with_compat_async(
@@ -1879,7 +1897,8 @@ Generate InteractionPlan JSON."""
         history: List[Dict[str, str]],
         user_preferences: Optional[Dict[str, Any]],
         pre_fetched_memories: Optional[List[str]] = None,
-        route: Optional[str] = None
+        route: Optional[str] = None,
+        voice_chunks: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         # ──────────────────────────────────────────────────────────────
         # IDENTITY RESOLUTION
@@ -1892,6 +1911,8 @@ Generate InteractionPlan JSON."""
             if not creator_name: creator_name = "The Creator"
         else:
             creator_name = raw_name.strip()
+
+        voice_source_chunks = voice_chunks if voice_chunks is not None else rag_chunks
 
         creator_category = creator_profile.get("creator_category")
         if not creator_category:
@@ -2432,12 +2453,15 @@ Output only the response."""
         user_msg: str,
         persona: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
-        user_preferences: Optional[Dict[str, Any]] = None
+        user_preferences: Optional[Dict[str, Any]] = None,
+        voice_chunks: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         # Robust name handling
         creator_name = (creator_profile.get("name") or "").strip()
         if not creator_name:
              creator_name = "The Creator"
+
+        voice_source_chunks = voice_chunks if voice_chunks is not None else rag_chunks
 
         # 1. Resolve Identity Context
         identity_fp = creator_profile.get("identity_fingerprint") or {}
@@ -2495,7 +2519,7 @@ Output only the response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
         legacy_voice_dna = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
-        legacy_voice_echo = build_voice_echo_block(rag_chunks)
+        legacy_voice_echo = build_voice_echo_block(voice_source_chunks)
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
         creator_genome_block = format_creator_genome_for_prompt(creator_genome)
         turn_anchor_block = format_turn_anchor_block(user_msg, creator_genome)

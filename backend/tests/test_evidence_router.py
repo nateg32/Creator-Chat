@@ -66,9 +66,19 @@ class EvidenceRouterTests(unittest.TestCase):
         plan = self.router.build_plan("when was your book published")
         self.assertEqual(plan.primary_world, "creator_world")
         self.assertTrue(plan.should_search_web)
+        self.assertFalse(plan.should_search_corpus)
         self.assertTrue(plan.should_verify)
         self.assertIn(plan.answer_mode, {"direct_fact", "hybrid"})
         self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
+    def test_identity_query_routes_to_web_first_creator_world(self):
+        plan = self.router.build_plan("what's your full name?")
+        self.assertEqual(plan.query_goal, "identity_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertEqual(plan.answer_mode, "direct_fact")
+        self.assertTrue(plan.should_search_web)
+        self.assertFalse(plan.should_search_corpus)
+        self.assertTrue(plan.should_verify)
 
     def test_live_world_plan_for_current_stat(self):
         plan = self.router.build_plan("how many followers do you have right now")

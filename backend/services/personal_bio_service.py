@@ -185,6 +185,15 @@ def _extract_fact_value_from_text(fact_field: str, text: str) -> str:
         return ""
 
     lowered_field = str(fact_field or "").strip().lower()
+    if lowered_field == "full_name":
+        for pattern in (
+            re.compile(r"(?:full|real|legal)\s+name\s*(?:is|:)\s*([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3})"),
+            re.compile(r"^[A-Za-z0-9@._' -]{2,60}\s*\(([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3})\)"),
+        ):
+            match = pattern.search(candidate_text)
+            if match:
+                return re.sub(r"\s+", " ", match.group(1)).strip()
+
     if lowered_field in {"publication_date", "launch_date", "start_date", "public_fact"}:
         for pattern in (
             rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b",
@@ -1077,7 +1086,7 @@ class PersonalBioService:
             return 4
         if query_goal == "journey_lookup" and policy_kind == "creator_journey":
             return 3
-        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup"}:
             return 2
         if query_goal in {"availability_lookup", "resource_lookup"}:
             return 2
@@ -1086,7 +1095,7 @@ class PersonalBioService:
     def _grounded_query_plan_limit(self, query_goal: str) -> int:
         if query_goal == "journey_lookup":
             return 2
-        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup"}:
             return 1
         if query_goal in {"availability_lookup", "resource_lookup"}:
             return 2
@@ -1097,7 +1106,7 @@ class PersonalBioService:
             return 12.0
         if query_goal == "journey_lookup" and policy_kind == "creator_journey":
             return 10.0
-        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup"}:
             return 9.0
         return 8.0
 
@@ -1237,6 +1246,12 @@ class PersonalBioService:
                 f'{creator_name} {focus_hint} journey story',
                 f'{creator_name} talks about why started {focus_hint}',
                 f'{creator_name} explains why got into {focus_hint}',
+            ])
+        elif query_goal == "identity_lookup":
+            queries.extend([
+                f'{creator_name} full name',
+                f'{creator_name} real name',
+                f'{creator_name} legal name',
             ])
 
         if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
@@ -1430,6 +1445,9 @@ class PersonalBioService:
             if re.search(r"\b(20\d{2}|19\d{2})\b", value):
                 return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
 
+        if fact_field == "full_name" and value:
+            return f"My full name is {value}."
+
         if fact_field == "price" and value:
             return f"I've got {subject} at {value} right now."
 
@@ -1589,6 +1607,19 @@ class PersonalBioService:
                     source_url=source_url,
                     source_title=source_title,
                     confidence=0.9,
+                )
+
+        if fact_field == "full_name":
+            value = _extract_fact_value_from_text("full_name", blob)
+            if value:
+                return StructuredFactCandidate(
+                    fact_field="full_name",
+                    subject=subject,
+                    value=value,
+                    answer_text=f"My full name is {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.94,
                 )
 
         if fact_field == "price":
