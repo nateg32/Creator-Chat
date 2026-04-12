@@ -5342,9 +5342,11 @@ Message: {answer_text[:500]}"""
             support_set = _inject_live_web_results(support_set, web_results)
         elif fact_search_requested:
             # No web results found. Instead of returning a generic fallback
-            # immediately, let the main LLM handle the question — it has
-            # domain lock rules and RAG context to answer or redirect properly.
-            logger.info("[LATENCY] fact_search_requested but no web results in sync path; falling through to main LLM.")
+            # immediately, force a blocking live web pass for creator-public
+            # fact questions so timeline/biography queries do not silently fall
+            # back to local RAG-only answers.
+            logger.info("[LATENCY] fact_search_requested with no web results in sync path; forcing blocking live web search.")
+            needs_fallback = True
 
         if needs_fallback and not web_results:
             logger.info("Triggering live web search fallback for explicit live/source request.")
@@ -6224,10 +6226,11 @@ async def grounded_rag_stream(
                 support_set = _inject_live_web_results(support_set, web_results)
                 needs_fallback = False
             else:
-                # No web results found. Instead of returning a generic fallback
-                # immediately, let the main LLM handle the question — it has
-                # domain lock rules and RAG context to answer or redirect properly.
-                logger.info("[LATENCY] fact_search_requested but no web results; falling through to main LLM.")
+                # Force a visible blocking web pass for creator-public fact
+                # questions so users see the web-search step instead of a quiet
+                # local fallback when we still need external verification.
+                logger.info("[LATENCY] fact_search_requested but no web results; forcing blocking live web search.")
+                needs_fallback = True
 
         if needs_fallback:
             logger.info("[LATENCY] Blocking web fallback for explicit live/source request.")
