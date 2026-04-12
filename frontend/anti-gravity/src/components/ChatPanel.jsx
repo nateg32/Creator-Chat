@@ -132,8 +132,13 @@ function hasVisibleMessageText(message) {
   return String(text).trim().length > 0;
 }
 
-const VISIBLE_PENDING_STATUSES = new Set(["thinking", "typing", "websearch", "searching", "grounding"]);
+const TERMINAL_MESSAGE_STATUSES = new Set(["done", "error"]);
 const SEARCH_PENDING_STATUSES = new Set(["websearch", "searching", "grounding"]);
+
+function isAssistantPendingMessage(message) {
+  const normalizedStatus = String(message?.status || "").toLowerCase();
+  return message?.role === "assistant" && !hasVisibleMessageText(message) && !TERMINAL_MESSAGE_STATUSES.has(normalizedStatus);
+}
 
 function getPendingStatusMeta(status) {
   const normalized = String(status || "").toLowerCase();
@@ -517,7 +522,9 @@ export function ChatPanel({
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId
-                ? { ...msg, content: msg.content + token, text: msg.text + token, status: "streaming" }
+                ? (!String(token || "").trim() && !hasVisibleMessageText(msg))
+                  ? msg
+                  : { ...msg, content: msg.content + token, text: msg.text + token, status: "streaming" }
                 : msg
             )
           );
@@ -610,7 +617,7 @@ export function ChatPanel({
                 );
               }
               const normalizedStatus = String(m.status || "").toLowerCase();
-              const isTypingMessage = m.role === "assistant" && VISIBLE_PENDING_STATUSES.has(normalizedStatus) && !hasVisibleMessageText(m);
+              const isTypingMessage = isAssistantPendingMessage(m);
               const hasMessageText = hasVisibleMessageText(m);
               const pendingStatus = getPendingStatusMeta(m.status);
               return (
