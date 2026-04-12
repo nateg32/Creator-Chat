@@ -28,6 +28,18 @@ class TextSanitizerTests(unittest.TestCase):
             "Do the work, then raise your price.",
         )
 
+    def test_preserves_numeric_percent_ranges(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I usually risk 1-3% of the account on a trade."),
+            "I usually risk 1-3% of the account on a trade.",
+        )
+
+    def test_preserves_numeric_word_ranges(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("That usually takes 3-4 years if you stay consistent."),
+            "That usually takes 3-4 years if you stay consistent.",
+        )
+
     def test_preserves_leading_bullets(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("- Keep going"),

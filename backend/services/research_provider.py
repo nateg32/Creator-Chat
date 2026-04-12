@@ -15,6 +15,52 @@ from backend.services.creator_fact_policy import classify_creator_fact_query
 
 logger = logging.getLogger(__name__)
 
+
+_GROUNDING_REDIRECT_HOSTS = {
+    "vertexaisearch.cloud.google.com",
+    "vertexaisearch.cloud.googleusercontent.com",
+}
+_GROUNDING_REDIRECT_QUERY_KEYS = (
+    "url",
+    "q",
+    "target",
+    "dest",
+    "destination",
+    "redirect",
+    "redirect_url",
+)
+_BARE_DOMAIN_RE = re.compile(r"^(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/[^\s]*)?$")
+
+
+def _normalize_grounding_url(raw_url: str, title: str = "") -> str:
+    url = str(raw_url or "").strip()
+    if not url:
+        return ""
+
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+
+    is_redirect = host in _GROUNDING_REDIRECT_HOSTS or "grounding-api-redirect" in (parsed.path or "")
+    if not is_redirect:
+        return url
+
+    query = parse_qs(parsed.query or "")
+    for key in _GROUNDING_REDIRECT_QUERY_KEYS:
+        for candidate in query.get(key) or []:
+            candidate = str(candidate or "").strip()
+            if candidate.startswith(("http://", "https://")):
+                return candidate
+
+    bare_title = str(title or "").strip()
+    if bare_title and _BARE_DOMAIN_RE.fullmatch(bare_title):
+        if not bare_title.startswith(("http://", "https://")):
+            bare_title = f"https://{bare_title}"
+        return bare_title
+
+    return url
+
 class ResearchProvider(ABC):
     @abstractmethod
     def search(self, query: str, creator_profile: Dict[str, Any], resource_type: str = "any", conversation_history: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, Any]]:
@@ -539,12 +585,12 @@ Return JSON only:
         seen_urls = set()
         for idx, chunk in enumerate(chunks):
             web = chunk.get("web") or {}
-            url = (web.get("uri") or "").strip()
+            title = (web.get("title") or "Grounded Web Result").strip()
+            url = _normalize_grounding_url(web.get("uri") or "", title=title)
             if not url or url in seen_urls:
                 continue
             seen_urls.add(url)
             snippets = support_map.get(idx) or []
-            title = (web.get("title") or "Grounded Web Result").strip()
             results.append({
                 "title": title,
                 "url": url,
@@ -580,8 +626,8 @@ Return JSON only:
                 if chunk_index < 0 or chunk_index >= len(chunks):
                     continue
                 web = (chunks[chunk_index] or {}).get("web") or {}
-                url = (web.get("uri") or "").strip()
                 title = (web.get("title") or "Grounded Web Result").strip()
+                url = _normalize_grounding_url(web.get("uri") or "", title=title)
                 if not url:
                     continue
                 key = (start_index, end_index, url)
@@ -817,7 +863,7 @@ Rules:
     "found": true,
     "fact_field": "{(fact_field or 'public_fact').strip()}",
     "value": "the exact fact value",
-    "answer_text": "one factual sentence answering the question directly",
+        "answer_text": "one natural first-person sentence answering the question directly",
     "confidence": 0.0,
     "source_url": "https://...",
     "source_title": "source title",
@@ -825,6 +871,7 @@ Rules:
   }}
 - If you cannot verify it, return the same shape with found=false and empty strings.
 - Do not hedge. Do not tell the user to check a listing if the fact is already found.
+- Never mention search, evidence, sources, transcripts, or that you pulled anything up.
 """
 
         raw = self._call_gemini_rest(prompt, search_enabled=True)

@@ -12,6 +12,10 @@ WORD_BREAK_DASH_CLASS = re.escape(WORD_BREAK_DASH_CHARS)
 CLAUSE_BREAK_DASH_CLASS = re.escape(CLAUSE_BREAK_DASH_CHARS)
 MOJIBAKE_DASHES = ("\u00e2\u20ac\u201d", "\u00e2\u20ac\u201c")
 PROTECTED_SPAN_RE = re.compile(r"\[[^\]]+\]\(https?://[^\s)]+\)|https?://[^\s)]+")
+NUMERIC_RANGE_RE = re.compile(
+    rf"(?<!\w)(?:[$£€]?\d+(?:\.\d+)?)\s*(?:[{DASH_CLASS}])\s*(?:[$£€]?\d+(?:\.\d+)?)(?:\s?(?:%|percent|x|times?|k|m|b|years?|year|months?|month|weeks?|week|days?|day|hours?|hour|minutes?|minute))?(?=(?:\s|[,.;:!?)]|$))",
+    re.IGNORECASE,
+)
 CLAUSE_DASH_RE = re.compile(
     rf"(?<=\S)(?:[ \t]+(?:--+|[{DASH_CLASS}]+)[ \t]*|[ \t]*(?:--+|[{DASH_CLASS}]+)[ \t]+)(?=\S)"
 )
@@ -108,11 +112,13 @@ MERGEABLE_COMMON_WORDS = COMMON_SHORT_WORDS | {
 # Words commonly merged with the pronoun "I" in streaming (e.g. "Ithink", "Iwant").
 # Only these suffixes trigger the I-prefix split; proper nouns like Instagram are safe.
 _I_SPLIT_WORDS = MERGEABLE_COMMON_WORDS | {
+    "attach", "attached", "attaching",
     "think", "want", "know", "love", "need", "like", "feel", "believe",
     "remember", "understand", "mean", "see", "hear", "hope", "wish",
     "guess", "got", "get", "really", "also", "always", "actually",
     "agree", "had", "may", "might", "said", "say", "told", "tell",
     "tried", "try", "used", "usually", "went", "made", "make",
+    "build", "building", "built", "coach", "coaching", "coached",
     "talk", "talked", "thought", "found", "keep", "kept", "left",
     "live", "lived", "look", "looked", "met", "moved", "play",
     "read", "run", "saw", "started", "took", "work", "worked",
@@ -141,15 +147,27 @@ SUSPICIOUS_FRAGMENT_STARTS = (
 logger = logging.getLogger(__name__)
 
 
+def _normalize_numeric_range(span: str) -> str:
+    cleaned = re.sub(rf"\s*(?:[{DASH_CLASS}])\s*", "-", str(span or "").strip())
+    cleaned = re.sub(r"(?<=\d)\s+(?=%)", "", cleaned)
+    return cleaned
+
+
 def _protect_spans(text: str) -> Tuple[str, Dict[str, str]]:
     protected: Dict[str, str] = {}
 
     def _replace(match: re.Match[str]) -> str:
         token = f"__CB_PROTECTED_{len(protected)}__"
-        protected[token] = match.group(0)
+        span = match.group(0)
+        if NUMERIC_RANGE_RE.fullmatch(span):
+            span = _normalize_numeric_range(span)
+        protected[token] = span
         return token
 
-    return PROTECTED_SPAN_RE.sub(_replace, text), protected
+    cleaned = text
+    for pattern in (PROTECTED_SPAN_RE, NUMERIC_RANGE_RE):
+        cleaned = pattern.sub(_replace, cleaned)
+    return cleaned, protected
 
 
 def _restore_spans(text: str, protected: Dict[str, str]) -> str:

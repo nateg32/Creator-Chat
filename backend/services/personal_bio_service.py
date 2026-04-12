@@ -179,6 +179,26 @@ def _render_timeline_sentence(question: str, *, subject: str = "", value: str = 
     return f"I started in {value}."
 
 
+def _normalize_creator_start_focus(focus: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(focus or "").strip().lower())
+    normalized = re.sub(r"^(?:doing|in|into|on)\s+", "", normalized)
+    if not normalized:
+        return ""
+
+    alias_map = (
+        (r"\b(?:day\s*)?trad(?:e|ing|er|ers)\b|\bswing\s*trad(?:e|ing)\b", "trading"),
+        (r"\binvest(?:ing|ment|ments)?\b", "investing"),
+        (r"\b(?:youtube|content\s+creation|creating\s+content|making\s+content|videos?)\b", "content creation"),
+        (r"\b(?:podcast|podcasting)\b", "podcasting"),
+        (r"\b(?:dropship(?:ping)?|e-?commerce|online\s+store)\b", "ecommerce"),
+        (r"\b(?:business|entrepreneur(?:ship)?)\b", "business"),
+    )
+    for pattern, canonical in alias_map:
+        if re.search(pattern, normalized):
+            return canonical
+    return normalized
+
+
 def _preview_text(value: Any, limit: int = 500) -> str:
     text = extract_search_text(value)
     if not text:
@@ -620,7 +640,20 @@ class PersonalBioService:
         evidence_plan: Optional[Any] = None,
         entity: Optional[Dict[str, Any]] = None,
     ) -> str:
+        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+        entity_type = str(getattr(evidence_plan, "entity_type", "") or "").lower()
+        policy = classify_creator_fact_query(question, entity_type=entity_type, query_goal=query_goal)
         explicit = str(getattr(evidence_plan, "entity_subject", "") or "").strip()
+        if policy.kind == "creator_start_timeline":
+            focus = _normalize_creator_start_focus(
+                policy.focus
+                or explicit
+                or str((entity or {}).get("name") or "")
+                or self._extract_subject(question, [])
+            )
+            if focus and focus not in {"it", "this", "that", "one"}:
+                return focus
+            return creator_name
         if explicit:
             return explicit
         resolved_name = str((entity or {}).get("name") or "").strip()
@@ -629,8 +662,6 @@ class PersonalBioService:
         extracted = self._extract_subject(question, [])
         if extracted and extracted.lower() not in {"it", "that", "this", "one", "book", "course", "podcast"}:
             return extracted
-        query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
-        entity_type = str(getattr(evidence_plan, "entity_type", "") or "").lower()
         lowered = str(question or "").lower()
         if query_goal in {"stat_lookup", "current_stat_lookup"}:
             return creator_name
@@ -816,6 +847,11 @@ class PersonalBioService:
         profile.setdefault("id", creator_id)
         profile.setdefault("name", creator_name)
         query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
+        policy = classify_creator_fact_query(
+            question,
+            entity_type=str((resolved_entity or {}).get("type") or ""),
+            query_goal=query_goal,
+        )
         queries = self._build_public_fact_search_queries(
             question,
             creator_name,
@@ -833,9 +869,9 @@ class PersonalBioService:
         best_score = 0.0
         best_fact: Optional[StructuredFactCandidate] = None
         seen_queries = set()
-        max_query_attempts = self._max_query_attempts(query_goal)
+        max_query_attempts = self._max_query_attempts(query_goal, policy_kind=policy.kind)
         grounded_max_queries = self._grounded_query_plan_limit(query_goal)
-        deadline = time.monotonic() + self._search_time_budget_seconds(query_goal)
+        deadline = time.monotonic() + self._search_time_budget_seconds(query_goal, policy_kind=policy.kind)
         for query in queries:
             if len(seen_queries) >= max_query_attempts:
                 break
@@ -922,7 +958,9 @@ class PersonalBioService:
         )
         return best_evidence, best_fact
 
-    def _max_query_attempts(self, query_goal: str) -> int:
+    def _max_query_attempts(self, query_goal: str, *, policy_kind: str = "") -> int:
+        if query_goal == "timeline_lookup" and policy_kind == "creator_start_timeline":
+            return 4
         if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
             return 2
         if query_goal in {"availability_lookup", "resource_lookup"}:
@@ -936,7 +974,9 @@ class PersonalBioService:
             return 2
         return 1
 
-    def _search_time_budget_seconds(self, query_goal: str) -> float:
+    def _search_time_budget_seconds(self, query_goal: str, *, policy_kind: str = "") -> float:
+        if query_goal == "timeline_lookup" and policy_kind == "creator_start_timeline":
+            return 12.0
         if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
             return 9.0
         return 8.0
@@ -1547,6 +1587,8 @@ RULES:
 3. Never say "I haven't talked about that publicly" about your own public work.
 4. Never say "I don't have that in front of me" about your own book, product, or release.
 5. Never invent facts. If the evidence is still insufficient, direct the user to a concrete official source.
+6. Never mention evidence, sources, transcripts, search, verification steps, or that you pulled anything up.
+7. Keep it natural and first-person, like a direct answer to the user.
 
 Return JSON:
 {{
@@ -1608,11 +1650,10 @@ Evidence:
             timeline_focus = _extract_timeline_focus(question)
             if timeline_focus:
                 return (
-                    f"I want to give you the right date on that. I couldn't verify an exact public source for when I started {timeline_focus}, "
-                    "so I don't want to guess."
+                    f"I don't want to fake the year on that. I couldn't pin down an exact date for when I started {timeline_focus}, so I won't make one up."
                 )
             return (
-                "I want to give you the right date on that. I couldn't verify an exact public source yet, so I don't want to guess."
+                "I don't want to fake the year on that. I couldn't pin down an exact date yet, so I won't make one up."
             )
         if query_goal in {"price_lookup"} or any(token in lowered for token in ["price", "pricing", "cost", "how much"]):
             return (

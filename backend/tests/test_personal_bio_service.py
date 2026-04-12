@@ -563,7 +563,63 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("amazon listing", answer.lower())
         self.assertNotIn("audible", answer.lower())
         self.assertNotIn("publisher page", answer.lower())
-        self.assertIn("don't want to guess", answer.lower())
+        self.assertIn("won't make one up", answer.lower())
+
+    def test_creator_start_subject_normalizes_trading_variants(self):
+        service, _provider = _load_personal_bio_service([], grounded_response_text="")
+        plan = types.SimpleNamespace(query_goal="timeline_lookup", entity_type="", entity_subject="")
+
+        self.assertEqual(
+            service._derive_entity_subject("when did u start day trading?", "Tjr", evidence_plan=plan),
+            "trading",
+        )
+        self.assertEqual(
+            service._derive_entity_subject("when did u start trading?", "Tjr", evidence_plan=plan),
+            "trading",
+        )
+
+    def test_creator_start_question_keeps_searching_past_two_queries(self):
+        def grounded_callback(query, creator_profile):
+            if " since" in query.lower():
+                return {
+                    "response_text": "Tjr started trading in 2018.",
+                    "citations": [],
+                    "search_entry_point": {"rendered_content": ""},
+                    "query_plan": [query],
+                    "results": [],
+                    "sources": [],
+                    "packages": [],
+                }
+            return {
+                "response_text": "Tjr talks a lot about trading.",
+                "citations": [],
+                "search_entry_point": {"rendered_content": ""},
+                "query_plan": [query],
+                "results": [],
+                "sources": [],
+                "packages": [],
+            }
+
+        service, provider = _load_personal_bio_service(
+            [],
+            grounded_overview_callback=grounded_callback,
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u start day trading?",
+            voice_profile={"energy": "direct"},
+            creator_name="Tjr",
+            decision_policy={},
+            creator_profile={"name": "Tjr"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertGreaterEqual(len(provider.grounded_calls), 4, provider.grounded_calls)
+        self.assertTrue(any(" since" in call[0].lower() for call in provider.grounded_calls), provider.grounded_calls)
+        self.assertIn("2018", answer)
 
 
 if __name__ == "__main__":

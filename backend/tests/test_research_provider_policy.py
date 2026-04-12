@@ -14,6 +14,11 @@ def load_research_provider_module():
     spec = importlib.util.spec_from_file_location("test_research_provider_module", module_path)
     module = importlib.util.module_from_spec(spec)
 
+    fake_backend = types.ModuleType("backend")
+    fake_backend.__path__ = []  # type: ignore[attr-defined]
+    fake_backend_services = types.ModuleType("backend.services")
+    fake_backend_services.__path__ = []  # type: ignore[attr-defined]
+
     fake_db = types.ModuleType("backend.db")
     fake_db.db = types.SimpleNamespace(
         execute_one=lambda *args, **kwargs: None,
@@ -34,15 +39,20 @@ def load_research_provider_module():
     fake_requests = types.ModuleType("requests")
     fake_live_rules = types.ModuleType("backend.services.live_search_rules")
     fake_live_rules.needs_fresh_public_web_search = lambda *args, **kwargs: False
+    fake_creator_fact_policy = types.ModuleType("backend.services.creator_fact_policy")
+    fake_creator_fact_policy.classify_creator_fact_query = lambda *args, **kwargs: types.SimpleNamespace(kind="general", fact_field="public_fact")
 
     with patch.dict(
         sys.modules,
         {
+            "backend": fake_backend,
+            "backend.services": fake_backend_services,
             "backend.db": fake_db,
             "backend.settings": fake_settings,
             "backend.rag": fake_rag,
             "requests": fake_requests,
             "backend.services.live_search_rules": fake_live_rules,
+            "backend.services.creator_fact_policy": fake_creator_fact_policy,
         },
     ):
         spec.loader.exec_module(module)
@@ -172,6 +182,68 @@ class ResearchProviderPolicyTests(unittest.TestCase):
         self.assertEqual(beta_citation["end_index"], len("Alpha facts.\n\n") + 4)
         self.assertEqual(overview["sources"][0]["url"], "https://creator.com/about")
         self.assertEqual(overview["sources"][1]["url"], "https://creator.com/offers")
+
+    def test_extract_grounding_package_unwraps_redirect_urls(self):
+        provider = GeminiResearchProvider()
+        package = provider._extract_grounding_package(
+            {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "Alpha facts."}]},
+                        "groundingMetadata": {
+                            "groundingChunks": [
+                                {
+                                    "web": {
+                                        "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect?url=https%3A%2F%2Fjointjrtrades.com%2Fabout",
+                                        "title": "jointjrtrades.com",
+                                    }
+                                }
+                            ],
+                            "groundingSupports": [
+                                {
+                                    "segment": {"text": "Alpha", "startIndex": 0, "endIndex": 5},
+                                    "groundingChunkIndices": [0],
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(package["grounded_results"][0]["url"], "https://jointjrtrades.com/about")
+        self.assertEqual(package["citations"][0]["url"], "https://jointjrtrades.com/about")
+
+    def test_extract_grounding_package_falls_back_to_title_domain_for_wrapper_urls(self):
+        provider = GeminiResearchProvider()
+        package = provider._extract_grounding_package(
+            {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "Alpha facts."}]},
+                        "groundingMetadata": {
+                            "groundingChunks": [
+                                {
+                                    "web": {
+                                        "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQ-test",
+                                        "title": "jointjrtrades.com",
+                                    }
+                                }
+                            ],
+                            "groundingSupports": [
+                                {
+                                    "segment": {"text": "Alpha", "startIndex": 0, "endIndex": 5},
+                                    "groundingChunkIndices": [0],
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(package["grounded_results"][0]["url"], "https://jointjrtrades.com")
+        self.assertEqual(package["citations"][0]["url"], "https://jointjrtrades.com")
 
 
 if __name__ == "__main__":
