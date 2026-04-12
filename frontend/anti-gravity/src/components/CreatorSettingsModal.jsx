@@ -13,6 +13,11 @@ const COLORS = [
   { label: "Neutral", value: "#3C4043" },
 ];
 
+function normalizeSearchMode(value = "hybrid") {
+  const normalized = String(value || "hybrid").toLowerCase();
+  return normalized === "ingested" ? "ingested_only" : normalized;
+}
+
 export function CreatorSettingsModal({
   isOpen,
   onClose,
@@ -24,25 +29,28 @@ export function CreatorSettingsModal({
   searchMode = "hybrid",
   onUpdateSearchMode,
 }) {
+  const normalizedSearchMode = normalizeSearchMode(searchMode);
   const [localCreatorColor, setLocalCreatorColor] = useState(
     visualConfig?.creatorNameColor || "#4285F4"
   );
   const [localUserColor, setLocalUserColor] = useState(
     visualConfig?.userNameColor || "#3C4043"
   );
-  const [localSearchMode, setLocalSearchMode] = useState(searchMode);
+  const [localSearchMode, setLocalSearchMode] = useState(normalizedSearchMode);
   const [localAvatarUrl, setLocalAvatarUrl] = useState(creatorAvatarUrl || "");
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
+  const normalizedLocalSearchMode = normalizeSearchMode(localSearchMode);
+  const webSearchEnabled = normalizedLocalSearchMode === "hybrid";
 
   useEffect(() => {
     if (!isOpen) return;
     setLocalCreatorColor(visualConfig?.creatorNameColor || "#4285F4");
     setLocalUserColor(visualConfig?.userNameColor || "#3C4043");
-    setLocalSearchMode(searchMode || "hybrid");
+    setLocalSearchMode(normalizedSearchMode);
     setLocalAvatarUrl(creatorAvatarUrl || "");
     setSaving(false);
-  }, [isOpen, visualConfig, searchMode, creatorAvatarUrl]);
+  }, [isOpen, visualConfig, normalizedSearchMode, creatorAvatarUrl]);
 
   if (!isOpen) return null;
 
@@ -56,7 +64,7 @@ export function CreatorSettingsModal({
   };
 
   const handleSearchModeChange = (mode) => {
-    setLocalSearchMode(mode);
+    setLocalSearchMode(normalizeSearchMode(mode));
   };
 
   const handleAvatarUpload = async (event) => {
@@ -87,8 +95,8 @@ export function CreatorSettingsModal({
         await onUpdateVisualConfig(nextVisualConfig);
       }
 
-      if ((searchMode || "hybrid") !== localSearchMode && onUpdateSearchMode) {
-        await onUpdateSearchMode(localSearchMode);
+      if (normalizedSearchMode !== normalizedLocalSearchMode && onUpdateSearchMode) {
+        await onUpdateSearchMode(normalizedLocalSearchMode);
       }
 
       if ((creatorAvatarUrl || "") !== localAvatarUrl) {
@@ -199,10 +207,26 @@ export function CreatorSettingsModal({
               <h3>Retrieval</h3>
             </div>
 
+            <div className={`creator-mode-status ${webSearchEnabled ? "creator-mode-status-on" : "creator-mode-status-off"}`}>
+              <span className={`creator-mode-status-badge ${webSearchEnabled ? "creator-mode-status-badge-on" : "creator-mode-status-badge-off"}`}>
+                {webSearchEnabled ? "Web on" : "Web off"}
+              </span>
+              <div className="creator-mode-status-copy">
+                <div className="creator-mode-status-title">
+                  {webSearchEnabled ? "Live web search is enabled for this creator." : "This creator is currently limited to ingested content."}
+                </div>
+                <div className="creator-mode-status-desc">
+                  {webSearchEnabled
+                    ? "Responses use creator content first and can fall back to the public web when needed."
+                    : "Responses use stored docs and transcripts only, so current web facts will not be fetched."}
+                </div>
+              </div>
+            </div>
+
             <div className="creator-mode-list">
               <button
                 type="button"
-                className={`creator-mode-card ${localSearchMode === "ingested_only" ? "selected" : ""}`}
+                className={`creator-mode-card ${normalizedLocalSearchMode === "ingested_only" ? "selected" : ""}`}
                 onClick={() => handleSearchModeChange("ingested_only")}
               >
                 <div className="creator-mode-radio">
@@ -216,7 +240,7 @@ export function CreatorSettingsModal({
 
               <button
                 type="button"
-                className={`creator-mode-card ${localSearchMode === "hybrid" ? "selected" : ""}`}
+                className={`creator-mode-card ${normalizedLocalSearchMode === "hybrid" ? "selected" : ""}`}
                 onClick={() => handleSearchModeChange("hybrid")}
               >
                 <div className="creator-mode-radio">
