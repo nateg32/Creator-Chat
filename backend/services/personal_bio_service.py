@@ -332,6 +332,24 @@ class PersonalBioService:
     4. Synthesize answer in creator voice based on the chosen move.
     """
 
+    def _structured_candidate_has_journey_reason(
+        candidate: Optional[StructuredFactCandidate],
+        creator_name: str,
+        *,
+        source_snippet: str = "",
+    ) -> bool:
+        if not candidate:
+            return False
+        blob = " ".join(
+            part
+            for part in [
+                str(candidate.answer_text or "").strip(),
+                str(candidate.value or "").strip(),
+                str(source_snippet or "").strip(),
+            ]
+            if part
+        )
+        return bool(_extract_journey_reason(blob, creator_name))
     def __init__(self):
         from backend.services.research_provider import get_research_provider
         self.researcher = get_research_provider()
@@ -422,6 +440,11 @@ class PersonalBioService:
         # (for "ingested only"), this service must stay inside ingested content,
         # soul_md, and creator profile data without silently re-enabling search.
         effective_allow_web = bool(allow_web and researcher_enabled)
+        policy = classify_creator_fact_query(
+            resolved_question,
+            entity_type=evidence_plan.entity_type,
+            query_goal=evidence_plan.query_goal,
+        )
         fact_field = fact_registry.infer_fact_field(resolved_question, evidence_plan.entity_type)
         entity_subject = self._derive_entity_subject(
             resolved_question,
@@ -439,6 +462,12 @@ class PersonalBioService:
                 fact_field,
                 freshness_required=evidence_plan.freshness_required,
             )
+        candidate_source_snippet = ""
+        if policy.kind == "creator_journey" and hot_cached_fact:
+            if not self._structured_candidate_has_journey_reason(hot_cached_fact, creator_name):
+                hot_cached_fact = None
+        if policy.kind == "creator_journey" and cached_fact:
+            candidate_source_snippet = str(getattr(cached_fact, "source_snippet", "") or "")
         logger.info(
             f"{SEARCH_TRACE_PREFIX} handle_start: question={question!r} resolved={resolved_question!r} "
             f"goal={evidence_plan.query_goal} fact_field={fact_field!r} entity={entity_subject!r} "
@@ -512,6 +541,12 @@ class PersonalBioService:
             internal_facts = cached_facts + internal_facts
 
         extracted_fact = hot_cached_fact or self._cached_fact_to_candidate(cached_fact)
+        if policy.kind == "creator_journey" and extracted_fact and not self._structured_candidate_has_journey_reason(
+            extracted_fact,
+            creator_name,
+            source_snippet=candidate_source_snippet,
+        ):
+            extracted_fact = None
         web_facts = []
         if not extracted_fact and effective_allow_web and evidence_plan.should_search_web and (
             public_fact_query or self._needs_more_evidence(internal_facts) or evidence_plan.should_verify
@@ -528,6 +563,12 @@ class PersonalBioService:
                 fact_field=fact_field,
                 entity_subject=entity_subject,
             )
+            if policy.kind == "creator_journey" and extracted_fact and not self._structured_candidate_has_journey_reason(
+                extracted_fact,
+                creator_name,
+                source_snippet=str((web_facts[0] or {}).get("text") or "") if web_facts else "",
+            ):
+                extracted_fact = None
         elif extracted_fact:
             logger.info(f"{SEARCH_TRACE_PREFIX} fact_source: using_cached_fact field={extracted_fact.fact_field} value={extracted_fact.value!r}")
 
@@ -549,33 +590,35 @@ class PersonalBioService:
 
         if public_fact_query:
             if extracted_fact:
-                extracted_fact.answer_text = self._render_structured_fact_answer(
+                rendered_structured_answer = self._render_structured_fact_answer(
                     extracted_fact,
                     resolved_question,
                     creator_name,
                     voice_profile,
                     entity=resolved_entity,
                 )
-                self._cache_structured_fact(
-                    creator_id,
-                    entity_subject,
-                    evidence_plan.entity_type or str((resolved_entity or {}).get("type") or ""),
-                    fact_field,
-                    extracted_fact,
-                    evidence_plan.freshness_required,
-                    cache_key=hot_cache_key,
-                )
-                answer = extracted_fact.answer_text
-                logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move=ANSWER_STRUCTURED_FACT answer={answer[:240]!r}")
-                return {
-                    "answer": answer,
-                    "confidence": "HIGH" if web_facts or hot_cached_fact else ("MEDIUM" if cached_fact else "MEDIUM"),
-                    "sources": all_evidence,
-                    "move": "ANSWER_STRUCTURED_FACT",
-                    "evidence_plan": evidence_plan.to_dict(),
-                    "fact_cache_hit": bool(cached_fact or hot_cached_fact),
-                    "contradiction_report": contradiction_report,
-                }
+                if rendered_structured_answer:
+                    extracted_fact.answer_text = rendered_structured_answer
+                    self._cache_structured_fact(
+                        creator_id,
+                        entity_subject,
+                        evidence_plan.entity_type or str((resolved_entity or {}).get("type") or ""),
+                        fact_field,
+                        extracted_fact,
+                        evidence_plan.freshness_required,
+                        cache_key=hot_cache_key,
+                    )
+                    answer = extracted_fact.answer_text
+                    logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move=ANSWER_STRUCTURED_FACT answer={answer[:240]!r}")
+                    return {
+                        "answer": answer,
+                        "confidence": "HIGH" if web_facts or hot_cached_fact else ("MEDIUM" if cached_fact else "MEDIUM"),
+                        "sources": all_evidence,
+                        "move": "ANSWER_STRUCTURED_FACT",
+                        "evidence_plan": evidence_plan.to_dict(),
+                        "fact_cache_hit": bool(cached_fact or hot_cached_fact),
+                        "contradiction_report": contradiction_report,
+                    }
             if requires_verified_timeline and not web_facts:
                 fallback_answer = self._public_fact_fallback(resolved_question, creator_name, evidence_plan=evidence_plan, entity=resolved_entity)
                 logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move=TIMELINE_VERIFY_REQUIRED answer={fallback_answer[:240]!r}")
@@ -1359,6 +1402,22 @@ class PersonalBioService:
         voice_blob = json.dumps(voice_profile or {}).lower()
         is_direct_voice = any(token in voice_blob for token in ["direct", "punchy", "intense", "high"])
 
+        if policy.kind == "creator_journey":
+            reason = _extract_journey_reason(
+                " ".join(part for part in [existing, value, str(candidate.answer_text or "").strip()] if part),
+                creator_name,
+            )
+            focus = _normalize_creator_start_focus(_extract_timeline_focus(question) or subject)
+            if reason:
+                if reason.lower().startswith("because ") or reason.lower().startswith("after "):
+                    reason_text = reason
+                else:
+                    reason_text = f"because {reason}"
+                if focus and focus not in {"it", "this", "that", "one"}:
+                    return f"I got into {focus} {reason_text}."
+                return f"I got into it {reason_text}."
+            return ""
+
         if fact_field in {"publication_date", "launch_date", "start_date"} and value:
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", value, re.IGNORECASE):
                 return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
@@ -1486,6 +1545,9 @@ class PersonalBioService:
         subject = str(entity_subject or self._extract_subject(question, evidence) or "It").strip() or "It"
         lowered_question = str(question or "").lower()
         policy = classify_creator_fact_query(question, query_goal="timeline_lookup" if _looks_like_timeline_question(question) else "")
+
+        if policy.kind == "creator_journey":
+            return None
 
         if policy.kind == "creator_start_timeline" and _looks_like_bibliographic_timeline_result(blob):
             return None

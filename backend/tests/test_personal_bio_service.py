@@ -666,6 +666,53 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertEqual(result.get("move"), "ANSWER_PUBLIC_FACT")
         self.assertIn("wanted more control over my future", result.get("answer", "").lower())
 
+    def test_creator_journey_question_prefers_reason_over_year_fact(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            grounded_response_text="He started trading in 2017 because he was tired of being broke and stuck.",
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="why did u start trading?",
+            voice_profile={"energy": "direct"},
+            creator_name="Tjr",
+            decision_policy={},
+            creator_profile={"name": "Tjr"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "").lower()
+        self.assertTrue(provider.grounded_calls)
+        self.assertIn("tired of being broke", answer)
+        self.assertNotEqual(answer.strip(), "2017")
+        self.assertNotIn("i started trading in 2017", answer)
+
+    def test_creator_journey_question_does_not_render_timeline_candidate(self):
+        service, _provider = _load_personal_bio_service([], grounded_response_text="")
+
+        candidate = service._candidate_from_fact_lookup(
+            {
+                "found": True,
+                "fact_field": "public_fact",
+                "answer_text": "I started trading in 2017.",
+                "value": "2017",
+                "confidence": 0.9,
+            },
+            fact_field="public_fact",
+            entity_subject="trading",
+        )
+
+        answer = service._render_structured_fact_answer(
+            candidate,
+            "why did u start trading?",
+            "Tjr",
+            {"energy": "direct"},
+        )
+
+        self.assertEqual(answer, "")
+
 
 if __name__ == "__main__":
     unittest.main()
