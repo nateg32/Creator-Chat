@@ -2392,7 +2392,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     assembled.append(pending_stream_text)
                     yield f"data: {json.dumps({'content': pending_stream_text})}\n\n"
                     pending_stream_text = ""
-                streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
+                raw_streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
+                streamed_answer = raw_streamed_answer
                 # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
                 streamed_answer = _repair_metadata_biography(streamed_answer)
                 cards = (
@@ -2428,7 +2429,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     full_answer,
                     explicit_support or _card_chunks_for_integrity(cards),
                 )
-                if full_answer != streamed_answer:
+                if full_answer != raw_streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 if request.thread_id:
                     finalize_stream_interaction(
