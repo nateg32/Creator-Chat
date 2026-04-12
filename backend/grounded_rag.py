@@ -3414,7 +3414,7 @@ def generate_grounded_answer(
         if published_at:
             try:
                 dt = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
-                header_parts.append(f"Published: {dt.strftime('%b %d, %Y')}")
+                header_parts.append(f"Content uploaded: {dt.strftime('%b %d, %Y')}")
             except Exception:
                 pass
 
@@ -3727,7 +3727,7 @@ RULES:
 8. PERSONA PROTECTION: Strictly PURGE all meta-talk like "I don't have enough info" or "Based on my data". NEVER mention being an AI.
 9. VERBOSITY: Strictly stay within the BUDGET. Cut content if necessary.
 10. FORMATTING QUALITY: Write complete, clean sentences. Every word must be spelled as one unbroken unit (correct: "mean", wrong: "me an"). Never drop words mid-sentence. Never leave dangling punctuation or orphaned parentheses. Every sentence must be grammatically complete.
-11. FACT GROUNDING: The NEUTRAL PLAN may contain things the creator SAID in their content. Do not adopt a fact as your personal biography unless it explicitly names you or uses first person. If a source says something was "published in 2017", that refers to material you discussed, NOT your timeline, unless it explicitly says YOU started or YOU published. When unsure, say "In one of my videos I mentioned..." rather than "I was..." or "I did...".
+11. FACT GROUNDING: The NEUTRAL PLAN may contain things the creator SAID in their content — these are NOT your personal biography. CRITICAL: Source headers contain metadata like "Content uploaded: 2017" — that is the upload/publish date of the VIDEO or ARTICLE, NOT when something happened to you. Never say "I was published in [year]" or "I started in [year]" based on a content upload date. Only claim personal timeline events ("I started trading in...", "I moved to...") if the transcript text itself explicitly states that biographical fact in first person. When unsure, say "In one of my videos I talked about..." rather than adopting it as your life story.
 
 NEUTRAL PLAN:
 {json.dumps(draft, indent=2)}
