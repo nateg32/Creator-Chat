@@ -67,6 +67,7 @@ from backend.services.creator_entity_service import creator_entity_service
 from backend.services.creator_fact_policy import classify_creator_fact_query, extract_timeline_focus
 from backend.services.evidence_router import recent_evidence_activity
 from backend.services.fact_registry import fact_registry
+from backend.services.stream_fact_recovery import recover_streamed_creator_fact_answer
 from backend.services.recommendation_feedback_service import recommendation_feedback_service
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
@@ -2397,12 +2398,40 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 streamed_answer = raw_streamed_answer
                 # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
                 streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, request.question)
+                recovered_citations = []
+                if metadata_bio_fallback_applied:
+                    recovery_profile = db.execute_one(
+                        f"""
+                        SELECT
+                            name,
+                            handle,
+                            search_mode,
+                            {_creator_select_expr('voice_profile')},
+                            {_creator_select_expr('decision_policy')}
+                        FROM creators
+                        WHERE id = %s AND user_id = %s
+                        """,
+                        (request.creator_id, current_user["id"]),
+                    )
+                    recovery_result = recover_streamed_creator_fact_answer(
+                        user_id=current_user["id"],
+                        creator_id=request.creator_id,
+                        question=request.question,
+                        creator_row=recovery_profile,
+                        conversation_history=safe_history,
+                    )
+                    recovered_answer = str(recovery_result.get("answer") or "").strip()
+                    if recovered_answer:
+                        logger.info("Recovered creator fact answer after metadata-biography fallback for streamed response.")
+                        streamed_answer = recovered_answer
+                        metadata_bio_fallback_applied = False
+                        recovered_citations = list(recovery_result.get("citations") or [])
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
                     else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=True)
                 )
-                citations = explicit_citations if explicit_citations else []
+                citations = recovered_citations if recovered_citations else (explicit_citations if explicit_citations else [])
                 if metadata_bio_fallback_applied:
                     citations = []
                 full_answer = prepare_chat_response(
