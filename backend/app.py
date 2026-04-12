@@ -2396,7 +2396,7 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 raw_streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 streamed_answer = raw_streamed_answer
                 # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
-                streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, question)
+                streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, request.question)
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
