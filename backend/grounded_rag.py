@@ -3230,6 +3230,14 @@ OFPO STEP 5 - USER-CENTEREDNESS CHECK:
 3. If info is missing, did I stop at the question?
 4. Is the plan concise and outcome-first?
 
+METADATA vs. BIOGRAPHY (CRITICAL):
+The Context section below contains source headers like [Source 1 | youtube | Ingested | Title: "..."]. 
+These headers are METADATA about the content (video title, platform, upload date, etc.) — they are NOT biographical facts about the creator.
+- "Content uploaded: 2017" means the VIDEO was posted in 2017, NOT that the creator started/did something in 2017.
+- ONLY treat information from the actual transcript/content TEXT (below each header) as things the creator said.
+- If the user asks a personal timeline question ("when did you start...", "how long have you been...") and the transcript text does NOT explicitly state the answer in first person, set "uncertainty_handling": "admit_unknown" and put a hedge in answer_points like "I've talked about [topic] in my content — check out [title] for the full story".
+- NEVER fabricate a biographical answer from upload dates, titles, or other header metadata.
+
 Output a JSON object with the following structure:
 {{
     "goal_guess": "1 sentence summary",
@@ -3411,12 +3419,8 @@ def generate_grounded_answer(
             header_parts.append(f'Title: "{title}"')
         if content_type and content_type not in ("unknown",):
             header_parts.append(f"Type: {content_type}")
-        if published_at:
-            try:
-                dt = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
-                header_parts.append(f"Content uploaded: {dt.strftime('%b %d, %Y')}")
-            except Exception:
-                pass
+        # ── Skip published_at in LLM-facing context to prevent metadata-biography confusion ──
+        # The date is preserved in source_ref for citation cards but NOT shown to the LLM.
 
         # ── Video timestamp context (if available) ──
         start_sec = source.get("start_time_sec")
@@ -3693,6 +3697,7 @@ Your persona is a "filter" applied to the NEUTRAL PLAN.
 - You control: sentence length, punchiness, metaphors, slang, and directness.
 - You are BLOCKED from: changing the chosen "Next Action", adding extra steps, adding unrelated anecdotes, or adding "fun facts".
 - Follow the NEUTRAL PLAN exactly. Do NOT add new sections.
+- EXCEPTION: If the plan's answer_points claim a personal timeline event (e.g. "started in [year]", "published in [year]") that does NOT come from explicit first-person transcript text, you MUST override that point. Replace it with a hedge like "I've talked about this in my content" or admit you don't recall the exact date. Never echo a metadata-derived date as your biography.
 
 ACTION: {mode_constraints.get('next_action', 'Explain')}
 BUDGET: Max {mode_constraints.get('max_sentences', 4)} sentences, {mode_constraints.get('max_bullets', 0)} bullets.
