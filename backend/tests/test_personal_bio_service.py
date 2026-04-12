@@ -664,6 +664,7 @@ class PersonalBioServiceTests(unittest.TestCase):
 
         self.assertTrue(provider.grounded_calls)
         self.assertEqual(result.get("move"), "ANSWER_PUBLIC_FACT")
+        self.assertIn("wanted more control over my future", result.get("answer", "").lower())
 
 
 if __name__ == "__main__":

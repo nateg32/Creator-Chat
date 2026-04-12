@@ -228,6 +228,48 @@ def _normalize_creator_start_focus(focus: str) -> str:
     return normalized
 
 
+def _normalize_journey_reason_text(reason: str, creator_name: str = "") -> str:
+    text = re.sub(r"\s+", " ", str(reason or "").strip(" .,:;!?"))
+    if not text:
+        return ""
+    if creator_name:
+        text = re.sub(rf"\b{re.escape(creator_name)}(?:'s)?\b", "I", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(he|she|they)\b", "I", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(his|her|their)\b", "my", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(himself|herself|themselves)\b", "myself", text, flags=re.IGNORECASE)
+    text = re.sub(r"^I\s+said\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^said\s+", "", text, flags=re.IGNORECASE)
+    return text.strip(" .,:;!?")
+
+
+def _extract_journey_reason(blob: str, creator_name: str = "") -> str:
+    normalized = re.sub(r"\s+", " ", str(blob or "").strip())
+    if not normalized:
+        return ""
+
+    segments = re.split(r"(?<=[.!?])\s+", normalized)
+    patterns = [
+        re.compile(r"\bbecause\s+([^.!?;]+)", re.IGNORECASE),
+        re.compile(r"\bafter\s+([^.!?;]+)", re.IGNORECASE),
+        re.compile(r"\b(?:wanted|wanting)\s+to\s+([^.!?;]+)", re.IGNORECASE),
+        re.compile(r"\blooking\s+for\s+([^.!?;]+)", re.IGNORECASE),
+    ]
+
+    for segment in segments:
+        cleaned_segment = segment.strip()
+        if not cleaned_segment:
+            continue
+        for pattern in patterns:
+            match = pattern.search(cleaned_segment)
+            if not match:
+                continue
+            candidate = match.group(0) if pattern.pattern.startswith("\\bbecause") or pattern.pattern.startswith("\\bafter") else match.group(0)
+            normalized_candidate = _normalize_journey_reason_text(candidate, creator_name)
+            if normalized_candidate and len(normalized_candidate.split()) >= 3:
+                return normalized_candidate
+    return ""
+
+
 def _preview_text(value: Any, limit: int = 500) -> str:
     text = extract_search_text(value)
     if not text:
@@ -1576,6 +1618,19 @@ class PersonalBioService:
         month_year = re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", blob, re.IGNORECASE)
         year = re.search(r"\b(20\d{2}|19\d{2})\b", blob)
 
+        if policy.kind == "creator_journey":
+            reason = _extract_journey_reason(blob, creator_name)
+            focus = _normalize_creator_start_focus(_extract_timeline_focus(question) or subject)
+            if reason:
+                if reason.lower().startswith("because ") or reason.lower().startswith("after "):
+                    reason_text = reason
+                else:
+                    reason_text = f"because {reason}"
+                if focus and focus not in {"it", "this", "that", "one"}:
+                    return f"I got into {focus} {reason_text}."
+                return f"I got into it {reason_text}."
+            return ""
+
         if any(token in lowered_question for token in TIMELINE_TOKENS):
             if policy.kind == "creator_start_timeline" and _looks_like_bibliographic_timeline_result(blob):
                 return ""
@@ -1625,6 +1680,10 @@ class PersonalBioService:
         creator_name: str,
     ) -> str:
         if not evidence:
+            return ""
+
+        policy = classify_creator_fact_query(question)
+        if policy.kind == "creator_journey" and not _extract_journey_reason(self._evidence_blob(evidence), creator_name):
             return ""
 
         evidence_text = "\n".join([f"- [{e.get('source', 'unknown')}]: {e.get('text', '')[:300]}" for e in evidence])
@@ -1685,6 +1744,7 @@ Evidence:
         lowered = str(question or "").lower()
         query_goal = str(getattr(evidence_plan, "query_goal", "") or "").lower()
         official_urls = [str(url or "").strip() for url in ((entity or {}).get("official_urls") or []) if str(url or "").strip()]
+        policy = classify_creator_fact_query(question, entity_type=str((entity or {}).get("type") or ""), query_goal=query_goal)
 
         if _looks_like_catalog_question(lowered, query_goal):
             if query_goal == "entity_catalog_lookup" and official_urls:
@@ -1711,6 +1771,15 @@ Evidence:
                 )
             return (
                 "I don't want to fake the year on that. I couldn't pin down an exact date yet, so I won't make one up."
+            )
+        if query_goal == "journey_lookup" or policy.kind == "creator_journey":
+            journey_focus = _normalize_creator_start_focus(_extract_timeline_focus(question))
+            if journey_focus:
+                return (
+                    f"I've talked about why I got into {journey_focus} in my content, but I couldn't pin down one clean public quote I'd trust enough to paraphrase."
+                )
+            return (
+                "I've talked about that in my content, but I couldn't pin down one clean public quote I'd trust enough to paraphrase."
             )
         if query_goal in {"price_lookup"} or any(token in lowered for token in ["price", "pricing", "cost", "how much"]):
             return (

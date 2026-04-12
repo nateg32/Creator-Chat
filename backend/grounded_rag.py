@@ -158,6 +158,7 @@ def _route_personal_via_evidence(route_evidence_plan: Optional[EvidencePlan]) ->
                 "entity_overview",
                 "entity_catalog_lookup",
                 "availability_lookup",
+                "journey_lookup",
                 "timeline_lookup",
                 "price_lookup",
                 "stat_lookup",
@@ -5957,6 +5958,8 @@ async def grounded_rag_stream(
         if not creator_row:
             yield "I couldn't find information about that creator."
             return
+        if route_evidence_plan and route_evidence_plan.should_search_web and route_evidence_plan.primary_world in {"creator_world", "live_world"}:
+            yield "__STATUS__websearch"
         personal_result = await asyncio.to_thread(
             personal_bio_service.handle_personal_question,
             user_id=user_id,
