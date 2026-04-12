@@ -70,9 +70,42 @@ function looksLikeJunkLinkLabel(label = "") {
   return false;
 }
 
+const GROUNDING_REDIRECT_HOSTS = new Set([
+  "vertexaisearch.cloud.google.com",
+  "vertexaisearch.cloud.googleusercontent.com",
+]);
+
+function normalizeSourceUrl(rawUrl = "", title = "") {
+  const url = String(rawUrl || "").trim();
+  if (!url) return "";
+
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    const isRedirect = GROUNDING_REDIRECT_HOSTS.has(host) || parsed.pathname.includes("grounding-api-redirect");
+    if (!isRedirect) return url;
+
+    for (const key of ["url", "q", "target", "dest", "destination", "redirect", "redirect_url"]) {
+      const candidate = parsed.searchParams.get(key);
+      if (candidate && /^https?:\/\//i.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    const bareTitle = String(title || "").trim();
+    if (/^(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:\/[^\s]*)?$/i.test(bareTitle)) {
+      return /^https?:\/\//i.test(bareTitle) ? bareTitle : `https://${bareTitle}`;
+    }
+  } catch {
+    return url;
+  }
+
+  return url;
+}
+
 function getDomainLabel(url = "") {
   try {
-    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+    return new URL(normalizeSourceUrl(url)).hostname.replace(/^www\./i, "").toLowerCase();
   } catch {
     return "";
   }
@@ -172,7 +205,7 @@ function normalizeSourceEntries(citations = [], cards = []) {
   const normalized = [];
 
   (citations || []).forEach((citation, idx) => {
-    const url = String(citation?.url || "").trim();
+    const url = normalizeSourceUrl(citation?.url || "", citation?.title || citation?.text || "");
     if (!url) return;
     const urlKey = url.toLowerCase();
     if (seen.has(urlKey)) return;
@@ -190,7 +223,7 @@ function normalizeSourceEntries(citations = [], cards = []) {
   });
 
   (cards || []).forEach((card, idx) => {
-    const url = String(card?.url || "").trim();
+    const url = normalizeSourceUrl(card?.url || "", card?.title || card?.short_snippet || card?.subtitle || "");
     if (!url) return;
     const urlKey = url.toLowerCase();
     if (seen.has(urlKey)) return;

@@ -179,6 +179,35 @@ def _render_timeline_sentence(question: str, *, subject: str = "", value: str = 
     return f"I started in {value}."
 
 
+def _extract_fact_value_from_text(fact_field: str, text: str) -> str:
+    candidate_text = re.sub(r"\s+", " ", str(text or "").strip())
+    if not candidate_text:
+        return ""
+
+    lowered_field = str(fact_field or "").strip().lower()
+    if lowered_field in {"publication_date", "launch_date", "start_date", "public_fact"}:
+        for pattern in (
+            rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b",
+            rf"\b({MONTH_PATTERN})\s+\d{{4}}\b",
+            r"\b(20\d{2}|19\d{2})\b",
+        ):
+            match = re.search(pattern, candidate_text, re.IGNORECASE)
+            if match:
+                return match.group(0)
+
+    if lowered_field == "price":
+        match = re.search(r"\$\s?\d[\d,]*(?:\.\d{2})?", candidate_text)
+        if match:
+            return match.group(0)
+
+    if lowered_field in {"followers", "subscribers", "students", "members", "latest_episode", "valuation", "net_worth"}:
+        match = re.search(r"\b\d[\d,]*(?:\.\d+)?(?:\s?[kKmM])?\b", candidate_text)
+        if match:
+            return match.group(0)
+
+    return ""
+
+
 def _normalize_creator_start_focus(focus: str) -> str:
     normalized = re.sub(r"\s+", " ", str(focus or "").strip().lower())
     normalized = re.sub(r"^(?:doing|in|into|on)\s+", "", normalized)
@@ -1202,10 +1231,15 @@ class PersonalBioService:
         answer_text = str(getattr(cached_fact, "fact_value", "") or "").strip()
         if not answer_text:
             return None
+        raw_value = (
+            _extract_fact_value_from_text(fact_field, answer_text)
+            or _extract_fact_value_from_text(fact_field, str(getattr(cached_fact, "source_snippet", "") or ""))
+            or answer_text
+        )
         return StructuredFactCandidate(
             fact_field=fact_field,
             subject=subject,
-            value=answer_text,
+            value=raw_value,
             answer_text=answer_text,
             source_url=str(getattr(cached_fact, "source_url", "") or ""),
             source_title=str(getattr(cached_fact, "source_title", "") or ""),
@@ -1221,15 +1255,17 @@ class PersonalBioService:
     ) -> Optional[StructuredFactCandidate]:
         if not isinstance(payload, dict) or not payload.get("found"):
             return None
+        inferred_field = str(payload.get("fact_field") or fact_field or "public_fact").strip()
         value = str(payload.get("value") or "").strip()
         answer_text = str(payload.get("answer_text") or "").strip()
         if not value and not answer_text:
             return None
+        normalized_value = value or _extract_fact_value_from_text(inferred_field, answer_text)
         subject = str(entity_subject or payload.get("subject") or "It").strip() or "It"
         return StructuredFactCandidate(
-            fact_field=str(payload.get("fact_field") or fact_field or "public_fact").strip(),
+            fact_field=inferred_field,
             subject=subject,
-            value=value or answer_text,
+            value=normalized_value or answer_text,
             answer_text=answer_text or value,
             source_url=str(payload.get("source_url") or "").strip(),
             source_title=str(payload.get("source_title") or "").strip(),
@@ -1320,10 +1356,10 @@ class PersonalBioService:
             entity_subject=entity_subject or candidate.subject,
             entity_type=entity_type,
             fact_field=fact_field or candidate.fact_field,
-            fact_value=candidate.answer_text,
+            fact_value=candidate.value or candidate.answer_text,
             source_url=candidate.source_url,
             source_title=candidate.source_title,
-            source_snippet=candidate.value,
+            source_snippet=candidate.answer_text or candidate.value,
             confidence=candidate.confidence,
             freshness=freshness_required or "low",
             metadata={"cached_from": "personal_bio_service_structured_fact"},

@@ -64,6 +64,7 @@ from backend.services.prompt_injection_guard import normalize_user_preferences
 from backend.services.regurgitation_guard import score_response_quality
 from backend.services.transcript_quality import transcript_needs_recovery
 from backend.services.creator_entity_service import creator_entity_service
+from backend.services.creator_fact_policy import classify_creator_fact_query, extract_timeline_focus
 from backend.services.evidence_router import recent_evidence_activity
 from backend.services.fact_registry import fact_registry
 from backend.services.recommendation_feedback_service import recommendation_feedback_service
@@ -2395,13 +2396,15 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                 raw_streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 streamed_answer = raw_streamed_answer
                 # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
-                streamed_answer = _repair_metadata_biography(streamed_answer)
+                streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, question)
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
                     else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=True)
                 )
                 citations = explicit_citations if explicit_citations else []
+                if metadata_bio_fallback_applied:
+                    citations = []
                 full_answer = prepare_chat_response(
                     streamed_answer,
                     cards=cards,
@@ -2573,17 +2576,31 @@ _METADATA_BIO_PATTERNS = [
     _re_app.compile(r"\b[Ii]\s+was\s+released\s+in\s+\d{4}\b[^.]*\.?", _re_app.IGNORECASE),
 ]
 
-def _repair_metadata_biography(text: str) -> str:
+def _metadata_biography_fallback(question: str) -> str:
+    policy = classify_creator_fact_query(question or "")
+    focus = extract_timeline_focus(question or "")
+    if policy.kind == "creator_start_timeline":
+        if focus:
+            return f"I don't want to fake the year on that. I couldn't pin down an exact date for when I started {focus}, so I won't make one up."
+        return "I don't want to fake the year on that. I couldn't pin down an exact date, so I won't make one up."
+    if policy.kind == "creator_journey":
+        if focus:
+            return f"I've talked about why I got into {focus} in my content, but I don't want to make up the story from memory."
+        return "I've talked about that in my content, but I don't want to make up the story from memory."
+    return "I don't want to fake that detail. If I can't pin it down cleanly, I'd rather keep it straight."
+
+
+def _repair_metadata_biography(text: str, question: str = "") -> tuple[str, bool]:
     """Catch and remove sentences where the LLM confused content metadata with personal biography."""
     if not text:
-        return text
+        return text, False
     repaired = text
     for pat in _METADATA_BIO_PATTERNS:
         repaired = pat.sub("", repaired).strip()
     # If the entire answer was just the bad sentence, return a graceful fallback
     if not repaired or len(repaired) < 10:
-        return "That's a great question. I've talked about my journey in my content, but I don't want to give you the wrong details off the top of my head."
-    return repaired
+        return _metadata_biography_fallback(question), True
+    return repaired, repaired != text
 
 
 def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None, support_chunks=None) -> str:

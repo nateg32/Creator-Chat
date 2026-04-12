@@ -621,6 +621,30 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertTrue(any(" since" in call[0].lower() for call in provider.grounded_calls), provider.grounded_calls)
         self.assertIn("2018", answer)
 
+    def test_fact_lookup_timeline_sentence_does_not_double_render(self):
+        service, _provider = _load_personal_bio_service([], grounded_response_text="")
+
+        candidate = service._candidate_from_fact_lookup(
+            {
+                "found": True,
+                "fact_field": "start_date",
+                "answer_text": "I started trading in 2017.",
+                "value": "",
+                "confidence": 0.92,
+            },
+            fact_field="start_date",
+            entity_subject="trading",
+        )
+
+        answer = service._render_structured_fact_answer(
+            candidate,
+            "when did u start day trading?",
+            "Tjr",
+            {"energy": "direct"},
+        )
+
+        self.assertEqual(answer, "I started day trading in 2017.")
+
 
 if __name__ == "__main__":
     unittest.main()
