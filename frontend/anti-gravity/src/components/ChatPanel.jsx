@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { ask, askStream } from "../api/client";
+import { askStream } from "../api/client";
 import { resizeImage, compressChatImage } from "../utils/image";
 import { formatCreatorName, formatMessageText } from "../utils/format";
 import { buildCreatorWelcomeBody } from "../utils/creatorWelcome";
@@ -215,10 +215,6 @@ function normalizeSourceEntries(citations = [], cards = []) {
     .filter(Boolean);
 }
 
-function splitRevealTokens(text) {
-  return String(text || "").match(/\n+|[^\s\n]+(?:\s+)?/g) || [];
-}
-
 const MIN_IMAGE_ZOOM = 0.75;
 const MAX_IMAGE_ZOOM = 3;
 const IMAGE_ZOOM_STEP = 0.25;
@@ -266,86 +262,8 @@ export function ChatPanel({
   const [imageZoom, setImageZoom] = useState(1);
   const [attachmentError, setAttachmentError] = useState(null);
   const errorTimeoutRef = useRef(null);
-  const typewriterTimeoutRef = useRef(null);
 
   const loading = localLoading;
-
-  const clearTypewriterTimeout = () => {
-    if (typewriterTimeoutRef.current) {
-      window.clearTimeout(typewriterTimeoutRef.current);
-      typewriterTimeoutRef.current = null;
-    }
-  };
-
-  const revealAssistantMessage = (messageId, finalText, cards = [], citations = []) => {
-    clearTypewriterTimeout();
-
-    const tokens = splitRevealTokens(finalText);
-    if (tokens.length === 0) {
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === messageId
-            ? { ...msg, content: finalText, text: finalText, status: "done", cards, citations }
-            : msg
-        )
-      );
-      setLocalLoading(false);
-      if (onInteraction) onInteraction();
-      return;
-    }
-
-    setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === messageId
-            ? { ...msg, content: "", text: "", status: "revealing", citations: [], cards: [] }
-            : msg
-      )
-    );
-
-    let cursor = 0;
-    const tick = () => {
-      const lastToken = tokens[Math.max(0, cursor - 1)] || "";
-      const burstSize = cursor < 12 ? 1 : 2;
-      cursor = Math.min(tokens.length, cursor + burstSize);
-      const partial = tokens.slice(0, cursor).join("");
-      const done = cursor >= tokens.length;
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === messageId
-            ? {
-                ...msg,
-                content: partial,
-                text: partial,
-                status: done ? "done" : "revealing",
-                ...(done && cards.length ? { cards } : {}),
-                ...(done && citations.length ? { citations } : {}),
-              }
-            : msg
-        )
-      );
-
-      if (done) {
-        typewriterTimeoutRef.current = null;
-        setLocalLoading(false);
-        if (onInteraction) onInteraction();
-        return;
-      }
-
-      let nextDelay = 64;
-      if (/\n\n$/.test(partial)) {
-        nextDelay = 180;
-      } else if (/[.!?]["')\]]?\s*$/.test(lastToken)) {
-        nextDelay = 150;
-      } else if (/[,;:]\s*$/.test(lastToken)) {
-        nextDelay = 96;
-      }
-
-      typewriterTimeoutRef.current = window.setTimeout(tick, nextDelay);
-    };
-
-    typewriterTimeoutRef.current = window.setTimeout(tick, 220);
-  };
 
   // Image handlers for Chat
   const handleChatImageSelect = (e) => {
@@ -596,18 +514,30 @@ export function ChatPanel({
             )
           );
         },
-        onToken: () => {
-          // Hide raw streamed tokens. We reveal the finalized cleaned message
-          // locally so the delivery stays smooth and formatting stays intact.
+        onToken: (token) => {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? { ...msg, content: msg.content + token, text: msg.text + token, status: "streaming" }
+                : msg
+            )
+          );
         },
         onComplete: (fullAnswer, meta = {}) => {
           const finalText = typeof meta.finalContent === "string" && meta.finalContent.length > 0
             ? meta.finalContent
             : fullAnswer;
-          revealAssistantMessage(assistantMessageId, finalText, meta.cards || [], meta.citations || []);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? { ...msg, content: finalText, text: finalText, status: "done", cards: meta.cards || [], citations: meta.citations || [] }
+                : msg
+            )
+          );
+          setLocalLoading(false);
+          if (onInteraction) onInteraction();
         },
         onError: (e) => {
-          clearTypewriterTimeout();
           const rawMessage = e?.message || "Something went wrong.";
           const needsApproval = /approve content to continue/i.test(rawMessage);
           const friendlyMessage = needsApproval
@@ -702,6 +632,9 @@ export function ChatPanel({
                       <div className="msg-sender">
                         {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
                       </div>
+                      {m.ts && (
+                        <span className="msg-timestamp">{new Date(m.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                      )}
                       {isTypingMessage && (
                         <div
                           className={`typing-name-indicator is-${pendingStatus.variant}`}
@@ -953,6 +886,19 @@ export function ChatPanel({
                       </div>
                     ) : null}
 
+                    {/* Copy button for assistant messages */}
+                    {m.role === "assistant" && hasMessageText && normalizedStatus === "done" && (
+                      <button
+                        className="msg-copy-btn"
+                        title="Copy message"
+                        onClick={() => {
+                          navigator.clipboard.writeText(m.content || m.text || "");
+                          const btn = document.activeElement;
+                          if (btn) { btn.textContent = "✓ Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1500); }
+                        }}
+                      >Copy</button>
+                    )}
+
                     {/* Mode Chip (Subtle debug) */}
                     {debug && m.role === "assistant" && m.meta?.plan_obj && (
                       <div className="mode-chip">
@@ -1049,17 +995,26 @@ export function ChatPanel({
             >
               <PlusIcon />
             </button>
-            <input
+            <textarea
               className="gemini-input"
+              rows={1}
               placeholder={
                 messages.length > 0 && messages[messages.length - 1].role === "assistant" && messages[messages.length - 1].meta?.plan_obj?.mode === "CLARIFY"
                   ? (messages[messages.length - 1].meta.plan_obj.next_question || "Answer the question above...")
                   : `Ask ${formatCreatorName(creatorDisplayName)} anything...`
               }
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                // Auto-resize textarea
+                e.target.style.height = "auto";
+                e.target.style.height = Math.min(e.target.scrollHeight, 150) + "px";
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") send();
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
               }}
               onPaste={async (e) => {
                 const items = e.clipboardData.items;

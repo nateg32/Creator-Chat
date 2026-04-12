@@ -2018,10 +2018,14 @@ Output ONLY your response."""
             
         dossier = summary.get("investigative_dossier") or {}
         consensus = dossier.get("public_consensus_facts") or dossier.get("biography") or {}
+        _skip_fact_keys = {"published", "published_at", "publish_date", "upload_date", "first_published", "date_published"}
         if consensus:
-            identity_context += "\nPUBLIC DOMAIN FACTS (High Certainty):\n"
+            identity_context += "\nPUBLIC DOMAIN FACTS (Researched — NOT from your transcript voice):\n"
             for k, v in consensus.items():
                 if v and v != "unknown":
+                    k_lower = k.lower().replace(" ", "_")
+                    if k_lower in _skip_fact_keys:
+                        continue
                     identity_context += f"- {k.replace('_', ' ').capitalize()}: {v}\n"
 
         # Inject Social Links
@@ -2152,7 +2156,7 @@ RULES:
 11. Never invent book titles, course names, product names, or entity names. Only mention entities from your KNOWLEDGE section or web search results.
 12. If the USER introduces a title you do not recognize, do NOT retract or apologize. Say you are not familiar and ask for details.
 13. Write clean sentences. Every word must be one unbroken unit (correct: "Welcome", wrong: "We lcome"). No orphaned quotes, no dangling punctuation.
-14. FACT GROUNDING: Your KNOWLEDGE section contains things you SAID in your content — these are NOT your personal biography. CRITICAL: Source headers contain metadata like "Content uploaded: 2017" — that is the upload/publish date of the VIDEO or ARTICLE, NOT when something happened to you. Never say "I was published in [year]" or "I started in [year]" based on a content upload date. Only claim personal timeline events ("I started trading in...", "I moved to...") if the transcript text itself explicitly states that biographical fact in first person. When unsure, say "In one of my videos I talked about..." rather than adopting it as your life story.
+14. FACT GROUNDING & BIOGRAPHY SAFETY: When the user asks a personal timeline question ("when did you start...", "how long have you been...", "when did you..."), you MUST answer ONLY from explicit first-person statements in your KNOWLEDGE transcript text (e.g., "I started trading when I was 19"). NEVER answer personal timeline questions from: (a) content upload dates, (b) video titles, (c) metadata fields, or (d) any "Published" or "Content uploaded" labels. If your transcript text does not explicitly state the biographical fact in first person, honestly say you don't remember the exact date or redirect: "I've talked about my journey in my content, but I don't want to give you the wrong date off the top of my head." NEVER say "I was published in [year]" — that phrase describes a book or video, not a person.
 {resource_lock_instruction}
 {resource_type_instruction}
 
@@ -2438,10 +2442,14 @@ Output only the response."""
             
         dossier = summary.get("investigative_dossier") or {}
         consensus = dossier.get("public_consensus_facts") or dossier.get("biography") or {}
+        _skip_fact_keys = {"published", "published_at", "publish_date", "upload_date", "first_published", "date_published"}
         if consensus:
-            identity_context += "\nPUBLIC DOMAIN FACTS (High Certainty):\n"
+            identity_context += "\nPUBLIC DOMAIN FACTS (Researched — NOT from your transcript voice):\n"
             for k, v in consensus.items():
                 if v and v != "unknown":
+                    k_lower = k.lower().replace(" ", "_")
+                    if k_lower in _skip_fact_keys:
+                        continue
                     identity_context += f"- {k.replace('_', ' ').capitalize()}: {v}\n"
 
         # Inject Social Links (Pass 2)

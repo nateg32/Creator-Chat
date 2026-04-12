@@ -140,14 +140,26 @@ export function ask({ creator_id, question, top_k, max_distance, messages, debug
 export async function askStream({ creator_id, question, top_k, max_distance, messages, thread_id, images, onToken, onComplete, onError, onStatus }) {
   const body = { creator_id, question, top_k, max_distance, messages, thread_id, images };
 
-  const response = await fetch(`${API_BASE_URL}/ask-stream`, {
-    method: "POST",
-    headers: buildHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
-    credentials: "include",
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/ask-stream`, {
+      method: "POST",
+      headers: buildHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+      credentials: "include",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") throw new Error("Request timed out. Please try again.");
+    throw err;
+  }
 
   if (!response.ok) {
+    clearTimeout(timeoutId);
     handleUnauthorizedResponse(response);
     const details = await readErrorPayload(response);
     const msg = details ? `Request failed (${response.status}): ${details}` : `Request failed (${response.status})`;
@@ -251,8 +263,14 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
       return completeStream();
     }
   } catch (err) {
-    if (onError) onError(err);
+    if (err.name === "AbortError") {
+      const timeoutErr = new Error("Response timed out. Please try again.");
+      if (onError) onError(timeoutErr);
+      else throw timeoutErr;
+    } else if (onError) onError(err);
     else throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

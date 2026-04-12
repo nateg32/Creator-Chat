@@ -226,6 +226,15 @@
   letter-spacing: -0.01em;
 }
 
+.msg-timestamp {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted, #98a2b3);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg-row:hover .msg-timestamp { opacity: 1; }
+
 .msg-content-wrapper {
   display: flex;
   flex-direction: column;
@@ -609,6 +618,25 @@
   }
 }
 
+/* ── Copy button ──────────────────────────────────── */
+.msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.msg-row:hover .msg-copy-btn { opacity: 1; }
+.msg-copy-btn:hover { background: var(--surface-hover, #f3f4f6); }
+
 .mode-chip {
   display: inline-flex;
   align-items: center;
@@ -793,6 +821,10 @@
   font-size: 14px;
   line-height: 1.5;
   outline: none;
+  resize: none;
+  max-height: 150px;
+  overflow-y: auto;
+  font-family: inherit;
 }
 
 .gemini-input::placeholder {

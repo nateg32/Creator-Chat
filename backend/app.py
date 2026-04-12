@@ -2393,6 +2393,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     yield f"data: {json.dumps({'content': pending_stream_text})}\n\n"
                     pending_stream_text = ""
                 streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
+                # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
+                streamed_answer = _repair_metadata_biography(streamed_answer)
                 cards = (
                     merge_preview_cards(explicit_cards, enrich_titles=True)
                     if explicit_cards
@@ -2554,6 +2556,33 @@ def _score_saved_answer_quality(
         support_chunks or [],
         creator_markers=creator_markers,
     )
+
+
+import re as _re_app
+
+# ── Metadata-as-biography repair ──
+_METADATA_BIO_PATTERNS = [
+    # "I was published in YYYY" → remove the sentence
+    _re_app.compile(r"\b[Ii]\s+was\s+published\s+in\s+\d{4}\b[^.]*\.?", _re_app.IGNORECASE),
+    # "I was uploaded in YYYY"
+    _re_app.compile(r"\b[Ii]\s+was\s+uploaded\s+in\s+\d{4}\b[^.]*\.?", _re_app.IGNORECASE),
+    # "I was posted in YYYY"
+    _re_app.compile(r"\b[Ii]\s+was\s+posted\s+in\s+\d{4}\b[^.]*\.?", _re_app.IGNORECASE),
+    # "I was released in YYYY"
+    _re_app.compile(r"\b[Ii]\s+was\s+released\s+in\s+\d{4}\b[^.]*\.?", _re_app.IGNORECASE),
+]
+
+def _repair_metadata_biography(text: str) -> str:
+    """Catch and remove sentences where the LLM confused content metadata with personal biography."""
+    if not text:
+        return text
+    repaired = text
+    for pat in _METADATA_BIO_PATTERNS:
+        repaired = pat.sub("", repaired).strip()
+    # If the entire answer was just the bad sentence, return a graceful fallback
+    if not repaired or len(repaired) < 10:
+        return "That's a great question. I've talked about my journey in my content, but I don't want to give you the wrong details off the top of my head."
+    return repaired
 
 
 def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str, answer: str, cards=None, support_chunks=None) -> str:

@@ -1213,16 +1213,6 @@ function AppInner() {
     return [];
   }, [activeChat]);
 
-  function handleResetChat() {
-    updateChatMessages(activeChat.id, [
-      {
-        id: "reset",
-        role: "assistant",
-        text: "Chat reset. Ask me anything!",
-      },
-    ]);
-  }
-
   function renderWorkflowStep() {
     switch (state.currentStep) {
       case 1:
