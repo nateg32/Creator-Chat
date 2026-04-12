@@ -392,6 +392,33 @@ def _normalized_public_urls(values: Any) -> List[str]:
     return normalized
 
 
+import re as _re_ie
+
+# ── Metadata-fact filter: prevent content metadata from being presented as biography ──
+_SKIP_FACT_SUBSTRINGS = {"publish", "upload", "posted", "released", "date", "first_video", "joined", "created_at"}
+
+def _is_metadata_fact(key: str, value: str) -> bool:
+    """Return True if this consensus fact looks like content metadata rather than biography."""
+    k = key.lower().replace(" ", "_")
+    v = str(value).strip()
+    # Exact key matches
+    if k in {"published", "published_at", "publish_date", "upload_date", "first_published",
+             "date_published", "year_published", "first_upload", "started", "career_start",
+             "channel_created", "account_created", "joined_youtube", "first_video_date"}:
+        return True
+    # Substring matches in key
+    for sub in _SKIP_FACT_SUBSTRINGS:
+        if sub in k:
+            return True
+    # Value is just a bare year (e.g. "2017", "2015") — likely metadata, not biography
+    if _re_ie.fullmatch(r"\d{4}", v):
+        return True
+    # Value looks like "January 2017", "Jan 15, 2017", "2017-01-15" with no other context
+    if _re_ie.fullmatch(r"(?:\w+\s+)?\d{1,2}[,.]?\s*\d{4}", v) or _re_ie.fullmatch(r"\d{4}[-/]\d{2}[-/]\d{2}", v):
+        return True
+    return False
+
+
 HONEST_FALLBACK_INSTRUCTION = """
 ## WHEN YOU DON'T HAVE THE ANSWER
 
@@ -2018,14 +2045,10 @@ Output ONLY your response."""
             
         dossier = summary.get("investigative_dossier") or {}
         consensus = dossier.get("public_consensus_facts") or dossier.get("biography") or {}
-        _skip_fact_keys = {"published", "published_at", "publish_date", "upload_date", "first_published", "date_published"}
         if consensus:
             identity_context += "\nPUBLIC DOMAIN FACTS (Researched — NOT from your transcript voice):\n"
             for k, v in consensus.items():
-                if v and v != "unknown":
-                    k_lower = k.lower().replace(" ", "_")
-                    if k_lower in _skip_fact_keys:
-                        continue
+                if v and v != "unknown" and not _is_metadata_fact(k, v):
                     identity_context += f"- {k.replace('_', ' ').capitalize()}: {v}\n"
 
         # Inject Social Links
@@ -2442,14 +2465,10 @@ Output only the response."""
             
         dossier = summary.get("investigative_dossier") or {}
         consensus = dossier.get("public_consensus_facts") or dossier.get("biography") or {}
-        _skip_fact_keys = {"published", "published_at", "publish_date", "upload_date", "first_published", "date_published"}
         if consensus:
             identity_context += "\nPUBLIC DOMAIN FACTS (Researched — NOT from your transcript voice):\n"
             for k, v in consensus.items():
-                if v and v != "unknown":
-                    k_lower = k.lower().replace(" ", "_")
-                    if k_lower in _skip_fact_keys:
-                        continue
+                if v and v != "unknown" and not _is_metadata_fact(k, v):
                     identity_context += f"- {k.replace('_', ' ').capitalize()}: {v}\n"
 
         # Inject Social Links (Pass 2)

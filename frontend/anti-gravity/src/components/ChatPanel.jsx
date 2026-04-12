@@ -359,7 +359,6 @@ export function ChatPanel({
   // Cleanup object URLs on unmount
   useEffect(() => {
     return () => {
-      clearTypewriterTimeout();
       selectedImages.forEach(img => {
         if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
       });
