@@ -221,6 +221,24 @@ def _get_creator_profile_row(creator_id: int, extra_columns: list[str]) -> Optio
     return db.execute_one(query, (creator_id,))
 
 
+def _normalize_personal_sources(sources: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for idx, source in enumerate(sources or [], start=1):
+        title = str(source.get("title") or source.get("text") or f"Source {idx}").strip()
+        url = str(source.get("url") or "").strip()
+        if url or title:
+            normalized.append(
+                {
+                    "source_id": f"personal_{idx}",
+                    "title": title[:140],
+                    "url": url,
+                    "snippet": str(source.get("text") or "")[:240],
+                    "platform": str(source.get("source") or "profile"),
+                }
+            )
+    return normalized
+
+
 def _platform_from_url(url: str) -> str:
     """Derive platform key from URL. Ensures platform always matches canonical_url domain."""
     if not url or not isinstance(url, str):
@@ -5089,18 +5107,7 @@ Message: {answer_text[:500]}"""
             conversation_history=conversation_history,
             allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
         )
-        personal_sources = []
-        for idx, source in enumerate(personal_result.get("sources") or [], start=1):
-            title = source.get("title") or source.get("text") or f"Source {idx}"
-            url = source.get("url")
-            if url or title:
-                personal_sources.append({
-                    "source_id": f"personal_{idx}",
-                    "title": title[:140],
-                    "url": url,
-                    "snippet": source.get("text", "")[:240],
-                    "platform": source.get("source", "profile"),
-                })
+        personal_sources = _normalize_personal_sources(personal_result.get("sources"))
         return apply_final_polish({
             "answer": personal_result.get("answer", "I haven't really talked about that publicly."),
             "retrieved": [],
@@ -5968,6 +5975,9 @@ async def grounded_rag_stream(
             conversation_history=conversation_history,
             allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
         )
+        personal_sources = _normalize_personal_sources(personal_result.get("sources"))
+        if personal_sources:
+            yield f"__CITATIONS__{json.dumps(personal_sources)}"
         yield personal_result.get("answer", "I haven't really talked about that publicly.")
         return
     

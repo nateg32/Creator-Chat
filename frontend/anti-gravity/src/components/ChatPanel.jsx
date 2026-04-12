@@ -634,34 +634,6 @@ export function ChatPanel({
                       {m.ts && (
                         <span className="msg-timestamp">{new Date(m.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
                       )}
-                      {isTypingMessage && (
-                        <div
-                          className={`typing-name-indicator is-${pendingStatus.variant}`}
-                          role="status"
-                          aria-live="polite"
-                          aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
-                        >
-                          <span className="typing-status-separator" aria-hidden="true"></span>
-                          <span className="typing-status-shell" aria-hidden="true">
-                            {pendingStatus.variant === "searching" ? (
-                              <>
-                                <span className="typing-side-dot"></span>
-                                <span className="typing-search-icon">
-                                  <span className="typing-search-ring"></span>
-                                  <span className="typing-search-handle"></span>
-                                </span>
-                                <span className="typing-side-dot"></span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="typing-name-dot"></span>
-                                <span className="typing-name-dot"></span>
-                                <span className="typing-name-dot"></span>
-                              </>
-                            )}
-                          </span>
-                        </div>
-                      )}
                     </div>
 
                     {/* Render Images Inside Bubble */}
@@ -882,6 +854,22 @@ export function ChatPanel({
                             </div>
                           );
                         })()}
+                      </div>
+                    ) : isTypingMessage ? (
+                      <div
+                        className={`msg-pending-bubble is-${pendingStatus.variant}`}
+                        role="status"
+                        aria-live="polite"
+                        aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
+                      >
+                        <span className="msg-pending-label">
+                          {pendingStatus.variant === "searching" ? "Checking the web" : "Typing"}
+                        </span>
+                        <span className="typing-status-shell" aria-hidden="true">
+                          <span className="typing-name-dot"></span>
+                          <span className="typing-name-dot"></span>
+                          <span className="typing-name-dot"></span>
+                        </span>
                       </div>
                     ) : null}
 

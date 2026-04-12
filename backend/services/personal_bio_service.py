@@ -1589,9 +1589,19 @@ Evidence:
                 "for the latest catalog."
             )
         if _looks_like_timeline_question(lowered, query_goal):
+            if _is_publication_timeline_question(question):
+                return (
+                    "I want to give you the right date on that. Check my Amazon listing, Audible, "
+                    "or the publisher page for the exact publication info."
+                )
+            timeline_focus = _extract_timeline_focus(question)
+            if timeline_focus:
+                return (
+                    f"I want to give you the right date on that. I couldn't verify an exact public source for when I started {timeline_focus}, "
+                    "so I don't want to guess."
+                )
             return (
-                "I want to give you the right date on that. Check my Amazon listing, Audible, "
-                "or the publisher page for the exact publication info."
+                "I want to give you the right date on that. I couldn't verify an exact public source yet, so I don't want to guess."
             )
         if query_goal in {"price_lookup"} or any(token in lowered for token in ["price", "pricing", "cost", "how much"]):
             return (

@@ -514,6 +514,53 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("Dan Martell's", answer)
         self.assertTrue("amazon" in answer.lower() or "publisher" in answer.lower() or "official" in answer.lower(), answer)
 
+    def test_creator_start_question_uses_grounded_timeline_not_publication_language(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            grounded_results=[],
+            grounded_response_text="Alex Hormozi started trading in 2014.",
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u start trading?",
+            voice_profile={"energy": "direct"},
+            creator_name="Alex Hormozi",
+            decision_policy={},
+            creator_profile={"name": "Alex Hormozi"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls or provider.calls)
+        self.assertIn("2014", answer)
+        self.assertIn("started trading", answer.lower())
+        self.assertNotIn("published", answer.lower())
+        self.assertNotIn("amazon", answer.lower())
+
+    def test_creator_start_question_fallback_is_not_publication_specific(self):
+        service, provider = _load_personal_bio_service([], grounded_response_text="")
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="when did u start trading?",
+            voice_profile={},
+            creator_name="Dan Martell",
+            decision_policy={},
+            creator_profile={"name": "Dan Martell"},
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertTrue(provider.grounded_calls or provider.calls)
+        self.assertNotIn("publication info", answer.lower())
+        self.assertNotIn("amazon listing", answer.lower())
+        self.assertNotIn("audible", answer.lower())
+        self.assertNotIn("publisher page", answer.lower())
+        self.assertIn("don't want to guess", answer.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

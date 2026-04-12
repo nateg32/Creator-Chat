@@ -61,6 +61,8 @@ _TIMELINE_PATTERNS = [
     re.compile(r"\bwhen (?:did|was|were|is)\b", re.IGNORECASE),
     re.compile(r"\bwhat (?:year|date|month|day)\b", re.IGNORECASE),
     re.compile(r"\bpublish(?:ed|ing)?\b|\bpublication\b|\brelease(?:d)?\b|\blaunch(?:ed)?\b|\bcome out\b", re.IGNORECASE),
+    re.compile(r"\bwhen\s+(?:did|do)\s+(?:you|u|he|she|they)\s+(?:start|begin|began|get into|got into|trade|day\s*trad(?:e|ing)|invest(?:ing)?|build|built|launch|launched|create|created)\b", re.IGNORECASE),
+    re.compile(r"\bhow\s+long\s+(?:have|has)\s+(?:you|u|he|she|they)\s+been\b", re.IGNORECASE),
 ]
 _PRICE_PATTERNS = [
     re.compile(r"\bprice\b|\bcost\b|\bpricing\b", re.IGNORECASE),
@@ -386,7 +388,7 @@ class EvidenceRouter:
                 flags.append("title_match")
         if any(pattern.search(lowered) for pattern in _FACTUAL_PATTERNS):
             flags.append("public_fact")
-        if any(token in lowered for token in ("published", "publication", "release", "launch", "when did", "what year", "what date", "which month")):
+        if any(token in lowered for token in ("published", "publication", "release", "launch", "when did", "what year", "what date", "which month", "start", "started", "begin", "began", "got into", "get into", "how long have you been")):
             flags.append("date")
         if any(token in lowered for token in ("price", "pricing", "cost", "how much", "buy", "purchase")):
             flags.append("pricing")
