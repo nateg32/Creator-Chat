@@ -98,6 +98,34 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertIn("Buy Back Your Time", plan.resolved_query)
         self.assertEqual(plan.entity_subject, "Buy Back Your Time")
 
+    def test_focusless_creator_start_followup_keeps_recent_subject(self):
+        plan = self.router.build_plan(
+            "when did u start",
+            conversation_history=[
+                {"role": "user", "content": "why did u start trading?"},
+                {"role": "assistant", "content": "I got into trading because I wanted leverage."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertEqual(plan.resolved_query, "When did you start trading?")
+        self.assertEqual(plan.query_goal, "timeline_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+
+    def test_subject_swap_followup_restores_timeline_lookup(self):
+        plan = self.router.build_plan(
+            "what about trading",
+            conversation_history=[
+                {"role": "user", "content": "when did u start"},
+                {"role": "assistant", "content": "I started Tjr in 2017."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertEqual(plan.resolved_query, "When did you start trading?")
+        self.assertEqual(plan.query_goal, "timeline_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+
     def test_entity_confirmation_uses_entity_graph_before_web(self):
         plan = self.router.build_plan("do you know the book buy your time")
         self.assertEqual(plan.query_goal, "entity_confirmation")

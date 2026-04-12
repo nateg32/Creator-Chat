@@ -90,6 +90,30 @@ class DecisionServiceTests(unittest.TestCase):
         )
         self.assertEqual(resolved, "When did you write $100M Money Models?")
 
+    def test_resolves_focusless_creator_start_followup_from_recent_subject(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "when did u start",
+            [
+                {"role": "user", "content": "yo"},
+                {"role": "assistant", "content": "yo what's up"},
+                {"role": "user", "content": "why did u start trading?"},
+                {"role": "assistant", "content": "I got into trading because I wanted leverage."},
+            ],
+        )
+        self.assertEqual(resolved, "When did you start trading?")
+
+    def test_resolves_subject_swap_followup_from_focusless_previous_question(self):
+        service = decision_service_module.DecisionService()
+        resolved = service.resolve_followup_question(
+            "what about trading",
+            [
+                {"role": "user", "content": "when did u start"},
+                {"role": "assistant", "content": "I started Tjr in 2017."},
+            ],
+        )
+        self.assertEqual(resolved, "When did you start trading?")
+
     def test_partner_business_question_stays_domain_advice(self):
         service = decision_service_module.DecisionService()
         q_type, topic, _ = service.classify_question(

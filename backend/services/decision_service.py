@@ -85,6 +85,17 @@ RECENT_BOOK_TITLE_PATTERNS_EXTRA = (
     re.compile(r'(?i)(?:^|[\.!\?]\s+)([$A-Za-z0-9][^"\n\.\!\?]{2,100}?)\s+is\s+my\s+\w+\s+book\b'),
 )
 
+FOCUSLESS_WHEN_START_RE = re.compile(
+    r"^\s*(?:so\s+)?when\s+did\s+(?:you|u|he|she|they)\s+(?:start|begin|began|get\s+into|got\s+into)\s*\??\s*$",
+    re.IGNORECASE,
+)
+FOCUSLESS_WHY_START_RE = re.compile(
+    r"^\s*(?:so\s+)?why\s+did\s+(?:you|u|he|she|they)\s+(?:start|begin|began|get\s+into|got\s+into)\s*\??\s*$",
+    re.IGNORECASE,
+)
+SUBJECT_SWAP_RE = re.compile(r"^\s*(?:so\s+)?(?:what|how)\s+about\s+(.+?)\s*\??\s*$", re.IGNORECASE)
+FOLLOWUP_FOCUS_FILLER_TERMS = {"man", "bro", "brother", "dude", "yo", "lol", "pls", "please"}
+
 
 class DecisionService:
     """
@@ -250,6 +261,112 @@ class DecisionService:
             return f"Can you clarify what you meant in your last answer about: {cleaned}?"
         return "Can you clarify what you meant in your last answer?"
 
+    def _normalize_followup_focus(self, text: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip(" ?!.").lower()
+        if not normalized:
+            return ""
+
+        patterns = (
+            re.compile(r"(?:start|started|begin|began|get into|got into)\s+(.+)$", re.IGNORECASE),
+            re.compile(r"(?:what|how)\s+about\s+(.+)$", re.IGNORECASE),
+        )
+        focus = ""
+        for pattern in patterns:
+            match = pattern.search(normalized)
+            if match:
+                focus = re.sub(r"\s+", " ", match.group(1)).strip(" \"'")
+                break
+
+        if not focus:
+            for candidate in (
+                "day trading",
+                "trading",
+                "investing",
+                "youtube",
+                "dropshipping",
+                "business",
+                "podcast",
+                "content creation",
+            ):
+                if candidate in normalized:
+                    focus = candidate
+                    break
+
+        if not focus:
+            return ""
+
+        focus_words = [
+            word
+            for word in re.findall(r"[a-z0-9']+", focus)
+            if word not in FOLLOWUP_FOCUS_FILLER_TERMS
+        ]
+        if not focus_words:
+            return ""
+
+        compact = " ".join(focus_words)
+        alias_map = (
+            (r"\b(?:day\s*)?trad(?:e|ing|er|ers)\b|\bswing\s*trad(?:e|ing)\b", "trading"),
+            (r"\binvest(?:ing|ment|ments)?\b", "investing"),
+            (r"\b(?:youtube|content\s+creation|creating\s+content|making\s+content|videos?)\b", "content creation"),
+            (r"\b(?:podcast|podcasting)\b", "podcasting"),
+            (r"\b(?:dropship(?:ping)?|e-?commerce|online\s+store)\b", "ecommerce"),
+            (r"\b(?:business|entrepreneur(?:ship)?)\b", "business"),
+        )
+        for pattern, canonical in alias_map:
+            if re.search(pattern, compact):
+                return canonical
+        return compact
+
+    def _latest_user_message(self, history: Optional[List[Dict[str, str]]]) -> str:
+        for msg in reversed(list(history or [])):
+            if (msg.get("role") or "").lower() != "user":
+                continue
+            text = (msg.get("content") or msg.get("text") or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _extract_recent_followup_focus(self, history: Optional[List[Dict[str, str]]]) -> str:
+        for msg in reversed(list(history or [])[-8:]):
+            if (msg.get("role") or "").lower() != "user":
+                continue
+            text = (msg.get("content") or msg.get("text") or "").strip()
+            focus = self._normalize_followup_focus(text)
+            if focus:
+                return focus
+        return ""
+
+    def _rewrite_focusless_creator_followup(self, question: str, history: Optional[List[Dict[str, str]]]) -> str:
+        if not history:
+            return ""
+        focus = self._extract_recent_followup_focus(history)
+        if not focus:
+            return ""
+        if FOCUSLESS_WHEN_START_RE.match(question or ""):
+            return f"When did you start {focus}?"
+        if FOCUSLESS_WHY_START_RE.match(question or ""):
+            return f"Why did you start {focus}?"
+        return ""
+
+    def _rewrite_subject_swap_followup(self, question: str, history: Optional[List[Dict[str, str]]]) -> str:
+        if not history:
+            return ""
+        match = SUBJECT_SWAP_RE.match(question or "")
+        if not match:
+            return ""
+        focus = self._normalize_followup_focus(match.group(1))
+        if not focus:
+            return ""
+
+        previous_user = self._latest_user_message(history)
+        if not previous_user:
+            return ""
+        if FOCUSLESS_WHEN_START_RE.match(previous_user):
+            return f"When did you start {focus}?"
+        if FOCUSLESS_WHY_START_RE.match(previous_user):
+            return f"Why did you start {focus}?"
+        return ""
+
     def resolve_followup_question(self, question: str, history: Optional[List[Dict[str, str]]] = None) -> str:
         q = (question or "").strip()
         if not q or not history:
@@ -274,6 +391,12 @@ class DecisionService:
             title = self._extract_recent_book_title(history)
             if title:
                 return self._rewrite_book_followup(q, title)
+        rewritten = self._rewrite_focusless_creator_followup(q, history)
+        if rewritten:
+            return rewritten
+        rewritten = self._rewrite_subject_swap_followup(q, history)
+        if rewritten:
+            return rewritten
         if normalized not in AFFIRMATIVE_FOLLOWUPS:
             return question
 
