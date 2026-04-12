@@ -715,7 +715,10 @@ export function ChatPanel({
                     {hasMessageText ? (
                       <div className="msg-text">
                         {(() => {
-                          const text = formatMessageText(m.content ?? m.text, creatorDisplayName);
+                          const rawText = m.content ?? m.text;
+                          const text = m.role === "assistant"
+                            ? formatMessageText(rawText, creatorDisplayName)
+                            : rawText;
                           const explicitCards = Array.isArray(m.cards) && m.cards.length > 0
                             ? m.cards.map((card, idx) => {
                                 let domain = "web";

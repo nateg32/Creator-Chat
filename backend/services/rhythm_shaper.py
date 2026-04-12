@@ -113,15 +113,28 @@ class RhythmShaper:
     def _apply_dm_chunking(self, sentences: List[str], max_paragraphs: int = 3) -> str:
         if not sentences: return ""
         
-        # Group sentences into paragraphs (roughly 2 per para)
+        cleaned_sentences = [sentence.strip() for sentence in sentences if sentence and sentence.strip()]
+        if not cleaned_sentences:
+            return ""
+
+        if len(cleaned_sentences) <= max_paragraphs * 2:
+            paragraphs = []
+            for i in range(0, len(cleaned_sentences), 2):
+                paragraphs.append(" ".join(cleaned_sentences[i:i+2]))
+            return "\n\n".join(paragraphs)
+
+        # Keep the DM-style paragraph cap without dropping later sentences.
+        paragraph_count = min(max_paragraphs, len(cleaned_sentences))
         paragraphs = []
-        for i in range(0, len(sentences), 2):
-            paragraphs.append(" ".join(sentences[i:i+2]))
-            
-        # Enforce max paragraph limit
-        if len(paragraphs) > max_paragraphs:
-            paragraphs = paragraphs[:max_paragraphs]
-            
+        cursor = 0
+
+        for paragraph_index in range(paragraph_count):
+            remaining_sentences = len(cleaned_sentences) - cursor
+            remaining_paragraphs = paragraph_count - paragraph_index
+            take = max(1, (remaining_sentences + remaining_paragraphs - 1) // remaining_paragraphs)
+            paragraphs.append(" ".join(cleaned_sentences[cursor:cursor + take]))
+            cursor += take
+
         return "\n\n".join(paragraphs)
 
 rhythm_shaper = RhythmShaper()

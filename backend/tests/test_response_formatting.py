@@ -54,6 +54,32 @@ clean_for_stream_chunk = formatting.clean_for_stream_chunk
 prepare_chat_response = formatting.prepare_chat_response
 should_strip_hyphens = formatting.should_strip_hyphens
 
+text_sanitizer_spec = importlib.util.spec_from_file_location(
+    "text_sanitizer_module",
+    BACKEND_ROOT / "services" / "text_sanitizer.py",
+)
+text_sanitizer_module = importlib.util.module_from_spec(text_sanitizer_spec)
+assert text_sanitizer_spec.loader is not None
+text_sanitizer_spec.loader.exec_module(text_sanitizer_module)
+
+rhythm_shaper_spec = importlib.util.spec_from_file_location(
+    "rhythm_shaper_module",
+    BACKEND_ROOT / "services" / "rhythm_shaper.py",
+)
+rhythm_shaper_module = importlib.util.module_from_spec(rhythm_shaper_spec)
+assert rhythm_shaper_spec.loader is not None
+backend_package = types.ModuleType("backend")
+services_package = types.ModuleType("backend.services")
+backend_package.services = services_package
+services_package.formatting = formatting
+services_package.text_sanitizer = text_sanitizer_module
+sys.modules["backend"] = backend_package
+sys.modules["backend.services"] = services_package
+sys.modules["backend.services.formatting"] = formatting
+sys.modules["backend.services.text_sanitizer"] = text_sanitizer_module
+rhythm_shaper_spec.loader.exec_module(rhythm_shaper_module)
+RhythmShaper = rhythm_shaper_module.RhythmShaper
+
 
 def _sample_pipeline_responses():
     return [
@@ -259,6 +285,25 @@ class ResponseFormattingTests(unittest.TestCase):
         self.assertIn("1) first thing", result)
         self.assertIn("2) second thing", result)
         self.assertIn("- keep going", result)
+
+    def test_rhythm_shaper_keeps_all_sentences_when_chunking_long_reply(self):
+        shaper = RhythmShaper()
+        sentences = [
+            "First point stays.",
+            "Second point stays.",
+            "Third point stays.",
+            "Fourth point stays.",
+            "Fifth point stays.",
+            "Sixth point stays.",
+            "Seventh point stays.",
+        ]
+
+        result = shaper._apply_dm_chunking(sentences, max_paragraphs=3)
+        paragraphs = [part for part in result.split("\n\n") if part.strip()]
+
+        self.assertLessEqual(len(paragraphs), 3)
+        for sentence in sentences:
+            self.assertIn(sentence, result)
 
 
 if __name__ == "__main__":
