@@ -777,6 +777,16 @@ Return JSON only:
                     continue
                 seen_citations.add(key)
                 merged_citations.append(adjusted)
+                citation_url = str(adjusted.get("url") or "").strip()
+                if citation_url and citation_url not in seen_urls:
+                    seen_urls.add(citation_url)
+                    merged_sources.append({
+                        "url": citation_url,
+                        "title": adjusted.get("title") or "Grounded Web Result",
+                        "resource_type": "web",
+                        "platform": self._infer_platform_from_url(citation_url),
+                        "subquery": package.get("subquery"),
+                    })
             for result in package.get("grounded_results") or []:
                 url = (result.get("url") or "").strip()
                 if not url or url in seen_urls:

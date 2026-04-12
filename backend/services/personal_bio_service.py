@@ -1125,8 +1125,11 @@ class PersonalBioService:
         evidence = self._normalize_web_evidence(list(overview.get("results") or []))
         response_text = re.sub(r"\s+", " ", extract_search_text(overview).strip())
         sources = list(overview.get("sources") or [])
+        citations = list(overview.get("citations") or [])
         if response_text:
             primary_source = (sources[0] or {}) if sources else {}
+            if not primary_source and citations:
+                primary_source = citations[0] or {}
             source_url = str(primary_source.get("url") or "")
             source_title = str(primary_source.get("title") or "Grounded Web Summary")
             evidence.insert(

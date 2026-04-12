@@ -183,6 +183,41 @@ class ResearchProviderPolicyTests(unittest.TestCase):
         self.assertEqual(overview["sources"][0]["url"], "https://creator.com/about")
         self.assertEqual(overview["sources"][1]["url"], "https://creator.com/offers")
 
+    def test_grounded_overview_promotes_citation_urls_into_sources_when_results_are_empty(self):
+        provider = GeminiResearchProvider()
+        provider.enabled = True
+        provider._build_grounding_query_plan = lambda *args, **kwargs: ["alpha query"]
+
+        def fake_call(prompt, search_enabled=True):
+            return {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "Alpha facts."}]},
+                        "groundingMetadata": {
+                            "groundingChunks": [
+                                {"web": {"uri": "https://creator.com/about", "title": "About Creator"}}
+                            ],
+                            "groundingSupports": [
+                                {
+                                    "segment": {"text": "Alpha", "startIndex": 0, "endIndex": 5},
+                                    "groundingChunkIndices": [0],
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+
+        with patch.object(provider, "_call_gemini_rest", side_effect=fake_call), \
+             patch.object(provider, "_extract_grounded_results", return_value=[]):
+            overview = provider.grounded_overview(
+                "Tell me about the creator",
+                {"name": "Creator", "official_domains": ["creator.com"], "platform_configs": {}},
+                max_queries=1,
+            )
+
+        self.assertEqual(overview["sources"][0]["url"], "https://creator.com/about")
+
     def test_extract_grounding_package_unwraps_redirect_urls(self):
         provider = GeminiResearchProvider()
         package = provider._extract_grounding_package(
