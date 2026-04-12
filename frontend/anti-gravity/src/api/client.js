@@ -141,7 +141,18 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   const body = { creator_id, question, top_k, max_distance, messages, thread_id, images };
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  const CONNECT_TIMEOUT_MS = 30000;
+  const STREAM_IDLE_TIMEOUT_MS = 60000;
+  let timeoutId = null;
+  let timeoutMessage = "Request timed out. Please try again.";
+
+  const resetTimeout = (durationMs, message) => {
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutMessage = message;
+    timeoutId = setTimeout(() => controller.abort(), durationMs);
+  };
+
+  resetTimeout(CONNECT_TIMEOUT_MS, "Request timed out. Please try again.");
 
   let response;
   try {
@@ -153,18 +164,20 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
       signal: controller.signal,
     });
   } catch (err) {
-    clearTimeout(timeoutId);
-    if (err.name === "AbortError") throw new Error("Request timed out. Please try again.");
+    if (timeoutId) clearTimeout(timeoutId);
+    if (err.name === "AbortError") throw new Error(timeoutMessage);
     throw err;
   }
 
   if (!response.ok) {
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
     handleUnauthorizedResponse(response);
     const details = await readErrorPayload(response);
     const msg = details ? `Request failed (${response.status}): ${details}` : `Request failed (${response.status})`;
     throw new Error(msg);
   }
+
+  resetTimeout(STREAM_IDLE_TIMEOUT_MS, "Response took too long to continue. Please try again.");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -236,6 +249,9 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   try {
     while (true) {
       const { done, value } = await reader.read();
+      if (!done) {
+        resetTimeout(STREAM_IDLE_TIMEOUT_MS, "Response took too long to continue. Please try again.");
+      }
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
       const parts = buffer.split("\n\n");
       buffer = parts.pop() || "";
@@ -264,13 +280,13 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      const timeoutErr = new Error("Response timed out. Please try again.");
+      const timeoutErr = new Error(timeoutMessage);
       if (onError) onError(timeoutErr);
       else throw timeoutErr;
     } else if (onError) onError(err);
     else throw err;
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 

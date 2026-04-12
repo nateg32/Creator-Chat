@@ -1648,14 +1648,14 @@ Generate InteractionPlan JSON."""
         if route == "ROUTE_0_GREETING":
             return {"max_words": 25, "max_sentences": 2, "max_paragraphs": 2, "max_tokens": 64, "detailed": False}
         if route == "ROUTE_1_SMALL_TALK":
-            return {"max_words": 35, "max_sentences": 3, "max_paragraphs": 3, "max_tokens": 80, "detailed": False}
+            return {"max_words": 30, "max_sentences": 2, "max_paragraphs": 2, "max_tokens": 64, "detailed": False}
 
         if detailed:
             if allow_lists:
-                return {"max_words": 220, "max_sentences": 8, "max_paragraphs": 5, "max_tokens": 360, "detailed": True}
-            return {"max_words": 180, "max_sentences": 7, "max_paragraphs": 4, "max_tokens": 320, "detailed": True}
+                return {"max_words": 180, "max_sentences": 6, "max_paragraphs": 4, "max_tokens": 280, "detailed": True}
+            return {"max_words": 150, "max_sentences": 5, "max_paragraphs": 3, "max_tokens": 240, "detailed": True}
 
-        return {"max_words": 110, "max_sentences": 4, "max_paragraphs": 3, "max_tokens": 180, "detailed": False}
+        return {"max_words": 85, "max_sentences": 4, "max_paragraphs": 2, "max_tokens": 140, "detailed": False}
 
     @staticmethod
     def _build_length_directive(reply_budget: Dict[str, int | bool], allow_lists: bool = False) -> str:
@@ -1675,6 +1675,7 @@ Generate InteractionPlan JSON."""
             f"{reply_budget['max_sentences']} sentences max, and {reply_budget['max_paragraphs']} short paragraphs max.\n"
             f"- Lead with the answer immediately, add only the most useful supporting point, then stop.\n"
             f"- Do not stack caveats, examples, or repeated restatements unless the user explicitly asked for depth.\n"
+            f"- Make it feel like a DM, not an essay. Ask at most one natural follow-up question, and only when it genuinely moves the conversation forward.\n"
             f"- {structure}\n"
         )
 

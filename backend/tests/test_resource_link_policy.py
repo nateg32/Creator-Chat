@@ -24,9 +24,16 @@ def _stub_module(name: str, **attrs):
 
 
 def _load_grounded_rag():
-    _stub_package("backend.prompts")
-    _stub_package("backend.services")
-    _stub_package("backend.core")
+    backend_package = _stub_package("backend")
+    prompts_package = _stub_package("backend.prompts")
+    services_package = _stub_package("backend.services")
+    core_package = _stub_package("backend.core")
+    utils_package = _stub_package("backend.utils")
+
+    backend_package.prompts = prompts_package
+    backend_package.services = services_package
+    backend_package.core = core_package
+    backend_package.utils = utils_package
 
     db_stub = types.SimpleNamespace(
         execute_one=lambda *args, **kwargs: None,
@@ -111,6 +118,7 @@ def _load_grounded_rag():
     rag_stub = types.SimpleNamespace(
         create_embedding=lambda *args, **kwargs: [0.0],
         generate_chat_completion=lambda *args, **kwargs: '{"classification": "SUFFICIENT"}',
+        get_client=lambda *args, **kwargs: None,
     )
 
     _stub_module("backend.settings", settings=settings_stub)
@@ -154,6 +162,7 @@ def _load_grounded_rag():
         extract_requested_platforms=lambda *args, **kwargs: [],
         needs_fresh_public_web_search=lambda *args, **kwargs: False,
     )
+    _stub_module("backend.utils.url_health", check_url_alive_sync=lambda *args, **kwargs: True)
     _stub_module(
         "backend.services.rag_text_matcher",
         extract_named_resource_fragments=lambda *args, **kwargs: [],
@@ -544,6 +553,65 @@ class ResourceLinkPolicyTests(unittest.TestCase):
         self.assertEqual(citations[0]["url"], "https://www.youtube.com/watch?v=PRESell01")
         self.assertEqual(citations[0]["platform"], "youtube")
         self.assertIn("Pre sell", citations[0]["snippet"])
+
+    def test_broad_grounded_creator_answer_keeps_citations_when_answer_overlap_is_strong(self):
+        support_set = [
+            {
+                "content": (
+                    "Start with market structure and execution. Learn higher highs, lower lows, breaks of structure, "
+                    "support and resistance, then liquidity sweeps and traps."
+                ),
+                "snippet": "Market structure first, then support and resistance, then liquidity sweeps.",
+                "title": "Trading Concepts Every Beginner Misses",
+                "url": "https://www.youtube.com/watch?v=TRADING001",
+                "source_ref": {
+                    "title": "Trading Concepts Every Beginner Misses",
+                    "canonical_url": "https://www.youtube.com/watch?v=TRADING001",
+                    "platform": "youtube",
+                },
+            }
+        ]
+
+        citations = grounded_rag.build_inline_citations(
+            support_set,
+            question="in terms of concept what concepts like technical do i need to know?",
+            answer_text=(
+                "Start with market structure, execution, support and resistance, then learn liquidity sweeps and traps."
+            ),
+        )
+
+        self.assertEqual(len(citations), 1)
+        self.assertEqual(citations[0]["url"], "https://www.youtube.com/watch?v=TRADING001")
+
+    def test_broad_grounded_creator_answer_keeps_cards_when_answer_overlap_is_strong(self):
+        support_set = [
+            {
+                "content": (
+                    "Start with market structure and execution. Learn higher highs, lower lows, breaks of structure, "
+                    "support and resistance, then liquidity sweeps and traps."
+                ),
+                "snippet": "Market structure first, then support and resistance, then liquidity sweeps.",
+                "title": "Trading Concepts Every Beginner Misses",
+                "url": "https://www.youtube.com/watch?v=TRADING001",
+                "source_ref": {
+                    "title": "Trading Concepts Every Beginner Misses",
+                    "canonical_url": "https://www.youtube.com/watch?v=TRADING001",
+                    "platform": "youtube",
+                },
+            }
+        ]
+
+        cards = grounded_rag._build_response_cards(
+            None,
+            support_set,
+            question="in terms of concept what concepts like technical do i need to know?",
+            answer_text=(
+                "Start with market structure, execution, support and resistance, then learn liquidity sweeps and traps."
+            ),
+        )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["url"], "https://www.youtube.com/watch?v=TRADING001")
 
     def test_support_set_shaping_prefers_document_diversity_for_title_match(self):
         shaped = grounded_rag.shape_support_set(

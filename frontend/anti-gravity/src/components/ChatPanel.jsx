@@ -302,6 +302,10 @@ export function ChatPanel({
   const errorTimeoutRef = useRef(null);
 
   const loading = localLoading;
+  const normalizedSearchMode = String(searchMode || "hybrid").toLowerCase() === "ingested"
+    ? "ingested_only"
+    : String(searchMode || "hybrid").toLowerCase();
+  const webSearchDisabled = normalizedSearchMode === "ingested_only";
 
   // Image handlers for Chat
   const handleChatImageSelect = (e) => {
@@ -621,7 +625,17 @@ export function ChatPanel({
               <SparkleIcon />
             )}
           </div>
-          <span className="title-text">{formatCreatorName(creatorDisplayName)}</span>
+          <div className="title-copy">
+            <span className="title-text">{formatCreatorName(creatorDisplayName)}</span>
+            {webSearchDisabled ? (
+              <span
+                className="search-mode-badge search-mode-badge-off"
+                title="This creator is currently set to ingested-only mode, so live web search is turned off."
+              >
+                Web off
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="gemini-actions">
           <button onClick={() => setShowSettings(true)} title="Settings" className="action-icon-btn"><SettingsIcon /></button>

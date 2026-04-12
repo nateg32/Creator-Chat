@@ -148,7 +148,14 @@ class _FakePriorityService:
         return 0
 
 
-def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybrid", grounded_results=None):
+def _load_grounded_rag(
+    search_results,
+    retrieved_chunks=None,
+    search_mode="hybrid",
+    grounded_results=None,
+    grounded_overview_payload=None,
+    fallback_search_results=None,
+):
     _stub_package("backend.prompts")
     _stub_package("backend.services")
     _stub_package("backend.core")
@@ -231,6 +238,16 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         def grounded_overview(self, query, creator_profile, conversation_history=None, max_queries=4):
             self.grounded_calls.append((query, creator_profile.get("name")))
             self.calls.append(("grounded_overview", query, creator_profile.get("name")))
+            if grounded_overview_payload is not None:
+                return {
+                    "response_text": grounded_overview_payload.get("response_text", ""),
+                    "citations": list(grounded_overview_payload.get("citations") or []),
+                    "search_entry_point": grounded_overview_payload.get("search_entry_point") or {"rendered_content": ""},
+                    "query_plan": list(grounded_overview_payload.get("query_plan") or [query]),
+                    "results": list(grounded_overview_payload.get("results") or []),
+                    "sources": list(grounded_overview_payload.get("sources") or []),
+                    "packages": list(grounded_overview_payload.get("packages") or []),
+                }
             results = list(grounded_results if grounded_results is not None else search_results)
             return {
                 "response_text": "Buy Back Your Time was published in September 2023." if results else "",
@@ -241,6 +258,14 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
                 "sources": [],
                 "packages": [],
             }
+
+    class _FallbackProvider:
+        def __init__(self):
+            self.search_calls = []
+
+        def search(self, query, creator_profile, **kwargs):
+            self.search_calls.append((query, creator_profile.get("name")))
+            return list(fallback_search_results or [])
 
     class _FakePersonalBioService:
         def handle_personal_question(
@@ -288,6 +313,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
             }
 
     provider = _Provider()
+    fallback_provider = _FallbackProvider() if fallback_search_results is not None else None
 
     _stub_module("backend.db", db=fake_db)
     _stub_module("backend.settings", settings=fake_settings)
@@ -300,6 +326,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
         "backend.services.research_provider",
         GeminiResearchProvider=type("GeminiResearchProvider", (), {}),
         get_research_provider=lambda: provider,
+        get_fallback_research_provider=lambda: fallback_provider,
     )
     _stub_module("backend.services.memory_service", memory_service=types.SimpleNamespace(update_memory=lambda *args, **kwargs: None))
     _stub_module(
@@ -433,6 +460,9 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     module._should_run_resource_recommender = lambda *args, **kwargs: False
     module.needs_links = lambda *args, **kwargs: False
     module.get_enabled_platforms_for_creator = lambda *args, **kwargs: []
+    module._test_creator_row = creator_row
+    module._test_provider = provider
+    module._test_fallback_provider = fallback_provider
     return module, provider
 
 
@@ -513,14 +543,14 @@ class WebSearchTriggerTests(unittest.TestCase):
             decision = self.engine.pre_retrieval_decision(query)
             self.assertFalse(decision.should_search, query)
 
-    def test_entity_confirmation_skips_web_search_even_with_no_rag_chunks(self):
+    def test_entity_confirmation_with_no_rag_chunks_triggers_web_search(self):
         decision = self.engine.post_retrieval_decision(
             "is buy back your time your book?",
             chunks=[],
             top_score=None,
         )
-        self.assertFalse(decision.should_search)
-        self.assertEqual(decision.reason, "entity_graph_answerable")
+        self.assertTrue(decision.should_search)
+        self.assertEqual(decision.reason, "no_entity_support")
 
     def test_web_search_result_used_in_response(self):
         search_results = [
@@ -575,6 +605,72 @@ class WebSearchTriggerTests(unittest.TestCase):
         self.assertFalse(provider.search_calls, "Expected factual creator query to use grounded_overview instead of generic search")
         answer = result.get("answer", "")
         self.assertTrue("2023" in answer or "September" in answer, answer)
+
+    def test_gemini_grounded_overview_sources_without_results_still_surface_web_results(self):
+        module, provider = _load_grounded_rag(
+            search_results=[],
+            grounded_overview_payload={
+                "response_text": "Buy Back Your Time was published in September 2023.",
+                "results": [],
+                "sources": [
+                    {
+                        "title": "Buy Back Your Time",
+                        "url": "https://www.amazon.com/dp/059342297X",
+                        "platform": "web",
+                    }
+                ],
+                "citations": [
+                    {
+                        "title": "Buy Back Your Time",
+                        "url": "https://www.amazon.com/dp/059342297X",
+                        "snippet": "Buy Back Your Time was published in September 2023.",
+                        "platform": "web",
+                        "score": 0.92,
+                    }
+                ],
+            },
+            retrieved_chunks=[],
+        )
+
+        results = module._run_live_web_search(
+            "when was your book published",
+            module._test_creator_row,
+            conversation_history=[],
+            intent_metadata={"intent": "PUBLIC_CREATOR_FACT"},
+        )
+
+        self.assertTrue(provider.grounded_calls, "Expected grounded_overview to be called")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["url"], "https://www.amazon.com/dp/059342297X")
+
+    def test_fallback_search_provider_used_when_primary_returns_no_results(self):
+        module, provider = _load_grounded_rag(
+            search_results=[],
+            grounded_results=[],
+            fallback_search_results=[
+                {
+                    "title": "Buy Back Your Time",
+                    "url": "https://www.penguinrandomhouse.com/books/123456/buy-back-your-time/",
+                    "snippet": "Buy Back Your Time was published in September 2023.",
+                    "platform": "web",
+                    "confidence": 0.91,
+                    "relation": "PUBLIC_FACT_VERIFIED",
+                }
+            ],
+            retrieved_chunks=[],
+        )
+
+        results = module._run_live_web_search(
+            "when was your book published",
+            module._test_creator_row,
+            conversation_history=[],
+            intent_metadata={"intent": "PUBLIC_CREATOR_FACT"},
+        )
+
+        self.assertTrue(provider.grounded_calls, "Expected primary provider to run first")
+        self.assertTrue(module._test_fallback_provider.search_calls, "Expected fallback provider to be used")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["url"], "https://www.penguinrandomhouse.com/books/123456/buy-back-your-time/")
 
     def test_no_hallucination_when_search_fails(self):
         module, provider = _load_grounded_rag(search_results=[], retrieved_chunks=[])

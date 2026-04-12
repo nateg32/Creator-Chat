@@ -284,6 +284,14 @@ class SearchDecisionEngine:
         conversation_history: Optional[list] = None,
     ) -> SearchDecision:
         if self._looks_like_entity_confirmation(query):
+            if not chunks:
+                return SearchDecision(
+                    should_search=True,
+                    reason="no_entity_support",
+                    reason_detail="Entity-style query had no supporting entity or corpus chunks, so it should be verified on the web",
+                    phase="post_retrieval",
+                    confidence=0.93,
+                )
             return SearchDecision(
                 should_search=False,
                 reason="entity_graph_answerable",
@@ -298,6 +306,14 @@ class SearchDecisionEngine:
                 top_score=top_score,
                 retrieved_chunks=chunks,
             )
+            if plan.query_goal == "entity_confirmation" and not chunks:
+                return SearchDecision(
+                    should_search=True,
+                    reason="no_entity_support",
+                    reason_detail=f"EvidencePlan query_goal={plan.query_goal} had no supporting entity or corpus chunks",
+                    phase="post_retrieval",
+                    confidence=0.96,
+                )
             if plan.query_goal == "entity_confirmation" and not self._needs_web_for_facts(query):
                 return SearchDecision(
                     should_search=False,
@@ -307,6 +323,14 @@ class SearchDecisionEngine:
                     confidence=0.96,
                 )
             if plan.query_goal == "entity_overview" and plan.entity_subject:
+                if not chunks:
+                    return SearchDecision(
+                        should_search=True,
+                        reason="no_entity_support",
+                        reason_detail=f"EvidencePlan query_goal={plan.query_goal} entity_subject={plan.entity_subject} had no supporting entity or corpus chunks",
+                        phase="post_retrieval",
+                        confidence=0.95,
+                    )
                 if not self._needs_web_for_facts(query):
                     return SearchDecision(
                         should_search=False,
@@ -338,6 +362,14 @@ class SearchDecisionEngine:
             logger.warning("Evidence router post-retrieval plan failed, falling back to heuristic search rules: %s", exc)
 
         if self._looks_like_entity_confirmation(query):
+            if not chunks:
+                return SearchDecision(
+                    should_search=True,
+                    reason="no_entity_support",
+                    reason_detail="Entity-style query had no supporting entity or corpus chunks, so it should be verified on the web",
+                    phase="post_retrieval",
+                    confidence=0.93,
+                )
             return SearchDecision(
                 should_search=False,
                 reason="entity_graph_answerable",

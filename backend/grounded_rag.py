@@ -1489,9 +1489,10 @@ def _score_support_resource_candidate(
     # If the source has zero overlap with what the user actually asked,
     # hard-cap its score below the citation threshold so it never surfaces.
     # This prevents irrelevant RAG chunks (e.g. AI-tools videos for a books
-    # question) from appearing as citations just because of high base/rank score
-    # or incidental answer-text overlap on shared business vocabulary.
-    if question_overlap < 0.05 and title_verbatim_bonus < 0.10:
+    # question) from appearing as citations just because of high base/rank score.
+    # But if the answer itself clearly overlaps the chunk, keep it eligible so
+    # broad grounded creator answers can still surface their real sources.
+    if (question or "").strip() and question_overlap < 0.05 and title_verbatim_bonus < 0.10 and answer_overlap < 0.12:
         score = min(score, 0.30)
 
     return round(score, 4)
@@ -1873,6 +1874,15 @@ def _should_speculate_live_search(
     return False
 
 
+def _normalize_creator_search_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"", "hybrid"}:
+        return "hybrid"
+    if normalized in {"ingested", "ingested_only", "corpus", "corpus_only"}:
+        return "ingested_only"
+    return "hybrid"
+
+
 def _wants_multiple_resources(question: str) -> bool:
     q = (question or "").lower()
     return any(token in q for token in [
@@ -1909,7 +1919,7 @@ def _should_block_on_web_fallback(
     needs fresh/public info or a source/link. This preserves quality where the
     web matters, while avoiding multi-second speculative searches for normal chat.
     """
-    if search_mode != "hybrid":
+    if _normalize_creator_search_mode(search_mode) != "hybrid":
         return False
 
     if images and not wants_link:
@@ -1960,6 +1970,7 @@ def _decision_is_creator_public_fact(decision: Optional[SearchDecision]) -> bool
         "creator_named_fact",
         "factual_query",
         "medium_confidence_factual",
+        "no_entity_support",
     }
 
 
@@ -1995,6 +2006,44 @@ def _run_gemini_grounded_search(
     ) or {}
     results = list(overview.get("results") or [])
     response_text = str(overview.get("response_text") or "").strip()
+
+    if not results:
+        synthesized_results: List[Dict[str, Any]] = []
+        seen_urls: Set[str] = set()
+
+        for citation in overview.get("citations") or []:
+            url = str(citation.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            synthesized_results.append(
+                {
+                    "title": citation.get("title") or "Grounded Web Result",
+                    "url": url,
+                    "snippet": citation.get("snippet") or response_text[:280],
+                    "platform": citation.get("platform") or _platform_from_url(url),
+                    "confidence": float(citation.get("score") or 0.9),
+                    "relation": "PUBLIC_FACT_VERIFIED",
+                }
+            )
+
+        for source in overview.get("sources") or []:
+            url = str(source.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            synthesized_results.append(
+                {
+                    "title": source.get("title") or "Grounded Web Result",
+                    "url": url,
+                    "snippet": response_text[:280],
+                    "platform": source.get("platform") or _platform_from_url(url),
+                    "confidence": 0.85,
+                    "relation": "PUBLIC_FACT_VERIFIED",
+                }
+            )
+
+        results = synthesized_results
 
     if response_text:
         for result in results:
@@ -2066,8 +2115,13 @@ def _run_live_web_search(
             from backend.services.research_provider import get_fallback_research_provider
             fallback_rp = get_fallback_research_provider()
             if fallback_rp and fallback_rp is not rp:
-                creator_name = creator_row.get("name") or creator_row.get("handle") or ""
-                fallback_query = f"{creator_name} {question}".strip()
+                fallback_query = build_live_search_query(
+                    question,
+                    conversation_history,
+                    creator_name=creator_row.get("name") or creator_row.get("handle"),
+                    preferred_platforms=preferred_platforms,
+                    require_video=is_video_request,
+                )
                 logger.info("[SEARCH_TRACE] Trying fallback search provider for: %s", fallback_query[:80])
                 web_results = fallback_rp.search(
                     fallback_query,
@@ -2730,6 +2784,8 @@ def response_length_instruction(
     - NO headings (###), NO bold intros, NO 'Hope this helps'.
     - Keep paragraphs short (1-2 sentences).
     - Use a human, 1-to-1 conversational tone.
+    - Default to a DM-style reply, not an essay. Stop once the core answer is delivered.
+    - Ask at most one follow-up question, and only if it naturally advances the conversation.
     - Punchiness: {constraints['punchiness']}
     - Punctuation Intensity: {constraints['punctuation_intensity']}
     - Emoji usage: {constraints['emoji_rate']}
@@ -5064,7 +5120,7 @@ Message: {answer_text[:500]}"""
             images=images,
             creator_id=creator_id,
             creator_profile=creator_row,
-            allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+            allow_web=(_normalize_creator_search_mode(creator_row.get("search_mode")) == "hybrid"),
         )
         if image_result.get("handled"):
             return apply_final_polish({
@@ -5100,7 +5156,7 @@ Message: {answer_text[:500]}"""
             decision_policy=creator_row.get("decision_policy") or {},
             creator_profile=creator_row,
             conversation_history=conversation_history,
-            allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+            allow_web=(_normalize_creator_search_mode(creator_row.get("search_mode")) == "hybrid"),
         )
         personal_sources = _normalize_personal_sources(personal_result.get("sources"))
         return apply_final_polish({
@@ -5149,7 +5205,7 @@ Message: {answer_text[:500]}"""
         context_needs_video = _is_followup_resource_request(question, last_bot_msg)
         should_run_recommender = _should_run_resource_recommender(question, conversation_history, last_bot_msg)
         preferred_platforms = extract_requested_platforms(question, conversation_history)
-        search_mode = creator_row.get("search_mode") or "hybrid"
+        search_mode = _normalize_creator_search_mode(creator_row.get("search_mode"))
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ["video", "watch", "reel", "short", "clip", "tutorial"]
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video
@@ -5970,7 +6026,7 @@ async def grounded_rag_stream(
             decision_policy=creator_row.get("decision_policy") or {},
             creator_profile=creator_row,
             conversation_history=conversation_history,
-            allow_web=((creator_row.get("search_mode") or "hybrid") == "hybrid"),
+            allow_web=(_normalize_creator_search_mode(creator_row.get("search_mode")) == "hybrid"),
         )
         personal_sources = _normalize_personal_sources(personal_result.get("sources"))
         if personal_sources:
@@ -6027,7 +6083,7 @@ async def grounded_rag_stream(
         context_needs_video = _is_followup_resource_request(question, last_bot_msg)
         should_run_recommender = _should_run_resource_recommender(question, conversation_history, last_bot_msg)
         preferred_platforms = extract_requested_platforms(question, conversation_history)
-        search_mode = creator_row.get("search_mode") or "hybrid"
+        search_mode = _normalize_creator_search_mode(creator_row.get("search_mode"))
         wants_link = explicit_link_request or context_needs_video
         video_intent_kws = ['video', 'watch', 'reel', 'short', 'clip', 'tutorial', 'recommend', 'reccomend']
         is_video_request = any(kw in question.lower() for kw in video_intent_kws) or context_needs_video

@@ -21,6 +21,8 @@ def load_interaction_engine_module():
     spec = importlib.util.spec_from_file_location("test_interaction_engine_module", module_path)
     module = importlib.util.module_from_spec(spec)
 
+    backend_package = types.ModuleType("backend")
+
     class FakeBaseModel:
         def __init__(self, **kwargs):
             for key, value in self.__class__.__dict__.items():
@@ -71,24 +73,68 @@ def load_interaction_engine_module():
         "test_greeting_service_module",
         pathlib.Path("services") / "greeting_service.py",
     )
+    greeting_service_module.greeting_service.generate_greeting = (
+        lambda user_name, *args, **kwargs: (
+            f"Hey {user_name}. What are you working on right now?"
+            if user_name else
+            "Hey. What are you working on right now?"
+        )
+    )
     regurgitation_guard_module = load_module(
         "test_regurgitation_guard_module",
         pathlib.Path("services") / "regurgitation_guard.py",
     )
 
     fake_services_package = types.ModuleType("backend.services")
+    fake_services_package.__path__ = []  # type: ignore[attr-defined]
     fake_services_package.prompt_injection_guard = prompt_guard_module
     fake_services_package.text_sanitizer = fake_text_sanitizer
     fake_services_package.formatting = fake_formatting
     fake_services_package.greeting_service = greeting_service_module
     fake_services_package.regurgitation_guard = regurgitation_guard_module
 
+    fake_voice_dna = types.ModuleType("backend.services.voice_dna")
+    fake_voice_dna.build_voice_dna_block = lambda *args, **kwargs: ""
+    fake_voice_dna.build_voice_echo_block = lambda *args, **kwargs: ""
+    fake_voice_dna.apply_vocabulary_resonance = lambda text, *args, **kwargs: text
+    fake_voice_dna.score_voice_fidelity = lambda *args, **kwargs: {"score": 1.0}
+
+    class FakeConversationVoiceTracker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fake_voice_dna.ConversationVoiceTracker = FakeConversationVoiceTracker
+
+    fake_conversation_closure = types.ModuleType("backend.services.conversation_closure")
+    fake_conversation_closure.compute_closure = lambda *args, **kwargs: types.SimpleNamespace(
+        should_ask_question=True,
+        closure_type="QUESTION",
+        question_probability=0.9,
+        prompt_instruction="Ask at most one natural follow-up question only if it helps the conversation.",
+        creator_question_hint="What are you working on right now?",
+    )
+    fake_conversation_closure.get_greeting_question = lambda *args, **kwargs: "What are you working on right now?"
+
+    fake_services_package.voice_dna = fake_voice_dna
+    fake_services_package.conversation_closure = fake_conversation_closure
+
+    fake_core_package = types.ModuleType("backend.core")
+    fake_core_package.memory_integration = fake_memory
+
+    backend_package.rag = fake_rag
+    backend_package.settings = fake_settings
+    backend_package.db = fake_db
+    backend_package.services = fake_services_package
+    backend_package.core = fake_core_package
+
     with patch.dict(
         sys.modules,
         {
+            "backend": backend_package,
             "backend.rag": fake_rag,
             "backend.settings": fake_settings,
             "backend.db": fake_db,
+            "backend.core": fake_core_package,
             "backend.core.memory_integration": fake_memory,
             "backend.services": fake_services_package,
             "backend.services.prompt_injection_guard": prompt_guard_module,
@@ -96,6 +142,8 @@ def load_interaction_engine_module():
             "backend.services.formatting": fake_formatting,
             "backend.services.greeting_service": greeting_service_module,
             "backend.services.regurgitation_guard": regurgitation_guard_module,
+            "backend.services.voice_dna": fake_voice_dna,
+            "backend.services.conversation_closure": fake_conversation_closure,
             "pydantic": fake_pydantic,
         },
     ):
@@ -147,6 +195,41 @@ class UserPreferenceTests(unittest.TestCase):
         self.assertIn("Blend any relevant user context into the reply naturally.", instructions)
         self.assertIn("I like basketball.", instructions)
         self.assertNotIn("basketball analogy", instructions.lower())
+
+    def test_default_task_reply_budget_is_short_and_conversational(self):
+        budget = interaction_engine._resolve_reply_budget(
+            "ROUTE_2_TASK",
+            "what should I focus on first?",
+            normalized_prefs=None,
+            allow_lists=False,
+        )
+
+        self.assertEqual(
+            budget,
+            {"max_words": 85, "max_sentences": 4, "max_paragraphs": 2, "max_tokens": 140, "detailed": False},
+        )
+
+    def test_explicit_detailed_request_keeps_larger_budget(self):
+        budget = interaction_engine._resolve_reply_budget(
+            "ROUTE_2_TASK",
+            "Give me a detailed step-by-step breakdown of how to start.",
+            normalized_prefs=None,
+            allow_lists=True,
+        )
+
+        self.assertEqual(
+            budget,
+            {"max_words": 180, "max_sentences": 6, "max_paragraphs": 4, "max_tokens": 280, "detailed": True},
+        )
+
+    def test_length_directive_emphasizes_dm_style_and_single_follow_up(self):
+        directive = interaction_engine._build_length_directive(
+            {"max_words": 85, "max_sentences": 4, "max_paragraphs": 2, "max_tokens": 140, "detailed": False},
+            allow_lists=False,
+        )
+
+        self.assertIn("DM, not an essay", directive)
+        self.assertIn("one natural follow-up question", directive)
 
     def test_render_task_adds_safety_boundary_and_sanitized_context(self):
         plan = InteractionPlan(route="ROUTE_2_TASK", routing="IN_DOMAIN")
