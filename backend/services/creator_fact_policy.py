@@ -170,7 +170,7 @@ def classify_creator_fact_query(question: str, *, entity_type: str = "", query_g
         return CreatorFactPolicy(
             kind="creator_journey",
             focus=focus,
-            requires_web=False,
+            requires_web=True,
             requires_verified_sources=False,
             is_personal=True,
             fact_field="public_fact",

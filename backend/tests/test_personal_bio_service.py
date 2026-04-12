@@ -645,6 +645,26 @@ class PersonalBioServiceTests(unittest.TestCase):
 
         self.assertEqual(answer, "I started day trading in 2017.")
 
+    def test_creator_journey_question_triggers_grounded_search(self):
+        service, provider = _load_personal_bio_service(
+            [],
+            grounded_response_text="He said he got into trading because he wanted more control over his future.",
+        )
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="why did u start trading man?",
+            voice_profile={"energy": "direct"},
+            creator_name="Tjr",
+            decision_policy={},
+            creator_profile={"name": "Tjr"},
+            allow_web=True,
+        )
+
+        self.assertTrue(provider.grounded_calls)
+        self.assertEqual(result.get("move"), "ANSWER_PUBLIC_FACT")
+
 
 if __name__ == "__main__":
     unittest.main()

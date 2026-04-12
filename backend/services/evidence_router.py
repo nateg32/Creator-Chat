@@ -439,6 +439,8 @@ class EvidenceRouter:
             return "entity_catalog_lookup"
         if policy.kind in {"publication_timeline", "creator_start_timeline"}:
             return "timeline_lookup"
+        if policy.kind == "creator_journey":
+            return "journey_lookup"
         if policy.kind == "price":
             return "price_lookup"
         if policy.kind == "stats":
@@ -508,6 +510,9 @@ class EvidenceRouter:
                 not has_official_urls,
                 "official_urls_first" if has_official_urls else "official_grounded_search",
             )
+
+        if query_goal == "journey_lookup":
+            return "creator_world", ["creator_memory"], True, True, False, "journey_grounded_search"
 
         if live_world_signal:
             primary_world = "live_world"

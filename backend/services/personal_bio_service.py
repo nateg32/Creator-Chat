@@ -990,6 +990,8 @@ class PersonalBioService:
     def _max_query_attempts(self, query_goal: str, *, policy_kind: str = "") -> int:
         if query_goal == "timeline_lookup" and policy_kind == "creator_start_timeline":
             return 4
+        if query_goal == "journey_lookup" and policy_kind == "creator_journey":
+            return 3
         if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
             return 2
         if query_goal in {"availability_lookup", "resource_lookup"}:
@@ -997,6 +999,8 @@ class PersonalBioService:
         return 2
 
     def _grounded_query_plan_limit(self, query_goal: str) -> int:
+        if query_goal == "journey_lookup":
+            return 2
         if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
             return 1
         if query_goal in {"availability_lookup", "resource_lookup"}:
@@ -1006,6 +1010,8 @@ class PersonalBioService:
     def _search_time_budget_seconds(self, query_goal: str, *, policy_kind: str = "") -> float:
         if query_goal == "timeline_lookup" and policy_kind == "creator_start_timeline":
             return 12.0
+        if query_goal == "journey_lookup" and policy_kind == "creator_journey":
+            return 10.0
         if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}:
             return 9.0
         return 8.0
@@ -1135,6 +1141,15 @@ class PersonalBioService:
                     f'site:goodreads.com "{subject_hint or creator_name}"',
                     f'site:penguinrandomhouse.com "{subject_hint or creator_name}"',
                 ])
+        elif query_goal == "journey_lookup" and focus_hint:
+            queries.extend([
+                f'{creator_name} why started {focus_hint}',
+                f'{creator_name} why got into {focus_hint}',
+                f'{creator_name} what got into {focus_hint}',
+                f'{creator_name} {focus_hint} journey story',
+                f'{creator_name} talks about why started {focus_hint}',
+                f'{creator_name} explains why got into {focus_hint}',
+            ])
 
         if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
             queries.append(f'{creator_name} "{subject_hint}"')
@@ -1144,6 +1159,12 @@ class PersonalBioService:
                 queries.extend([
                     f"{creator_name} book published",
                     f"{creator_name} first book release date",
+                ])
+        elif query_goal == "journey_lookup":
+            if focus_hint:
+                queries.extend([
+                    f'{creator_name} {focus_hint} journey',
+                    f'{creator_name} {focus_hint} origin story',
                 ])
         elif query_goal == "price_lookup":
             if subject_hint:
@@ -1612,14 +1633,14 @@ class PersonalBioService:
         system_prompt = f"""
 You are {creator_name}.
 
-This is a public factual question about your own public work, products, books, releases, platforms, or stats.
+This is a public factual question about your own public work, products, books, releases, platforms, stats, or creator journey.
 
 Voice Profile:
 {vp_json}
 
 RULES:
 1. Answer directly from the evidence in 1-2 sentences.
-2. If the evidence contains a date, title, platform, or availability detail, lead with that concrete fact.
+2. If the evidence contains a date, title, platform, availability detail, or a clear reason or motivation from your public story, lead with that concrete point.
 3. Never say "I haven't talked about that publicly" about your own public work.
 4. Never say "I don't have that in front of me" about your own book, product, or release.
 5. Never invent facts. If the evidence is still insufficient, direct the user to a concrete official source.

@@ -19,7 +19,44 @@ BASE_DIR = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _load_search_decision_engine():
-    _load_module("backend.services.creator_fact_policy", pathlib.Path("services") / "creator_fact_policy.py")
+    _stub_package("backend")
+    _stub_package("backend.services")
+    creator_fact_policy = _load_module("backend.services.creator_fact_policy", pathlib.Path("services") / "creator_fact_policy.py")
+
+    class _StubEvidenceRouter:
+        def __init__(self, creator):
+            self.creator = creator or {}
+
+        def build_plan(self, query, conversation_history=None, top_score=None, retrieved_chunks=None, web_results=None):
+            lowered = str(query or "").lower()
+            policy = creator_fact_policy.classify_creator_fact_query(query)
+            if policy.kind == "availability":
+                query_goal = "availability_lookup"
+            elif policy.kind in {"publication_timeline", "creator_start_timeline"}:
+                query_goal = "timeline_lookup"
+            elif policy.kind == "creator_journey":
+                query_goal = "journey_lookup"
+            elif policy.kind == "price":
+                query_goal = "price_lookup"
+            elif policy.kind == "stats":
+                query_goal = "stat_lookup"
+            elif "do you have a book" in lowered or "is buy back your time your book" in lowered or "tell me about buy back your time" in lowered:
+                query_goal = "entity_confirmation"
+            else:
+                query_goal = "general"
+
+            should_search_web = bool(policy.requires_web)
+            primary_world = "creator_world" if should_search_web else "creator_memory"
+            return types.SimpleNamespace(
+                query_goal=query_goal,
+                entity_subject="buy back your time" if "buy back your time" in lowered else "",
+                should_search_web=should_search_web,
+                primary_world=primary_world,
+                answer_mode="hybrid",
+                risk_flags=["public_fact"] if should_search_web else [],
+            )
+
+    _stub_module("backend.services.evidence_router", EvidenceRouter=_StubEvidenceRouter)
     module_path = BASE_DIR / "services" / "search_decision_engine.py"
     spec = importlib.util.spec_from_file_location("search_decision_engine_test", module_path)
     module = importlib.util.module_from_spec(spec)
@@ -118,10 +155,7 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     _stub_package("backend.utils")
     search_engine_module = _load_search_decision_engine()
     sys.modules["backend.services.search_decision_engine"] = search_engine_module
-    evidence_router_module = _load_module(
-        "backend.services.evidence_router",
-        pathlib.Path("services") / "evidence_router.py",
-    )
+    _stub_module("backend.services.decision_service", decision_service=_FakeDecisionService())
     creator_entity_module = _load_module(
         "backend.services.creator_entity_service",
         pathlib.Path("services") / "creator_entity_service.py",
@@ -129,6 +163,10 @@ def _load_grounded_rag(search_results, retrieved_chunks=None, search_mode="hybri
     fact_registry_module = _load_module(
         "backend.services.fact_registry",
         pathlib.Path("services") / "fact_registry.py",
+    )
+    evidence_router_module = _load_module(
+        "backend.services.evidence_router",
+        pathlib.Path("services") / "evidence_router.py",
     )
     sys.modules["backend.services.evidence_router"] = evidence_router_module
     sys.modules["backend.services.creator_entity_service"] = creator_entity_module
@@ -420,6 +458,7 @@ class WebSearchTriggerTests(unittest.TestCase):
             "what is Dan Martell's latest podcast episode",
             "where can I buy Dan Martell's course",
             "what is Dan Martell's net worth",
+            "why did you start trading",
         ]
         for query in queries:
             decision = self.engine.pre_retrieval_decision(query)
