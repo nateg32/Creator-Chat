@@ -26,7 +26,12 @@ MONTH_PATTERN = (
     r"October|Oct(?:ober)?|November|Nov(?:ember)?|December|Dec(?:ember)?"
 )
 
-TIMELINE_TOKENS = ["when", "published", "publication", "release", "released", "launched", "launch", "come out", "what year", "what date", "which month", "write", "wrote", "written"]
+TIMELINE_TOKENS = [
+    "when", "published", "publication", "release", "released", "launched", "launch", "come out",
+    "what year", "what date", "which month", "write", "wrote", "written", "start", "started",
+    "begin", "began", "get into", "got into", "how long", "been", "trading", "day trading",
+    "investing", "youtube", "business", "company", "podcast", "course", "brand",
+]
 SEARCH_TRACE_PREFIX = "[SEARCH_TRACE]"
 HOT_FACT_CACHE_TTL = 3600.0
 _hot_fact_cache: Dict[str, Dict[str, Any]] = {}
@@ -142,11 +147,53 @@ def _looks_like_timeline_question(question: str, query_goal: str = "") -> bool:
     )
     if any(token in lowered for token in explicit_date_tokens):
         return True
+    if any(token in lowered for token in ("start", "started", "begin", "began", "get into", "got into", "how long have you been")):
+        return True
     if any(token in lowered for token in ("write", "wrote", "written")) and any(
         token in lowered for token in ("when", "what year", "what date", "which month")
     ):
         return True
     return False
+
+
+def _is_publication_timeline_question(question: str) -> bool:
+    lowered = str(question or "").lower()
+    return any(token in lowered for token in (
+        "published", "publication", "release", "released", "launch", "launched", "come out", "write", "wrote", "written", "book"
+    ))
+
+
+def _extract_timeline_focus(question: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(question or "")).strip(" ?!.").lower()
+    patterns = [
+        re.compile(r"(?:start|started|begin|began|get into|got into)\s+(.+)$", re.IGNORECASE),
+        re.compile(r"how\s+long\s+(?:have|has)\s+(?:you|u|he|she|they)\s+been\s+(.+)$", re.IGNORECASE),
+    ]
+    for pattern in patterns:
+        match = pattern.search(normalized)
+        if match:
+            focus = re.sub(r"\s+", " ", match.group(1)).strip(" \"'")
+            focus = re.sub(r"^(?:doing|in|into|on)\s+", "", focus)
+            if focus:
+                return focus
+    for candidate in ("day trading", "trading", "investing", "youtube", "dropshipping", "business", "podcast", "content creation"):
+        if candidate in normalized:
+            return candidate
+    return ""
+
+
+def _render_timeline_sentence(question: str, *, subject: str = "", value: str = "", is_direct_voice: bool = False) -> str:
+    if not value:
+        return ""
+    if _is_publication_timeline_question(question):
+        phrase = "put out" if is_direct_voice else "published"
+        thing = subject or "it"
+        return f"I {phrase} {thing} in {value}."
+    focus = _extract_timeline_focus(question) or subject
+    focus = str(focus or "").strip()
+    if focus and focus.lower() not in {"it", "this", "that"}:
+        return f"I started {focus} in {value}."
+    return f"I started in {value}."
 
 
 def _preview_text(value: Any, limit: int = 500) -> str:
@@ -418,6 +465,12 @@ class PersonalBioService:
         else:
             all_evidence = internal_facts + web_facts
 
+        requires_verified_timeline = bool(
+            public_fact_query
+            and str(getattr(evidence_plan, "query_goal", "") or "").lower() == "timeline_lookup"
+            and effective_allow_web
+        )
+
         if public_fact_query:
             if extracted_fact:
                 extracted_fact.answer_text = self._render_structured_fact_answer(
@@ -445,6 +498,18 @@ class PersonalBioService:
                     "move": "ANSWER_STRUCTURED_FACT",
                     "evidence_plan": evidence_plan.to_dict(),
                     "fact_cache_hit": bool(cached_fact or hot_cached_fact),
+                    "contradiction_report": contradiction_report,
+                }
+            if requires_verified_timeline and not web_facts:
+                fallback_answer = self._public_fact_fallback(resolved_question, creator_name, evidence_plan=evidence_plan, entity=resolved_entity)
+                logger.info(f"{SEARCH_TRACE_PREFIX} handle_return: move=TIMELINE_VERIFY_REQUIRED answer={fallback_answer[:240]!r}")
+                return {
+                    "answer": fallback_answer,
+                    "confidence": "LOW",
+                    "sources": all_evidence,
+                    "move": "TIMELINE_VERIFY_REQUIRED",
+                    "evidence_plan": evidence_plan.to_dict(),
+                    "fact_cache_hit": bool(cached_fact),
                     "contradiction_report": contradiction_report,
                 }
             direct_public_answer = self._answer_public_creator_fact(
@@ -990,12 +1055,21 @@ class PersonalBioService:
         queries: List[str] = []
 
         if query_goal == "timeline_lookup":
+            focus_hint = _extract_timeline_focus(question)
             if subject_hint:
                 queries.extend([
                     f'"{subject_hint}" publication date',
                     f'"{subject_hint}" release date',
                     f'{creator_name} "{subject_hint}" published',
                     f'{creator_name} "{subject_hint}" released',
+                ])
+            if focus_hint:
+                queries.extend([
+                    f'{creator_name} when started {focus_hint}',
+                    f'{creator_name} started {focus_hint}',
+                    f'{creator_name} {focus_hint} journey',
+                    f'{creator_name} how long has been {focus_hint}',
+                    f'{creator_name} first got into {focus_hint}',
                 ])
             if entity_type == "book":
                 queries.extend([
@@ -1146,14 +1220,11 @@ class PersonalBioService:
 
         if fact_field in {"publication_date", "launch_date"} and value:
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b", value, re.IGNORECASE):
-                phrase = "put out" if is_direct_voice else "published"
-                return f"I {phrase} {subject} on {value}."
+                return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
             if re.search(rf"\b({MONTH_PATTERN})\s+\d{{4}}\b", value, re.IGNORECASE):
-                phrase = "put out" if is_direct_voice else "published"
-                return f"I {phrase} {subject} in {value}."
+                return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
             if re.search(r"\b(20\d{2}|19\d{2})\b", value):
-                phrase = "put out" if is_direct_voice else "published"
-                return f"I {phrase} {subject} in {value}."
+                return _render_timeline_sentence(question, subject=subject, value=value, is_direct_voice=is_direct_voice)
 
         if fact_field == "price" and value:
             return f"I've got {subject} at {value} right now."
@@ -1280,7 +1351,7 @@ class PersonalBioService:
                     fact_field=fact_field or "publication_date",
                     subject=subject,
                     value=value,
-                    answer_text=f"{subject} was published on {value}.",
+                    answer_text=_render_timeline_sentence(question, subject=subject, value=value),
                     source_url=source_url,
                     source_title=source_title,
                     confidence=0.96,
@@ -1291,7 +1362,7 @@ class PersonalBioService:
                     fact_field=fact_field or "publication_date",
                     subject=subject,
                     value=value,
-                    answer_text=f"{subject} was published in {value}.",
+                    answer_text=_render_timeline_sentence(question, subject=subject, value=value),
                     source_url=source_url,
                     source_title=source_title,
                     confidence=0.93,
@@ -1302,7 +1373,7 @@ class PersonalBioService:
                     fact_field=fact_field or "publication_date",
                     subject=subject,
                     value=value,
-                    answer_text=f"{subject} was published in {value}.",
+                    answer_text=_render_timeline_sentence(question, subject=subject, value=value),
                     source_url=source_url,
                     source_title=source_title,
                     confidence=0.9,
@@ -1343,6 +1414,8 @@ class PersonalBioService:
         patterns = [
             re.compile(r"(?:when|where|what year|what date|which month)\s+(?:was|did)\s+(.+?)\s+(?:published|launch(?:ed)?|release(?:d)?|come out)", re.IGNORECASE),
             re.compile(r"(?:when)\s+(?:did)\s+(?:you|u)\s+write\s+(.+)", re.IGNORECASE),
+            re.compile(r"(?:when)\s+(?:did)\s+(?:you|u)\s+(?:start|begin|get\s+into)\s+(.+)", re.IGNORECASE),
+            re.compile(r"how\s+long\s+(?:have|has)\s+(?:you|u)\s+been\s+(.+)", re.IGNORECASE),
             re.compile(r"where can i (?:buy|get|find|purchase)\s+(.+)", re.IGNORECASE),
         ]
         normalized_question = re.sub(r"\s+", " ", str(question or "")).strip(" ?!.")
@@ -1399,14 +1472,11 @@ class PersonalBioService:
 
         if any(token in lowered_question for token in TIMELINE_TOKENS):
             if full_date:
-                phrase = "put out" if is_direct_voice else "published"
-                return f"I {phrase} {subject} on {full_date.group(0)}."
+                return _render_timeline_sentence(question, subject=subject, value=full_date.group(0), is_direct_voice=is_direct_voice)
             if month_year:
-                phrase = "put out" if is_direct_voice else "published"
-                return f"I {phrase} {subject} in {month_year.group(0)}."
+                return _render_timeline_sentence(question, subject=subject, value=month_year.group(0), is_direct_voice=is_direct_voice)
             if year:
-                phrase = "put out" if is_direct_voice else "published"
-                return f"I {phrase} {subject} in {year.group(1)}."
+                return _render_timeline_sentence(question, subject=subject, value=year.group(1), is_direct_voice=is_direct_voice)
 
         if any(token in lowered_question for token in ["where can i buy", "where do i buy", "where can i get", "where can i find", "purchase"]):
             domains = {
