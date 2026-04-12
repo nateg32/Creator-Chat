@@ -143,6 +143,60 @@ def _build_evidence_plan(
         return None
 
 
+def _is_explicit_creator_timeline_query(question: str) -> bool:
+    lowered = str(question or "").strip().lower()
+    if not lowered:
+        return False
+    return bool(
+        re.search(r"\bwhen\s+(?:did|do|was|were)\s+(?:you|u|he|she|they)\s+(?:start|begin|launch|launched|found|founded|create|created|publish|published|release|released|move|moved|write|wrote|get\s+into|trade|day\s*trad(?:e|ing)|invest|investing)\b", lowered)
+        or re.search(r"\bhow\s+long\s+(?:have|has)\s+(?:you|u|he|she|they)\s+been\b", lowered)
+        or re.search(r"\bwhat\s+(?:year|date|month)\s+did\s+(?:you|u|he|she|they)\b", lowered)
+        or re.search(r"\bwhen\s+did\s+(?:you|u)\s+start\b", lowered)
+    )
+
+
+def _route_personal_via_evidence(route_evidence_plan: Optional[EvidencePlan]) -> bool:
+    return bool(
+        route_evidence_plan
+        and (
+            route_evidence_plan.query_goal in {
+                "entity_confirmation",
+                "entity_overview",
+                "entity_catalog_lookup",
+                "availability_lookup",
+                "timeline_lookup",
+                "price_lookup",
+                "stat_lookup",
+                "current_stat_lookup",
+            }
+            or (
+                route_evidence_plan.primary_world in {"creator_world", "live_world"}
+                and route_evidence_plan.entity_subject
+            )
+        )
+    )
+
+
+def _should_route_personal_fact_question(
+    question: str,
+    *,
+    route_q_type: str = "",
+    rule_intent: str = "",
+    route_evidence_plan: Optional[EvidencePlan] = None,
+    route_creator_personal: bool = False,
+    personal_question_flag: bool = False,
+) -> bool:
+    route_personal_from_classifier = bool(personal_question_flag and route_creator_personal)
+    route_personal_from_rules = bool(route_q_type == "personal_bio" or rule_intent == "personal_bio_question")
+    route_personal_from_timeline = _is_explicit_creator_timeline_query(question)
+    return bool(
+        route_personal_from_classifier
+        or route_personal_from_rules
+        or _route_personal_via_evidence(route_evidence_plan)
+        or route_personal_from_timeline
+    )
+
+
 def _creator_column_exists(column_name: str) -> bool:
     cached = _CREATOR_COLUMN_CACHE.get(column_name)
     if cached is not None:
@@ -5014,32 +5068,15 @@ Message: {answer_text[:500]}"""
     creator_personal_detector = getattr(decision_service, "is_creator_personal_fact_question", None)
     route_creator_personal = bool(creator_personal_detector(question)) if callable(creator_personal_detector) else False
     route_evidence_plan = _build_evidence_plan(question, creator_row, conversation_history)
-    route_personal_via_evidence = bool(
-        route_evidence_plan
-        and (
-            route_evidence_plan.query_goal in {
-                "entity_confirmation",
-                "entity_overview",
-                "entity_catalog_lookup",
-                "availability_lookup",
-                "timeline_lookup",
-                "price_lookup",
-                "stat_lookup",
-                "current_stat_lookup",
-            }
-            or (
-                route_evidence_plan.primary_world in {"creator_world", "live_world"}
-                and route_evidence_plan.entity_subject
-            )
-        )
+    should_route_personal = _should_route_personal_fact_question(
+        question,
+        route_q_type=route_q_type,
+        rule_intent=rule_intent,
+        route_evidence_plan=route_evidence_plan,
+        route_creator_personal=route_creator_personal,
+        personal_question_flag=bool(user_state.get("flags", {}).get("personal_question_flag")),
     )
-    route_personal_from_classifier = bool(
-        user_state.get("flags", {}).get("personal_question_flag") and route_creator_personal
-    )
-    route_personal_from_rules = bool(
-        route_q_type == "personal_bio" or rule_intent == "personal_bio_question"
-    )
-    if route_personal_from_classifier or route_personal_from_rules or route_personal_via_evidence:
+    if should_route_personal:
         logger.info("Pipeline Step 5: Routing personal factual question through PersonalBioService...")
         personal_result = personal_bio_service.handle_personal_question(
             user_id=user_id,
@@ -5894,37 +5931,27 @@ async def grounded_rag_stream(
                         logger.warning(f"Streaming off-domain LLM check failed (non-blocking): {e}")
 
     route_evidence_plan = None
-    route_personal_via_evidence = False
+    route_creator_personal = False
     if creator_task:
         try:
             creator_preview = await creator_task
             if creator_preview:
                 route_evidence_plan = _build_evidence_plan(question, creator_preview, conversation_history)
-                route_personal_via_evidence = bool(
-                    route_evidence_plan
-                    and (
-                        route_evidence_plan.query_goal in {
-                            "entity_confirmation",
-                            "entity_overview",
-                            "entity_catalog_lookup",
-                            "availability_lookup",
-                            "timeline_lookup",
-                            "price_lookup",
-                            "stat_lookup",
-                            "current_stat_lookup",
-                        }
-                        or (
-                            route_evidence_plan.primary_world in {"creator_world", "live_world"}
-                            and route_evidence_plan.entity_subject
-                        )
-                    )
-                )
+                creator_personal_detector = getattr(decision_service, "is_creator_personal_fact_question", None)
+                route_creator_personal = bool(creator_personal_detector(question)) if callable(creator_personal_detector) else False
             creator_task = asyncio.create_task(asyncio.sleep(0, result=creator_preview))
         except Exception:
             pass
 
-    route_personal_from_rules = bool(route_q_type == "personal_bio" or rule_intent == "personal_bio_question")
-    if route_personal_from_rules or route_personal_via_evidence:
+    should_route_personal = _should_route_personal_fact_question(
+        question,
+        route_q_type=route_q_type,
+        rule_intent=rule_intent,
+        route_evidence_plan=route_evidence_plan,
+        route_creator_personal=route_creator_personal,
+        personal_question_flag=False,
+    )
+    if should_route_personal:
         creator_row = await creator_task
         if not creator_row:
             yield "I couldn't find information about that creator."
