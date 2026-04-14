@@ -223,13 +223,16 @@ def _normalize_personal_sources(sources: Optional[List[Dict[str, Any]]]) -> List
         title = str(source.get("title") or source.get("text") or f"Source {idx}").strip()
         url = str(source.get("url") or "").strip()
         if url:
+            platform = str(source.get("source") or "").strip().lower()
+            if platform in {"internal", "web", "profile", "web_grounded_summary", "web_fact_lookup", ""}:
+                platform = _platform_from_url(url) if url else "web"
             normalized.append(
                 {
                     "source_id": f"personal_{idx}",
                     "title": title[:140],
                     "url": url,
                     "snippet": str(source.get("text") or "")[:240],
-                    "platform": str(source.get("source") or "profile"),
+                    "platform": platform,
                 }
             )
     return normalized

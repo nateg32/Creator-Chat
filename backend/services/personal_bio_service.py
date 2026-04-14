@@ -905,11 +905,13 @@ class PersonalBioService:
 
         facts = []
         for chunk in retrieved:
+            source_url = chunk.get("url") or ""
+            source_title = chunk.get("title") or ""
             facts.append({
                 "text": chunk.get("content", ""),
                 "source": "internal",
-                "title": chunk.get("title"),
-                "url": chunk.get("url"),
+                "title": source_title,
+                "url": source_url,
                 "sim": max(0.0, 1.0 - float(chunk.get("distance", 1.0)))
             })
 
