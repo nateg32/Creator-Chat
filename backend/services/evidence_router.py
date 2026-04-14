@@ -525,6 +525,9 @@ class EvidenceRouter:
         if query_goal == "journey_lookup":
             return "creator_world", [], True, False, False, "journey_grounded_search"
 
+        if query_goal == "resource_lookup":
+            return "creator_world", ["creator_memory"], True, True, False, "resource_web_plus_corpus"
+
         if live_world_signal:
             primary_world = "live_world"
             secondary = ["creator_world"]

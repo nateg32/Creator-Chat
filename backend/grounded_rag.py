@@ -1882,7 +1882,7 @@ def _should_speculate_live_search(
 ) -> bool:
     if needs_fresh_public_web_search(question, history):
         return True
-    if (explicit_link_request or context_needs_video) and not should_run_recommender:
+    if explicit_link_request or context_needs_video:
         return True
     # Proactively speculate on any factual / creator-world question so web
     # results are ready by the time the pipeline needs them.  This runs in
