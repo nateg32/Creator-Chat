@@ -416,6 +416,26 @@ class SearchDecisionEngine:
                     confidence=0.70,
                 )
 
+        # Creator-context references (e.g. "you spent a million bucks") in the
+        # mid-confidence range deserve a web check — the corpus may have
+        # partial match but the specific video/source might only be findable
+        # via search.
+        _CREATOR_CTX_RE = re.compile(
+            r"\b(?:you|u|ya)\s+(?:spent|lost|made|bought|sold|paid|invested|earned|said|mentioned|talked about|spoke about|discussed|showed|covered)"
+            r"|\bwhich\s+(?:video|episode|stream|clip)"
+            r"|\bwhat\s+(?:video|episode)\s+(?:did|was|is)"
+            r"|\bwhat\s+did\s+(?:you|u|ya)\s+(?:talk|say|mean|cover|discuss|explain|show)",
+            re.IGNORECASE,
+        )
+        if _CREATOR_CTX_RE.search(query_lower):
+            return SearchDecision(
+                should_search=True,
+                reason="medium_confidence_creator_context",
+                reason_detail="Medium RAG confidence plus creator-context reference — web search may find the specific source",
+                phase="post_retrieval",
+                confidence=0.65,
+            )
+
         return SearchDecision(
             should_search=False,
             reason="medium_confidence_sufficient",

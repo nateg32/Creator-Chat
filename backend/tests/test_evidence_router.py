@@ -213,6 +213,47 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertTrue(report.get("has_contradiction"))
         self.assertEqual(report.get("kind"), "date")
 
+    # ── Content-reference routing tests ──────────────────────────────
+
+    def test_creator_context_reference_routes_to_web_plus_corpus(self):
+        """'you spent a million bucks' should trigger creator_context_reference with web search."""
+        plan = self.router.build_plan("why did you spend a million bucks")
+        self.assertEqual(plan.query_goal, "creator_context_reference")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertEqual(plan.search_strategy, "context_ref_web_plus_corpus")
+
+    def test_which_video_routes_to_resource_lookup(self):
+        """'which video did you talk about motivation in' should match resource_lookup."""
+        plan = self.router.build_plan("which video did you talk about motivation in")
+        self.assertEqual(plan.query_goal, "resource_lookup")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+
+    def test_what_did_you_talk_about_routes_with_web(self):
+        """'what did you talk about in your trading basics video' should enable web search."""
+        plan = self.router.build_plan("what did you talk about in your trading basics video")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+
+    def test_you_mentioned_triggers_creator_context(self):
+        """'you mentioned something about risk management' should trigger creator_context_reference."""
+        plan = self.router.build_plan("you mentioned something about risk management")
+        self.assertEqual(plan.query_goal, "creator_context_reference")
+        self.assertTrue(plan.should_search_web)
+
+    def test_remember_when_you_triggers_creator_context(self):
+        """'remember when you lost 50k in a day' should trigger creator_context_reference."""
+        plan = self.router.build_plan("remember when you lost 50k in a day")
+        self.assertEqual(plan.query_goal, "creator_context_reference")
+        self.assertTrue(plan.should_search_web)
+
+    def test_your_video_triggers_creator_world_hints(self):
+        """'your video' should now trigger _CREATOR_WORLD_HINTS."""
+        plan = self.router.build_plan("what was your video about")
+        self.assertTrue(plan.should_search_web)
+
 
 if __name__ == "__main__":
     unittest.main()

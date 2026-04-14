@@ -1298,6 +1298,15 @@ def _hybrid_retrieve_recommendation_chunks(
         all_chunks.extend(sparse_chunks)
     return all_chunks, debug_payload
 
+def fetch_all_document_titles(creator_id: int) -> List[str]:
+    """Return every ingested document title for a creator (lightweight catalog query)."""
+    rows = db.execute_query(
+        "SELECT DISTINCT title FROM documents WHERE creator_id = %s AND (metadata->>'type' IS NULL OR metadata->>'type' != 'persona') AND title IS NOT NULL AND title != '' ORDER BY title",
+        (creator_id,),
+    )
+    return [r["title"] for r in rows if r.get("title")]
+
+
 def retrieve_candidates(
     creator_id: int,
     query_embedding: List[float],
@@ -1901,6 +1910,21 @@ def _should_speculate_live_search(
         or re.search(r"\b(married|wife|husband|spouse|children|kids|family|born|age|hometown)\b", lowered)
     )
     if _factual_signal:
+        return True
+    # Creator-context references ("you spent a million", "you talked about X")
+    # deserve speculative web search so we can find the specific video if the
+    # corpus doesn't have it.
+    _creator_context_signal = bool(
+        re.search(r"\b(?:you|u|ya)\s+(?:spent?|lost?|made|bought|sold|paid|invest(?:ed)?|earned|gave|donated|wasted|blew|blow)\b", lowered)
+        or re.search(r"\b(?:did|do)\s+(?:you|u|ya)\s+(?:spend|lose|make|buy|sell|pay|invest|earn|give|donate|waste|blow)\b", lowered)
+        or re.search(r"\b(?:you|u|ya)\s+(?:said|mentioned|talked about|spoke about|discussed|explained|showed|covered)\b", lowered)
+        or re.search(r"\bwhich\s+(?:video|episode|stream|clip|post|reel)\b", lowered)
+        or re.search(r"\bwhat\s+(?:video|episode)\s+(?:did|was|is)\b", lowered)
+        or re.search(r"\bwhat\s+did\s+(?:you|u|ya)\s+(?:talk|say|mean|cover|discuss|explain|show)\b", lowered)
+        or re.search(r"\b(?:that|the)\s+(?:video|episode|stream)\s+(?:where|when|about)\b", lowered)
+        or re.search(r"\bremember\s+(?:when|that\s+time)\s+(?:you|u)\b", lowered)
+    )
+    if _creator_context_signal:
         return True
     return False
 
@@ -6536,6 +6560,7 @@ async def grounded_rag_stream(
             return
 
     # 4. Async Synthesis Stream (Instant Start)
+    all_video_titles = await asyncio.to_thread(fetch_all_document_titles, creator_id)
     stream = await interaction_engine.render_combined_pass_stream_async(
         creator_profile=creator_row,
         rag_chunks=support_set,
@@ -6550,6 +6575,7 @@ async def grounded_rag_stream(
         pre_fetched_memories=mems,
         route=route,
         voice_chunks=voice_support_set,
+        all_video_titles=all_video_titles,
     )
 
     streamed_parts: List[str] = []

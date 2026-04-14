@@ -1860,6 +1860,7 @@ Generate InteractionPlan JSON."""
         pre_fetched_memories: Optional[List[str]] = None,
         route: Optional[str] = None,
         voice_chunks: Optional[List[Dict[str, Any]]] = None,
+        all_video_titles: Optional[List[str]] = None,
     ):
         """Async version of the combined pass."""
         normalized_prefs = self._normalize_user_preferences(user_preferences)
@@ -1871,6 +1872,7 @@ Generate InteractionPlan JSON."""
             pre_fetched_memories=pre_fetched_memories,
             route=route,
             voice_chunks=voice_chunks,
+            all_video_titles=all_video_titles,
         )
 
         return await self._generate_completion_with_compat_async(
@@ -1899,6 +1901,7 @@ Generate InteractionPlan JSON."""
         pre_fetched_memories: Optional[List[str]] = None,
         route: Optional[str] = None,
         voice_chunks: Optional[List[Dict[str, Any]]] = None,
+        all_video_titles: Optional[List[str]] = None,
     ) -> str:
         # ──────────────────────────────────────────────────────────────
         # IDENTITY RESOLUTION
@@ -2003,15 +2006,27 @@ Output ONLY your response."""
             source_context = "No specific content retrieved. Answer from your general domain expertise."
         has_image_context = any(c.get("is_image_context") for c in (rag_chunks or []))
 
-        # Build a video inventory so the LLM knows exactly which videos it has content from
+        # Build a video inventory so the LLM knows which videos it has content from
+        # Use full catalog if available; fall back to titles visible in the support_set
+        full_catalog = set(all_video_titles or []) | available_video_titles
         video_inventory_block = ""
-        if available_video_titles:
-            titles_list = ", ".join(f'"{t}"' for t in sorted(available_video_titles))
+        if full_catalog:
+            titles_list = ", ".join(f'"{t}"' for t in sorted(full_catalog))
+            context_titles_list = ", ".join(f'"{t}"' for t in sorted(available_video_titles)) if available_video_titles else ""
             video_inventory_block = (
-                f"\nVIDEO INVENTORY (the ONLY videos you have actual content from right now): {titles_list}\n"
-                "CRITICAL: If the user asks what you said IN a specific video and that video title is NOT in this inventory, "
-                "you MUST say you do not have the transcript for that specific video right now. "
-                "DO NOT guess or fabricate what a video contains. Only describe content you can see above."
+                f"\nFULL VIDEO CATALOG (all ingested content): {titles_list}\n"
+            )
+            if available_video_titles:
+                video_inventory_block += (
+                    f"ACTIVE CONTEXT (videos whose transcripts you can see above): {context_titles_list}\n"
+                )
+            video_inventory_block += (
+                "When the user asks 'which video' or 'what did you talk about in [title]', "
+                "first check ACTIVE CONTEXT for verbatim transcript evidence. "
+                "If the answer is in the catalog but NOT in active context, name the video naturally and say you have it "
+                "but the specific excerpt is not loaded right now. "
+                "If the video title is NOT in the catalog at all, say you don't have that specific video ingested yet. "
+                "NEVER fabricate or rename a video title."
             )
 
         persona_anchor = creator_profile.get("soul_md") or persona or ""
@@ -2116,7 +2131,18 @@ STRICT IDENTITY LOCK:
             
         anti_halluc_rule = "- FALLBACK: If a fact, title, or link is NOT in Priority 1 or 2, say naturally that you do not have it right now. DO NOT guess, speculate, rename a title, or hallucinate. NEVER output empty or placeholder URLs like \"\" or '' in your response."
         if not has_links:
-            anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent or rename a title. NEVER output empty or placeholder URLs like \"\" or '' in your response. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice from your knowledge. If the user did NOT ask for a link or video, do not mention missing links at all."
+            if available_video_titles:
+                # We have transcript context with known video titles but no clickable URLs
+                _known = ", ".join(f'"{t}"' for t in sorted(available_video_titles))
+                anti_halluc_rule = (
+                    f"- You do NOT have clickable links right now, so NEVER output any URL. "
+                    f"However, you DO have transcript content from these videos: {_known}. "
+                    "You MAY reference these titles naturally (e.g. 'I talked about that in my video [Title]') "
+                    "because you genuinely have that content. Do NOT invent or rename any title not in this list. "
+                    "NEVER output empty or placeholder URLs like \"\" or '' in your response."
+                )
+            else:
+                anti_halluc_rule = "- CRITICAL ANTI-HALLUCINATION GUARDRAIL: YOU CURRENTLY DO NOT HAVE ANY VIDEO LINKS. Therefore, you MUST NOT recommend ANY specific video or resource by title. Do not invent or rename a title. NEVER output empty or placeholder URLs like \"\" or '' in your response. If the user explicitly asks for a link or video, say naturally that you do not have a specific link handy right now, then give your best advice from your knowledge. If the user did NOT ask for a link or video, do not mention missing links at all."
         
         # If we have web search results, ensure the rule allows them
         has_video_links = any(
@@ -2557,14 +2583,14 @@ Output only the response."""
         else:
             source_context = "No specific content retrieved. Answer from your general domain expertise."
 
-        # Build a video inventory so the LLM knows exactly which videos it has content from
+        # Build a video inventory so the LLM knows which videos it has content from
         video_inventory_block = ""
         if available_video_titles:
             titles_list = ", ".join(f'"{t}"' for t in sorted(available_video_titles))
             video_inventory_block = (
-                f"\nVIDEO INVENTORY (the ONLY videos you have actual content from right now): {titles_list}\n"
-                "CRITICAL: If the user asks what you said IN a specific video and that video title is NOT in this inventory, "
-                "you MUST say you do not have the transcript for that specific video right now. "
+                f"\nVIDEO CATALOG (videos you have content from): {titles_list}\n"
+                "If the user asks what you said IN a specific video and that video title is NOT in this list, "
+                "say you do not have the transcript for that specific video right now. "
                 "DO NOT guess or fabricate what a video contains. Only describe content you can see above."
             )
 

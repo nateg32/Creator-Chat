@@ -117,9 +117,22 @@ _ADVICE_PATTERNS = [
     re.compile(r"\bany advice\b", re.IGNORECASE),
 ]
 _CREATOR_WORLD_HINTS = [
-    re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business)\b", re.IGNORECASE),
+    re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business|video|videos|channel)\b", re.IGNORECASE),
     re.compile(r"\b(your|my)\s+(?:full|real|legal|last)\s+name\b", re.IGNORECASE),
     re.compile(r"\bnet worth\b|\bemployees\b|\bfounded\b|\bvaluation\b|\bfollowers?\b|\bsubscribers?\b", re.IGNORECASE),
+]
+# Patterns indicating the user references something the creator specifically did, said,
+# or experienced — even without a factual interrogative ("how much", "when did", etc.).
+_CREATOR_CONTEXT_REF_PATTERNS = [
+    re.compile(r"\b(?:you|u|ya)\s+(?:spent?|lost?|made|bought|sold|paid|invest(?:ed)?|earned|gave|donated|wasted|blew|blow)\b", re.IGNORECASE),
+    re.compile(r"\b(?:did|do)\s+(?:you|u|ya)\s+(?:spend|lose|make|buy|sell|pay|invest|earn|give|donate|waste|blow)\b", re.IGNORECASE),
+    re.compile(r"\b(?:you|u|ya)\s+(?:said|mentioned|talked about|spoke about|discussed|explained|showed|covered|went over)\b", re.IGNORECASE),
+    re.compile(r"\b(?:you|u|ya)\s+(?:did|made|built|created|launched|started|released|posted|uploaded|filmed|recorded)\b", re.IGNORECASE),
+    re.compile(r"\bwhich\s+(?:video|episode|stream|clip|post|reel)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:video|episode)\s+(?:did|was|is)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+did\s+(?:you|u|ya)\s+(?:talk|say|mean|cover|discuss|explain|show)\b", re.IGNORECASE),
+    re.compile(r"\b(?:that|the)\s+(?:video|episode|stream)\s+(?:where|when|about)\b", re.IGNORECASE),
+    re.compile(r"\bremember\s+(?:when|that\s+time)\s+(?:you|u)\b", re.IGNORECASE),
 ]
 
 
@@ -479,6 +492,8 @@ class EvidenceRouter:
             return "creator_take"
         if entity and "creator_owned_entity" in risk_flags:
             return "entity_overview"
+        if any(pattern.search(lowered) for pattern in _CREATOR_CONTEXT_REF_PATTERNS):
+            return "creator_context_reference"
         return "general"
 
     def _classify_worlds(
@@ -527,6 +542,9 @@ class EvidenceRouter:
 
         if query_goal == "resource_lookup":
             return "creator_world", ["creator_memory"], True, True, False, "resource_web_plus_corpus"
+
+        if query_goal == "creator_context_reference":
+            return "creator_world", ["creator_memory"], True, True, False, "context_ref_web_plus_corpus"
 
         if live_world_signal:
             primary_world = "live_world"
