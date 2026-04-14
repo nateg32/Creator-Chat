@@ -658,6 +658,32 @@ class ResourceLinkPolicyTests(unittest.TestCase):
         self.assertEqual(shaped[0]["source_ref"]["content_id"], "INVEST001")
         self.assertEqual(shaped[1]["source_ref"]["content_id"], "INVEST002")
 
+    def test_web_result_citation_survives_scoring_threshold(self):
+        """Web search results with topic overlap must appear as citations."""
+        support_set = [
+            {
+                "content": "[LIVE WEB SEARCH RESULT]\nDay Trading Basics for Beginners — Learn risk management, market structure, and a simple system.",
+                "snippet": "Day Trading Basics for Beginners — Learn risk management, market structure.",
+                "title": "Day Trading Basics for Beginners",
+                "url": "https://www.youtube.com/watch?v=DAYTRADING01",
+                "source_ref": {
+                    "title": "Day Trading Basics for Beginners",
+                    "canonical_url": "https://www.youtube.com/watch?v=DAYTRADING01",
+                    "platform": "youtube",
+                },
+            }
+        ]
+
+        citations = grounded_rag.build_inline_citations(
+            support_set,
+            question="whats a key video youd recommend if i wanna start day trading from the basics",
+            answer_text="Start with risk management and a simple system. I attached a video below on day trading basics.",
+        )
+
+        self.assertGreaterEqual(len(citations), 1)
+        self.assertEqual(citations[0]["url"], "https://www.youtube.com/watch?v=DAYTRADING01")
+        self.assertTrue(citations[0]["is_live_web"])
+
 
 if __name__ == "__main__":
     unittest.main()

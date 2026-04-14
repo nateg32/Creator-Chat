@@ -1745,7 +1745,7 @@ Generate InteractionPlan JSON."""
         PASS 2 — PERSONA RENDERER
         Route-aware rendering. All output run through strip_all_markdown.
         """
-        allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none"
+        allow_links = True
 
         if plan.route == "ROUTE_0_GREETING":
             raw = self._render_greeting(plan, creator_profile, user_msg, user_name, persona, user_preferences, history=history, thread_id=thread_id)
@@ -2814,7 +2814,7 @@ Output only the response text."""
             )
             
             # PASS 3: Light reduction + format cleaning
-            allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none"
+            allow_links = True
             return self._enforce_task_reduction(draft.strip(), plan, user_msg, allow_lists=allow_lists, allow_links=allow_links)
         except Exception as e:
             logger.error(f"Task render failed: {e}")

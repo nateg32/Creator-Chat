@@ -222,7 +222,7 @@ def _normalize_personal_sources(sources: Optional[List[Dict[str, Any]]]) -> List
     for idx, source in enumerate(sources or [], start=1):
         title = str(source.get("title") or source.get("text") or f"Source {idx}").strip()
         url = str(source.get("url") or "").strip()
-        if url or title:
+        if url:
             normalized.append(
                 {
                     "source_id": f"personal_{idx}",
@@ -1504,7 +1504,7 @@ def _score_support_resource_candidate(
     title_verbatim_bonus = _title_verbatim_match_bonus(title, question)
 
     score = (
-        (0.28 if not is_live_web else 0.12)
+        (0.28 if not is_live_web else 0.24)
         + (0.24 if recommended else 0.0)
         + (0.12 if (not recommended and not is_live_web) else 0.0)  # ingested content bonus
         + (title_quality * 0.22)
@@ -1520,7 +1520,7 @@ def _score_support_resource_candidate(
     # question) from appearing as citations just because of high base/rank score.
     # But if the answer itself clearly overlaps the chunk, keep it eligible so
     # broad grounded creator answers can still surface their real sources.
-    if (question or "").strip() and question_overlap < 0.05 and title_verbatim_bonus < 0.10 and answer_overlap < 0.12:
+    if (question or "").strip() and question_overlap < 0.05 and title_verbatim_bonus < 0.10 and answer_overlap < 0.08:
         score = min(score, 0.30)
 
     return round(score, 4)
@@ -4858,7 +4858,7 @@ def grounded_rag_ask(
             is_light_route = plan and getattr(plan, 'route', '') in ["ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK"]
             
             # ABSOLUTE FIRST: strip any remaining markdown artifacts
-            allow_links = plan.grounding.requires_sources or plan.grounding.video_policy != "none" if plan else False
+            allow_links = True
             result_dict["answer"] = strip_all_markdown(answer.strip(), allow_links=allow_links)
             
             # ── Source-grounding guard: verify cited titles against actual support set ──
@@ -6715,7 +6715,7 @@ def build_inline_citations(
 
     # Filter to sources that meaningfully contributed to the answer before sorting.
     # Prevents all retrieved chunks from appearing as citations when only 1-2 were used.
-    _MIN_CITATION_SCORE = 0.34
+    _MIN_CITATION_SCORE = 0.28
     ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
     # ── URL health-check: drop dead links from citations ──
