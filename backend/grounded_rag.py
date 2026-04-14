@@ -1884,6 +1884,24 @@ def _should_run_exact_text_match(
     return len(q.split()) <= 6
 
 
+_CREATOR_CONTEXT_REF_RE = re.compile(
+    r"\b(?:you|u|ya)\s+(?:spent?|lost?|made|bought|sold|paid|invest(?:ed)?|earned|gave|donated|wasted|blew|blow)"
+    r"|\b(?:did|do)\s+(?:you|u|ya)\s+(?:spend|lose|make|buy|sell|pay|invest|earn|give|donate|waste|blow)"
+    r"|\b(?:you|u|ya)\s+(?:said|mentioned|talked about|spoke about|discussed|explained|showed|covered|went over)"
+    r"|\bwhich\s+(?:video|episode|stream|clip|post|reel)"
+    r"|\bwhat\s+(?:video|episode)\s+(?:did|was|is)"
+    r"|\bwhat\s+did\s+(?:you|u|ya)\s+(?:talk|say|mean|cover|discuss|explain|show)"
+    r"|\b(?:that|the)\s+(?:video|episode|stream)\s+(?:where|when|about)"
+    r"|\bremember\s+(?:when|that\s+time)\s+(?:you|u)",
+    re.IGNORECASE,
+)
+
+
+def _is_creator_context_reference(question: str) -> bool:
+    """True when the query references something the creator specifically did, said, or experienced."""
+    return bool(_CREATOR_CONTEXT_REF_RE.search(question or ""))
+
+
 def _should_speculate_live_search(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
@@ -5414,6 +5432,17 @@ Message: {answer_text[:500]}"""
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
                 voice_support_set = _build_voice_support_chunks(voice_support_set, exact_text_matches)
+        # --- Sparse keyword match for creator-context references (e.g. "lacy", "vegas") ---
+        if corpus_search_enabled and not resource_locked and _is_creator_context_reference(question):
+            sparse_text_matches = retrieve_sparse_text_matches(
+                creator_id,
+                question,
+                4,
+                enabled_platforms,
+            )
+            if sparse_text_matches:
+                support_set = merge_support_sets(support_set, sparse_text_matches, limit=4)
+                voice_support_set = _build_voice_support_chunks(voice_support_set, sparse_text_matches)
         support_set, resolved_entity = _inject_entity_graph_support(
             support_set,
             question,
@@ -6303,6 +6332,18 @@ async def grounded_rag_stream(
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
                 voice_support_set = _build_voice_support_chunks(voice_support_set, exact_text_matches)
+        # --- Sparse keyword match for creator-context references (e.g. "lacy", "vegas") ---
+        if corpus_search_enabled and not resource_locked and _is_creator_context_reference(question):
+            sparse_text_matches = await asyncio.to_thread(
+                retrieve_sparse_text_matches,
+                creator_id,
+                question,
+                4,
+                None,
+            )
+            if sparse_text_matches:
+                support_set = merge_support_sets(support_set, sparse_text_matches, limit=4)
+                voice_support_set = _build_voice_support_chunks(voice_support_set, sparse_text_matches)
         support_set, resolved_entity = _inject_entity_graph_support(
             support_set,
             question,
