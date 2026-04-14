@@ -1600,6 +1600,21 @@ class OpenAIResearchProvider(ResearchProvider):
             logger.warning(f"[URL-VALIDATE] Could not verify {url}: {e}")
             return None  # Can't verify, drop to be safe
 
+    def _validate_web_url(self, url: str) -> bool:
+        """Validate a non-YouTube URL via HEAD request. Returns True if reachable (2xx/3xx)."""
+        import urllib.request
+        try:
+            req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=3) as response:
+                status = response.getcode()
+                if status and status < 400:
+                    return True
+                logger.warning(f"[URL-VALIDATE] Web URL returned {status}: {url}")
+                return False
+        except Exception as e:
+            logger.warning(f"[URL-VALIDATE] Web URL unreachable: {url} — {e}")
+            return False
+
     def _extract_topic_from_context(
         self, query: str, creator_name: str,
         conversation_history: Optional[List[Dict[str, str]]] = None
@@ -2011,8 +2026,9 @@ class OpenAIResearchProvider(ResearchProvider):
             pre_validated.append(result)
 
         youtube_items = [(i, r) for i, r in enumerate(pre_validated) if 'youtube.com' in (r.get('url') or '') or 'youtu.be' in (r.get('url') or '')]
+        non_youtube_items = [(i, r) for i, r in enumerate(pre_validated) if 'youtube.com' not in (r.get('url') or '') and 'youtu.be' not in (r.get('url') or '')]
+        validation_results = {}
         if youtube_items:
-            validation_results = {}
             def validate_item(args):
                 idx, result = args
                 return idx, self._validate_youtube_url(result['url'])
@@ -2024,19 +2040,35 @@ class OpenAIResearchProvider(ResearchProvider):
                         validation_results[idx] = real_title
                     except Exception:
                         validation_results[futures[future]] = None
-            validated = []
-            for idx, result in enumerate(pre_validated):
-                if idx in validation_results:
-                    real_title = validation_results[idx]
-                    if real_title is None:
-                        continue
-                    if result.get('title', '').strip().lower() in ('youtube video', 'untitled', ''):
-                        result['title'] = real_title
-                    else:
-                        result['_real_title'] = real_title
-                validated.append(result)
-        else:
-            validated = pre_validated
+        # Validate non-YouTube URLs via HEAD request to catch broken/hallucinated links
+        web_validation_results = {}
+        if non_youtube_items:
+            def validate_web_item(args):
+                idx, result = args
+                return idx, self._validate_web_url(result['url'])
+            with ThreadPoolExecutor(max_workers=min(len(non_youtube_items), 4)) as executor:
+                futures = {executor.submit(validate_web_item, item): item[0] for item in non_youtube_items}
+                for future in as_completed(futures):
+                    try:
+                        idx, is_valid = future.result(timeout=4)
+                        web_validation_results[idx] = is_valid
+                    except Exception:
+                        web_validation_results[futures[future]] = False
+        validated = []
+        for idx, result in enumerate(pre_validated):
+            if idx in validation_results:
+                real_title = validation_results[idx]
+                if real_title is None:
+                    continue
+                if result.get('title', '').strip().lower() in ('youtube video', 'untitled', ''):
+                    result['title'] = real_title
+                else:
+                    result['_real_title'] = real_title
+            elif idx in web_validation_results:
+                if not web_validation_results[idx]:
+                    logger.info(f"[URL-VALIDATE] Dropping unreachable web URL: {result.get('url')}")
+                    continue
+            validated.append(result)
 
         results = self._score_relevance(validated, sanitized_topic or query, search_intent)
 

@@ -159,7 +159,6 @@ def _route_personal_via_evidence(route_evidence_plan: Optional[EvidencePlan]) ->
                 "entity_overview",
                 "entity_catalog_lookup",
                 "availability_lookup",
-                "journey_lookup",
                 "timeline_lookup",
                 "price_lookup",
                 "stat_lookup",
