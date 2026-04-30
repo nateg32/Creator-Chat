@@ -1314,6 +1314,10 @@ function AppInner() {
 
   // Handler for global navigation step clicks
   function handleStepClick(step) {
+    if (step === 2) {
+      return;
+    }
+
     if (step === 5) {
       dispatch({ type: "SET_STEP", step });
       return;

@@ -39,12 +39,13 @@ export function WorkflowNav({
   const merged = useMemo(() => {
     return steps.map((s, idx) => {
       const remote = stepsByKey[s.key] || null;
+      const fallbackReady = s.key === "search" ? false : true;
       return {
         index: idx + 1,
         key: s.key,
         label: s.label,
         status: remote?.status || (idx + 1 === currentStep ? "active" : "available"),
-        ready: remote ? remote.ready : true,
+        ready: remote ? remote.ready : fallbackReady,
         stale: Boolean(remote?.stale),
         blocked_reason: remote?.blocked_reason || null,
         count: remote?.count || null,
