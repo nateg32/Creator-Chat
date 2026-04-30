@@ -1168,16 +1168,16 @@ def mark_queue_ingested(conn, creator_id: int, queue_ids: List[int]):
 
 @app.post("/auth/login", response_model=LoginResponse)
 @limiter.limit("10/minute")
-async def login(http_request: Request, request: LoginRequest, response: Response):
+async def login(request: Request, payload: LoginRequest, response: Response):
     """Login and create session"""
     try:
         query = "SELECT id, password_hash FROM users WHERE email = %s"
-        user = db.execute_one(query, (request.email,))
+        user = db.execute_one(query, (payload.email,))
         
         if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
         
-        if not verify_password(request.password, user["password_hash"]):
+        if not verify_password(payload.password, user["password_hash"]):
             raise HTTPException(status_code=401, detail="Invalid email or password")
         
         session_id = create_session(user["id"])
@@ -1194,7 +1194,7 @@ async def login(http_request: Request, request: LoginRequest, response: Response
         return LoginResponse(
             session_id=session_id,
             user_id=user["id"],
-            access_token=create_access_token(user["id"], request.email),
+            access_token=create_access_token(user["id"], payload.email),
             token_type="bearer",
         )
     except HTTPException:
@@ -1204,17 +1204,17 @@ async def login(http_request: Request, request: LoginRequest, response: Response
 
 @app.post("/auth/register")
 @limiter.limit("5/minute")
-async def register(http_request: Request, request: LoginRequest, response: Response):
+async def register(request: Request, payload: LoginRequest, response: Response):
     """Register a new user"""
     try:
         query = "SELECT id FROM users WHERE email = %s"
-        existing = db.execute_one(query, (request.email,))
+        existing = db.execute_one(query, (payload.email,))
         if existing:
             raise HTTPException(status_code=400, detail="User already exists")
         
-        password_hash = hash_password(request.password)
+        password_hash = hash_password(payload.password)
         query = "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id"
-        user_id = db.execute_insert(query, (request.email, password_hash))
+        user_id = db.execute_insert(query, (payload.email, password_hash))
         
         session_id = create_session(user_id)
         
@@ -1230,7 +1230,7 @@ async def register(http_request: Request, request: LoginRequest, response: Respo
         return LoginResponse(
             session_id=session_id,
             user_id=user_id,
-            access_token=create_access_token(user_id, request.email),
+            access_token=create_access_token(user_id, payload.email),
             token_type="bearer",
         )
     except HTTPException:
@@ -2193,14 +2193,14 @@ async def health():
 
 @app.post("/ask-stream")
 @limiter.limit("60/minute")
-async def ask_stream_endpoint(http_request: Request, request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
+async def ask_stream_endpoint(request: Request, payload: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Streaming version of /ask. 
     Bypasses deep classification/planning for immediate time-to-first-token.
     """
     try:
-        ensure_creator_access(request.creator_id, current_user["id"])
-        status_obj = get_creator_status(request.creator_id)
+        ensure_creator_access(payload.creator_id, current_user["id"])
+        status_obj = get_creator_status(payload.creator_id)
         if not status_obj["ready_to_chat"]:
             raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
             
@@ -2208,12 +2208,12 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
         
         # 1. Fetch creator soul metadata + Check fingerprint (Async)
         def _get_creator_meta():
-            creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
+            creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (payload.creator_id,))
             if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
-                print(f"[CHAT] Missing soul for creator {request.creator_id}, enqueueing FINGERPRINT job...")
+                print(f"[CHAT] Missing soul for creator {payload.creator_id}, enqueueing FINGERPRINT job...")
                 db.execute_insert(
                     "INSERT INTO system_jobs (creator_id, job_type, payload, message) VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Auto-enqueued from chat')",
-                    (request.creator_id, json.dumps({"creator_id": request.creator_id}))
+                    (payload.creator_id, json.dumps({"creator_id": payload.creator_id}))
                 )
             return creator_row
             
@@ -2235,16 +2235,16 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
         # 3. Thread Logic & History (Async)
         def _get_thread_history():
             conversation_history = []
-            if request.thread_id:
+            if payload.thread_id:
                 try:
-                    uuid.UUID(str(request.thread_id))
+                    uuid.UUID(str(payload.thread_id))
                     
                     # Auto-initialize thread if missing
                     db.execute_update("""
                         INSERT INTO chat_threads (id, user_id, creator_id, title)
                         VALUES (%s, %s, %s, 'New conversation')
                         ON CONFLICT (id) DO NOTHING
-                    """, (request.thread_id, current_user["id"], request.creator_id))
+                    """, (payload.thread_id, current_user["id"], payload.creator_id))
 
                     msgs_rows = db.execute_query("""
                         SELECT role, content, metadata FROM chat_messages 
@@ -2255,12 +2255,12 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                           )
                         ORDER BY created_at DESC 
                         LIMIT 30
-                    """, (request.thread_id, request.thread_id, current_user["id"]))
+                    """, (payload.thread_id, payload.thread_id, current_user["id"]))
                     if msgs_rows:
                         msgs_rows.reverse()
                         conversation_history = [_history_message_from_row(m) for m in msgs_rows]
                 except ValueError:
-                    request.thread_id = None
+                    payload.thread_id = None
             return conversation_history
 
         # Execute DB calls sequentially to prevent psycopg connection threading issues
@@ -2271,11 +2271,11 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
 
         images_payload = None
         user_image_metadata = {}
-        if request.images and len(request.images) > 0:
-            images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in request.images[:4]]
+        if payload.images and len(payload.images) > 0:
+            images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in payload.images[:4]]
             user_image_metadata["images"] = images_payload
-        elif question_refers_to_recent_image(request.question):
-            recent_images = get_latest_thread_images(request.thread_id, current_user["id"])
+        elif question_refers_to_recent_image(payload.question):
+            recent_images = get_latest_thread_images(payload.thread_id, current_user["id"])
             if recent_images:
                 images_payload = recent_images[:4]
 
@@ -2287,14 +2287,14 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
             explicit_support = []
             assembled = []
             pending_stream_text = ""
-            creator_cleaning_profile = _get_creator_cleaning_profile(request.creator_id, current_user["id"])
+            creator_cleaning_profile = _get_creator_cleaning_profile(payload.creator_id, current_user["id"])
             strip_hyphens = should_strip_hyphens(creator_cleaning_profile)
             try:
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 if images_payload:
                     creator_name = "Creator"
                     try:
-                        creator_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (request.creator_id,))
+                        creator_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (payload.creator_id,))
                         if creator_row:
                             creator_name = (creator_row.get("name") or "").strip()
                             if not creator_name:
@@ -2302,18 +2302,18 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                     except Exception:
                         pass
 
-                    image_question = request.question
+                    image_question = payload.question
                     if not image_question or not image_question.strip():
                         image_question = "Describe this image and point out anything important."
 
                     result = grounded_rag_ask(
-                        creator_id=request.creator_id,
+                        creator_id=payload.creator_id,
                         question=image_question,
-                        thread_id=request.thread_id,
+                        thread_id=payload.thread_id,
                         conversation_history=copy.deepcopy(conversation_history) if conversation_history else [],
-                        top_k=request.top_k or 6,
-                        max_distance=request.max_distance or 1.15,
-                        debug=request.debug or False,
+                        top_k=payload.top_k or 6,
+                        max_distance=payload.max_distance or 1.15,
+                        debug=payload.debug or False,
                         user_preferences=user_prefs,
                         user_name=user_name,
                         creator_name=creator_name,
@@ -2331,9 +2331,9 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                         if token:
                             yield f"data: {json.dumps({'content': token})}\n\n"
 
-                    if request.thread_id:
+                    if payload.thread_id:
                         finalize_stream_interaction(
-                            request.thread_id,
+                            payload.thread_id,
                             image_question,
                             full_answer,
                             cards=cards,
@@ -2342,9 +2342,9 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                             user_id=current_user["id"],
                             creator_profile=creator_cleaning_profile,
                         )
-                        thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                        thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (payload.thread_id,))
                         if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
-                            background_tasks.add_task(_update_thread_title_background, request.thread_id)
+                            background_tasks.add_task(_update_thread_title_background, payload.thread_id)
 
                     if cards:
                         yield f"data: {json.dumps({'cards': cards})}\n\n"
@@ -2356,9 +2356,9 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                 # Explicitly deepcopy conversation history to prevent frozenset cache poisoning
                 safe_history = copy.deepcopy(conversation_history) if conversation_history else []
                 async for chunk in grounded_rag_stream(
-                    creator_id=request.creator_id,
-                    question=request.question,
-                    thread_id=request.thread_id,
+                    creator_id=payload.creator_id,
+                    question=payload.question,
+                    thread_id=payload.thread_id,
                     conversation_history=safe_history,
                     user_preferences=user_prefs,
                     user_name=user_name,
@@ -2422,7 +2422,7 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                 raw_streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 streamed_answer = raw_streamed_answer
                 # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
-                streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, request.question)
+                streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, payload.question)
                 recovered_citations = []
                 if metadata_bio_fallback_applied:
                     recovery_profile = db.execute_one(
@@ -2436,12 +2436,12 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                         FROM creators
                         WHERE id = %s AND user_id = %s
                         """,
-                        (request.creator_id, current_user["id"]),
+                        (payload.creator_id, current_user["id"]),
                     )
                     recovery_result = recover_streamed_creator_fact_answer(
                         user_id=current_user["id"],
-                        creator_id=request.creator_id,
-                        question=request.question,
+                        creator_id=payload.creator_id,
+                        question=payload.question,
                         creator_row=recovery_profile,
                         conversation_history=safe_history,
                     )
@@ -2472,26 +2472,26 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                 )
                 
                 full_answer = _apply_stream_creator_integrity(
-                    request.creator_id,
+                    payload.creator_id,
                     current_user["id"],
-                    request.question,
+                    payload.question,
                     full_answer,
                     cards=cards,
                     support_chunks=explicit_support,
                 )
                 quality_report = _score_saved_answer_quality(
-                    request.creator_id,
+                    payload.creator_id,
                     current_user["id"],
-                    request.question,
+                    payload.question,
                     full_answer,
                     explicit_support or _card_chunks_for_integrity(cards),
                 )
                 if full_answer != raw_streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
-                if request.thread_id:
+                if payload.thread_id:
                     finalize_stream_interaction(
-                        request.thread_id,
-                        request.question,
+                        payload.thread_id,
+                        payload.question,
                         full_answer,
                         cards=cards,
                         citations=citations,
@@ -2501,9 +2501,9 @@ async def ask_stream_endpoint(http_request: Request, request: AskRequest, backgr
                         creator_profile=creator_cleaning_profile,
                     )
                     # Check for title update
-                    thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (request.thread_id,))
+                    thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (payload.thread_id,))
                     if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
-                        background_tasks.add_task(_update_thread_title_background, request.thread_id)
+                        background_tasks.add_task(_update_thread_title_background, payload.thread_id)
                 
                 if cards:
                     yield f"data: {json.dumps({'cards': cards})}\n\n"
@@ -2780,13 +2780,13 @@ async def generate_fingerprint_endpoint(creator_id: int, current_user: Dict[str,
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     # Pre-chat check: Ensure soul assets exist
-    ensure_creator_access(request.creator_id, current_user["id"])
-    creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (request.creator_id,))
+    ensure_creator_access(payload.creator_id, current_user["id"])
+    creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (payload.creator_id,))
     if creator_row and not creator_row.get("soul_md") and creator_row.get("fingerprint_status") != "processing":
-        print(f"[ASK] Missing soul for creator {request.creator_id}, enqueueing FINGERPRINT job...")
+        print(f"[ASK] Missing soul for creator {payload.creator_id}, enqueueing FINGERPRINT job...")
         db.execute_insert(
             "INSERT INTO system_jobs (creator_id, job_type, payload, message) VALUES (%s, 'FINGERPRINT', %s::jsonb, 'Auto-enqueued from chat')",
-            (request.creator_id, json.dumps({"creator_id": request.creator_id}))
+            (payload.creator_id, json.dumps({"creator_id": payload.creator_id}))
         )
 
     """
@@ -2795,7 +2795,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
     Handles thread persistence if thread_id is provided.
     """
     try:
-        status_obj = get_creator_status(request.creator_id)
+        status_obj = get_creator_status(payload.creator_id)
         if not status_obj["ready_to_chat"]:
             raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
             
@@ -2815,26 +2815,26 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
         user_prefs = normalize_user_preferences(user_prefs, RESPONSE_PRESETS.keys())
         
         # Thread Logic (Session Persistence)
-        conversation_history = request.messages
+        conversation_history = payload.messages
         thread = None
         
-        if request.thread_id:
+        if payload.thread_id:
              # Validate UUID format
              try:
-                 uuid.UUID(str(request.thread_id))
+                 uuid.UUID(str(payload.thread_id))
                  
                  # Auto-initialize thread if missing
                  db.execute_update("""
                      INSERT INTO chat_threads (id, user_id, creator_id, title)
                      VALUES (%s, %s, %s, 'New conversation')
                      ON CONFLICT (id) DO NOTHING
-                 """, (request.thread_id, current_user["id"], request.creator_id))
+                 """, (payload.thread_id, current_user["id"], payload.creator_id))
                  
                  # Verify thread exists
-                 thread = db.execute_one("SELECT id, user_id, title, title_locked FROM chat_threads WHERE id = %s AND user_id = %s", (request.thread_id, current_user["id"]))
+                 thread = db.execute_one("SELECT id, user_id, title, title_locked FROM chat_threads WHERE id = %s AND user_id = %s", (payload.thread_id, current_user["id"]))
              except ValueError:
-                 print(f"[WARN] Invalid UUID received for thread_id: {request.thread_id}. Treating as new thread.")
-                 request.thread_id = None
+                 print(f"[WARN] Invalid UUID received for thread_id: {payload.thread_id}. Treating as new thread.")
+                 payload.thread_id = None
                  thread = None
 
              if thread:
@@ -2844,22 +2844,22 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                     VALUES (%s, %s, %s)
                     ON CONFLICT (user_id, creator_id) 
                     DO UPDATE SET last_active_thread_id = EXCLUDED.last_active_thread_id, updated_at = NOW()
-                 """, (current_user["id"], request.creator_id, request.thread_id))
+                 """, (current_user["id"], payload.creator_id, payload.thread_id))
                  
                  # Save user message with images (persisted in metadata)
                  user_metadata = {}
-                 if request.images and len(request.images) > 0:
+                 if payload.images and len(payload.images) > 0:
                      # Store images in metadata JSON so they persist on refresh
                      # Note: Storing base64 strings in DB can be heavy, but required for persistence without S3.
                      user_metadata["images"] = [
                          {"data_url": img.data_url, "detail": img.detail} 
-                         for img in request.images
+                         for img in payload.images
                      ]
 
                  db.execute_update("""
                     INSERT INTO chat_messages (thread_id, role, content, metadata)
                     VALUES (%s, 'user', %s, %s::jsonb)
-                 """, (request.thread_id, request.question, json.dumps(user_metadata)))
+                 """, (payload.thread_id, payload.question, json.dumps(user_metadata)))
                  
                  # Fetch history from DB for RAG context (last 20 messages)
                  # We want the messages BEFORE the one we just inserted.
@@ -2869,7 +2869,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                     WHERE thread_id = %s 
                     ORDER BY created_at DESC 
                     LIMIT 21
-                 """, (request.thread_id,))
+                 """, (payload.thread_id,))
                  
                  if msgs_rows:
                      # Reverse to chronological order [oldest ... newest]
@@ -2878,7 +2878,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                      # The last message in msgs_rows should be the one we just inserted (user question).
                      # We want history *excluding* the current question for the RAG 'conversation_history' param.
                      # (grounded_rag_ask treats 'question' as new, 'conversation_history' as past)
-                     if msgs_rows[-1]['role'] == 'user' and msgs_rows[-1]['content'] == request.question:
+                     if msgs_rows[-1]['role'] == 'user' and msgs_rows[-1]['content'] == payload.question:
                           msgs_rows.pop() 
                      
                      conversation_history = [_history_message_from_row(m) for m in msgs_rows]
@@ -2886,7 +2886,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
         # Get creator name
         creator_name = "Creator"
         try:
-            cr = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (request.creator_id,))
+            cr = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (payload.creator_id,))
             if cr:
                 creator_name = (cr.get("name") or "").strip()
                 if not creator_name:
@@ -2899,36 +2899,36 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
         
         # Prepare images for vision model
         images_payload = None
-        if request.images and len(request.images) > 0:
-            images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in request.images[:4]]
+        if payload.images and len(payload.images) > 0:
+            images_payload = [{"data_url": img.data_url, "detail": img.detail} for img in payload.images[:4]]
             print(f"[ASK] {len(images_payload)} image(s) attached, using vision model")
-        elif question_refers_to_recent_image(request.question):
-            recent_images = get_latest_thread_images(request.thread_id, current_user["id"])
+        elif question_refers_to_recent_image(payload.question):
+            recent_images = get_latest_thread_images(payload.thread_id, current_user["id"])
             if recent_images:
                 images_payload = recent_images[:4]
         
         # Auto-inject default question for image-only messages
-        question = request.question
+        question = payload.question
         if images_payload and (not question or not question.strip()):
             question = "Describe this image and point out anything important."
         
         # Use grounded RAG algorithm for better grounding
         result = grounded_rag_ask(
-            creator_id=request.creator_id,
+            creator_id=payload.creator_id,
             question=question,
             conversation_history=conversation_history,
-            top_k=request.top_k or 6,
-            max_distance=request.max_distance or 1.15,
-            debug=request.debug or False,
+            top_k=payload.top_k or 6,
+            max_distance=payload.max_distance or 1.15,
+            debug=payload.debug or False,
             user_preferences=user_prefs,
             user_name=user_name,
             creator_name=creator_name,
             images=images_payload,
             user_id=thread.get("user_id", current_user["id"]) if thread else current_user["id"],
-            thread_id=request.thread_id
+            thread_id=payload.thread_id
         )
         
-        creator_cleaning_profile = _get_creator_cleaning_profile(request.creator_id, current_user["id"])
+        creator_cleaning_profile = _get_creator_cleaning_profile(payload.creator_id, current_user["id"])
         strip_hyphens = should_strip_hyphens(creator_cleaning_profile)
         answer_text = clean_response(result["answer"] or "", strip_hyphens=strip_hyphens)
         explicit_cards = result.get("cards") or ([] if result.get("card") is None else [result.get("card")])
@@ -2946,7 +2946,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
         quality_report = ((result.get("meta") or {}).get("quality_report") or {})
 
         # Post-Processing: Save Assistant Message & Update Thread
-        if request.thread_id and thread:
+        if payload.thread_id and thread:
              # Save assistant message with cards in metadata
              assistant_metadata = {}
              if cards:
@@ -2972,7 +2972,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
              db.execute_update("""
                 INSERT INTO chat_messages (thread_id, role, content, metadata)
                 VALUES (%s, 'assistant', %s, %s::jsonb)
-             """, (request.thread_id, answer_text, json.dumps(assistant_metadata)))
+             """, (payload.thread_id, answer_text, json.dumps(assistant_metadata)))
              
              # Update thread metadata
              preview = answer_text[:60] + "..." if len(answer_text) > 60 else answer_text
@@ -2980,11 +2980,11 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
                 UPDATE chat_threads 
                 SET last_message_at = NOW(), last_preview = %s 
                 WHERE id = %s
-             """, (preview, request.thread_id))
+             """, (preview, payload.thread_id))
              
              # Trigger title update if needed (only if 'New conversation' and unlocked)
              if thread['title'] == 'New conversation' and not thread['title_locked']:
-                  background_tasks.add_task(_update_thread_title_background, request.thread_id)
+                  background_tasks.add_task(_update_thread_title_background, payload.thread_id)
 
         # Ensure response matches AskResponse format
         return {
@@ -2993,7 +2993,7 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             "sources": result.get("sources", []),
             "cards": cards,
             "citations": citations,
-            "debug_info": result.get("debug") if request.debug else None,
+            "debug_info": result.get("debug") if payload.debug else None,
         }
     except Exception as e:
         import traceback
@@ -3006,18 +3006,18 @@ async def recommendation_feedback_endpoint(
     request: RecommendationFeedbackRequest,
     current_user: Dict[str, Any] = Depends(require_auth),
 ):
-    ensure_creator_access(request.creator_id, current_user["id"])
+    ensure_creator_access(payload.creator_id, current_user["id"])
     event_id = recommendation_feedback_service.log_event(
-        event_type=request.event_type,
+        event_type=payload.event_type,
         user_id=current_user["id"],
-        creator_id=request.creator_id,
-        thread_id=request.thread_id,
+        creator_id=payload.creator_id,
+        thread_id=payload.thread_id,
         query="",
-        candidate_title=request.title or "",
-        candidate_url=request.url or "",
+        candidate_title=payload.title or "",
+        candidate_url=payload.url or "",
         metadata={
-            "recommendation_event_id": request.recommendation_event_id,
-            **(request.metadata or {}),
+            "recommendation_event_id": payload.recommendation_event_id,
+            **(payload.metadata or {}),
         },
     )
     return {"ok": True, "event_id": event_id}
@@ -3026,14 +3026,14 @@ async def recommendation_feedback_endpoint(
 async def ingest(request: IngestRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Ingest a single document"""
     try:
-        ensure_creator_access(request.creator_id, current_user["id"])
+        ensure_creator_access(payload.creator_id, current_user["id"])
         result = ingest_document(
-            creator_id=request.creator_id,
-            title=request.title,
-            content=request.content,
-            source=request.source,
-            source_id=request.source_id,
-            doc_type=request.doc_type
+            creator_id=payload.creator_id,
+            title=payload.title,
+            content=payload.content,
+            source=payload.source,
+            source_id=payload.source_id,
+            doc_type=payload.doc_type
         )
         return result
     except HTTPException:
@@ -3243,7 +3243,7 @@ def _run_search_background(
 
 @app.post("/search", response_model=SearchResponse)
 @limiter.limit("30/minute")
-async def search_endpoint(http_request: Request, request: SearchRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
+async def search_endpoint(request: Request, payload: SearchRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Search via Apify. Two modes:
     - Legacy: provide `url` (Instagram) + optional `limit`. Creates creator by handle.
@@ -3252,28 +3252,28 @@ async def search_endpoint(http_request: Request, request: SearchRequest, backgro
     Returns immediately with search_id. Use /search/{search_id}/progress to track progress.
     """
     try:
-        payload = request.model_dump() if hasattr(request, "model_dump") else request.dict()
+        payload = payload.model_dump() if hasattr(request, "model_dump") else payload.dict()
     except Exception:
-        payload = {"creator_id": request.creator_id}
+        payload = {"creator_id": payload.creator_id}
     print("[SEARCH] request payload:", payload, flush=True)
     print("[APIFY] token present:", bool(settings.APIFY_TOKEN), flush=True)
     search_run_id = None  # Initialize to avoid UnboundLocalError
     try:
-        if request.creator_id is not None:
+        if payload.creator_id is not None:
             # Config-based flow: load creator + platform_configs, run search router async
             if not settings.APIFY_TOKEN:
                 raise HTTPException(status_code=500, detail="APIFY_TOKEN is not set.")
             dcol = _creator_display_column()
             row = db.execute_one(
                 f"SELECT id, handle, {dcol} AS display_name, platform_configs FROM creators WHERE id = %s",
-                (request.creator_id,),
+                (payload.creator_id,),
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Creator not found.")
             creator_handle = row.get("handle") or row.get("display_name") or "creator"
             pc = row.get("platform_configs") or {}
-            if request.platform_configs is not None:
-                pc = _validate_and_normalize_platform_configs(request.platform_configs)
+            if payload.platform_configs is not None:
+                pc = _validate_and_normalize_platform_configs(payload.platform_configs)
             else:
                 if hasattr(pc, "copy"):
                     pc = dict(pc) if pc else {}
@@ -3310,10 +3310,10 @@ async def search_endpoint(http_request: Request, request: SearchRequest, backgro
                 # Queue into durable system worker.
                 job_payload = {
                     "search_run_id": search_run_id,
-                    "creator_id": request.creator_id,
+                    "creator_id": payload.creator_id,
                     "creator_handle": creator_handle,
                     "platform_configs": pc,
-                    "source_url": source_url or f"creator:{request.creator_id}",
+                    "source_url": source_url or f"creator:{payload.creator_id}",
                     "platform_tag": platform_tag,
                 }
                 db.execute_insert(
@@ -3322,17 +3322,17 @@ async def search_endpoint(http_request: Request, request: SearchRequest, backgro
                     VALUES (%s, 'SCRAPE', %s::jsonb, 'queued', 0, 'Search job enqueued')
                     RETURNING id
                     """,
-                    (request.creator_id, json.dumps(job_payload)),
+                    (payload.creator_id, json.dumps(job_payload)),
                 )
             else:
                 # Run search pipeline in-process as a background task.
                 background_tasks.add_task(
                     _run_search_background,
                     search_run_id,
-                    request.creator_id,
+                    payload.creator_id,
                     creator_handle,
                     pc,
-                    source_url or f"creator:{request.creator_id}",
+                    source_url or f"creator:{payload.creator_id}",
                     platform_tag,
                 )
 
@@ -3340,13 +3340,13 @@ async def search_endpoint(http_request: Request, request: SearchRequest, backgro
             return {
                 "search_id": search_run_id,
                 "items": [],  # Empty initially, fetch via /search/{search_id}/items when complete
-                "creator_id": request.creator_id,
+                "creator_id": payload.creator_id,
                 "platform_statuses": {},
             }
-        if request.url:
+        if payload.url:
             # Legacy: single Instagram URL
-            limit = min(request.limit, 10)
-            parsed = parse_instagram_url(request.url)
+            limit = min(payload.limit, 10)
+            parsed = parse_instagram_url(payload.url)
             if not parsed:
                 raise HTTPException(status_code=400, detail="Invalid Instagram URL. Provide a valid profile or reel URL.")
             handle = parsed["handle"]
@@ -3362,7 +3362,7 @@ async def search_endpoint(http_request: Request, request: SearchRequest, backgro
             if not normalized_items:
                 raise HTTPException(status_code=404, detail=f"No Instagram reels found for @{handle}")
             search_run_id, response_items, failed_items = _execute_search_run(
-                creator_id, handle, normalized_items, request.url, "instagram", mode
+                creator_id, handle, normalized_items, payload.url, "instagram", mode
             )
             return {
                 "search_id": search_run_id, 
