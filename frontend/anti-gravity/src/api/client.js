@@ -532,16 +532,14 @@ export function getScrapeProgress(scrape_id) {
 }
 
 // Auth functions
+// Note: Auth is handled via the HttpOnly session_id cookie set by the backend.
+// The access_token in the response is unused on the client.
 export async function login(email, password) {
-  const result = await postJson("/auth/login", { email, password });
-  setAccessToken(result?.access_token || "");
-  return result;
+  return postJson("/auth/login", { email, password });
 }
 
 export async function register(email, password) {
-  const result = await postJson("/auth/register", { email, password });
-  setAccessToken(result?.access_token || "");
-  return result;
+  return postJson("/auth/register", { email, password });
 }
 
 export async function getSession() {
