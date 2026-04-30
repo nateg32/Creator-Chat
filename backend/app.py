@@ -3256,10 +3256,10 @@ async def search_endpoint(request: Request, payload: SearchRequest, background_t
     Returns immediately with search_id. Use /search/{search_id}/progress to track progress.
     """
     try:
-        payload = payload.model_dump() if hasattr(request, "model_dump") else payload.dict()
+        log_payload = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     except Exception:
-        payload = {"creator_id": payload.creator_id}
-    print("[SEARCH] request payload:", payload, flush=True)
+        log_payload = {"creator_id": getattr(payload, "creator_id", None)}
+    print("[SEARCH] request payload:", log_payload, flush=True)
     print("[APIFY] token present:", bool(settings.APIFY_TOKEN), flush=True)
     search_run_id = None  # Initialize to avoid UnboundLocalError
     try:
