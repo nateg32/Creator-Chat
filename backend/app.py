@@ -2137,29 +2137,23 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
     # Search is hidden until the user actually triggers a run from Setup.
     # Once they've moved forward (items approved/denied) and no run is active,
     # it locks (visible as a checked step) to prevent regression.
-    progressed_past_search = (approved + denied) > 0
-    search_ever_started = bool(last_run)
-    if not search_ever_started:
+    # Search step is only visible while a run is actively in flight.
+    # For existing creators / edit mode / completed runs, it stays hidden so the
+    # nav reads as: Setup -> Approve -> Persona -> Chat.
+    if search_running:
         steps.append(_step(
             "search", "Search",
-            status="locked", ready=False,
-            hidden=True,
-            blocked_reason="Click Search in Setup to start.",
-        ))
-    elif progressed_past_search and not search_running:
-        steps.append(_step(
-            "search", "Search",
-            status="complete", ready=False,
-            blocked_reason="You've already moved past Search. Edit sources in Setup to re-run.",
+            status="active",
+            ready=False,
+            blocked_reason="Search runs automatically when triggered from Setup.",
             count={"items": total_items} if total_items else None,
         ))
     else:
         steps.append(_step(
             "search", "Search",
-            status="active" if search_running else ("complete" if search_complete else "available"),
-            ready=False,
+            status="locked", ready=False,
+            hidden=True,
             blocked_reason="Search runs automatically when triggered from Setup.",
-            count={"items": total_items} if total_items else None,
         ))
 
     if total_items == 0:

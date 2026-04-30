@@ -339,9 +339,6 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
       </div>
 
       <div className="approval-footer">
-        <button type="button" onClick={onBack} className="secondary-button" disabled={loading}>
-          Back
-        </button>
         {isDirty || forceShowSave ? (
           <button
             type="button"
