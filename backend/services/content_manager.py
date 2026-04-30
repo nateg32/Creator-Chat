@@ -83,7 +83,15 @@ class ContentManager:
         Normalize, hash, and save. Enqueues ingest job if visible.
         Returns 'NEW', 'DUPLICATE', or 'FILTERED'.
         """
-        source_id = str(item.get("id") or item.get("source_id") or item.get("url"))
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source_url = item.get("source_url") or item.get("url")
+        source_id = str(
+            item.get("id")
+            or item.get("source_id")
+            or metadata.get("content_id")
+            or source_url
+            or ""
+        )
         if not source_id:
             return "SKIPPED_NO_ID"
 
@@ -112,7 +120,7 @@ class ContentManager:
                 RETURNING id
                 """,
                 (
-                    creator_id, platform_key, source_id, item.get("url"),
+                    creator_id, platform_key, source_id, source_url,
                     item.get("published_at"), "post", json.dumps(item, default=str),
                     norm_text, content_hash, quality, status
                 )

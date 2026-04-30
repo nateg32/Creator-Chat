@@ -1,11 +1,18 @@
 from datetime import datetime, timezone
-import random
-import time
 from typing import List, Dict, Any, Optional
 from backend.db import db
 from backend.services.content_manager import ContentManager
 from backend.services.cursor_manager import CursorManager
-from backend.config.platforms import PLATFORMS, get_platform
+from backend.apify_service import (
+    scrape_custom_urls,
+    scrape_tiktok_posts,
+    search_facebook_posts,
+    search_instagram_reels,
+    search_linkedin_posts,
+    search_reddit_user,
+    search_twitter_profile,
+    search_youtube_channel,
+)
 
 class ScrapeOrchestrator:
     """
@@ -42,9 +49,7 @@ class ScrapeOrchestrator:
                 last_id = cursor.get("last_item_id")
                 last_time = cursor.get("last_fetched_mp")
 
-                # Mock Scrape (Replace with actual API call)
-                # In real code, call: adapter.fetch(config, since_id=last_id)
-                new_items = self._mock_fetch(key, config, last_id)
+                new_items = self._fetch_platform_items(key, config, last_id, last_time)
                 
                 stats = {
                     "fetched": len(new_items),
@@ -73,7 +78,7 @@ class ScrapeOrchestrator:
                     # Assuming items are chronological or ID-ordered
                     latest = items_processed[-1]
                     new_cursor = {
-                        "last_item_id": latest.get("id"),
+                        "last_item_id": latest.get("id") or latest.get("source_id") or latest.get("source_url"),
                         "last_fetched_mp": datetime.now(timezone.utc).isoformat()
                     }
                     CursorManager.update_cursor(self.creator_id, key, new_cursor)
@@ -117,23 +122,52 @@ class ScrapeOrchestrator:
 
         return results
 
-    def _mock_fetch(self, platform: str, config: Dict, since_id=None) -> List[Dict]:
-        """Placeholder for actual platform API calls."""
-        # This would import correct adapter based on platform key
-        # Return dummy list for now to demonstrate pipeline flow
-        time.sleep(1) # Simulate network
-        return [
-            {
-                "id": f"{platform}_post_{random.randint(1000,9999)}",
-                "text": f"New content from {platform} about AI agents. #tech",
-                "url": f"https://{platform}.com/post/123",
-                "published_at": datetime.now(timezone.utc).isoformat(),
-                "author_id": config.get("handle")
-            },
-            {
-                 "id": f"{platform}_post_{9999}", # Simulate duplicate if needed
-                 "text": "Old content",
-                 "url": f"https://{platform}.com/post/old",
-                 "published_at": "2023-01-01T00:00:00Z"
-            }
-        ]
+    def _fetch_platform_items(
+        self,
+        platform: str,
+        config: Dict[str, Any],
+        since_id: Optional[str] = None,
+        since_time: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Dispatch to the real platform fetcher for the requested config."""
+        limit = max(1, int(config.get("maxItems") or 10))
+        url = str(config.get("url") or "").strip()
+        handle = str(config.get("handle") or config.get("creator_handle") or "").strip()
+        time_filter = config.get("timeFilter") if isinstance(config.get("timeFilter"), dict) else None
+
+        if platform == "youtube":
+            return search_youtube_channel(url, handle or None, limit=limit, time_filter=time_filter)
+        if platform == "youtube_shorts":
+            return search_youtube_channel(
+                url,
+                handle or None,
+                limit=limit,
+                time_filter=time_filter,
+                youtube_shorts_only=True,
+            )
+        if platform == "instagram":
+            instagram_handle = handle.lstrip("@") or self._extract_handle_from_url(url)
+            return search_instagram_reels(instagram_handle, limit=limit)
+        if platform == "twitter":
+            twitter_handle = handle.lstrip("@") or self._extract_handle_from_url(url)
+            return search_twitter_profile(twitter_handle, url=url, limit=limit, time_filter=time_filter)
+        if platform == "linkedin":
+            return search_linkedin_posts(url, limit=limit)
+        if platform == "facebook":
+            return search_facebook_posts(url, handle or None, limit=limit, time_filter=time_filter)
+        if platform == "tiktok":
+            return scrape_tiktok_posts(url, handle or None, limit=limit)
+        if platform == "reddit":
+            return search_reddit_user(url, handle or None, limit=limit, time_filter=time_filter)
+        if platform == "custom":
+            urls = [line.strip() for line in url.splitlines() if line.strip()]
+            return scrape_custom_urls(urls[:limit], creator_handle=handle or "custom", limit=limit)
+
+        raise ValueError(f"Unsupported platform for scraping: {platform}")
+
+    @staticmethod
+    def _extract_handle_from_url(url: str) -> str:
+        cleaned = str(url or "").strip().rstrip("/")
+        if not cleaned:
+            return ""
+        return cleaned.split("/")[-1].lstrip("@")
