@@ -3697,27 +3697,42 @@ def _search_run_has_pending_transcripts(search_id: Optional[str]) -> bool:
     return int((row or {}).get("count", 0) or 0) > 0
 
 
-def _compose_ingest_text(caption: str, transcript: str) -> str:
+def _compose_ingest_text(caption: str, transcript: str, title: str = "", platform: str = "", source_url: str = "") -> str:
     caption_text = str(caption or "").strip()
     transcript_text = clean_transcript_for_ingestion(transcript)
 
     if not caption_text and not transcript_text:
         return ""
     if not caption_text:
-        return transcript_text
-    if not transcript_text:
-        return caption_text
+        body = transcript_text
+    elif not transcript_text:
+        body = caption_text
+    else:
+        cap_norm = " ".join(caption_text.split()).casefold()
+        transcript_norm = " ".join(transcript_text.split()).casefold()
+        if cap_norm == transcript_norm:
+            body = transcript_text if len(transcript_text) >= len(caption_text) else caption_text
+        elif cap_norm in transcript_norm:
+            body = transcript_text
+        elif transcript_norm in cap_norm:
+            body = caption_text
+        else:
+            body = f"{caption_text}\n\n---\n\n{transcript_text}"
 
-    cap_norm = " ".join(caption_text.split()).casefold()
-    transcript_norm = " ".join(transcript_text.split()).casefold()
-    if cap_norm == transcript_norm:
-        return transcript_text if len(transcript_text) >= len(caption_text) else caption_text
-    if cap_norm in transcript_norm:
-        return transcript_text
-    if transcript_norm in cap_norm:
-        return caption_text
-
-    return f"{caption_text}\n\n---\n\n{transcript_text}"
+    # Prepend a compact provenance anchor so retrieved chunks carry source
+    # context inline. This boosts recall for title/topic queries and gives the
+    # LLM the source label without needing an extra DB join in the prompt.
+    title_clean = str(title or "").strip()
+    platform_clean = str(platform or "").strip().lower()
+    anchor_bits = []
+    if title_clean:
+        anchor_bits.append(title_clean)
+    if platform_clean:
+        anchor_bits.append(platform_clean)
+    if anchor_bits:
+        anchor = "[" + " · ".join(anchor_bits) + "]"
+        return f"{anchor}\n\n{body}"
+    return body
 
 @app.post("/approve_ingest", response_model=ApproveIngestResponseNew)
 async def approve_ingest(request: ApproveIngestRequestNew, current_user: Dict[str, Any] = Depends(require_auth)):
@@ -4096,7 +4111,13 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
 
                     transcript = item.get("transcript") or ""
                     transcript_status = item.get("transcript_status", "missing")
-                    text_content = _compose_ingest_text(item.get("caption"), transcript)
+                    text_content = _compose_ingest_text(
+                        item.get("caption"),
+                        transcript,
+                        title=title,
+                        platform=source_platform,
+                        source_url=source_url,
+                    )
                     existing_doc = find_existing_document(
                         creator_id,
                         source=source_platform,
@@ -4165,7 +4186,13 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                                 print(f"Transcription failed for {item_id}: {e}")
                                 transcript_status = "error"
 
-                    text_content = _compose_ingest_text(item.get("caption"), transcript)
+                    text_content = _compose_ingest_text(
+                        item.get("caption"),
+                        transcript,
+                        title=title,
+                        platform=source_platform,
+                        source_url=source_url,
+                    )
 
                     if not text_content:
                         print(f"Skipping item {item_id}: no transcript, caption, or post text")

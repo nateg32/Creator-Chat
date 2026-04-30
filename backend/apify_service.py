@@ -316,11 +316,56 @@ def _extract_platform_transcript_candidate(item: Dict[str, Any], platform: str) 
     return _pick_richest_text(candidates)
 
 
+def fetch_youtube_oembed_title(video_url: str, timeout: int = 6) -> str:
+    """
+    Fetch a YouTube video's authentic title via the public oEmbed endpoint.
+
+    No auth required, no rate limit issues for low volume. Used as a last-resort
+    fallback when the scraper actor returns an item without a title field.
+    Returns empty string on any failure (caller falls back to generic label).
+    """
+    if not video_url:
+        return ""
+    try:
+        from urllib.parse import quote
+        oembed_url = f"https://www.youtube.com/oembed?url={quote(video_url, safe='')}&format=json"
+        req = Request(
+            oembed_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; CreatorBot/1.0)",
+                "Accept": "application/json",
+            },
+        )
+        with urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", errors="ignore"))
+        title = str(data.get("title") or "").strip()
+        return title
+    except Exception as exc:
+        print(f"[YOUTUBE-OEMBED] title fetch failed for {video_url}: {exc}", flush=True)
+        return ""
+
+
 def extract_title_from_metadata(item: Dict[str, Any], platform: str, source_url: str, caption_override: Optional[str] = None) -> str:
     """Extract title from item metadata or derive from URL/caption."""
     caption = caption_override or _extract_platform_caption(item, platform)
-        
-    title_from_item = item.get("title") or item.get("name") or ""
+
+    # Per-platform candidate fields, ordered most-authentic first.
+    candidate_fields_by_platform = {
+        "youtube": ["title", "videoTitle", "name", "headline", "displayTitle"],
+        "tiktok": ["title", "desc", "description", "name"],
+        "instagram": ["title", "name", "caption_title"],
+        "twitter": ["title", "name"],
+        "linkedin": ["title", "headline", "name"],
+        "facebook": ["title", "name", "headline"],
+        "reddit": ["title", "name", "link_title"],
+    }
+    candidates = candidate_fields_by_platform.get(platform, ["title", "name", "headline"])
+    title_from_item = ""
+    for field in candidates:
+        val = item.get(field)
+        if val and isinstance(val, str) and val.strip():
+            title_from_item = val.strip()
+            break
     
     # Check if the title from item is generic or just an ID
     is_generic = False
@@ -575,6 +620,10 @@ def _fallback_youtube_feed_items(
             continue
         source_url = f"https://www.youtube.com/watch?v={video_id}"
         title = entry.findtext("atom:title", default="", namespaces=ns)
+        if not title or title.strip().lower() in {"", "youtube", "youtube video"}:
+            oembed_title = fetch_youtube_oembed_title(source_url)
+            if oembed_title:
+                title = oembed_title
         published_at = entry.findtext("atom:published", default=None, namespaces=ns)
         description = entry.findtext("media:group/media:description", default="", namespaces=ns)
         channel_name = entry.findtext("atom:author/atom:name", default=creator, namespaces=ns)
@@ -1399,7 +1448,7 @@ def search_youtube_channel(
     # Second pass: build items with transcripts
     items = []
     for item, source_url in video_data:
-        title = item.get("title") or ""
+        title = item.get("title") or item.get("videoTitle") or item.get("name") or ""
         caption = _extract_platform_caption(item, "youtube") or title
 
         # Get transcript from batch extraction or fallback
@@ -1425,6 +1474,11 @@ def search_youtube_channel(
         
         # Extract content_id and title for source fidelity
         content_id = extract_content_id(source_url, "youtube")
+        # If actor returned no usable title, hit YouTube oEmbed for the real one.
+        if not title or title.strip().lower() in {"", "youtube", "youtube video"}:
+            oembed_title = fetch_youtube_oembed_title(source_url)
+            if oembed_title:
+                title = oembed_title
         # Ensure we have a descriptive title
         final_title = title or f"YouTube Video {content_id}"
         if "/shorts/" in source_url:
@@ -2076,7 +2130,11 @@ def _scrape_youtube_videos(urls: List[str], creator_handle: str) -> List[Dict[st
     
     items = []
     for item, source_url in video_data:
-         title = item.get("title") or ""
+         title = item.get("title") or item.get("videoTitle") or item.get("name") or ""
+         if not title or title.strip().lower() in {"", "youtube", "youtube video"}:
+             oembed_title = fetch_youtube_oembed_title(source_url)
+             if oembed_title:
+                 title = oembed_title
          caption = _extract_platform_caption(item, "youtube") or title
          transcript = transcripts.get(source_url, "") or _extract_platform_transcript_candidate(item, "youtube")
              

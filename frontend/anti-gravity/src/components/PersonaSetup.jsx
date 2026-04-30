@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { getFingerprintStatus, getQueueItems, getCreatorConfig } from "../api/client";
 import "./PersonaSetup.css";
 
@@ -40,6 +40,8 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
   const [status, setStatus] = useState("idle"); // idle, processing, error
   const [creatorStatus, setCreatorStatus] = useState(null);
   const [fingerprintProgress, setFingerprintProgress] = useState(null);
+  const [recentTitles, setRecentTitles] = useState([]);
+  const [tickerIndex, setTickerIndex] = useState(0);
 
   useEffect(() => {
     if (creatorId) {
@@ -54,6 +56,12 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
             (i.item_status && ['ingested', 'approved', 'completed', 'ready'].includes(i.item_status))
           );
           setHasContent(hasIngested);
+          // Capture a few recent titles for the live ticker
+          const titles = items
+            .map((i) => i.title || i.metadata?.title || "")
+            .filter((t) => typeof t === "string" && t.trim() && !/^youtube video\s/i.test(t))
+            .slice(0, 6);
+          setRecentTitles(titles);
         })
         .finally(() => setContentLoading(false));
 
@@ -145,6 +153,33 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
   const progressFunLine = fingerprintProgress?.fun_line || "The engine is turning approved content into a creator operating system.";
   const progressStageCounter = formatStageCounter(fingerprintProgress);
   const progressStages = Array.isArray(fingerprintProgress?.stages) ? fingerprintProgress.stages : [];
+  const stageIndex = Number(fingerprintProgress?.stage_index) || 1;
+  const stageTotal = Number(fingerprintProgress?.stage_total) || progressStages.length || 1;
+
+  // Rotating ticker: cycles every 4s through the fun line, the stage description,
+  // and recent item titles ("Studying: …"). Keeps the user engaged while the
+  // analysis runs without resorting to shimmer/animation noise.
+  const tickerLines = useMemo(() => {
+    const lines = [];
+    if (progressFunLine) lines.push(progressFunLine);
+    if (progressDescription && progressDescription !== progressFunLine) {
+      lines.push(progressDescription);
+    }
+    recentTitles.forEach((t) => lines.push(`Studying: ${t}`));
+    return lines.length ? lines : ["Listening for signal in the approved corpus."];
+  }, [progressFunLine, progressDescription, recentTitles]);
+
+  useEffect(() => {
+    if (status !== "processing") return undefined;
+    if (tickerLines.length <= 1) return undefined;
+    const id = setInterval(() => {
+      setTickerIndex((i) => (i + 1) % tickerLines.length);
+    }, 4000);
+    return () => clearInterval(id);
+  }, [status, tickerLines.length]);
+
+  const tickerLine = tickerLines[tickerIndex % tickerLines.length] || "";
+  const stageNumberLabel = `${String(stageIndex).padStart(2, "0")} / ${String(stageTotal).padStart(2, "0")}`;
 
   return (
     <div className="persona-setup-card">
@@ -160,43 +195,61 @@ export function PersonaSetup({ creatorId, onContinue, loading, onGoToApprove }) 
 
       <div className="persona-form read-only">
         {status === "processing" && (
-          <div className="fingerprint-progress-card">
-            <div className="fingerprint-progress-header">
-              <div>
-                <p className="fingerprint-progress-label">{progressStageCounter}</p>
-                <h3 className="fingerprint-progress-title">{progressStage}</h3>
-                <p className="loading-text">{progressMessage}</p>
+          <div className="fp-card" role="status" aria-live="polite">
+            <div className="fp-card-grid">
+              <div className="fp-dial" aria-hidden="true">
+                <svg className="fp-dial-svg" viewBox="0 0 120 120">
+                  <circle className="fp-dial-track" cx="60" cy="60" r="52" />
+                  <circle
+                    className="fp-dial-progress"
+                    cx="60"
+                    cy="60"
+                    r="52"
+                    style={{
+                      strokeDasharray: 2 * Math.PI * 52,
+                      strokeDashoffset: 2 * Math.PI * 52 * (1 - progressPercent / 100),
+                    }}
+                  />
+                  <circle className="fp-dial-scan" cx="60" cy="60" r="52" />
+                </svg>
+                <div className="fp-dial-center">
+                  <div className="fp-dial-percent">{progressPercent}</div>
+                  <div className="fp-dial-percent-mark">%</div>
+                </div>
               </div>
-              <div className="fingerprint-progress-percent">{progressPercent}%</div>
+
+              <div className="fp-meta">
+                <div className="fp-station">
+                  <span className="fp-station-num">{stageNumberLabel}</span>
+                  <span className="fp-station-dot" aria-hidden="true" />
+                  <span className="fp-station-label">{progressStage}</span>
+                </div>
+                <h3 className="fp-message">{progressMessage}</h3>
+                <div className="fp-ticker" aria-live="polite">
+                  <span className="fp-ticker-cursor" aria-hidden="true">▸</span>
+                  <span key={tickerLine} className="fp-ticker-line">{tickerLine}</span>
+                </div>
+              </div>
             </div>
-            <div className="progress-bar-container">
-              <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }}></div>
-            </div>
-            <div className="fingerprint-progress-stage-rail">
+
+            <ol className="fp-tape" aria-label="Fingerprint stages">
               {progressStages.map((stage) => (
-                <div
+                <li
                   key={stage.key}
-                  className={`fingerprint-stage-chip ${stage.state || "upcoming"}`}
+                  className={`fp-tape-row ${stage.state || "upcoming"}`}
                   title={stage.description}
                 >
-                  <span className="fingerprint-stage-chip-index">{stage.index}</span>
-                  <span className="fingerprint-stage-chip-label">{stage.label}</span>
-                </div>
+                  <span className="fp-tape-mark" aria-hidden="true" />
+                  <span className="fp-tape-index">{String(stage.index).padStart(2, "0")}</span>
+                  <span className="fp-tape-label">{stage.label}</span>
+                </li>
               ))}
-            </div>
-            <div className="fingerprint-progress-callouts">
-              <div className="fingerprint-callout">
-                <span className="fingerprint-callout-label">What&apos;s happening</span>
-                <p>{progressDescription}</p>
-              </div>
-              <div className="fingerprint-callout playful">
-                <span className="fingerprint-callout-label">Backstage</span>
-                <p>{progressFunLine}</p>
-              </div>
-            </div>
-            <div className="fingerprint-progress-meta">
+            </ol>
+
+            <div className="fp-foot">
               <span>{progressStageCounter}</span>
-              <span>Auto-refreshing every 3 seconds</span>
+              <span className="fp-foot-divider" aria-hidden="true" />
+              <span>Refreshing every 3s</span>
             </div>
           </div>
         )}
