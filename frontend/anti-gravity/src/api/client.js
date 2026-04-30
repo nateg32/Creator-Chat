@@ -337,6 +337,10 @@ export function getCreatorConfig(creatorId) {
   return getJson(`/creators/${creatorId}/config`);
 }
 
+export function getCreatorWorkflow(creatorId) {
+  return getJson(`/creators/${creatorId}/workflow`);
+}
+
 export function getScrapeRuns(creatorId, limit = 5) {
   return getJson(`/scrape/runs?creator_id=${creatorId}&limit=${limit}`);
 }

@@ -1,0 +1,45 @@
+.wf-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(1240px, calc(100% - clamp(16px, 3vw, 32px)));
+  margin: 8px auto 0;
+  padding: 8px 14px;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #7c2d12;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.wf-stale-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex: 0 0 auto;
+}
+
+.wf-stale-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wf-stale-banner-action {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid #fdba74;
+  border-radius: 999px;
+  background: #fff;
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.wf-stale-banner-action:hover {
+  background: #fffbeb;
+  border-color: #f97316;
+}

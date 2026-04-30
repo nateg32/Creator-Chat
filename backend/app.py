@@ -2032,6 +2032,195 @@ async def get_creator_config(creator_id: int, current_user: Dict[str, Any] = Dep
     )
 
 
+@app.get("/creators/{creator_id}/workflow")
+async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
+    """
+    Single source of truth for the 5-step workflow FSM (Setup -> Search -> Approve -> Persona -> Chat).
+    The frontend should derive ALL navigation/lock/badge state from this response.
+    """
+    ensure_creator_access(creator_id, current_user["id"])
+
+    creator = db.execute_one(
+        "SELECT id, handle, platform_configs, soul_md, config_version, last_approved_version, "
+        "fingerprint_status, fingerprint_updated_at FROM creators WHERE id = %s",
+        (creator_id,),
+    )
+    if not creator:
+        raise HTTPException(status_code=404, detail="Creator not found")
+
+    pc = creator.get("platform_configs") or {}
+    if isinstance(pc, str):
+        try:
+            pc = json.loads(pc)
+        except Exception:
+            pc = {}
+    source_count = sum(
+        1 for v in pc.values()
+        if isinstance(v, dict) and v.get("enabled") and (v.get("url") or "").strip()
+    )
+
+    handle = creator.get("handle")
+    last_run = None
+    if handle:
+        last_run = db.execute_one(
+            "SELECT id, status, created_at FROM scrape_runs WHERE creator_handle = %s ORDER BY created_at DESC LIMIT 1",
+            (handle,),
+        )
+
+    counts_row = db.execute_one(
+        """
+        SELECT
+          COUNT(*) FILTER (WHERE si.review_status = 'pending')  AS pending,
+          COUNT(*) FILTER (WHERE si.review_status = 'approved') AS approved,
+          COUNT(*) FILTER (WHERE si.review_status = 'denied')   AS denied,
+          COUNT(*)                                              AS total
+        FROM scrape_items si
+        JOIN scrape_runs sr ON si.scrape_run_id = sr.id
+        WHERE sr.creator_handle = %s
+        """,
+        (handle,),
+    ) if handle else None
+    pending = int((counts_row or {}).get("pending") or 0)
+    approved = int((counts_row or {}).get("approved") or 0)
+    denied = int((counts_row or {}).get("denied") or 0)
+    total_items = int((counts_row or {}).get("total") or 0)
+
+    doc_row = db.execute_one(
+        "SELECT COUNT(*) AS count FROM documents WHERE creator_id = %s",
+        (creator_id,),
+    )
+    ingested_docs = int((doc_row or {}).get("count") or 0)
+
+    fingerprint_status = creator.get("fingerprint_status") or "empty"
+    fingerprint_updated_at = creator.get("fingerprint_updated_at")
+    fingerprint_built = fingerprint_status == "ready" or (
+        fingerprint_status == "idle" and fingerprint_updated_at is not None
+    )
+    has_persona = bool((creator.get("soul_md") or "").strip())
+
+    config_version = int(creator.get("config_version") or 1)
+    last_approved_version = int(creator.get("last_approved_version") or 0)
+    needs_reapproval = last_approved_version < config_version and approved > 0
+
+    setup_complete = source_count > 0
+    search_complete = bool(last_run) and total_items > 0
+    search_running = bool(last_run) and (last_run.get("status") in ("running", "queued", "pending"))
+    approve_complete = approved >= 1 and pending == 0
+    persona_complete = (
+        has_persona and fingerprint_built and fingerprint_status not in ("processing", "error")
+    )
+
+    approve_stale = needs_reapproval
+    persona_stale = persona_complete and (needs_reapproval or pending > 0)
+
+    def _step(key, label, *, status, ready, blocked_reason=None, stale=False, count=None):
+        return {
+            "key": key,
+            "label": label,
+            "status": status,
+            "ready": ready,
+            "stale": stale,
+            "blocked_reason": blocked_reason,
+            "count": count,
+        }
+
+    steps = []
+
+    steps.append(_step(
+        "setup", "Setup",
+        status="complete" if setup_complete else "active",
+        ready=True,
+        count={"sources": source_count} if source_count else None,
+    ))
+
+    if not setup_complete:
+        steps.append(_step(
+            "search", "Search",
+            status="locked", ready=False,
+            blocked_reason="Add at least one source in Setup first.",
+        ))
+    else:
+        steps.append(_step(
+            "search", "Search",
+            status="active" if search_running else ("complete" if search_complete else "available"),
+            ready=True,
+            count={"items": total_items} if total_items else None,
+        ))
+
+    if total_items == 0:
+        steps.append(_step(
+            "approve", "Approve",
+            status="locked", ready=False,
+            blocked_reason="Run Search to gather items to approve.",
+        ))
+    else:
+        if approve_complete and not approve_stale:
+            approve_status = "complete"
+        elif pending > 0:
+            approve_status = "active"
+        else:
+            approve_status = "available"
+        steps.append(_step(
+            "approve", "Approve",
+            status=approve_status,
+            ready=True,
+            stale=approve_stale,
+            blocked_reason="Re-approve items: sources changed." if approve_stale else None,
+            count={"pending": pending, "approved": approved, "denied": denied},
+        ))
+
+    if approved == 0 or ingested_docs == 0:
+        steps.append(_step(
+            "persona", "Persona",
+            status="locked", ready=False,
+            blocked_reason="Approve at least one item to build the persona.",
+        ))
+    else:
+        if fingerprint_status == "processing":
+            persona_status, persona_blocked = "active", None
+        elif fingerprint_status == "error":
+            persona_status, persona_blocked = "available", "Persona build failed. Re-run from Approve."
+        elif persona_complete:
+            persona_status, persona_blocked = "complete", None
+        else:
+            persona_status, persona_blocked = "available", None
+        steps.append(_step(
+            "persona", "Persona",
+            status=persona_status,
+            ready=True,
+            stale=persona_stale,
+            blocked_reason=persona_blocked,
+            count={"docs": ingested_docs} if ingested_docs else None,
+        ))
+
+    chat_status = get_creator_status(creator_id)
+    ready_to_chat = bool(chat_status.get("ready_to_chat"))
+    if not ready_to_chat:
+        steps.append(_step(
+            "chat", "Chat",
+            status="locked", ready=False,
+            blocked_reason=chat_status.get("block_reason") or "Finish the previous steps to start chatting.",
+        ))
+    else:
+        steps.append(_step("chat", "Chat", status="active", ready=True))
+
+    current_step = "chat"
+    for s in steps:
+        if s["status"] in ("active", "available") or s["stale"]:
+            current_step = s["key"]
+            break
+        if s["status"] == "locked":
+            current_step = s["key"]
+            break
+
+    return {
+        "creator_id": creator_id,
+        "current_step": current_step,
+        "ready_to_chat": ready_to_chat,
+        "steps": steps,
+    }
+
+
 @app.get("/creators/{creator_id}/stats", response_model=CreatorStats)
 async def get_creator_stats(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get stats for a creator"""

@@ -1,0 +1,80 @@
+/* WorkflowNav — additive styles layered on top of Stepper.css */
+
+.wf-step {
+  position: relative;
+}
+
+.wf-step .wf-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-soft);
+  flex: 0 0 auto;
+}
+
+.wf-step.wf-complete .wf-icon { color: var(--text); }
+
+.wf-step.wf-locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.wf-step.wf-locked .wf-icon { color: var(--text-soft); }
+
+.wf-step.wf-active {
+  color: var(--text);
+}
+
+.wf-step.wf-stale .nav-step-label {
+  text-decoration: underline dotted rgba(220, 130, 30, 0.55);
+  text-underline-offset: 3px;
+}
+
+.wf-stale-dot {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95);
+}
+
+.wf-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  margin-left: 2px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  line-height: 1;
+}
+
+.wf-count-pill.wf-count-attention {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+
+.wf-count-pill.wf-count-success {
+  background: #f0fdf4;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.wf-count-pill.active {
+  border-color: var(--border-strong);
+}

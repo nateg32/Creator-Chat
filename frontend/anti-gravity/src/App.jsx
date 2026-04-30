@@ -1,6 +1,8 @@
 import { useReducer, useState, useMemo, useEffect, useRef, Component } from "react";
 import { useCallback } from "react";
 import { Stepper } from "./components/Stepper";
+import { WorkflowNav } from "./components/WorkflowNav";
+import { WorkflowStaleBanner } from "./components/WorkflowStaleBanner";
 import { CreatorSetup } from "./components/CreatorSetup";
 import { ScrapeProgress } from "./components/ScrapeProgress";
 import { ApprovalGate } from "./components/ApprovalGate";
@@ -1546,14 +1548,37 @@ function AppInner() {
     ) : (
     <div className={`app-shell ${showChatInterface ? "fixed-height" : ""}`}>
       {/* Global Navigation - Always visible (requirement #1) */}
-      <Stepper
-        currentStep={state.currentStep}
-        steps={STEPS}
-        onStepClick={handleStepClick}
-        searchProgress={searchProgress}
-        onUserClick={() => setShowUserSettings(true)}
-        userAvatarUrl={userAvatarUrl}
-      />
+      {state.creatorId && state.creatorId > 0 ? (
+        <WorkflowNav
+          currentStep={state.currentStep}
+          steps={STEPS}
+          onStepClick={handleStepClick}
+          creatorId={state.creatorId}
+          searchProgress={searchProgress}
+          onUserClick={() => setShowUserSettings(true)}
+          userAvatarUrl={userAvatarUrl}
+        />
+      ) : (
+        <Stepper
+          currentStep={state.currentStep}
+          steps={STEPS}
+          onStepClick={handleStepClick}
+          searchProgress={searchProgress}
+          onUserClick={() => setShowUserSettings(true)}
+          userAvatarUrl={userAvatarUrl}
+        />
+      )}
+
+      {state.creatorId && state.creatorId > 0 && (
+        <WorkflowStaleBanner
+          creatorId={state.creatorId}
+          currentStepKey={STEPS[state.currentStep - 1]?.key}
+          onJumpTo={(targetKey) => {
+            const idx = STEPS.findIndex((s) => s.key === targetKey);
+            if (idx >= 0) handleStepClick(idx + 1);
+          }}
+        />
+      )}
 
       {toast && (
         <div className={`toast toast-${toast.type}`}>
