@@ -2134,16 +2134,17 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
         count={"sources": source_count} if source_count else None,
     ))
 
-    # Search is hidden until Setup has at least one source. Once the user has moved
-    # forward (any approved/denied items exist OR a search is currently in flight is
-    # the only time Search is interactive), it locks to prevent regression.
+    # Search is hidden until the user actually triggers a run from Setup.
+    # Once they've moved forward (items approved/denied) and no run is active,
+    # it locks (visible as a checked step) to prevent regression.
     progressed_past_search = (approved + denied) > 0
-    if not setup_complete:
+    search_ever_started = bool(last_run)
+    if not search_ever_started:
         steps.append(_step(
             "search", "Search",
             status="locked", ready=False,
             hidden=True,
-            blocked_reason="Add at least one source in Setup first.",
+            blocked_reason="Click Search in Setup to start.",
         ))
     elif progressed_past_search and not search_running:
         steps.append(_step(
@@ -2156,7 +2157,8 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
         steps.append(_step(
             "search", "Search",
             status="active" if search_running else ("complete" if search_complete else "available"),
-            ready=True,
+            ready=False,
+            blocked_reason="Search runs automatically when triggered from Setup.",
             count={"items": total_items} if total_items else None,
         ))
 
