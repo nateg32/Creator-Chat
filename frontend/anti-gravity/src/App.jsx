@@ -1,4 +1,5 @@
 import { useReducer, useState, useMemo, useEffect, useRef, Component } from "react";
+import { useCallback } from "react";
 import { Stepper } from "./components/Stepper";
 import { CreatorSetup } from "./components/CreatorSetup";
 import { ScrapeProgress } from "./components/ScrapeProgress";
