@@ -21,11 +21,7 @@ export function Login({ onLogin }) {
         result = await login(email, password);
       }
 
-      // Store session in cookie (handled by browser)
-      // Also store in localStorage for quick access
-      localStorage.setItem("session_id", result.session_id);
-      localStorage.setItem("user_id", result.user_id.toString());
-
+      // Store session in cookie (handled by browser via HttpOnly cookie)
       if (onLogin) {
         onLogin(result);
       }

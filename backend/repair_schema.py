@@ -10,6 +10,7 @@ try:
     
     sql = """
     ALTER TABLE creators 
+    ADD COLUMN IF NOT EXISTS creator_category TEXT,
     ADD COLUMN IF NOT EXISTS identity_fingerprint JSONB DEFAULT '{}'::jsonb,
     ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS fingerprint_status VARCHAR(50) DEFAULT 'idle';

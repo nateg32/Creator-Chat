@@ -2,7 +2,7 @@ import logging
 import base64
 import hmac
 import hashlib
-from fastapi import FastAPI, HTTPException, Cookie, Depends, Response, Header
+from fastapi import FastAPI, HTTPException, Cookie, Depends, Response, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import os
@@ -78,10 +78,37 @@ from backend.services.corpus_state import (
     refresh_creator_corpus_state,
 )
 from backend.core.interaction_engine import RESPONSE_PRESETS
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Creator Bot API")
+_IS_PRODUCTION = os.getenv("RENDER", "") != "" or os.getenv("ENV", "").lower() == "production"
+app = FastAPI(
+    title="Creator Bot API",
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
+)
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 _CREATOR_COLUMN_CACHE: Dict[str, bool] = {}
@@ -339,15 +366,6 @@ def _safe_error_detail(exc: Exception, fallback: str = "Unexpected server error"
     return fallback
 
 
-# TEMP DEBUG: verify what env vars the running backend process sees
-@app.get("/debug/env")
-def debug_env():
-    return {
-        "has_apify": bool(os.getenv("APIFY_TOKEN")),
-        "has_openai": bool(os.getenv("OPENAI_API_KEY")),
-        "has_db_password": bool(os.getenv("DB_PASSWORD")),
-    }
-
 def _get_cors_origins() -> List[str]:
     """Allow localhost in dev plus deployed frontend URLs via env vars."""
     default_origins = [
@@ -379,8 +397,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Session-Id", "Accept"],
 )
 
 # Auth helpers (kept for backward compatibility)
@@ -559,7 +577,10 @@ async def startup():
     """Initialize database connection"""
     try:
         if settings.JWT_SECRET_KEY == "change-me-before-prod":
-            print("[AUTH] WARNING: JWT_SECRET_KEY is using the default development value", flush=True)
+            raise RuntimeError(
+                "JWT_SECRET_KEY is set to the default insecure value. "
+                "Set the JWT_SECRET_KEY environment variable before running in production."
+            )
         db.execute_query("SELECT 1")
         print("[STARTUP] DB connection OK")
     except Exception as e:
@@ -567,6 +588,7 @@ async def startup():
     # Migration: Add soul and fingerprint columns if missing
     try:
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS creator_category TEXT")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS identity_fingerprint JSONB")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS style_fingerprint JSONB")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS soul_md TEXT")
@@ -1145,7 +1167,8 @@ def mark_queue_ingested(conn, creator_id: int, queue_ids: List[int]):
 # ============================================================================
 
 @app.post("/auth/login", response_model=LoginResponse)
-async def login(request: LoginRequest, response: Response):
+@limiter.limit("10/minute")
+async def login(http_request: Request, request: LoginRequest, response: Response):
     """Login and create session"""
     try:
         query = "SELECT id, password_hash FROM users WHERE email = %s"
@@ -1180,7 +1203,8 @@ async def login(request: LoginRequest, response: Response):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/auth/register")
-async def register(request: LoginRequest, response: Response):
+@limiter.limit("5/minute")
+async def register(http_request: Request, request: LoginRequest, response: Response):
     """Register a new user"""
     try:
         query = "SELECT id FROM users WHERE email = %s"
@@ -2168,7 +2192,8 @@ async def health():
         raise
 
 @app.post("/ask-stream")
-async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("60/minute")
+async def ask_stream_endpoint(http_request: Request, request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Streaming version of /ask. 
     Bypasses deep classification/planning for immediate time-to-first-token.
@@ -2486,11 +2511,8 @@ async def ask_stream_endpoint(request: AskRequest, background_tasks: BackgroundT
                     yield f"data: {json.dumps({'citations': citations})}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as stream_err:
-                import traceback
-                tb = traceback.format_exc()
-                logger.error(f"Error mid-stream: {stream_err}")
-                logger.debug(tb)
-                yield f"data: {json.dumps({'error': str(stream_err), 'traceback': tb})}\n\n"
+                logger.error(f"Error mid-stream: {stream_err}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
 
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
 
@@ -2637,7 +2659,7 @@ def _apply_stream_creator_integrity(creator_id: int, user_id: int, question: str
         select_expr = ", ".join(
             [
                 "name",
-                "creator_category",
+                    _creator_select_expr("creator_category"),
                 _creator_select_expr("voice_profile"),
                 _creator_select_expr("style_fingerprint"),
                 _creator_select_expr("identity_fingerprint"),
@@ -3001,9 +3023,10 @@ async def recommendation_feedback_endpoint(
     return {"ok": True, "event_id": event_id}
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest(request: IngestRequest):
+async def ingest(request: IngestRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Ingest a single document"""
     try:
+        ensure_creator_access(request.creator_id, current_user["id"])
         result = ingest_document(
             creator_id=request.creator_id,
             title=request.title,
@@ -3013,6 +3036,8 @@ async def ingest(request: IngestRequest):
             doc_type=request.doc_type
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3217,7 +3242,8 @@ def _run_search_background(
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search_endpoint(request: SearchRequest, background_tasks: BackgroundTasks):
+@limiter.limit("30/minute")
+async def search_endpoint(http_request: Request, request: SearchRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Search via Apify. Two modes:
     - Legacy: provide `url` (Instagram) + optional `limit`. Creates creator by handle.
@@ -3360,7 +3386,7 @@ async def search_endpoint(request: SearchRequest, background_tasks: BackgroundTa
         raise HTTPException(status_code=500, detail=f"Scraping failed: {error_msg}")
 
 @app.get("/search/{search_id}/progress")
-async def get_search_progress(search_id: str):
+async def get_search_progress(search_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Get search progress for a search run.
     Returns: { status, percent, stage, current_platform, completed_platforms, message, ... }
@@ -3395,7 +3421,7 @@ async def get_search_progress(search_id: str):
 
 
 @app.get("/search/{search_id}/items", response_model=SearchResponse)
-async def get_search_items(search_id: str):
+async def get_search_items(search_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get all items for a search run"""
     try:
         query = """
@@ -3501,13 +3527,13 @@ def _compose_ingest_text(caption: str, transcript: str) -> str:
     return f"{caption_text}\n\n---\n\n{transcript_text}"
 
 @app.post("/approve_ingest", response_model=ApproveIngestResponseNew)
-async def approve_ingest(request: ApproveIngestRequestNew):
+async def approve_ingest(request: ApproveIngestRequestNew, current_user: Dict[str, Any] = Depends(require_auth)):
     """Ingest items from queue - insert documents from search_queue, then chunk and embed (legacy endpoint)"""
     try:
-        conn = db.connect()
+        ensure_creator_access(request.creator_id, current_user["id"])
 
         # Fetch rows to ingest
-        queue_rows = fetch_queue_items(conn, request.creator_id, request.queue_ids)
+        queue_rows = fetch_queue_items(None, request.creator_id, request.queue_ids)
 
         ingested = []
 
@@ -3584,9 +3610,11 @@ async def approve_ingest(request: ApproveIngestRequestNew):
         # Mark all as ingested in batch (only for successfully processed ids)
         if ingested:
             ingested_ids = [item.queue_id for item in ingested]
-            mark_queue_ingested(conn, request.creator_id, ingested_ids)
+            mark_queue_ingested(None, request.creator_id, ingested_ids)
 
         return ApproveIngestResponseNew(approved=len(request.queue_ids), ingested=ingested)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4327,17 +4355,20 @@ async def get_queue_items(creator_id: int, current_user: Dict[str, Any] = Depend
         return {"search_id": str(creator_id), "items": []}
 
 @app.post("/items/{item_id}/retry-transcript")
-def retry_transcript(item_id: str, background_tasks: BackgroundTasks):
+def retry_transcript(item_id: str, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     """
     Manually retries processing the transcript for a given scrape_item.
     """
     row = db.execute_one(
-        "SELECT id, source_url, platform, caption, is_primary FROM scrape_items WHERE id = %s",
+        "SELECT id, source_url, platform, caption, is_primary, creator_id FROM scrape_items WHERE id = %s",
         (item_id,)
     )
     if not row:
         raise HTTPException(status_code=404, detail="Item not found")
-        
+
+    if row.get("creator_id"):
+        ensure_creator_access(row["creator_id"], current_user["id"])
+
     if not row.get("is_primary"):
         raise HTTPException(status_code=400, detail="Cannot retry transcript on duplicate item")
 
@@ -4618,85 +4649,6 @@ def _update_thread_title_background(thread_id: str):
 
     except Exception as e:
         print(f"Error updating thread title: {e}")
-@app.delete("/creators/{creator_id}", status_code=204)
-async def delete_creator_endpoint(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
-    """
-    Delete a creator and ALL their associated data:
-    - Creator profile
-    - Chat threads & messages
-    - Documents & Chunks (Knowledge Base)
-    - Scrape items / Search results
-    - Vector embeddings (implied by chunks deletion)
-    """
-    try:
-        ensure_creator_access(creator_id, current_user["id"])
-        # Verify creator exists
-        exists = db.execute_one("SELECT id FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user["id"]))
-        if not exists:
-            # If not found, perhaps already deleted? 204 is fine.
-            return
-
-        # 1. Delete Messages (via threads)
-        try:
-             db.execute_update(
-                 "DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE creator_id = %s)",
-                 (creator_id,)
-             )
-        except Exception: 
-            pass
-
-        # 2. Delete Threads
-        try:
-            db.execute_update("DELETE FROM threads WHERE creator_id = %s", (creator_id,))
-        except Exception:
-            pass
-
-        # 3. Delete Chunks (Vector Store Data) - This is critical for vector cleanup
-        try:
-             db.execute_update("DELETE FROM chunks WHERE creator_id = %s", (creator_id,))
-        except Exception:
-             pass
-
-        # Also clean up chunks that might be linked via documents but missing creator_id (if any legacy issues)
-        try:
-             db.execute_update(
-                 "DELETE FROM chunks WHERE document_id IN (SELECT id FROM documents WHERE creator_id = %s)",
-                 (creator_id,)
-             )
-        except Exception:
-             pass
-
-        # 4. Delete Documents (Knowledge Base)
-        try:
-             db.execute_update("DELETE FROM documents WHERE creator_id = %s", (creator_id,))
-        except Exception:
-             pass
-
-        # 5. Delete Scrape Items / Queue (Raw Search Data)
-        # Note: scrape_queue is legacy, scrape_items is current
-        try:
-             db.execute_update("DELETE FROM scrape_queue WHERE creator_id = %s", (creator_id,))
-        except Exception:
-             pass 
-        
-        # New table usage - scrape_items usually linked to search_run_id which is often ephemeral or missing proper linkage
-        # However, we can TRY to delete if creator_id exists
-        try:
-             # Just in case `creator_id` column exists
-             db.execute_update("DELETE FROM scrape_items WHERE creator_id = %s", (creator_id,)) 
-        except Exception:
-             # If column doesn't exist, we might have orphan scrape_items but that's less critical than KB/Vectors
-             pass
-
-        # 6. Delete Creator Profile
-        db.execute_update("DELETE FROM creators WHERE id = %s AND user_id = %s", (creator_id, current_user["id"]))
-
-        return 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error deleting creator {creator_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete creator: {str(e)}")
 
 # ============================================================================
 # Advanced Scrape Pipeline Endpoints

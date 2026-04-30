@@ -4,42 +4,10 @@ import {
   formatBackendTimeoutError,
 } from "../config";
 
-const ACCESS_TOKEN_KEY = "access_token";
-const SESSION_ID_KEY = "session_id";
 const USER_ID_KEY = "user_id";
-
-function getAccessToken() {
-  try {
-    return localStorage.getItem(ACCESS_TOKEN_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-function getSessionId() {
-  try {
-    return localStorage.getItem(SESSION_ID_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-function setAccessToken(token) {
-  try {
-    if (token) {
-      localStorage.setItem(ACCESS_TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(ACCESS_TOKEN_KEY);
-    }
-  } catch {
-    // Ignore storage failures and continue with cookie auth.
-  }
-}
 
 function clearStoredAuth() {
   try {
-    localStorage.removeItem(ACCESS_TOKEN_KEY);
-    localStorage.removeItem(SESSION_ID_KEY);
     localStorage.removeItem(USER_ID_KEY);
   } catch {
     // Ignore storage failures.
@@ -60,16 +28,8 @@ function handleUnauthorizedResponse(res) {
 }
 
 function buildHeaders(headers = {}) {
-  const token = getAccessToken();
-  const sessionId = getSessionId();
-  const nextHeaders = { ...headers };
-  if (token) {
-    nextHeaders.Authorization = `Bearer ${token}`;
-  }
-  if (sessionId) {
-    nextHeaders["X-Session-Id"] = sessionId;
-  }
-  return nextHeaders;
+  // Auth is handled by the HttpOnly session_id cookie sent automatically via credentials: "include".
+  return { ...headers };
 }
 
 async function readErrorPayload(res) {

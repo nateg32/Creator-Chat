@@ -1,15 +1,15 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Dict, Any, Union
 
 # Request models
 class ImageInput(BaseModel):
     """Image attached to a chat message."""
-    data_url: str  # base64 data URL (data:image/jpeg;base64,...)
+    data_url: str = Field(..., max_length=5_000_000)  # base64 data URL (data:image/jpeg;base64,...)
     detail: str = "auto"  # "auto", "low", or "high"
 
 class AskRequest(BaseModel):
     creator_id: int
-    question: str
+    question: str = Field(..., max_length=4000)
     top_k: int = 5
     max_distance: float = 1.15
     messages: Optional[List[Dict[str, str]]] = None  # conversation history [{role, content}]
@@ -84,8 +84,8 @@ class ApproveIngestRequestV2(BaseModel):
     search_id: Optional[str] = None
     scrape_id: Optional[str] = None # Added for compatibility with frontend
     decisions: List[Dict[str, str]]  # [{"item_id": "...", "decision": "approve"|"deny"}]
-    # Which creator these items belong to; defaults to 1 for backward compatibility.
-    creator_id: int = 1
+    # Which creator these items belong to (required).
+    creator_id: int
 
 class ApproveIngestItem(BaseModel):
     # Legacy response uses integer queue_id; Instagram Reels v2 uses UUID item ids.

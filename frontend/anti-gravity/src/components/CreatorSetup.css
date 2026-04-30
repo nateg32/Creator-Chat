@@ -1,10 +1,10 @@
 .creator-setup-card {
   max-width: 940px;
   margin: 0 auto;
-  padding: 20px;
+  padding: 24px;
   border-radius: 24px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
   backdrop-filter: blur(8px);
 }
@@ -16,47 +16,103 @@
   gap: 12px;
 }
 
+.setup-hero-text {
+  min-width: 0;
+}
+
 .setup-kicker,
 .setup-section-kicker,
 .platform-block-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 
-.setup-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(72px, 1fr));
-  gap: 8px;
-  min-width: 246px;
+.setup-kicker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #111827;
+  display: inline-block;
 }
 
-.setup-summary-metric {
-  padding: 10px 8px;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  background: var(--surface-soft);
+/* Slim 4-step progress rail (replaces 0/0/0 stat tiles) */
+.setup-progress {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  position: relative;
+}
+
+.setup-progress::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 11px;
+  height: 1px;
+  background: var(--border);
+  z-index: 0;
+}
+
+.setup-progress-step {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   text-align: center;
 }
 
-.setup-summary-metric strong {
-  display: block;
-  font-size: 18px;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  color: var(--text);
+.setup-progress-marker {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  transition: all 0.2s ease;
 }
 
-.setup-summary-metric span {
-  display: block;
-  margin-top: 4px;
+.setup-progress-label {
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.setup-progress-step.active .setup-progress-marker {
+  border-color: #111827;
+  color: #111827;
+  box-shadow: 0 0 0 4px rgba(17, 24, 39, 0.06);
+}
+
+.setup-progress-step.active .setup-progress-label {
+  color: #111827;
+}
+
+.setup-progress-step.done .setup-progress-marker {
+  background: #111827;
+  border-color: #111827;
+  color: #ffffff;
+}
+
+.setup-progress-step.done .setup-progress-label {
+  color: var(--text);
 }
 
 .creator-setup-card h2 {
@@ -83,10 +139,24 @@
 }
 
 .setup-section {
-  padding: 12px;
+  position: relative;
+  padding: 16px 16px 16px 20px;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(250, 251, 253, 0.84);
+  overflow: hidden;
+}
+
+.setup-section::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #111827 0%, rgba(17, 24, 39, 0.08) 100%);
+  opacity: 0.55;
 }
 
 .setup-section-head h3 {
@@ -204,16 +274,15 @@
 .platform-check {
   position: relative;
   display: flex;
-  min-height: 62px;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 10px;
-  border-radius: 16px;
+  min-height: 56px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 14px;
   border: 1px solid var(--border);
   background: rgba(247, 249, 252, 0.9);
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 
 .platform-check input {
@@ -229,8 +298,9 @@
 }
 
 .platform-check.selected {
-  border-color: #dbe2ee;
+  border-color: #111827;
   background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
 }
 
 .platform-check.disabled {
@@ -238,34 +308,11 @@
   cursor: not-allowed;
 }
 
-.platform-check-indicator {
-  position: relative;
-  align-self: flex-end;
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: #ffffff;
-}
-
-.platform-check.selected .platform-check-indicator {
-  border-color: #111827;
-  background: #111827;
-}
-
-.platform-check.selected .platform-check-indicator::after {
-  content: "";
-  position: absolute;
-  inset: 4px;
-  border-radius: 2px;
-  background: #ffffff;
-}
-
 .platform-check-content {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 4px;
 }
 
 .badge {
@@ -640,6 +687,15 @@
 
   .setup-summary {
     min-width: 0;
+  }
+
+  .setup-progress {
+    margin-top: 16px;
+  }
+
+  .setup-progress-label {
+    font-size: 9px;
+    letter-spacing: 0.08em;
   }
 
   .platform-checkboxes {

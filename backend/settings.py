@@ -45,8 +45,8 @@ class Settings:
     # Auth / JWT
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "change-me-before-prod")
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "43200"))
-    COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+    COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "true").lower() == "true"
     
     # Transcription
     TRANSCRIBE_ON_INGEST: bool = os.getenv("TRANSCRIBE_ON_INGEST", "false").lower() == "true"

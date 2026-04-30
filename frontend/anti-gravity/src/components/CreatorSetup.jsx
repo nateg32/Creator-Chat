@@ -551,26 +551,35 @@ export function CreatorSetup({
   return (
     <div className="creator-setup-card">
       <div className="setup-hero">
-        <div>
-          <div className="setup-kicker">Setup</div>
+        <div className="setup-hero-text">
+          <div className="setup-kicker">
+            <span className="setup-kicker-dot" aria-hidden="true" />
+            Setup
+          </div>
           <h2>Create a bot</h2>
           <p className="subtitle">Name. Sources. Search.</p>
         </div>
-        <div className="setup-summary">
-          <div className="setup-summary-metric">
-            <strong>{selectedPlatformDetails.length}</strong>
-            <span>Platforms</span>
-          </div>
-          <div className="setup-summary-metric">
-            <strong>{configuredPlatformCount}</strong>
-            <span>Configured</span>
-          </div>
-          <div className="setup-summary-metric">
-            <strong>{readyPlatformCount}</strong>
-            <span>Ready</span>
-          </div>
-        </div>
       </div>
+
+      <ol className="setup-progress" aria-label="Setup progress">
+        {[
+          { key: "name", label: "Name", done: creatorName.trim().length >= 2 && !nameError },
+          { key: "sources", label: "Sources", done: selectedPlatformDetails.length > 0 },
+          { key: "configure", label: "Configure", done: configuredPlatformCount > 0 && configuredPlatformCount === selectedPlatformDetails.length },
+          { key: "ready", label: "Ready", done: readyPlatformCount > 0 && readyPlatformCount === selectedPlatformDetails.length },
+        ].map((step, idx, arr) => {
+          const prevDone = idx === 0 ? true : arr[idx - 1].done;
+          const state = step.done ? "done" : prevDone ? "active" : "idle";
+          return (
+            <li key={step.key} className={`setup-progress-step ${state}`}>
+              <span className="setup-progress-marker" aria-hidden="true">
+                {step.done ? "\u2713" : idx + 1}
+              </span>
+              <span className="setup-progress-label">{step.label}</span>
+            </li>
+          );
+        })}
+      </ol>
 
       {platforms.length === 0 && !error && (
         <div style={{ textAlign: "center", padding: "20px" }}>
@@ -706,7 +715,6 @@ export function CreatorSetup({
                       onChange={() => togglePlatform(p.key)}
                       disabled={saveLoading || !implemented}
                     />
-                    <span className="platform-check-indicator" aria-hidden="true" />
                     <span className="platform-check-content">
                       <span className={`badge badge-${p.icon}`}>{p.label}</span>
                       {!implemented && <span className="coming-soon">Coming soon</span>}
