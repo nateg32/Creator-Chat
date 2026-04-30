@@ -186,10 +186,15 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
   return (
     <div className="scrape-progress-container">
       <div className="progress-content">
-        <h2>{isFinishing ? "Finalizing..." : "Searching..."}</h2>
-        <p className="status-message">{displayMsg}</p>
+        <h2>
+          <span>{isFinishing ? "Finalizing" : "Searching"}</span>
+          <span className="title-dots" aria-hidden="true">
+            <span>.</span><span>.</span><span>.</span>
+          </span>
+        </h2>
+        <p className="status-message" key={displayMsg}>{displayMsg}</p>
 
-        <div className="progress-bar-container large">
+        <div className={`progress-bar-container large ${percent >= 99 ? "is-complete" : ""}`}>
           <div
             className="progress-bar-fill"
             style={{
@@ -200,7 +205,14 @@ export function ScrapeProgress({ scrapeId, onComplete, onProgress, onError }) {
         </div>
 
         <div className="progress-stats">
-          <span className="percentage">{Math.round(percent)}%</span>
+          <span className={`percentage ${percent > 0 && percent < 100 ? "is-active" : ""}`}>
+            {Math.round(percent)}%
+          </span>
+          {data?.items_found != null && data.items_found > 0 && (
+            <span className="items-found-tag" key={data.items_found}>
+              {data.items_found} found
+            </span>
+          )}
         </div>
       </div>
     </div>
