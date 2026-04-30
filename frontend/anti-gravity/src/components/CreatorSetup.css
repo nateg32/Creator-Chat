@@ -181,11 +181,10 @@
 .setup-platform-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 4px;
   margin-top: 12px;
-  padding: 6px;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.04);
+  padding: 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .platform-tab {
@@ -193,41 +192,60 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid transparent;
+  padding: 8px 4px;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
   background: transparent;
   cursor: pointer;
   font: inherit;
-  color: inherit;
-  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+  color: var(--text-soft);
+  transition: color 120ms ease, border-color 120ms ease;
 }
 
 .platform-tab:hover {
-  background: #ffffff;
-  border-color: var(--border);
+  color: var(--text);
 }
 
 .platform-tab.active {
-  background: #ffffff;
-  border-color: var(--border-strong);
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
-}
-
-.platform-tab.filled .badge {
-  opacity: 0.95;
+  color: var(--text);
+  border-bottom-color: var(--text);
 }
 
 .platform-tab-dot {
   font-size: 11px;
   color: #15803d;
   font-weight: 600;
+  line-height: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .platform-tab {
     transition: none;
   }
+}
+
+.duplicate-creator-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.duplicate-creator-message {
+  color: var(--text-soft);
+}
+
+.duplicate-creator-message strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .setup-empty-state {

@@ -686,15 +686,16 @@ export function CreatorSetup({
         </div>
       )}
       {duplicateCreator && !savedCreatorId && (
-        <div className="warning-message" style={{ marginBottom: "16px" }}>
-          {duplicateCreator.name || duplicateCreator.handle || "This creator"} already exists. Switch to edit mode instead of creating a duplicate.
+        <div className="duplicate-creator-banner">
+          <span className="duplicate-creator-message">
+            <strong>{duplicateCreator.name || duplicateCreator.handle || "This creator"}</strong> already exists.
+          </span>
           <button
             type="button"
-            className="text-button"
+            className="link-button"
             onClick={() => onUseExistingCreator?.(duplicateCreator.id)}
-            style={{ marginLeft: "8px" }}
           >
-            Edit existing creator
+            Edit existing
           </button>
         </div>
       )}
@@ -844,12 +845,14 @@ export function CreatorSetup({
                       onClick={() => setActivePlatformKey(platform.key)}
                     >
                       <span className={`badge badge-${platform.icon}`}>{platform.label}</span>
-                      {verified && <span className="platform-tab-dot" aria-hidden="true">\u2713</span>}
+                      {verified && <span className="platform-tab-dot" aria-hidden="true">✓</span>}
                     </button>
                   );
                 })}
               </div>
-            )}\n\n            {selectedPlatformDetails.length > 0 && activePlatformKey && (() => {
+            )}
+
+            {selectedPlatformDetails.length > 0 && activePlatformKey && (() => {
               const platform = selectedPlatformDetails.find((p) => p.key === activePlatformKey) || selectedPlatformDetails[0];
               const cfg = config[platform.key] || {};
               const status = testStatus[platform.key];
