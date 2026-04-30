@@ -1,4 +1,4 @@
-.persona-setup-card {
+ï»¿.persona-setup-card {
   background: #ffffff;
   border: 1px solid #ececf1;
   border-radius: 28px;
@@ -383,7 +383,7 @@
 
 
 /* ============================================================
- * Fingerprint progress — minimal vibe edition
+ * Fingerprint progress â€” minimal vibe edition
  * Single accent (--fp-accent), monochrome surface, one rotating
  * scan arc. Respects prefers-reduced-motion.
  * ============================================================ */
@@ -470,14 +470,16 @@
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: center;
   gap: 2px;
   font-feature-settings: "tnum" 1;
+  /* Nudge the readout down so the rotating scan arc never clips the % glyph */
+  padding-top: 8px;
 }
 
 .fp-dial-percent {
-  font-size: 32px;
+  font-size: 30px;
   font-weight: 600;
   letter-spacing: -0.04em;
   color: var(--fp-ink);
@@ -485,11 +487,11 @@
 }
 
 .fp-dial-percent-mark {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--fp-mute);
-  align-self: flex-start;
-  margin-top: 4px;
+  /* Sit on the same baseline as the number, just slightly raised. */
+  transform: translateY(-2px);
 }
 
 .fp-meta { min-width: 0; }
@@ -631,250 +633,3 @@
 }
 
 
-/* ============================================================
- * Fingerprint progress — minimal vibe edition
- * Single accent (--fp-accent), monochrome surface, one rotating
- * scan arc. Respects prefers-reduced-motion.
- * ============================================================ */
-
-.fp-card {
-  --fp-accent: #0f172a;
-  --fp-ink: #0f172a;
-  --fp-mute: #6b7280;
-  --fp-faint: #d1d5db;
-  --fp-line: #e5e7eb;
-  --fp-bg: #ffffff;
-
-  position: relative;
-  background: var(--fp-bg);
-  border: 1px solid var(--fp-line);
-  border-radius: 18px;
-  padding: 24px 24px 18px;
-  overflow: hidden;
-}
-
-.fp-card::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, var(--fp-accent) 50%, transparent 100%);
-  opacity: 0.55;
-}
-
-.fp-card-grid {
-  display: grid;
-  grid-template-columns: 124px 1fr;
-  gap: 22px;
-  align-items: center;
-}
-
-@media (max-width: 520px) {
-  .fp-card-grid { grid-template-columns: 1fr; justify-items: start; gap: 18px; }
-}
-
-.fp-dial {
-  position: relative;
-  width: 124px;
-  height: 124px;
-}
-
-.fp-dial-svg {
-  width: 100%;
-  height: 100%;
-  transform: rotate(-90deg);
-}
-
-.fp-dial-track {
-  fill: none;
-  stroke: var(--fp-line);
-  stroke-width: 2;
-}
-
-.fp-dial-progress {
-  fill: none;
-  stroke: var(--fp-accent);
-  stroke-width: 2;
-  stroke-linecap: round;
-  transition: stroke-dashoffset 600ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.fp-dial-scan {
-  fill: none;
-  stroke: var(--fp-accent);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-dasharray: 8 318;
-  transform-origin: 60px 60px;
-  animation: fp-scan 4.8s linear infinite;
-  opacity: 0.45;
-}
-
-@keyframes fp-scan {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-
-.fp-dial-center {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  font-feature-settings: "tnum" 1;
-}
-
-.fp-dial-percent {
-  font-size: 32px;
-  font-weight: 600;
-  letter-spacing: -0.04em;
-  color: var(--fp-ink);
-  line-height: 1;
-}
-
-.fp-dial-percent-mark {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fp-mute);
-  align-self: flex-start;
-  margin-top: 4px;
-}
-
-.fp-meta { min-width: 0; }
-
-.fp-station {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--fp-mute);
-  margin-bottom: 10px;
-}
-
-.fp-station-num { color: var(--fp-ink); font-weight: 600; }
-
-.fp-station-dot {
-  width: 4px; height: 4px;
-  border-radius: 50%;
-  background: var(--fp-accent);
-  display: inline-block;
-}
-
-.fp-message {
-  margin: 0 0 8px;
-  font-size: 18px;
-  line-height: 1.3;
-  letter-spacing: -0.02em;
-  color: var(--fp-ink);
-  font-weight: 600;
-}
-
-.fp-ticker {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--fp-mute);
-  min-height: 1.5em;
-}
-
-.fp-ticker-cursor {
-  color: var(--fp-accent);
-  font-size: 11px;
-  transform: translateY(-1px);
-}
-
-.fp-ticker-line {
-  animation: fp-fade 380ms ease-out;
-  display: inline-block;
-}
-
-@keyframes fp-fade {
-  from { opacity: 0; transform: translateY(2px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.fp-tape {
-  list-style: none;
-  margin: 22px 0 0;
-  padding: 16px 0 4px;
-  border-top: 1px dashed var(--fp-line);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 6px 18px;
-}
-
-.fp-tape-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--fp-faint);
-  padding: 4px 0;
-}
-
-.fp-tape-mark {
-  width: 6px; height: 6px;
-  border-radius: 1px;
-  background: var(--fp-line);
-  flex-shrink: 0;
-}
-
-.fp-tape-row.complete { color: var(--fp-mute); }
-.fp-tape-row.complete .fp-tape-mark { background: var(--fp-mute); }
-
-.fp-tape-row.current { color: var(--fp-ink); }
-.fp-tape-row.current .fp-tape-mark {
-  background: var(--fp-accent);
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
-  animation: fp-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes fp-pulse {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08); }
-  50%      { box-shadow: 0 0 0 6px rgba(15, 23, 42, 0.04); }
-}
-
-.fp-tape-index {
-  font-weight: 600;
-  letter-spacing: 0.1em;
-}
-
-.fp-tape-label {
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-}
-
-.fp-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--fp-line);
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--fp-mute);
-}
-
-.fp-foot-divider {
-  width: 1px;
-  height: 10px;
-  background: var(--fp-line);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .fp-dial-scan { animation: none; opacity: 0; }
-  .fp-tape-row.current .fp-tape-mark { animation: none; }
-  .fp-ticker-line { animation: none; }
-  .fp-dial-progress { transition: none; }
-}

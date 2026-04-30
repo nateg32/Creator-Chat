@@ -20,14 +20,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 36px;
-  min-height: 36px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px;
+  flex-shrink: 0;
 }
 
 .app-branding-mark {
   display: block;
-  width: clamp(29px, 2.15vw, 34px);
-  height: auto;
+  width: clamp(26px, 1.95vw, 30px);
+  height: clamp(26px, 1.95vw, 30px);
+  object-fit: contain;
 }
 
 .nav-steps-container {
@@ -132,8 +135,9 @@
   }
 
   .app-branding {
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 38px;
+    min-height: 38px;
+    padding: 3px;
   }
 
   .nav-steps-container {
