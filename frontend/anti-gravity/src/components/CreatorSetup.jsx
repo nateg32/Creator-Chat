@@ -49,9 +49,11 @@ export function CreatorSetup({
   const [showSearchConfirm, setShowSearchConfirm] = useState(false);
   const [searchSummary, setSearchSummary] = useState([]);
   const [savedConfigSignature, setSavedConfigSignature] = useState("");
+  const [hasSavedInSession, setHasSavedInSession] = useState(false);
   const [actionFeedback, setActionFeedback] = useState(null); // 'success' | 'error' | null
   const nameInputRef = useRef(null);
   const platformUrlRefs = useRef(new Map());
+  const preserveSaveGateRef = useRef(false);
   const setPlatformUrlRef = useCallback((key, el) => {
     if (el) platformUrlRefs.current.set(key, el);
     else platformUrlRefs.current.delete(key);
@@ -232,6 +234,12 @@ export function CreatorSetup({
             ])
           )
         ));
+        if (preserveSaveGateRef.current) {
+          setHasSavedInSession(true);
+          preserveSaveGateRef.current = false;
+        } else {
+          setHasSavedInSession(false);
+        }
         setTestStatus({ ...nextStatuses });
       })
       .catch(() => { });
@@ -318,6 +326,7 @@ export function CreatorSetup({
     setSaveLoading(true);
     try {
       const platform_configs = buildPlatformConfigs();
+      preserveSaveGateRef.current = true;
       if (savedCreatorId) {
         const res = await updateCreator(savedCreatorId, {
           name: creatorName.trim() || undefined,
@@ -334,8 +343,10 @@ export function CreatorSetup({
         onSaveConfig({ creatorId: res.id, name: res.name, handle: res.handle, profile_picture_url: res.profile_picture_url, status: res.status, visual_config: res.visual_config });
       }
       setSavedConfigSignature(JSON.stringify(platform_configs));
+      setHasSavedInSession(true);
       onSaveSuccess?.();
     } catch (err) {
+      preserveSaveGateRef.current = false;
       setError(err.message || "Save failed");
     } finally {
       setSaveLoading(false);
@@ -530,9 +541,9 @@ export function CreatorSetup({
     if (missingUrl) return { kind: "blocked", label: `Add a ${missingUrl.label} URL`, reason: missingUrl.key };
     if (!savedCreatorId) return { kind: "save", label: "Save bot", reason: null };
     const dirty = buildConfigSignature() !== savedConfigSignature;
-    if (dirty) return { kind: "update-and-search", label: "Update & search", reason: null };
+    if (!hasSavedInSession || dirty) return { kind: "save", label: "Save changes", reason: null };
     return { kind: "search", label: "Search now", reason: null };
-  }, [saveLoading, scrapeLoading, creatorName, nameError, selected.size, selectedPlatformDetails, config, savedCreatorId, buildConfigSignature, savedConfigSignature]);
+  }, [saveLoading, scrapeLoading, creatorName, nameError, selected.size, selectedPlatformDetails, config, savedCreatorId, buildConfigSignature, savedConfigSignature, hasSavedInSession]);
 
   const triggerNextAction = useCallback(async () => {
     if (nextAction.kind === "blocked" || nextAction.kind === "loading") {
@@ -650,21 +661,6 @@ export function CreatorSetup({
           <p className="muted">Loading platforms...</p>
         </div>
       )}
-      {duplicateCreator && !savedCreatorId && (
-        <div className="duplicate-creator-banner">
-          <span className="duplicate-creator-message">
-            <strong>{duplicateCreator.name || duplicateCreator.handle || "This creator"}</strong> already exists.
-          </span>
-          <button
-            type="button"
-            className="link-button"
-            onClick={() => onUseExistingCreator?.(duplicateCreator.id)}
-          >
-            Edit existing
-          </button>
-        </div>
-      )}
-
       {error && (
         <div className="error-message" style={{ marginBottom: "16px" }}>
           {error}
@@ -721,6 +717,20 @@ export function CreatorSetup({
                 placeholder="e.g. Dan Martell"
                 disabled={saveLoading}
               />
+              {duplicateCreator && !savedCreatorId && (
+                <div className="duplicate-creator-banner">
+                  <span className="duplicate-creator-message">
+                    <strong>{duplicateCreator.name || duplicateCreator.handle || "This creator"}</strong> already exists.
+                  </span>
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => onUseExistingCreator?.(duplicateCreator.id)}
+                  >
+                    Edit existing
+                  </button>
+                </div>
+              )}
               {nameError && <div className="validation-error">{nameError}</div>}
               {nameHint && (
                 <div className="validation-hint">
@@ -1019,7 +1029,7 @@ export function CreatorSetup({
               >
                 <span className="primary-action-spinner" aria-hidden="true" />
                 <span className="primary-action-label">{nextAction.label}</span>
-                {(nextAction.kind === "save" || nextAction.kind === "search" || nextAction.kind === "update-and-search") && (
+                {(nextAction.kind === "save" || nextAction.kind === "search") && (
                   <kbd className="kbd-hint kbd-hint-on-dark">&#8984;&#8629;</kbd>
                 )}
               </button>
