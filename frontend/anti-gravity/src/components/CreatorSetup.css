@@ -734,3 +734,298 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ===========================================================================
+   Phase 3: System-engineering for buttons + inline platform config
+   ===========================================================================
+   Design principles applied:
+   - Single source of truth: one primary button morphs across all states.
+   - Layout stability: button reserves min-width so label changes never reflow.
+   - Affordance: every state has a distinct visual identity (idle, ready,
+     loading, success, error, blocked).
+   - Reversibility: animations are short (<= 300ms) and CSS-only so they
+     interrupt cleanly when state changes mid-flight.
+   - Accessibility: focus-visible rings, aria-busy spinners, keyboard hints.
+=========================================================================== */
+
+.setup-section-meta {
+  font-size: 11px;
+  color: var(--text-soft);
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kbd-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #f7f8fa;
+  color: var(--text-soft);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+.kbd-hint-tile {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.platform-check:hover .kbd-hint-tile,
+.platform-check:focus-within .kbd-hint-tile {
+  opacity: 1;
+}
+.kbd-hint-on-dark {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Inline-config list under the platform grid */
+.setup-platform-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+.setup-platform-list .platform-block {
+  animation: platformBlockIn 0.22s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes platformBlockIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.platform-block-remove {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease,
+    transform 0.08s ease;
+}
+.platform-block-remove:hover:not(:disabled) {
+  background: #fff1f2;
+  color: #b42318;
+  border-color: #fecdd3;
+}
+.platform-block-remove:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.platform-block-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.url-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.link-button {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+}
+.link-button:hover:not(:disabled) {
+  background: var(--surface-soft);
+  border-color: #cbd2dc;
+}
+.link-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.link-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---- Contextual primary action button ---- */
+.setup-action-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.primary-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 220px;
+  height: 44px;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--text);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 0.18s ease, transform 0.08s ease, box-shadow 0.2s ease,
+    opacity 0.18s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+.primary-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(36, 87, 197, 0.25), 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+.primary-action:hover:not(.primary-action-blocked):not(.primary-action-loading) {
+  background: #1a2333;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+.primary-action:active:not(.primary-action-blocked):not(.primary-action-loading) {
+  transform: scale(0.97);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.primary-action-label {
+  position: relative;
+  z-index: 1;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+/* Spinner — hidden by default, fades in only when loading */
+.primary-action-spinner {
+  position: absolute;
+  left: 22px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.primary-action-loading {
+  background: #1a2333;
+  cursor: progress;
+}
+.primary-action-loading .primary-action-spinner {
+  opacity: 1;
+  animation: primarySpin 0.7s linear infinite;
+}
+.primary-action-loading .primary-action-label {
+  transform: translateX(11px); /* compensate for spinner width */
+}
+.primary-action-loading .kbd-hint-on-dark {
+  display: none;
+}
+@keyframes primarySpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Blocked: disabled-with-reason. Soft, not aggressive. */
+.primary-action-blocked {
+  background: #e5e8ee;
+  color: #6b7280;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.primary-action-blocked:hover {
+  background: #dfe3eb;
+}
+.primary-action-blocked .kbd-hint-on-dark {
+  display: none;
+}
+
+/* Save state — neutral primary */
+.primary-action-save {
+  background: var(--text);
+}
+
+/* Search states — accent color hint via subtle gradient */
+.primary-action-search,
+.primary-action-update-and-search {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+}
+.primary-action-search:hover,
+.primary-action-update-and-search:hover {
+  background: linear-gradient(135deg, #1a2333 0%, #2a3548 100%);
+}
+
+/* Success pulse: a brief ring expands and fades */
+.primary-action-success::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  animation: primarySuccessPulse 0.65s ease-out;
+  pointer-events: none;
+}
+@keyframes primarySuccessPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(34, 197, 94, 0);
+  }
+}
+
+/* Error shake — small horizontal nudge, never destabilising */
+.primary-action-error {
+  animation: primaryErrorShake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+@keyframes primaryErrorShake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-3px); }
+  40%, 60% { transform: translateX(3px); }
+}
+
+/* Reduced motion: kill all the fancy stuff */
+@media (prefers-reduced-motion: reduce) {
+  .primary-action,
+  .primary-action-label,
+  .primary-action-spinner,
+  .platform-block,
+  .platform-block-remove,
+  .link-button {
+    transition: none !important;
+    animation: none !important;
+  }
+  .primary-action-loading .primary-action-spinner {
+    animation: primarySpin 1.4s linear infinite;
+  }
+}
+
+@media (max-width: 720px) {
+  .primary-action {
+    width: 100%;
+    min-width: 0;
+  }
+  .setup-action-row {
+    width: 100%;
+  }
+}

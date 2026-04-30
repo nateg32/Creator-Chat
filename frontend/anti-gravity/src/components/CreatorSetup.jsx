@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   getPlatforms,
   validatePlatformUrl,
@@ -40,7 +40,6 @@ export function CreatorSetup({
   const [saveLoading, setSaveLoading] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [testStatus, setTestStatus] = useState({});
-  const [activePlatformKey, setActivePlatformKey] = useState(null);
 
   const isLinkValidated = useCallback((key) => {
     const status = String(testStatus[key] || "").toLowerCase();
@@ -49,6 +48,13 @@ export function CreatorSetup({
   const [showSearchConfirm, setShowSearchConfirm] = useState(false);
   const [searchSummary, setSearchSummary] = useState([]);
   const [savedConfigSignature, setSavedConfigSignature] = useState("");
+  const [actionFeedback, setActionFeedback] = useState(null); // 'success' | 'error' | null
+  const nameInputRef = useRef(null);
+  const platformUrlRefs = useRef(new Map());
+  const setPlatformUrlRef = useCallback((key, el) => {
+    if (el) platformUrlRefs.current.set(key, el);
+    else platformUrlRefs.current.delete(key);
+  }, []);
   const visiblePlatforms = useMemo(
     () => platforms.filter((platform) => platform.key !== "reddit"),
     [platforms]
@@ -56,10 +62,6 @@ export function CreatorSetup({
   const selectedPlatformDetails = useMemo(
     () => visiblePlatforms.filter((platform) => selected.has(platform.key)),
     [selected, visiblePlatforms]
-  );
-  const activePlatform = useMemo(
-    () => selectedPlatformDetails.find((platform) => platform.key === activePlatformKey) || selectedPlatformDetails[0] || null,
-    [activePlatformKey, selectedPlatformDetails]
   );
 
   const duplicateCreator = useMemo(() => {
@@ -233,14 +235,8 @@ export function CreatorSetup({
   }, [platforms, savedCreatorId]);
 
   useEffect(() => {
-    if (!selectedPlatformDetails.length) {
-      setActivePlatformKey(null);
-      return;
-    }
-    if (!selectedPlatformDetails.some((platform) => platform.key === activePlatformKey)) {
-      setActivePlatformKey(selectedPlatformDetails[0].key);
-    }
-  }, [activePlatformKey, selectedPlatformDetails]);
+    // Reserved for future per-platform side-effects when selection changes.
+  }, [selectedPlatformDetails]);
 
   const togglePlatform = (key) => {
     setSelected((prev) => {
@@ -545,8 +541,99 @@ export function CreatorSetup({
     [config, isLinkValidated, selectedPlatformDetails]
   );
 
-  const canSaveConfig = valid() && !saveLoading && !scrapeLoading;
-  const canScrape = Boolean(savedCreatorId) && valid() && !scrapeLoading && !loading;
+  // -------- System-engineering: contextual next-action state machine --------
+  // The primary button always reflects the single next required action.
+  const nextAction = useMemo(() => {
+    if (saveLoading) return { kind: "loading", label: "Saving\u2026", reason: null };
+    if (scrapeLoading) return { kind: "loading", label: "Searching\u2026", reason: null };
+    if (!creatorName.trim() || nameError) return { kind: "blocked", label: "Add a creator name", reason: "name" };
+    if (selected.size === 0) return { kind: "blocked", label: "Pick at least one source", reason: "sources" };
+    const missingUrl = selectedPlatformDetails.find((p) => !(config[p.key]?.url || "").trim());
+    if (missingUrl) return { kind: "blocked", label: `Add a ${missingUrl.label} URL`, reason: missingUrl.key };
+    if (!savedCreatorId) return { kind: "save", label: "Save bot", reason: null };
+    const dirty = buildConfigSignature() !== savedConfigSignature;
+    if (dirty) return { kind: "update-and-search", label: "Update & search", reason: null };
+    return { kind: "search", label: "Search now", reason: null };
+  }, [saveLoading, scrapeLoading, creatorName, nameError, selected.size, selectedPlatformDetails, config, savedCreatorId, buildConfigSignature, savedConfigSignature]);
+
+  const triggerNextAction = useCallback(async () => {
+    if (nextAction.kind === "blocked" || nextAction.kind === "loading") {
+      // Fly the user to whatever's blocking them.
+      if (nextAction.reason === "name") {
+        nameInputRef.current?.focus();
+      } else if (typeof nextAction.reason === "string" && platformUrlRefs.current.has(nextAction.reason)) {
+        platformUrlRefs.current.get(nextAction.reason)?.focus();
+      }
+      return;
+    }
+    try {
+      if (nextAction.kind === "save") {
+        await handleSave({ preventDefault: () => {} });
+        setActionFeedback("success");
+      } else {
+        await handleScrape({ preventDefault: () => {} });
+      }
+    } catch {
+      setActionFeedback("error");
+    }
+  }, [nextAction]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear feedback flash after the animation completes.
+  useEffect(() => {
+    if (!actionFeedback) return;
+    const t = setTimeout(() => setActionFeedback(null), 700);
+    return () => clearTimeout(t);
+  }, [actionFeedback]);
+
+  // -------- Keyboard shortcuts (system-engineering: command surface) --------
+  useEffect(() => {
+    function onKeyDown(e) {
+      const target = e.target;
+      const inEditable = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
+      const meta = e.metaKey || e.ctrlKey;
+
+      // Cmd/Ctrl+K: focus name input
+      if (meta && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        nameInputRef.current?.focus();
+        nameInputRef.current?.select();
+        return;
+      }
+      // Cmd/Ctrl+Enter: trigger primary action
+      if (meta && e.key === "Enter") {
+        e.preventDefault();
+        triggerNextAction();
+        return;
+      }
+      // 1-8: toggle nth visible platform (only when not typing)
+      if (!inEditable && !meta && /^[1-8]$/.test(e.key)) {
+        const idx = parseInt(e.key, 10) - 1;
+        const target = visiblePlatforms[idx];
+        if (target && target.implemented !== false) {
+          e.preventDefault();
+          togglePlatform(target.key);
+        }
+      }
+      // Esc: close search confirm modal
+      if (e.key === "Escape" && showSearchConfirm) {
+        setShowSearchConfirm(false);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [triggerNextAction, visiblePlatforms, showSearchConfirm]);
+
+  // Auto-focus a newly-selected platform's URL input.
+  useEffect(() => {
+    if (selectedPlatformDetails.length === 0) return;
+    const last = selectedPlatformDetails[selectedPlatformDetails.length - 1];
+    if (!(config[last.key]?.url || "").trim()) {
+      const el = platformUrlRefs.current.get(last.key);
+      // Defer to next tick so the input is mounted.
+      const t = setTimeout(() => el?.focus(), 60);
+      return () => clearTimeout(t);
+    }
+  }, [selectedPlatformDetails.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="creator-setup-card">
@@ -625,6 +712,7 @@ export function CreatorSetup({
               <label>Creator name</label>
               <input
                 type="text"
+                ref={nameInputRef}
                 className={nameError ? "input-error" : ""}
                 value={creatorName}
                 onChange={(e) => {
@@ -701,10 +789,13 @@ export function CreatorSetup({
               <div className="setup-section-kicker">Sources</div>
               <h3>Platforms</h3>
             </div>
+            <div className="setup-section-meta">
+              <kbd className="kbd-hint">1</kbd>&ndash;<kbd className="kbd-hint">8</kbd> to toggle
+            </div>
           </div>
           <div className="setup-section-body">
             <div className="platform-checkboxes">
-              {visiblePlatforms.map((p) => {
+              {visiblePlatforms.map((p, idx) => {
                 const implemented = p.implemented !== false;
                 const checked = selected.has(p.key);
                 return (
@@ -718,187 +809,183 @@ export function CreatorSetup({
                     <span className="platform-check-content">
                       <span className={`badge badge-${p.icon}`}>{p.label}</span>
                       {!implemented && <span className="coming-soon">Coming soon</span>}
+                      {implemented && idx < 8 && <kbd className="kbd-hint kbd-hint-tile">{idx + 1}</kbd>}
                     </span>
                   </label>
                 );
               })}
             </div>
-          </div>
-        </section>
 
-        <section className="setup-section">
-          <div className="setup-section-head">
-            <div>
-              <div className="setup-section-kicker">Configuration</div>
-              <h3>{activePlatform ? activePlatform.label : "Configure sources"}</h3>
-            </div>
-          </div>
-          <div className="setup-section-body setup-platform-list">
-            {selectedPlatformDetails.length === 0 ? (
-              <div className="setup-empty-state">
-                Select a platform.
-              </div>
-            ) : (
-              <>
-                <div className="platform-config-tabs" role="tablist" aria-label="Configured platform">
-                  {selectedPlatformDetails.map((platform) => (
-                    <button
-                      key={platform.key}
-                      type="button"
-                      className={`platform-config-tab ${activePlatform?.key === platform.key ? "active" : ""}`}
-                      onClick={() => setActivePlatformKey(platform.key)}
-                    >
-                      <span className={`badge badge-${platform.key === "youtube_shorts" ? "youtube" : platform.icon}`}>{platform.label}</span>
-                    </button>
-                  ))}
-                </div>
-                <div key={activePlatform.key} className="platform-block">
-                  <div className="platform-block-header">
-                    <div>
-                      <div className="platform-block-eyebrow">Source</div>
-                      <h3 className="platform-block-title">{activePlatform.label}</h3>
-                    </div>
-                    <span className={`badge badge-${activePlatform.key === "youtube_shorts" ? "youtube" : activePlatform.icon}`}>{activePlatform.label}</span>
-                  </div>
-                <div className="form-group">
-                  <label>{activePlatform.key === "custom" ? "Resource URLs" : "Profile URL"}</label>
-                  <div className="url-row">
-                    {activePlatform.key === "custom" ? (
-                      <textarea
-                        value={config[activePlatform.key]?.url || ""}
-                        onChange={(e) => updatePlatformConfig(activePlatform.key, { url: e.target.value })}
-                        placeholder={activePlatform.placeholder}
-                        disabled={saveLoading}
-                        rows={6}
-                        style={{ width: "100%", fontFamily: "monospace", resize: "vertical" }}
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        value={config[activePlatform.key]?.url || ""}
-                        onChange={(e) => updatePlatformConfig(activePlatform.key, { url: e.target.value })}
-                        placeholder={activePlatform.placeholder}
-                        disabled={saveLoading}
-                      />
-                    )}
-                  </div>
-                  {activePlatform.key === "tiktok" && (
-                    <div className="validation-hint">Video links auto-convert to the creator profile.</div>
-                  )}
-                  {activePlatform.key !== "custom" && testStatus[activePlatform.key] && (() => {
-                    const statusText = String(testStatus[activePlatform.key] || "").toLowerCase();
-                    const isVerified = statusText.startsWith("valid public link");
-                    const isWarning = !isVerified && (
-                      statusText.startsWith("valid format") ||
-                      statusText.startsWith("valid platform match") ||
-                      statusText.includes("inconclusive") ||
-                      statusText.includes("blocked live verification") ||
-                      statusText.includes("scraping stays locked")
-                    );
-                    const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
-                    return (
-                      <span className={`test-status ${statusClass}`}>
-                        {testStatus[activePlatform.key]}
-                      </span>
-                    );
-                  })()}
-                </div>
-
-                {activePlatform.key !== "custom" && (
-                  <div className="form-group">
-                    <label>Search from</label>
-                    <div className="time-mode-radios">
-                      {TIME_MODES.map((m) => (
-                        <label key={m.value}>
-                          <input
-                            type="radio"
-                            name={`time-${activePlatform.key}`}
-                            checked={(config[activePlatform.key]?.timeFilter?.mode || "all") === m.value}
-                            onChange={() =>
-                              updatePlatformConfig(activePlatform.key, {
-                                timeFilter: { ...(config[activePlatform.key]?.timeFilter || {}), mode: m.value },
-                              })
-                            }
-                            disabled={saveLoading}
-                          />
-                          <span className="time-mode-label-text">{m.label}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {(config[activePlatform.key]?.timeFilter?.mode === "last_days" || config[activePlatform.key]?.timeFilter?.mode === "since") && (
-                  <div className="form-group inline">
-                    {config[activePlatform.key]?.timeFilter?.mode === "last_days" && (
-                      <>
-                        <label>Days</label>
-                        <select
-                          value={config[activePlatform.key]?.timeFilter?.days ?? 30}
-                          onChange={(e) =>
-                            updatePlatformConfig(activePlatform.key, {
-                              timeFilter: { ...(config[activePlatform.key]?.timeFilter || {}), days: Number(e.target.value) },
-                            })
-                          }
+            {selectedPlatformDetails.length > 0 && (
+              <div className="setup-platform-list">
+                {selectedPlatformDetails.map((platform) => {
+                  const cfg = config[platform.key] || {};
+                  const status = testStatus[platform.key];
+                  const statusText = String(status || "").toLowerCase();
+                  const isVerified = statusText.startsWith("valid public link");
+                  const isWarning = !isVerified && (
+                    statusText.startsWith("valid format") ||
+                    statusText.startsWith("valid platform match") ||
+                    statusText.includes("inconclusive") ||
+                    statusText.includes("blocked live verification") ||
+                    statusText.includes("scraping stays locked")
+                  );
+                  const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
+                  return (
+                    <div key={platform.key} className="platform-block">
+                      <div className="platform-block-header">
+                        <div>
+                          <div className="platform-block-eyebrow">Source</div>
+                          <h3 className="platform-block-title">{platform.label}</h3>
+                        </div>
+                        <button
+                          type="button"
+                          className="platform-block-remove"
+                          onClick={() => togglePlatform(platform.key)}
+                          aria-label={`Remove ${platform.label}`}
+                          title="Remove this source"
                           disabled={saveLoading}
                         >
-                          {[7, 30, 90].map((d) => (
-                            <option key={d} value={d}>{d}</option>
-                          ))}
-                        </select>
-                      </>
-                    )}
-                    {config[activePlatform.key]?.timeFilter?.mode === "since" && (
-                      <>
-                        <label>Since</label>
+                          &times;
+                        </button>
+                      </div>
+                      <div className="form-group">
+                        <label>{platform.key === "custom" ? "Resource URLs" : "Profile URL"}</label>
+                        <div className="url-row">
+                          {platform.key === "custom" ? (
+                            <textarea
+                              ref={(el) => setPlatformUrlRef(platform.key, el)}
+                              value={cfg.url || ""}
+                              onChange={(e) => updatePlatformConfig(platform.key, { url: e.target.value })}
+                              placeholder={platform.placeholder}
+                              disabled={saveLoading}
+                              rows={6}
+                              style={{ width: "100%", fontFamily: "monospace", resize: "vertical" }}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              ref={(el) => setPlatformUrlRef(platform.key, el)}
+                              value={cfg.url || ""}
+                              onChange={(e) => updatePlatformConfig(platform.key, { url: e.target.value })}
+                              placeholder={platform.placeholder}
+                              disabled={saveLoading}
+                            />
+                          )}
+                        </div>
+                        {platform.key === "tiktok" && (
+                          <div className="validation-hint">Video links auto-convert to the creator profile.</div>
+                        )}
+                        {platform.key !== "custom" && (
+                          <div className="url-row-actions">
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => handleTestLink(platform.key)}
+                              disabled={saveLoading || !(cfg.url || "").trim()}
+                            >
+                              Verify link
+                            </button>
+                            {status && <span className={`test-status ${statusClass}`}>{status}</span>}
+                          </div>
+                        )}
+                      </div>
+
+                      {platform.key !== "custom" && (
+                        <div className="form-group">
+                          <label>Search from</label>
+                          <div className="time-mode-radios">
+                            {TIME_MODES.map((m) => (
+                              <label key={m.value}>
+                                <input
+                                  type="radio"
+                                  name={`time-mode-${platform.key}`}
+                                  value={m.value}
+                                  checked={(cfg.timeFilter?.mode || "all") === m.value}
+                                  onChange={() =>
+                                    updatePlatformConfig(platform.key, {
+                                      timeFilter: { ...(cfg.timeFilter || {}), mode: m.value },
+                                    })
+                                  }
+                                  disabled={saveLoading}
+                                />
+                                <span className="time-mode-label-text">{m.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {(cfg.timeFilter?.mode === "last_days" || cfg.timeFilter?.mode === "since") && (
+                        <div className="form-group inline">
+                          {cfg.timeFilter?.mode === "last_days" && (
+                            <>
+                              <label>Days</label>
+                              <select
+                                value={cfg.timeFilter?.days ?? 30}
+                                onChange={(e) =>
+                                  updatePlatformConfig(platform.key, {
+                                    timeFilter: { ...(cfg.timeFilter || {}), days: Number(e.target.value) },
+                                  })
+                                }
+                                disabled={saveLoading}
+                              >
+                                {[7, 30, 90].map((d) => (
+                                  <option key={d} value={d}>{d}</option>
+                                ))}
+                              </select>
+                            </>
+                          )}
+                          {cfg.timeFilter?.mode === "since" && (
+                            <>
+                              <label>Since</label>
+                              <input
+                                type="date"
+                                value={cfg.timeFilter?.since || ""}
+                                onChange={(e) =>
+                                  updatePlatformConfig(platform.key, {
+                                    timeFilter: { ...(cfg.timeFilter || {}), since: e.target.value },
+                                  })
+                                }
+                                disabled={saveLoading}
+                              />
+                            </>
+                          )}
+                        </div>
+                      )}
+                      <div className="form-group">
+                        <label>Max items</label>
                         <input
-                          type="date"
-                          value={config[activePlatform.key]?.timeFilter?.since || ""}
-                          onChange={(e) =>
-                            updatePlatformConfig(activePlatform.key, {
-                              timeFilter: { ...(config[activePlatform.key]?.timeFilter || {}), since: e.target.value },
-                            })
-                          }
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={cfg.maxItems ?? platform.default_max_items ?? 10}
+                          onChange={(e) => updatePlatformConfig(platform.key, { maxItems: e.target.value })}
                           disabled={saveLoading}
                         />
-                      </>
-                    )}
-                  </div>
-                )}
-                <div className="form-group">
-                  <label>Max items</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={config[activePlatform.key]?.maxItems ?? activePlatform.default_max_items ?? 10}
-                    onChange={(e) => updatePlatformConfig(activePlatform.key, { maxItems: e.target.value })}
-                    disabled={saveLoading}
-                  />
-                </div>
-                </div>
-              </>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         </section>
 
         <div className="setup-footer">
-          <div className="button-row">
+          <div className="setup-action-row">
             <button
               type="button"
-              className="primary-button"
-              onClick={handleSave}
-              disabled={!canSaveConfig}
+              className={`primary-action primary-action-${nextAction.kind} ${actionFeedback ? `primary-action-${actionFeedback}` : ""}`}
+              onClick={triggerNextAction}
+              aria-busy={nextAction.kind === "loading"}
+              data-reason={nextAction.kind === "blocked" ? nextAction.label : undefined}
+              title={nextAction.kind === "blocked" ? nextAction.label : "\u2318 Enter"}
             >
-              {saveLoading ? "Saving..." : savedCreatorId ? "Update config" : "Save & Continue"}
-            </button>
-
-            <button
-              type="button"
-              className={`primary-button search-button ${scrapeLoading ? 'searching' : ''}`}
-              onClick={handleScrape}
-              disabled={!canScrape}
-            >
-              {scrapeLoading ? "Starting..." : "Search now"}
+              <span className="primary-action-spinner" aria-hidden="true" />
+              <span className="primary-action-label">{nextAction.label}</span>
+              {(nextAction.kind === "save" || nextAction.kind === "search" || nextAction.kind === "update-and-search") && (
+                <kbd className="kbd-hint kbd-hint-on-dark">&#8984;&#8629;</kbd>
+              )}
             </button>
           </div>
         </div>
