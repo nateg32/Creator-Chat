@@ -35,6 +35,7 @@ export function CreatorSetup({
   const [creatorName, setCreatorName] = useState(initialCreatorName);
   const [creatorAvatarUrl, setCreatorAvatarUrl] = useState(initialAvatarUrl);
   const [selected, setSelected] = useState(new Set());
+  const [activePlatformKey, setActivePlatformKey] = useState(null);
   const [config, setConfig] = useState({});
   const [error, setError] = useState(null);
   const [saveLoading, setSaveLoading] = useState(false);
@@ -241,8 +242,18 @@ export function CreatorSetup({
   const togglePlatform = (key) => {
     setSelected((prev) => {
       const n = new Set(prev);
-      if (n.has(key)) n.delete(key);
-      else n.add(key);
+      if (n.has(key)) {
+        n.delete(key);
+        // If we just removed the active one, fall back to another remaining selection.
+        if (activePlatformKey === key) {
+          const fallback = [...n][n.size - 1] || null;
+          setActivePlatformKey(fallback);
+        }
+      } else {
+        n.add(key);
+        // Newly selected platform becomes the active one shown below.
+        setActivePlatformKey(key);
+      }
       return n;
     });
     setError(null);
@@ -817,22 +828,44 @@ export function CreatorSetup({
             </div>
 
             {selectedPlatformDetails.length > 0 && (
-              <div className="setup-platform-list">
+              <div className="setup-platform-tabs" role="tablist" aria-label="Selected platforms">
                 {selectedPlatformDetails.map((platform) => {
-                  const cfg = config[platform.key] || {};
-                  const status = testStatus[platform.key];
-                  const statusText = String(status || "").toLowerCase();
-                  const isVerified = statusText.startsWith("valid public link");
-                  const isWarning = !isVerified && (
-                    statusText.startsWith("valid format") ||
-                    statusText.startsWith("valid platform match") ||
-                    statusText.includes("inconclusive") ||
-                    statusText.includes("blocked live verification") ||
-                    statusText.includes("scraping stays locked")
-                  );
-                  const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
+                  const isActive = activePlatformKey === platform.key;
+                  const hasUrl = !!String(config[platform.key]?.url || "").trim();
+                  const status = String(testStatus[platform.key] || "").toLowerCase();
+                  const verified = status.startsWith("valid public link");
                   return (
-                    <div key={platform.key} className="platform-block">
+                    <button
+                      key={platform.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      className={`platform-tab ${isActive ? "active" : ""} ${verified ? "verified" : hasUrl ? "filled" : ""}`}
+                      onClick={() => setActivePlatformKey(platform.key)}
+                    >
+                      <span className={`badge badge-${platform.icon}`}>{platform.label}</span>
+                      {verified && <span className="platform-tab-dot" aria-hidden="true">\u2713</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}\n\n            {selectedPlatformDetails.length > 0 && activePlatformKey && (() => {
+              const platform = selectedPlatformDetails.find((p) => p.key === activePlatformKey) || selectedPlatformDetails[0];
+              const cfg = config[platform.key] || {};
+              const status = testStatus[platform.key];
+              const statusText = String(status || "").toLowerCase();
+              const isVerified = statusText.startsWith("valid public link");
+              const isWarning = !isVerified && (
+                statusText.startsWith("valid format") ||
+                statusText.startsWith("valid platform match") ||
+                statusText.includes("inconclusive") ||
+                statusText.includes("blocked live verification") ||
+                statusText.includes("scraping stays locked")
+              );
+              const statusClass = isVerified ? "ok" : (isWarning ? "warn" : "err");
+              return (
+              <div className="setup-platform-list">
+                  <div key={platform.key} className="platform-block">
                       <div className="platform-block-header">
                         <div>
                           <div className="platform-block-eyebrow">Source</div>
