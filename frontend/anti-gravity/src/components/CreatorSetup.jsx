@@ -199,6 +199,8 @@ export function CreatorSetup({
           }
         }
         setSelected(next);
+        // Default the active tab to the first selected platform when loading an existing creator.
+        setActivePlatformKey((prev) => (prev && next.has(prev) ? prev : ([...next][0] || null)));
         setConfig(cf);
         setCreatorName(data.name || "");
         setCreatorAvatarUrl(data.profile_picture_url || "");
@@ -634,17 +636,15 @@ export function CreatorSetup({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [triggerNextAction, visiblePlatforms, showSearchConfirm]);
 
-  // Auto-focus a newly-selected platform's URL input.
+  // Auto-focus the active platform's URL input when it changes (e.g., new tile clicked).
   useEffect(() => {
-    if (selectedPlatformDetails.length === 0) return;
-    const last = selectedPlatformDetails[selectedPlatformDetails.length - 1];
-    if (!(config[last.key]?.url || "").trim()) {
-      const el = platformUrlRefs.current.get(last.key);
-      // Defer to next tick so the input is mounted.
+    if (!activePlatformKey) return;
+    if (!(config[activePlatformKey]?.url || "").trim()) {
+      const el = platformUrlRefs.current.get(activePlatformKey);
       const t = setTimeout(() => el?.focus(), 60);
       return () => clearTimeout(t);
     }
-  }, [selectedPlatformDetails.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activePlatformKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="creator-setup-card">
@@ -997,10 +997,9 @@ export function CreatorSetup({
                         />
                       </div>
                     </div>
-                  );
-                })}
               </div>
-            )}
+              );
+            })()}
           </div>
         </section>
 
