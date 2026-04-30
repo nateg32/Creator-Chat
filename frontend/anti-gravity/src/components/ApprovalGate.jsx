@@ -114,15 +114,6 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
     setDecisions(newDecisions);
   }
 
-  function denyAll() {
-    const newDecisions = {};
-    items.forEach((item) => {
-      const itemKey = item.item_id || item.queue_id;
-      newDecisions[itemKey] = DECISION_DENY;
-    });
-    setDecisions(newDecisions);
-  }
-
   function resetDecisions() {
     setDecisions(initialDecisions);
   }
@@ -252,9 +243,6 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
             <div className="bulk-buttons">
               <button type="button" onClick={approveAll} className="bulk-button">
                 Approve all
-              </button>
-              <button type="button" onClick={denyAll} className="bulk-button">
-                Deny all
               </button>
               <button type="button" onClick={resetDecisions} className="bulk-button">
                 Reset

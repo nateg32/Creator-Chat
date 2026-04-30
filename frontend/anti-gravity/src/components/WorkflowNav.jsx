@@ -48,9 +48,12 @@ export function WorkflowNav({
         stale: Boolean(remote?.stale),
         blocked_reason: remote?.blocked_reason || null,
         count: remote?.count || null,
+        hidden: Boolean(remote?.hidden),
       };
     });
   }, [steps, stepsByKey, currentStep]);
+
+  const visible = merged.filter((s) => !s.hidden);
 
   const activeKey = serverStep || steps[currentStep - 1]?.key;
 
@@ -60,7 +63,7 @@ export function WorkflowNav({
         <img src={creatorBotMark} alt="Creator Bot" className="app-branding-mark" />
       </div>
       <div className="nav-steps-container">
-        {merged.map((s) => {
+        {visible.map((s) => {
           const isCurrent = s.key === activeKey;
           const isLocked = s.status === "locked" || !s.ready;
           const cls = [

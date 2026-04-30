@@ -2113,7 +2113,7 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
     approve_stale = needs_reapproval
     persona_stale = persona_complete and (needs_reapproval or pending > 0)
 
-    def _step(key, label, *, status, ready, blocked_reason=None, stale=False, count=None):
+    def _step(key, label, *, status, ready, blocked_reason=None, stale=False, count=None, hidden=False):
         return {
             "key": key,
             "label": label,
@@ -2122,6 +2122,7 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
             "stale": stale,
             "blocked_reason": blocked_reason,
             "count": count,
+            "hidden": hidden,
         }
 
     steps = []
@@ -2133,11 +2134,23 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
         count={"sources": source_count} if source_count else None,
     ))
 
+    # Search is hidden until Setup has at least one source. Once the user has moved
+    # forward (any approved/denied items exist OR a search is currently in flight is
+    # the only time Search is interactive), it locks to prevent regression.
+    progressed_past_search = (approved + denied) > 0
     if not setup_complete:
         steps.append(_step(
             "search", "Search",
             status="locked", ready=False,
+            hidden=True,
             blocked_reason="Add at least one source in Setup first.",
+        ))
+    elif progressed_past_search and not search_running:
+        steps.append(_step(
+            "search", "Search",
+            status="complete", ready=False,
+            blocked_reason="You've already moved past Search. Edit sources in Setup to re-run.",
+            count={"items": total_items} if total_items else None,
         ))
     else:
         steps.append(_step(
