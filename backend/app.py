@@ -4403,6 +4403,19 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                     yield f"data: {json.dumps({'stage': 'embedding', 'current': current_item, 'total': total_items, 'message': f'Creating embeddings for item {current_item} ({len(chunk_ids)} chunks)...'})}\n\n"
                     
                     embed_chunks(chunk_ids)  # Now uses batch API - much faster!
+
+                    # Cross-platform paraphrase linking. Compares this doc's
+                    # title-chunk embedding to other docs' title chunks for the
+                    # same creator and stamps documents.metadata.related_document_ids
+                    # so paraphrased reposts (e.g. YouTube vs LinkedIn version of
+                    # the same idea) get linked even when simhash misses them.
+                    try:
+                        from backend.services.paraphrase_link import link_cross_platform_paraphrases
+                        related_links = link_cross_platform_paraphrases(int(document_id), int(creator_id))
+                        if related_links:
+                            yield f"data: {json.dumps({'stage': 'paraphrase_linked', 'current': current_item, 'total': total_items, 'related_count': len(related_links), 'message': f'Item {current_item} linked to {len(related_links)} cross-platform paraphrase(s).'})}\n\n"
+                    except Exception as _link_exc:
+                        logger.warning(f"paraphrase link skipped for doc {document_id}: {_link_exc}")
                     
                     # Update search_items status
                     update_status_query = """

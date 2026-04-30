@@ -1409,6 +1409,7 @@ def retrieve_candidates(
             "content": r["chunk_text"],
             "source_ref": source_ref_dict,
             "document_id": r["document_id"],
+            "_doc_meta": doc_meta,
         }
         candidates.append(cand)
 
@@ -1419,6 +1420,15 @@ def retrieve_candidates(
         if len(filtered) < len(candidates) and debug:
             logger.info("retrieval_debug platform_filter kept=%d dropped=%d enabled=%s", len(filtered), len(candidates) - len(filtered), list(allowed))
         candidates = filtered
+
+    # ── Cross-platform paraphrase de-dup ──
+    # documents.metadata.related_document_ids is populated by paraphrase_link
+    # after each ingest. When two retrieved chunks belong to documents in the
+    # same paraphrase cluster, keep the closer (better) chunk and surface the
+    # others on its source_ref.also_on so the answer can say "also on tiktok,
+    # linkedin" without citing the same idea twice.
+    if candidates:
+        candidates = _dedupe_paraphrase_clusters(candidates, debug=debug)
 
     if debug and candidates:
         for i, c in enumerate(candidates[:10]):
@@ -1444,8 +1454,103 @@ def retrieve_candidates(
             logger.debug("total_chunks enrichment failed: %s", e)
     for c in candidates:
         c["total_chunks"] = doc_chunk_counts.get(c.get("document_id"), 0)
+        c.pop("_doc_meta", None)
 
     return candidates
+
+
+def _dedupe_paraphrase_clusters(candidates: List[Dict[str, Any]], debug: bool = False) -> List[Dict[str, Any]]:
+    """Collapse retrieval candidates that belong to the same paraphrase cluster.
+
+    A "cluster" is the union-find closure over `documents.metadata.related_document_ids`
+    edges (written by backend/services/paraphrase_link.py). Within each cluster
+    we keep the candidate with the lowest distance and merge the dropped
+    documents' platform/title onto the survivor's source_ref.also_on list.
+    """
+    # Build doc_id -> set(linked_doc_ids)
+    doc_links: Dict[Any, set] = {}
+    for c in candidates:
+        did = c.get("document_id")
+        if did is None:
+            continue
+        doc_links.setdefault(did, set())
+        doc_meta = c.get("_doc_meta") or {}
+        related = doc_meta.get("related_document_ids") or []
+        for entry in related:
+            if isinstance(entry, dict) and entry.get("document_id"):
+                doc_links[did].add(int(entry["document_id"]))
+
+    # Union-find over doc_ids that actually appear in candidates.
+    present_docs = set(doc_links.keys())
+    parent: Dict[Any, Any] = {d: d for d in present_docs}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for did, links in doc_links.items():
+        for other in links:
+            if other in present_docs:
+                union(did, other)
+
+    # Group candidates by cluster root.
+    clusters: Dict[Any, List[Dict[str, Any]]] = {}
+    for c in candidates:
+        did = c.get("document_id")
+        if did is None or did not in parent:
+            # No grouping info; keep on its own.
+            clusters.setdefault(("solo", id(c)), []).append(c)
+            continue
+        root = find(did)
+        clusters.setdefault(root, []).append(c)
+
+    survivors: List[Dict[str, Any]] = []
+    dropped_count = 0
+    for cluster_chunks in clusters.values():
+        if len(cluster_chunks) == 1:
+            survivors.append(cluster_chunks[0])
+            continue
+        # Sort: best (lowest) distance wins. Tie-break: title-chunks first.
+        cluster_chunks.sort(
+            key=lambda c: (
+                float(c.get("distance", 1.0)),
+                0 if (c.get("source_ref") or {}).get("title") else 1,
+            )
+        )
+        winner = cluster_chunks[0]
+        also_on: List[Dict[str, str]] = []
+        seen_docs = {winner.get("document_id")}
+        for loser in cluster_chunks[1:]:
+            ldid = loser.get("document_id")
+            if ldid in seen_docs:
+                continue
+            seen_docs.add(ldid)
+            ref = loser.get("source_ref") or {}
+            also_on.append({
+                "platform": (ref.get("platform") or "").lower(),
+                "title": ref.get("title") or "",
+                "canonical_url": ref.get("canonical_url") or "",
+                "document_id": ldid,
+            })
+            dropped_count += 1
+        if also_on:
+            winner_ref = winner.setdefault("source_ref", {})
+            winner_ref["also_on"] = also_on
+        survivors.append(winner)
+
+    if debug and dropped_count:
+        logger.info(
+            "retrieval_debug paraphrase_dedupe kept=%d dropped=%d",
+            len(survivors), dropped_count,
+        )
+    return survivors
 
 
 def _normalize_search_terms(text: str) -> List[str]:
