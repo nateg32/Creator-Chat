@@ -1007,55 +1007,69 @@ export function CreatorSetup({
         </section>
 
         <div className="setup-footer">
+          {showSearchConfirm && (
+            <div className="search-confirm-inline" role="region" aria-label="Search summary">
+              <div className="search-confirm-head">
+                <span className="search-confirm-eyebrow">Ready to scrape</span>
+                <button
+                  type="button"
+                  className="search-confirm-cancel"
+                  onClick={() => setShowSearchConfirm(false)}
+                  aria-label="Cancel"
+                >
+                  &times;
+                </button>
+              </div>
+              <ul className="search-confirm-list">
+                {searchSummary.map((item) => (
+                  <li key={item.key} className="search-confirm-item">
+                    <span className={`badge badge-${item.key === "youtube_shorts" ? "youtube" : item.key}`}>{item.label}</span>
+                    <span className="search-confirm-url" title={item.url}>{item.url}</span>
+                    <span className="search-confirm-meta">{item.timeLabel} &middot; {item.maxItems}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="setup-action-row">
-            <button
-              type="button"
-              className={`primary-action primary-action-${nextAction.kind} ${actionFeedback ? `primary-action-${actionFeedback}` : ""}`}
-              onClick={triggerNextAction}
-              aria-busy={nextAction.kind === "loading"}
-              data-reason={nextAction.kind === "blocked" ? nextAction.label : undefined}
-              title={nextAction.kind === "blocked" ? nextAction.label : "\u2318 Enter"}
-            >
-              <span className="primary-action-spinner" aria-hidden="true" />
-              <span className="primary-action-label">{nextAction.label}</span>
-              {(nextAction.kind === "save" || nextAction.kind === "search" || nextAction.kind === "update-and-search") && (
-                <kbd className="kbd-hint kbd-hint-on-dark">&#8984;&#8629;</kbd>
-              )}
-            </button>
+            {showSearchConfirm ? (
+              <>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => setShowSearchConfirm(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary-action primary-action-search"
+                  onClick={handleConfirmScrape}
+                  aria-busy={scrapeLoading}
+                >
+                  <span className="primary-action-spinner" aria-hidden="true" />
+                  <span className="primary-action-label">Confirm &amp; Search</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={`primary-action primary-action-${nextAction.kind} ${actionFeedback ? `primary-action-${actionFeedback}` : ""}`}
+                onClick={triggerNextAction}
+                aria-busy={nextAction.kind === "loading"}
+                data-reason={nextAction.kind === "blocked" ? nextAction.label : undefined}
+                title={nextAction.kind === "blocked" ? nextAction.label : "\u2318 Enter"}
+              >
+                <span className="primary-action-spinner" aria-hidden="true" />
+                <span className="primary-action-label">{nextAction.label}</span>
+                {(nextAction.kind === "save" || nextAction.kind === "search" || nextAction.kind === "update-and-search") && (
+                  <kbd className="kbd-hint kbd-hint-on-dark">&#8984;&#8629;</kbd>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </form>
-
-      {showSearchConfirm && (
-        <div className="creator-setup-modal-overlay" onClick={() => setShowSearchConfirm(false)}>
-          <div className="creator-setup-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="creator-setup-modal-header">
-              <h3>Confirm search</h3>
-              <p>Review the exact sources that will be scraped before continuing.</p>
-            </div>
-            <div className="creator-setup-modal-body">
-              {searchSummary.map((item) => (
-                <div key={item.key} className="search-summary-card">
-                  <div className="search-summary-head">
-                    <span className={`badge badge-${item.key === "youtube_shorts" ? "youtube" : item.key}`}>{item.label}</span>
-                    <span className="search-summary-items">Up to {item.maxItems} items</span>
-                  </div>
-                  <div className="search-summary-url">{item.url}</div>
-                  <div className="search-summary-time">{item.timeLabel}</div>
-                </div>
-              ))}
-            </div>
-            <div className="creator-setup-modal-footer">
-              <button type="button" className="secondary-button" onClick={() => setShowSearchConfirm(false)}>
-                Cancel
-              </button>
-              <button type="button" className="primary-button" onClick={handleConfirmScrape}>
-                Confirm & Search
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );
