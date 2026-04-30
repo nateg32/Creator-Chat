@@ -46,10 +46,15 @@ def generate_canonical_key(source_url: str, platform: str) -> str:
 
 def compute_normalized_text(title: Optional[str], description: Optional[str], caption: Optional[str]) -> str:
     parts = []
-    if title: parts.append(title)
+    # Repeat the title so it dominates the simhash signal. This is what makes
+    # cross-platform dedup work: a YouTube video titled "Spending 1M in Vegas"
+    # and a LinkedIn post "Spent $1M in Vegas—here's why" should collide on
+    # the title even when bodies differ wildly in length and phrasing.
+    if title:
+        parts.extend([title, title, title])
     if description: parts.append(description)
     if caption: parts.append(caption)
-    
+
     combined = " ".join(parts).lower()
     combined = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', combined)
     combined = re.sub(r'[^\w\s]', '', combined)
@@ -97,13 +102,19 @@ def hamming_distance(hash1: int, hash2: int) -> int:
 def find_duplicate(canonical_key: str, content_fingerprint: int, creator_handle: str) -> Tuple[bool, Optional[str], Optional[str], float]:
     """
     Returns (is_primary, duplicate_of_item_id, duplicate_method, duplicate_confidence)
+
+    Two tiers:
+      - distance ≤ 3  → 'fingerprint' (strict, treat as same content)
+      - distance ≤ 10 → 'fingerprint_near' (cross-platform paraphrase, link only)
+    Items with the near-duplicate tier are still kept as primary so the user
+    can review both, but the link is preserved in metadata for retrieval.
     """
     if canonical_key:
         query = "SELECT id FROM scrape_items WHERE canonical_key = %s LIMIT 1"
         res = db.execute_query(query, (canonical_key,))
         if res:
             return False, res[0]["id"], "canonical", 1.0
-            
+
     if content_fingerprint and content_fingerprint != 0:
         query = """
             SELECT id, content_fingerprint
@@ -114,18 +125,54 @@ def find_duplicate(canonical_key: str, content_fingerprint: int, creator_handle:
             LIMIT 200
         """
         recent_items = db.execute_query(query, (creator_handle,))
-        
+
         best_match_id = None
         best_distance = 64
-        
+
         for item in recent_items:
             dist = hamming_distance(content_fingerprint, item["content_fingerprint"])
             if dist <= 3 and dist < best_distance:
                 best_distance = dist
                 best_match_id = item["id"]
-                
+
         if best_match_id:
             confidence = 1.0 - (best_distance / 64.0)
             return False, best_match_id, "fingerprint", confidence
-            
+
     return True, None, None, 0.0
+
+
+def find_near_duplicate(
+    content_fingerprint: int,
+    creator_handle: str,
+    exclude_id: Optional[str] = None,
+    distance_threshold: int = 10,
+) -> Tuple[Optional[str], float]:
+    """Find a near-duplicate (paraphrased / cross-platform same-topic).
+
+    Returns (related_item_id, confidence) or (None, 0.0). Used to *link*
+    related cross-platform items without marking them as duplicates.
+    """
+    if not content_fingerprint or content_fingerprint == 0:
+        return None, 0.0
+    query = """
+        SELECT id, content_fingerprint
+        FROM scrape_items
+        WHERE creator_handle = %s
+        AND content_fingerprint IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 200
+    """
+    recent_items = db.execute_query(query, (creator_handle,))
+    best_id = None
+    best_distance = 64
+    for item in recent_items:
+        if exclude_id and item.get("id") == exclude_id:
+            continue
+        dist = hamming_distance(content_fingerprint, item.get("content_fingerprint"))
+        if 3 < dist <= distance_threshold and dist < best_distance:
+            best_distance = dist
+            best_id = item.get("id")
+    if best_id is None:
+        return None, 0.0
+    return best_id, 1.0 - (best_distance / 64.0)

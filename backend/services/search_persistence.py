@@ -148,6 +148,29 @@ def _find_duplicate_preloaded(
     return True, None, None, 0.0
 
 
+def _find_near_duplicate_preloaded(
+    content_fingerprint: int,
+    fingerprints: List[Dict[str, Any]],
+    exclude_id: Optional[Any] = None,
+    distance_threshold: int = 10,
+) -> Tuple[Optional[Any], float]:
+    """Detect cross-platform paraphrases (3 < distance <= threshold)."""
+    if not content_fingerprint or content_fingerprint == 0:
+        return None, 0.0
+    best_id = None
+    best_distance = 64
+    for item in fingerprints[:200]:
+        if exclude_id and item.get('id') == exclude_id:
+            continue
+        dist = hamming_distance(content_fingerprint, item.get('content_fingerprint'))
+        if 3 < dist <= distance_threshold and dist < best_distance:
+            best_distance = dist
+            best_id = item.get('id')
+    if best_id is None:
+        return None, 0.0
+    return best_id, 1.0 - (best_distance / 64.0)
+
+
 def _build_response_item(db_item_id: Any, item: Dict[str, Any], creator_handle: str, item_platform: str, published_at: Optional[datetime], meta: Dict[str, Any], norm_status: str, is_primary: bool, dup_item_id: Optional[str]) -> Dict[str, Any]:
     preview_text = item.get('transcript') or item.get('caption', '') or ''
     preview = preview_text[:200] + '...' if len(preview_text) > 200 else preview_text
@@ -249,6 +272,18 @@ def persist_search_items(
             is_primary, dup_item_id, dup_method, dup_confidence = _find_duplicate_preloaded(
                 canon_key, fingerprint, canonical_map, fingerprints
             )
+            # Detect cross-platform near-duplicates (paraphrased content). These
+            # are NOT marked as duplicates (still primary) but linked via
+            # metadata so retrieval can show all platforms covering the same
+            # topic in one answer.
+            related_id, related_conf = _find_near_duplicate_preloaded(
+                fingerprint, fingerprints, exclude_id=dup_item_id
+            )
+            if related_id and is_primary:
+                meta['related_item_id'] = str(related_id)
+                meta['related_confidence'] = round(related_conf, 3)
+                meta['related_method'] = 'fingerprint_near'
+                metadata_json = json.dumps(meta, default=str)
             norm_status = resolve_transcript_status(item.get('transcript'), item.get('transcript_status', 'missing'))
             db_item_id = db.execute_insert(
                 insert_query,

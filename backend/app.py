@@ -4039,7 +4039,8 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
             
             fetch_query = """
                 SELECT id, creator_handle, source_url, caption, transcript, 
-                       transcript_status, published_at, metadata, content_type
+                       transcript_status, published_at, metadata, content_type,
+                       is_primary, duplicate_of_item_id
                 FROM scrape_items
                 WHERE id = ANY(%s::uuid[]) AND scrape_run_id = %s
             """
@@ -4095,6 +4096,43 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                         else:
                             platform = "unknown"
                     
+                    # Cross-platform duplicate short-circuit. If this scrape_item
+                    # was flagged at scrape-time as a duplicate of another item
+                    # (canonical URL match or simhash distance <= 3), reuse the
+                    # existing document instead of re-embedding the same content.
+                    if not item.get("is_primary") and item.get("duplicate_of_item_id"):
+                        primary_doc = db.execute_one(
+                            """
+                            SELECT d.id
+                            FROM scrape_items s
+                            JOIN documents d
+                              ON d.source_id = COALESCE(NULLIF(s.metadata->>'content_id', ''), s.id::text)
+                            WHERE s.id = %s::uuid
+                            LIMIT 1
+                            """,
+                            (str(item["duplicate_of_item_id"]),),
+                        )
+                        if primary_doc and primary_doc.get("id"):
+                            primary_doc_id = int(primary_doc["id"])
+                            db.execute_update(
+                                "INSERT INTO creator_documents (creator_id, document_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                                (creator_id, primary_doc_id),
+                            )
+                            db.execute_update(
+                                "UPDATE scrape_items SET review_status = 'approved' WHERE id = %s::uuid",
+                                (str(item_id),),
+                            )
+                            skipped_item_count += 1
+                            ingested.append(
+                                ApproveIngestItem(
+                                    queue_id=str(item_id),
+                                    document_id=primary_doc_id,
+                                    chunks_inserted=0,
+                                )
+                            )
+                            yield f"data: {json.dumps({'stage': 'duplicate_skipped', 'current': current_item, 'total': total_items, 'message': f'Item {current_item} is a cross-platform duplicate \u2014 reusing existing document.'})}\n\n"
+                            continue
+
                     content_id = item_meta.get("content_id") or ""
                     title_from_meta = item_meta.get("title") or ""
                     
@@ -4279,6 +4317,32 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                         chunk_size=800,
                         overlap=120
                     )
+
+                    # Prepend a tiny "title summary" chunk so semantic queries
+                    # that match the topic/title (e.g. "why did u spend a million
+                    # in vegas" -> "Spending 1 Million in Vegas") get a strong
+                    # vector hit on a high-signal short chunk. Without this the
+                    # title is diluted by 800 chars of body in chunk 0.
+                    body_preview = (text_content or "").strip()
+                    # Strip the existing [title · platform] anchor we prepended
+                    # in _compose_ingest_text so we don't double-count it.
+                    if body_preview.startswith("["):
+                        nl = body_preview.find("\n\n")
+                        if 0 < nl < 200:
+                            body_preview = body_preview[nl + 2 :].strip()
+                    body_preview = body_preview[:240]
+                    title_chunk_text = f"{title}\n\n{platform} \u00b7 {item['creator_handle']}\n\n{body_preview}".strip()
+                    if title_chunk_text:
+                        # Shift body chunk indices up by 1 so the title chunk
+                        # owns chunk_index 0.
+                        for c in chunks:
+                            c["index"] = c["index"] + 1
+                        chunks.insert(0, {
+                            "index": 0,
+                            "text": title_chunk_text,
+                            "creator_id": creator_id,
+                            "document_id": document_id,
+                        })
                     
                     # Store chunks
                     chunk_ids = []
@@ -4304,6 +4368,7 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                             "transcript_status": transcript_status,
                             "published_at": item.get("published_at"),
                             "source_ref": source_ref,
+                            "is_title_chunk": chunk["index"] == 0,
                         }
                         
                         chunk_id = db.execute_insert(
