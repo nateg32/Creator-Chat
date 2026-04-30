@@ -315,6 +315,27 @@ function AppInner() {
   const [workflowHasDetectedChanges, setWorkflowHasDetectedChanges] = useState(false);
   const [workflowRequiresApproval, setWorkflowRequiresApproval] = useState(false);
   const scrapedItemsRef = useRef(state.scrapedItems);
+  const backendProbeFailuresRef = useRef(0);
+
+  const markBackendConnected = useCallback(() => {
+    backendProbeFailuresRef.current = 0;
+    setBackendConnected(true);
+  }, []);
+
+  const markBackendProbeFailure = useCallback(() => {
+    backendProbeFailuresRef.current += 1;
+    setBackendConnected(backendProbeFailuresRef.current >= 3 ? false : null);
+  }, []);
+
+  const isBackendConnectionError = useCallback((error) => {
+    const message = String(error?.message || "");
+    return (
+      message.includes("Cannot connect to backend at") ||
+      message.includes("Request timeout:") ||
+      message.includes("Failed to fetch") ||
+      message.includes("NetworkError")
+    );
+  }, []);
 
   useEffect(() => {
     scrapedItemsRef.current = state.scrapedItems;
@@ -407,7 +428,7 @@ function AppInner() {
     try {
       const data = await listCreators();
       setExistingCreators(data.creators || []);
-      setBackendConnected(true);
+      markBackendConnected();
 
       // Pre-load threads for all creators (lazy load is better at scale but this is fine for now)
       if (data.creators) {
@@ -415,8 +436,8 @@ function AppInner() {
       }
     } catch (error) {
       console.error("Failed to load creators:", error);
-      if (error.message.includes("Failed to fetch")) {
-        setBackendConnected(false);
+      if (isBackendConnectionError(error)) {
+        markBackendProbeFailure();
       }
     }
   }
@@ -654,10 +675,29 @@ function AppInner() {
   }
 
   useEffect(() => {
-    health()
-      .then(() => setBackendConnected(true))
-      .catch(() => setBackendConnected(false));
-  }, []);
+    let cancelled = false;
+
+    async function probeBackendHealth() {
+      try {
+        await health();
+        if (!cancelled) {
+          markBackendConnected();
+        }
+      } catch (error) {
+        if (!cancelled && isBackendConnectionError(error)) {
+          markBackendProbeFailure();
+        }
+      }
+    }
+
+    probeBackendHealth();
+    const intervalId = window.setInterval(probeBackendHealth, 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isBackendConnectionError, markBackendConnected, markBackendProbeFailure]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
