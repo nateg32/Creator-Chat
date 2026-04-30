@@ -52,6 +52,7 @@ export function CreatorSetup({
   const [hasSavedInSession, setHasSavedInSession] = useState(false);
   const [actionFeedback, setActionFeedback] = useState(null); // 'success' | 'error' | null
   const nameInputRef = useRef(null);
+  const isExistingCreatorRef = useRef(Boolean(savedCreatorId));
   const platformUrlRefs = useRef(new Map());
   const preserveSaveGateRef = useRef(false);
   const setPlatformUrlRef = useCallback((key, el) => {
@@ -327,16 +328,17 @@ export function CreatorSetup({
     try {
       const platform_configs = buildPlatformConfigs();
       preserveSaveGateRef.current = true;
+      const creatorNamePayload = isExistingCreatorRef.current ? undefined : (creatorName.trim() || undefined);
       if (savedCreatorId) {
         const res = await updateCreator(savedCreatorId, {
-          name: creatorName.trim() || undefined,
+          name: creatorNamePayload,
           profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
         onSaveConfig({ creatorId: savedCreatorId, name: res.name, handle: res.handle, profile_picture_url: res.profile_picture_url, status: res.status, visual_config: res.visual_config });
       } else {
         const res = await createCreatorWithConfig({
-          name: creatorName.trim() || undefined,
+          name: creatorNamePayload,
           profile_picture_url: creatorAvatarUrl.trim() || undefined,
           platform_configs,
         });
@@ -689,6 +691,7 @@ export function CreatorSetup({
                 className={nameError ? "input-error" : ""}
                 value={creatorName}
                 onChange={(e) => {
+                  if (isExistingCreatorRef.current) return;
                   setCreatorName(e.target.value);
                   if (!e.target.value.trim()) setNameError("Enter a creator name.");
                   else if (e.target.value.trim().length < 2) setNameError("Name is too short.");
@@ -697,6 +700,7 @@ export function CreatorSetup({
                   setNameSuggestedAcronym(null);
                 }}
                 onBlur={() => {
+                  if (isExistingCreatorRef.current) return;
                   const res = normalizeCreatorName(creatorName);
                   if (!res.isValid) {
                     setNameError(res.error);
@@ -715,8 +719,11 @@ export function CreatorSetup({
                   }
                 }}
                 placeholder="e.g. Dan Martell"
-                disabled={saveLoading}
+                disabled={saveLoading || isExistingCreatorRef.current}
               />
+              {isExistingCreatorRef.current && (
+                <div className="validation-hint">Creator name is locked when editing an existing bot.</div>
+              )}
               {duplicateCreator && !savedCreatorId && (
                 <div className="duplicate-creator-banner">
                   <span className="duplicate-creator-message">

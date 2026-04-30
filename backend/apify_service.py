@@ -3,9 +3,11 @@ import json
 import html
 import re
 import time
+import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
+from urllib.request import Request, urlopen
 from backend.settings import settings
 from backend.services.transcript_quality import assess_transcript_quality, transcript_needs_recovery
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -505,6 +507,101 @@ def _time_filter_to_date_expr(time_filter: Optional[Dict[str, Any]]) -> Optional
         d = time_filter.get("days") or 30
         return f"{int(d)} days"
     return None
+
+
+def _fetch_url_text(url: str, timeout: int = 20) -> str:
+    req = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    with urlopen(req, timeout=timeout) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def _resolve_youtube_feed_url(channel_url: str) -> Optional[str]:
+    url = str(channel_url or "").strip()
+    if not url:
+        return None
+
+    direct_channel = re.search(r"/channel/([A-Za-z0-9_-]+)", url)
+    if direct_channel:
+        return f"https://www.youtube.com/feeds/videos.xml?channel_id={direct_channel.group(1)}"
+
+    try:
+        html_text = _fetch_url_text(url)
+    except Exception as exc:
+        print(f"[YOUTUBE-FALLBACK] Could not fetch channel HTML: {exc}", flush=True)
+        return None
+
+    match = re.search(r"https://www\.youtube\.com/feeds/videos\.xml\?channel_id=([A-Za-z0-9_-]+)", html_text)
+    if match:
+        return f"https://www.youtube.com/feeds/videos.xml?channel_id={match.group(1)}"
+
+    return None
+
+
+def _fallback_youtube_feed_items(
+    channel_url: str,
+    handle: Optional[str],
+    limit: int,
+    skip_transcripts: bool = False,
+) -> List[Dict[str, Any]]:
+    feed_url = _resolve_youtube_feed_url(channel_url)
+    if not feed_url:
+        return []
+
+    try:
+        xml_text = _fetch_url_text(feed_url)
+        root = ET.fromstring(xml_text)
+    except Exception as exc:
+        print(f"[YOUTUBE-FALLBACK] Could not parse feed: {exc}", flush=True)
+        return []
+
+    ns = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "yt": "http://www.youtube.com/xml/schemas/2015",
+        "media": "http://search.yahoo.com/mrss/",
+    }
+
+    items: List[Dict[str, Any]] = []
+    creator = handle or "youtube"
+
+    for entry in root.findall("atom:entry", ns):
+        video_id = entry.findtext("yt:videoId", default="", namespaces=ns)
+        if not video_id:
+            continue
+        source_url = f"https://www.youtube.com/watch?v={video_id}"
+        title = entry.findtext("atom:title", default="", namespaces=ns)
+        published_at = entry.findtext("atom:published", default=None, namespaces=ns)
+        description = entry.findtext("media:group/media:description", default="", namespaces=ns)
+        channel_name = entry.findtext("atom:author/atom:name", default=creator, namespaces=ns)
+
+        items.append({
+            "creator_handle": channel_name or creator,
+            "platform": "youtube",
+            "content_type": "video",
+            "source_url": source_url,
+            "caption": description or title,
+            "transcript": "",
+            "transcript_status": "pending" if skip_transcripts else "missing",
+            "published_at": published_at,
+            "metadata": {
+                "platform": "youtube",
+                "content_id": video_id,
+                "canonical_url": source_url,
+                "title": title or f"YouTube Video {video_id}",
+                "channelName": channel_name or creator,
+                "fallback_source": "youtube_rss",
+            },
+        })
+        if len(items) >= limit:
+            break
+
+    print(f"[YOUTUBE-FALLBACK] RSS fallback returned {len(items)} items from {feed_url}", flush=True)
+    return items
 
 
 def _extract_transcripts_invideoiq(video_urls: List[str], token: str, language: str = "", platform_hint: str = "") -> Dict[str, str]:
@@ -1366,6 +1463,19 @@ def search_youtube_channel(
         })
         if len(items) >= limit:
             break
+
+    if len(items) < limit and not youtube_shorts_only:
+        fallback_items = _fallback_youtube_feed_items(target_url, handle, limit, skip_transcripts=skip_transcripts)
+        seen_urls = {item.get("source_url") for item in items}
+        for fallback_item in fallback_items:
+            fallback_url = fallback_item.get("source_url")
+            if not fallback_url or fallback_url in seen_urls:
+                continue
+            items.append(fallback_item)
+            seen_urls.add(fallback_url)
+            if len(items) >= limit:
+                break
+
     return items
 
 

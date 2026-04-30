@@ -2134,16 +2134,14 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
         count={"sources": source_count} if source_count else None,
     ))
 
-    # Search is hidden until the user actually triggers a run from Setup.
-    # Search is an internal transition initiated from Setup, not a user-visible nav step.
-    # Keep it hidden in all states so the visible journey stays Setup -> Approve -> Persona -> Chat.
+    # Search is a visible status step, but it is never directly navigable.
     steps.append(_step(
         "search", "Search",
-        status="active" if search_running else "locked",
+        status="active" if search_running else ("complete" if search_complete else "locked"),
         ready=False,
-        hidden=True,
-        blocked_reason="Search runs automatically when triggered from Setup.",
-        count={"items": total_items} if search_running and total_items else None,
+        hidden=False,
+        blocked_reason="Search runs automatically from Setup and cannot be opened directly.",
+        count={"items": total_items} if total_items else None,
     ))
 
     if total_items == 0:
@@ -2203,7 +2201,7 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
     else:
         steps.append(_step("chat", "Chat", status="active", ready=True))
 
-    current_step = "setup" if search_running else "chat"
+    current_step = "search" if search_running else "chat"
     if not search_running:
         for s in steps:
             if s.get("hidden"):
