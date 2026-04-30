@@ -12,7 +12,7 @@ export function Stepper({ currentStep, steps, onStepClick, searchProgress = 0, o
           const stepNumber = index + 1;
           const isActive = stepNumber === currentStep;
           // Only disable Search (step 2) - it should be visible but not clickable
-          const isDisabled = step.key === 'scrape';
+          const isDisabled = step.key === 'search';
 
           return (
             <button
@@ -24,7 +24,7 @@ export function Stepper({ currentStep, steps, onStepClick, searchProgress = 0, o
             >
               <span className="nav-step-label">
                 {step.label}
-                {isActive && step.key === 'scrape' && searchProgress > 0 && searchProgress < 100 && (
+                {isActive && step.key === 'search' && searchProgress > 0 && searchProgress < 100 && (
                   <span className="step-progress-inline"> {Math.round(searchProgress)}%</span>
                 )}
               </span>

@@ -16,7 +16,7 @@ export function WorkflowStaleBanner({ creatorId, currentStepKey, onJumpTo }) {
   // Decide where to send the user to fix it.
   let target = null;
   if (currentStepKey === "persona") target = "approve";
-  else if (currentStepKey === "approve") target = "scrape";
+  else if (currentStepKey === "approve") target = "search";
 
   return (
     <div className="wf-stale-banner" role="status">

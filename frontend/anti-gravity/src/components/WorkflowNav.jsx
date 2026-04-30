@@ -116,7 +116,7 @@ export function WorkflowNav({
               )}
               <span className="nav-step-label">{s.label}</span>
 
-              {s.key === "scrape" && isCurrent && searchProgress > 0 && searchProgress < 100 && (
+              {s.key === "search" && isCurrent && searchProgress > 0 && searchProgress < 100 && (
                 <span className="step-progress-inline">{Math.round(searchProgress)}%</span>
               )}
 
@@ -157,7 +157,7 @@ function CountPill({ stepKey, count, active }) {
       value = count.approved;
       tone = "success";
     }
-  } else if (stepKey === "scrape" && count.items) {
+  } else if (stepKey === "search" && count.items) {
     value = count.items;
   } else if (stepKey === "persona" && count.docs) {
     value = count.docs;

@@ -73,7 +73,7 @@ class ErrorBoundary extends Component {
 
 const STEPS = [
   { label: "Setup", key: "setup" },
-  { label: "Search", key: "scrape" },
+  { label: "Search", key: "search" },
   { label: "Approve", key: "approve" },
   { label: "Persona", key: "persona" },
   { label: "Chat", key: "chat" },
