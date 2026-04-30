@@ -55,7 +55,21 @@ export function WorkflowNav({
 
   const visible = merged.filter((s) => !s.hidden);
 
-  const activeKey = serverStep || steps[currentStep - 1]?.key;
+  const activeKey = useMemo(() => {
+    const visibleKeys = new Set(visible.map((s) => s.key));
+    if (serverStep && visibleKeys.has(serverStep)) return serverStep;
+
+    const localKey = steps[currentStep - 1]?.key;
+    if (localKey && visibleKeys.has(localKey)) return localKey;
+
+    const localIndex = steps.findIndex((step) => step.key === localKey);
+    for (let idx = localIndex - 1; idx >= 0; idx -= 1) {
+      const candidateKey = steps[idx]?.key;
+      if (candidateKey && visibleKeys.has(candidateKey)) return candidateKey;
+    }
+
+    return visible[0]?.key || null;
+  }, [visible, serverStep, steps, currentStep]);
 
   return (
     <div className="global-nav-stepper">

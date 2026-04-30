@@ -228,10 +228,13 @@
 .duplicate-creator-banner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: min(100%, 560px);
   padding: 12px 16px;
-  margin-bottom: 16px;
+  margin: 0 auto 16px;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: #ffffff;
@@ -246,7 +249,8 @@
   align-items: center;
   gap: 10px;
   color: var(--text-soft);
-  line-height: 1;
+  line-height: 1.35;
+  text-align: center;
 }
 
 .duplicate-creator-message::before {
@@ -281,6 +285,13 @@
 .duplicate-creator-banner .link-button:hover {
   background: var(--surface-soft);
   border-color: var(--border-strong);
+}
+
+.url-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
 }
 
 .setup-empty-state {

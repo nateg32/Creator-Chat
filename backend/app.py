@@ -2135,26 +2135,16 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
     ))
 
     # Search is hidden until the user actually triggers a run from Setup.
-    # Once they've moved forward (items approved/denied) and no run is active,
-    # it locks (visible as a checked step) to prevent regression.
-    # Search step is only visible while a run is actively in flight.
-    # For existing creators / edit mode / completed runs, it stays hidden so the
-    # nav reads as: Setup -> Approve -> Persona -> Chat.
-    if search_running:
-        steps.append(_step(
-            "search", "Search",
-            status="active",
-            ready=False,
-            blocked_reason="Search runs automatically when triggered from Setup.",
-            count={"items": total_items} if total_items else None,
-        ))
-    else:
-        steps.append(_step(
-            "search", "Search",
-            status="locked", ready=False,
-            hidden=True,
-            blocked_reason="Search runs automatically when triggered from Setup.",
-        ))
+    # Search is an internal transition initiated from Setup, not a user-visible nav step.
+    # Keep it hidden in all states so the visible journey stays Setup -> Approve -> Persona -> Chat.
+    steps.append(_step(
+        "search", "Search",
+        status="active" if search_running else "locked",
+        ready=False,
+        hidden=True,
+        blocked_reason="Search runs automatically when triggered from Setup.",
+        count={"items": total_items} if search_running and total_items else None,
+    ))
 
     if total_items == 0:
         steps.append(_step(
@@ -2213,14 +2203,17 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
     else:
         steps.append(_step("chat", "Chat", status="active", ready=True))
 
-    current_step = "chat"
-    for s in steps:
-        if s["status"] in ("active", "available") or s["stale"]:
-            current_step = s["key"]
-            break
-        if s["status"] == "locked":
-            current_step = s["key"]
-            break
+    current_step = "setup" if search_running else "chat"
+    if not search_running:
+        for s in steps:
+            if s.get("hidden"):
+                continue
+            if s["status"] in ("active", "available") or s["stale"]:
+                current_step = s["key"]
+                break
+            if s["status"] == "locked":
+                current_step = s["key"]
+                break
 
     return {
         "creator_id": creator_id,

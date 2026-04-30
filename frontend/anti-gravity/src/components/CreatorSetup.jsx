@@ -282,41 +282,6 @@ export function CreatorSetup({
     return true;
   }, [selected, config, creatorName, nameError]);
 
-  const handleTestLink = async (key) => {
-    const c = config[key];
-    const url = (c?.url || "").trim();
-    if (!url) {
-      setTestStatus((s) => ({ ...s, [key]: "Enter a URL first" }));
-      return;
-    }
-
-    let urlToValidate = url;
-    setTestStatus((s) => ({ ...s, [key]: "Checking public link..." }));
-    try {
-      const res = await validatePlatformUrl(key, urlToValidate);
-      if (res.valid) {
-        const normalized = res.normalized || urlToValidate;
-        if (normalized !== url) {
-          updatePlatformConfig(key, { url: normalized });
-        }
-        const statusMessage = res.scrape_ready === false
-          ? (res.message || "Valid format, but scraping stays locked until the link can be verified publicly.")
-          : (res.message || "Valid public link");
-        setTestStatus((s) => ({
-          ...s,
-          [key]: statusMessage,
-        }));
-        return;
-      }
-      setTestStatus((s) => ({
-        ...s,
-        [key]: res.error || "Link invalid",
-      }));
-    } catch (e) {
-      setTestStatus((s) => ({ ...s, [key]: e.message || "Link invalid" }));
-    }
-  };
-
   const handleAvatarUpload = async (e, type) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -912,17 +877,9 @@ export function CreatorSetup({
                         {platform.key === "tiktok" && (
                           <div className="validation-hint">Video links auto-convert to the creator profile.</div>
                         )}
-                        {platform.key !== "custom" && (
-                          <div className="url-row-actions">
-                            <button
-                              type="button"
-                              className="link-button"
-                              onClick={() => handleTestLink(platform.key)}
-                              disabled={saveLoading || !(cfg.url || "").trim()}
-                            >
-                              Verify link
-                            </button>
-                            {status && <span className={`test-status ${statusClass}`}>{status}</span>}
+                        {platform.key !== "custom" && status && (
+                          <div className="url-status-row">
+                            <span className={`test-status ${statusClass}`}>{status}</span>
                           </div>
                         )}
                       </div>
