@@ -47,6 +47,8 @@ class Settings:
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
     COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "true").lower() == "true"
+    # Cross-site cookies (e.g., Vercel frontend → Render backend) require SameSite=None + Secure=True.
+    COOKIE_SAMESITE: str = os.getenv("COOKIE_SAMESITE", "none").lower()
     
     # Transcription
     TRANSCRIBE_ON_INGEST: bool = os.getenv("TRANSCRIBE_ON_INGEST", "false").lower() == "true"

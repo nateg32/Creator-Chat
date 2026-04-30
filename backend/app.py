@@ -1187,7 +1187,7 @@ async def login(request: Request, payload: LoginRequest, response: Response):
             value=session_id,
             max_age=30 * 24 * 60 * 60,
             httponly=True,
-            samesite="lax",
+            samesite=settings.COOKIE_SAMESITE,
             secure=settings.COOKIE_SECURE,
         )
         
@@ -1223,7 +1223,7 @@ async def register(request: Request, payload: LoginRequest, response: Response):
             value=session_id,
             max_age=30 * 24 * 60 * 60,
             httponly=True,
-            samesite="lax",
+            samesite=settings.COOKIE_SAMESITE,
             secure=settings.COOKIE_SECURE,
         )
         
@@ -1265,7 +1265,11 @@ async def logout(
     if sid:
         query = "DELETE FROM sessions WHERE id = %s"
         db.execute_update(query, (sid,))
-    response.delete_cookie(key="session_id")
+    response.delete_cookie(
+        key="session_id",
+        samesite=settings.COOKIE_SAMESITE,
+        secure=settings.COOKIE_SECURE,
+    )
     return {"ok": True}
 
 # ============================================================================
