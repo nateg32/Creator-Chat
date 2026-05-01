@@ -20,17 +20,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: #0f172a;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #111114;
   flex-shrink: 0;
-  transition: transform 180ms ease, background 180ms ease;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .app-branding:hover {
   transform: translateY(-1px);
-  background: #1e293b;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 .app-branding-mark {
@@ -38,8 +39,8 @@
   width: 22px;
   height: 22px;
   object-fit: contain;
-  /* Invert the dark mark to white when sitting on the dark pill */
-  filter: invert(1) brightness(2);
+  /* Render the dark-stroke SVG as crisp white on the dark pill */
+  filter: brightness(0) invert(1);
 }
 
 .nav-steps-container {
@@ -144,9 +145,8 @@
   }
 
   .app-branding {
-    width: 32px;
-    height: 32px;
-    border-radius: 9px;
+    width: 34px;
+    height: 34px;
   }
 
   .nav-steps-container {
