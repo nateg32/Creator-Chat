@@ -876,20 +876,37 @@
 .gemini-input {
   flex: 1;
   min-width: 0;
+  width: auto;
   border: none;
+  border-radius: 0;
   background: transparent;
   color: var(--text);
   font-size: 13px;
   line-height: 1.4;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0;
   outline: none;
   resize: none;
   max-height: 96px;
-  overflow-y: auto;
+  overflow-y: hidden;
   font-family: inherit;
+  box-shadow: none;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .gemini-input::placeholder {
   color: #a1adbf;
+}
+
+.gemini-input:hover,
+.gemini-input:focus,
+.gemini-input:focus-visible {
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
 .gemini-attach-btn,
