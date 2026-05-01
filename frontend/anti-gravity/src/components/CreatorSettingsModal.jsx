@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./CreatorSettingsModal.css";
 import { resizeImage } from "../utils/image";
+import { useFeedback } from "./feedback/FeedbackProvider";
 
 const COLORS = [
   { label: "Blue", value: "#4285F4" },
@@ -29,6 +30,7 @@ export function CreatorSettingsModal({
   searchMode = "hybrid",
   onUpdateSearchMode,
 }) {
+  const { toast } = useFeedback();
   const normalizedSearchMode = normalizeSearchMode(searchMode);
   const [localCreatorColor, setLocalCreatorColor] = useState(
     visualConfig?.creatorNameColor || "#4285F4"
@@ -74,7 +76,7 @@ export function CreatorSettingsModal({
         setLocalAvatarUrl(base64);
       } catch (err) {
         console.error("Avatar upload failed:", err);
-        alert("Failed to upload image");
+        toast.error("Failed to upload image");
       }
       event.target.value = "";
     }
@@ -106,7 +108,7 @@ export function CreatorSettingsModal({
       onClose();
     } catch (err) {
       console.error("Failed to save creator settings:", err);
-      alert(`Failed to save: ${err.message}`);
+      toast.error(`Failed to save: ${err.message}`);
     } finally {
       setSaving(false);
     }

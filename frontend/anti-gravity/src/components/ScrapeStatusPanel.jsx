@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { getScrapeRuns, startScrapeRun } from "../api/client";
 import "./ScrapeStatusPanel.css";
+import { useFeedback } from "./feedback/FeedbackProvider";
 
 export function ScrapeStatusPanel({ creatorId }) {
+    const { toast } = useFeedback();
     const [runs, setRuns] = useState([]);
     const [loading, setLoading] = useState(false);
     const [triggering, setTriggering] = useState(false);
@@ -30,7 +32,7 @@ export function ScrapeStatusPanel({ creatorId }) {
             // Wait for backend to start, then refresh
             setTimeout(fetchRuns, 2000);
         } catch (e) {
-            alert("Failed to start scrape: " + e.message);
+            toast.error("Failed to start scrape: " + e.message);
         } finally {
             setTriggering(false);
         }

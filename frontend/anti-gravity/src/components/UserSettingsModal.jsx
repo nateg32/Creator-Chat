@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./UserSettingsModal.css";
 import { resizeImage } from "../utils/image";
+import { useFeedback } from "./feedback/FeedbackProvider";
 
 const RESPONSE_STYLES = [
   {
@@ -37,6 +38,7 @@ export function UserSettingsModal({
   userSettings,
   onUpdateUserSettings,
 }) {
+  const { toast } = useFeedback();
   const [displayName, setDisplayName] = useState(userSettings?.display_name || "");
   const [avatarUrl, setAvatarUrl] = useState(userSettings?.profile_picture_url || "");
   const [presets, setPresets] = useState(userSettings?.response_preferences?.presets || []);
@@ -62,7 +64,7 @@ export function UserSettingsModal({
         setAvatarUrl(base64);
       } catch (err) {
         console.error("Avatar upload failed:", err);
-        alert("Failed to upload image");
+        toast.error("Failed to upload image");
       }
     }
   };
@@ -89,7 +91,7 @@ export function UserSettingsModal({
       onClose();
     } catch (err) {
       console.error("Failed to save user settings:", err);
-      alert(`Failed to save: ${err.message}`);
+      toast.error(`Failed to save: ${err.message}`);
     } finally {
       setSaving(false);
     }

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { formatCreatorName } from "../utils/format";
 import "./ChatSidebar.css";
+import { useFeedback } from "./feedback/FeedbackProvider";
 
 export function ChatSidebar({
     creators = [],
@@ -22,6 +23,7 @@ export function ChatSidebar({
     onLoadArchived, // (creatorId) => void
     canCreateCreator = true,
 }) {
+    const { confirm } = useFeedback();
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [expandedCreators, setExpandedCreators] = useState({});
 
@@ -224,7 +226,13 @@ export function ChatSidebar({
 
     const executeDeleteCreators = async () => {
         if (selectedCreators.size === 0) return;
-        if (!window.confirm(`Are you sure you want to delete ${selectedCreators.size} creator(s)? This cannot be undone.`)) return;
+        const ok = await confirm({
+            title: `Delete ${selectedCreators.size} creator${selectedCreators.size === 1 ? "" : "s"}?`,
+            message: "Their conversations and knowledge base will be permanently removed. This cannot be undone.",
+            confirmLabel: "Delete",
+            danger: true,
+        });
+        if (!ok) return;
 
         if (onDeleteCreators) {
             await onDeleteCreators(Array.from(selectedCreators));

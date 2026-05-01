@@ -1,8 +1,10 @@
 import { useState } from "react";
 import "./NewChatModal.css";
 import { deleteCreator } from "../api/client";
+import { useFeedback } from "./feedback/FeedbackProvider";
 
 export function NewChatModal({ onClose, onCreateChat, existingCreators, onRefreshCreators }) {
+    const { toast, confirm } = useFeedback();
     const [mode, setMode] = useState("temporary"); // "temporary" or "new" or "existing"
     const [creatorName, setCreatorName] = useState("");
     const [creatorHandle, setCreatorHandle] = useState("");
@@ -43,7 +45,13 @@ export function NewChatModal({ onClose, onCreateChat, existingCreators, onRefres
 
     const handleDeleteCreator = async (e, creatorId, creatorName) => {
         e.stopPropagation(); // Prevent selection when clicking delete
-        if (!window.confirm(`Are you sure you want to delete ${creatorName}? This cannot be undone.`)) {
+        const ok = await confirm({
+            title: `Delete ${creatorName}?`,
+            message: "Their conversations and knowledge base will be permanently removed. This cannot be undone.",
+            confirmLabel: "Delete",
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
 
@@ -58,7 +66,7 @@ export function NewChatModal({ onClose, onCreateChat, existingCreators, onRefres
             }
         } catch (error) {
             console.error("Failed to delete creator:", error);
-            alert("Failed to delete creator: " + error.message);
+            toast.error("Failed to delete creator: " + error.message);
         } finally {
             setIsDeleting(false);
         }

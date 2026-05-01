@@ -453,12 +453,14 @@
 .fp-dial-scan {
   fill: none;
   stroke: var(--fp-accent);
-  stroke-width: 2;
+  stroke-width: 1;
   stroke-linecap: round;
-  stroke-dasharray: 8 318;
+  /* Tiny tick that orbits the dial — kept short so it can't be mistaken
+   * for additional progress on the ring. */
+  stroke-dasharray: 3 324;
   transform-origin: 60px 60px;
   animation: fp-scan 4.8s linear infinite;
-  opacity: 0.45;
+  opacity: 0.28;
 }
 
 @keyframes fp-scan {
@@ -470,12 +472,13 @@
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: baseline;
+  align-items: flex-end;
   justify-content: center;
-  gap: 2px;
+  gap: 3px;
+  /* Vertically center the readout block as a unit so it sits in the
+   * middle of the dial regardless of glyph metrics. */
+  padding-bottom: calc(50% - 16px);
   font-feature-settings: "tnum" 1;
-  /* Nudge the readout down so the rotating scan arc never clips the % glyph */
-  padding-top: 8px;
 }
 
 .fp-dial-percent {
@@ -487,11 +490,11 @@
 }
 
 .fp-dial-percent-mark {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--fp-mute);
-  /* Sit on the same baseline as the number, just slightly raised. */
-  transform: translateY(-2px);
+  line-height: 1;
+  /* Sit flush on the number's baseline (no superscript look). */
 }
 
 .fp-meta { min-width: 0; }
@@ -528,23 +531,32 @@
 
 .fp-ticker {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 8px;
   font-size: 13px;
   line-height: 1.5;
   color: var(--fp-mute);
-  min-height: 1.5em;
+  /* Reserve space for up to two lines so layout doesn't jump as the
+   * ticker rotates between short and long messages. */
+  min-height: 3em;
 }
 
 .fp-ticker-cursor {
   color: var(--fp-accent);
   font-size: 11px;
-  transform: translateY(-1px);
+  line-height: 1.5;
+  flex-shrink: 0;
 }
 
 .fp-ticker-line {
   animation: fp-fade 380ms ease-out;
-  display: inline-block;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
+  min-width: 0;
 }
 
 @keyframes fp-fade {
@@ -558,19 +570,23 @@
   padding: 16px 0 4px;
   border-top: 1px dashed var(--fp-line);
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 6px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 18px;
+  align-items: stretch;
 }
 
 .fp-tape-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 10px 22px 1fr;
+  align-items: start;
+  gap: 8px;
   font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   font-size: 11px;
   letter-spacing: 0.06em;
   color: var(--fp-faint);
   padding: 4px 0;
+  min-height: 32px;
+  line-height: 1.35;
 }
 
 .fp-tape-mark {
@@ -578,6 +594,8 @@
   border-radius: 1px;
   background: var(--fp-line);
   flex-shrink: 0;
+  /* Align the square with the cap-height of the index/label text. */
+  margin-top: 5px;
 }
 
 .fp-tape-row.complete { color: var(--fp-mute); }
@@ -608,7 +626,8 @@
 .fp-foot {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--fp-line);
@@ -619,10 +638,13 @@
   color: var(--fp-mute);
 }
 
+.fp-foot > span:first-child { color: var(--fp-ink); font-weight: 600; }
+
 .fp-foot-divider {
   width: 1px;
   height: 10px;
   background: var(--fp-line);
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,0 +1,238 @@
+/* ============================================================
+   Feedback system — Toast + Confirm dialog
+   Light premium theme matching index.css variables. Designed to
+   feel like Linear / Claude / OpenAI rather than browser native.
+   ============================================================ */
+
+/* ── Toast stack ───────────────────────────────────────────── */
+.fb-toast-region {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: min(380px, calc(100vw - 48px));
+}
+
+.fb-toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 14px 14px 16px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e8edf3);
+  border-radius: 14px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 12px 32px rgba(15, 23, 42, 0.08),
+    0 2px 6px rgba(15, 23, 42, 0.04);
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--text, #101828);
+  animation: fb-toast-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.fb-toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--text-muted, #7b879c);
+  opacity: 0.6;
+}
+
+.fb-toast--success::before { background: var(--success, #16a34a); opacity: 1; }
+.fb-toast--error::before   { background: var(--danger, #dc2626);  opacity: 1; }
+.fb-toast--info::before    { background: var(--accent, #2457c5);  opacity: 1; }
+
+.fb-toast--leaving {
+  animation: fb-toast-out 180ms ease forwards;
+}
+
+.fb-toast__icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #7b879c);
+}
+.fb-toast--success .fb-toast__icon { color: var(--success, #16a34a); }
+.fb-toast--error   .fb-toast__icon { color: var(--danger, #dc2626); }
+.fb-toast--info    .fb-toast__icon { color: var(--accent, #2457c5); }
+
+.fb-toast__body {
+  min-width: 0;
+}
+.fb-toast__title {
+  font-weight: 600;
+  font-size: 13.5px;
+  margin: 0 0 2px;
+  letter-spacing: -0.01em;
+}
+.fb-toast__msg {
+  margin: 0;
+  color: var(--text-soft, #475467);
+  font-size: 13px;
+  word-wrap: break-word;
+}
+
+.fb-toast__close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #7b879c);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  margin: -2px -2px 0 0;
+  transition: background 120ms ease, color 120ms ease;
+}
+.fb-toast__close:hover {
+  background: var(--surface-soft, #f6f8fb);
+  color: var(--text, #101828);
+}
+
+@keyframes fb-toast-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+@keyframes fb-toast-out {
+  to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+
+/* ── Confirm dialog ───────────────────────────────────────── */
+.fb-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10010;
+  animation: fb-overlay-in 160ms ease;
+  padding: 24px;
+}
+
+@keyframes fb-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.fb-confirm {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e8edf3);
+  border-radius: 18px;
+  padding: 22px 22px 18px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 32px 80px rgba(15, 23, 42, 0.18),
+    0 8px 18px rgba(15, 23, 42, 0.06);
+  animation: fb-confirm-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  font-family: inherit;
+}
+
+@keyframes fb-confirm-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+
+.fb-confirm__icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft, #f0f4fb);
+  color: var(--accent, #2457c5);
+  margin-bottom: 14px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.fb-confirm--danger .fb-confirm__icon {
+  background: var(--danger-soft, #fef2f2);
+  color: var(--danger, #dc2626);
+}
+
+.fb-confirm__title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text, #101828);
+}
+
+.fb-confirm__msg {
+  margin: 0 0 20px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-soft, #475467);
+}
+
+.fb-confirm__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.fb-confirm__btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text, #101828);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 10px;
+  letter-spacing: -0.01em;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.fb-confirm__btn:focus-visible {
+  outline: 2px solid var(--accent, #2457c5);
+  outline-offset: 2px;
+}
+
+.fb-confirm__btn--secondary {
+  border-color: var(--border, #e8edf3);
+  color: var(--text-soft, #475467);
+}
+.fb-confirm__btn--secondary:hover {
+  background: var(--surface-soft, #f6f8fb);
+  color: var(--text, #101828);
+}
+
+.fb-confirm__btn--primary {
+  background: var(--text, #101828);
+  color: #fff;
+}
+.fb-confirm__btn--primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.18);
+}
+
+.fb-confirm--danger .fb-confirm__btn--primary {
+  background: var(--danger, #dc2626);
+}
+.fb-confirm--danger .fb-confirm__btn--primary:hover {
+  box-shadow: 0 8px 16px rgba(220, 38, 38, 0.28);
+}

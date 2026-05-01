@@ -13,6 +13,7 @@ import { ChatSidebar } from "./components/ChatSidebar";
 import { NewChatModal } from "./components/NewChatModal";
 import { UserSettingsModal } from "./components/UserSettingsModal";
 import { Login } from "./components/Login";
+import { useFeedback } from "./components/feedback/FeedbackProvider";
 import { API_BASE_URL, API_CONNECTION_HELP } from "./config";
 import { buildCreatorStarterMessage } from "./utils/creatorWelcome";
 import {
@@ -312,6 +313,7 @@ function AppInner() {
   const [showDebug, setShowDebug] = useState(false);
   const [debugAsk, setDebugAsk] = useState(false);
   const [toast, setToast] = useState(null);
+  const feedback = useFeedback();
   const [backendConnected, setBackendConnected] = useState(null);
   const [searchProgress, setSearchProgress] = useState(0);
   const [workflowOrigin, setWorkflowOrigin] = useState({ fromChat: false, threadId: null, creatorId: null });
@@ -366,8 +368,9 @@ function AppInner() {
   ]);
 
   const showToast = (message, type = "success") => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 2000);
+    if (type === "error") feedback.toast.error(message);
+    else if (type === "info") feedback.toast.info(message);
+    else feedback.toast.success(message);
   };
 
   async function syncWorkflowApprovalStatus(creatorId) {
@@ -614,7 +617,13 @@ function AppInner() {
   }
 
   async function handleDeleteThread(threadId, creatorId) {
-    if (!window.confirm("Permanently delete this conversation? This cannot be undone.")) return;
+    const ok = await feedback.confirm({
+      title: "Delete conversation?",
+      message: "This will permanently remove the conversation. This cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteThread(threadId);
       await refreshThreads(creatorId);
@@ -1213,7 +1222,12 @@ function AppInner() {
     let requiresSave = Boolean(nextStatus?.needs_reapproval);
 
     if (requiresSave) {
-      const shouldSaveChanges = window.confirm("Changes were detected for this creator. Save them to the knowledge base before returning to chat?");
+      const shouldSaveChanges = await feedback.confirm({
+        title: "Save changes?",
+        message: "Changes were detected for this creator. Save them to the knowledge base before returning to chat?",
+        confirmLabel: "Save changes",
+        cancelLabel: "Discard",
+      });
       if (shouldSaveChanges) {
         if (canAutoConfirmApproval()) {
           const saved = await handleApproveSave(buildAutoApprovalDecisions());
@@ -1470,7 +1484,12 @@ function AppInner() {
   }
 
   async function handleArchiveThread(threadId, creatorId) {
-    if (!window.confirm("Archive this conversation?")) return;
+    const ok = await feedback.confirm({
+      title: "Archive conversation?",
+      message: "You can restore archived conversations later from settings.",
+      confirmLabel: "Archive",
+    });
+    if (!ok) return;
     try {
       await updateThread(threadId, { is_archived: true });
       refreshThreads(creatorId);
@@ -1483,7 +1502,13 @@ function AppInner() {
   }
 
   async function handleDeleteThread(threadId, creatorId) {
-    if (!window.confirm("Delete this conversation permanently?")) return;
+    const ok = await feedback.confirm({
+      title: "Delete conversation?",
+      message: "This will permanently remove the conversation. This cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteThread(threadId);
       refreshThreads(creatorId);
@@ -1584,11 +1609,12 @@ function AppInner() {
         />
       )}
 
-      {toast && (
+      {toast && false && (
         <div className={`toast toast-${toast.type}`}>
           {toast.message}
         </div>
       )}
+      {/* Toast rendering moved to FeedbackProvider — keeping `toast` state harmless for now in case other code reads it. */}
 
       {backendConnected === false && (
         <div className="error-banner">

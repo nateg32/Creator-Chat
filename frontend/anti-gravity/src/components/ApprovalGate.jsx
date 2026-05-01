@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import "./ApprovalGate.css";
+import { useFeedback } from "./feedback/FeedbackProvider";
 
 const DECISION_PENDING = "pending";
 const DECISION_APPROVE = "approve";
@@ -33,6 +34,7 @@ function normalizeDisplayText(value) {
 }
 
 export function ApprovalGate({ items, onSave, onBack, loading, progress, forceShowSave = false }) {
+  const { toast } = useFeedback();
   const itemKeySignature = useMemo(() => JSON.stringify(
     items.map((item) => item.item_id || item.queue_id)
   ), [items]);
@@ -130,7 +132,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
     const actionableCount = decisionsArray.filter((d) => d.decision === DECISION_APPROVE || d.decision === DECISION_DENY).length;
 
     if (actionableCount === 0) {
-      alert("Approve or deny at least one item before saving your content decisions.");
+      toast.info("Approve or deny at least one item before saving your content decisions.");
       return;
     }
 
