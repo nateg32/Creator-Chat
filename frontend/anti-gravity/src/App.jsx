@@ -320,6 +320,7 @@ function AppInner() {
   const [workflowOrigin, setWorkflowOrigin] = useState({ fromChat: false, threadId: null, creatorId: null });
   const [workflowHasDetectedChanges, setWorkflowHasDetectedChanges] = useState(false);
   const [workflowRequiresApproval, setWorkflowRequiresApproval] = useState(false);
+  const [emptyCreatorFocus, setEmptyCreatorFocus] = useState("voice");
   const scrapedItemsRef = useRef(state.scrapedItems);
   const backendProbeFailuresRef = useRef(0);
 
@@ -1361,6 +1362,31 @@ function AppInner() {
 
   // Determine if we have any creators
   const hasCreators = existingCreators.length > 0;
+  const shouldShowSidebar = hasCreators || Boolean(activeChatId);
+
+  const emptyCreatorDetails = {
+    voice: {
+      label: "Voice",
+      title: "Shape a creator voice",
+      description: "Start with a handle, approve source material, and the chat learns how the creator actually sounds.",
+    },
+    memory: {
+      label: "Memory",
+      title: "Build a usable knowledge base",
+      description: "Pull in content, clean it up, and turn it into grounded replies instead of filler.",
+    },
+    chat: {
+      label: "Chat",
+      title: "Open a real thread space",
+      description: "Once one creator exists, this surface becomes a clean conversation library instead of an empty rail.",
+    },
+  };
+
+  useEffect(() => {
+    if (!shouldShowSidebar) {
+      setSidebarCollapsed(false);
+    }
+  }, [shouldShowSidebar]);
 
   async function handleUpdateVisualConfig(creatorId, newConfig) {
     if (!creatorId || creatorId === -1) return;
@@ -1632,47 +1658,111 @@ function AppInner() {
       <div className="main-content-area">
         {showChatInterface ? (
           <div className={`chat-fullscreen ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-            <ChatSidebar
-              creators={existingCreators}
-              threadsByCreator={threadsByCreator}
-              activeThreadId={activeChatId}
-              activeCreatorIdProp={activeCreatorId}
-              onSelectThread={handleSelectThreadWrapper}
-              onNewThread={handleNewThreadWrapper}
-              onToggleSidebar={setSidebarCollapsed}
-              onRenameThread={handleRenameThread}
-              onArchiveThread={handleArchiveThread}
-              onRestoreThread={handleRestoreThread}
-              onDeleteThread={handleDeleteThread}
-              archivedThreadsByCreator={archivedThreadsByCreator}
-              onLoadArchived={refreshArchivedThreads}
-              onNewCreator={() => {
-                resetWorkflowSession({ step: 1, isDraft: false });
-              }}
-              onDeleteCreators={handleDeleteCreators}
-              canCreateCreator={!workflowSessionActive}
-            />
+            {shouldShowSidebar && sidebarCollapsed && (
+              <button
+                type="button"
+                className="sidebar-reopen-button"
+                onClick={() => setSidebarCollapsed(false)}
+                title="Open chats"
+              >
+                <span className="sidebar-reopen-icon" aria-hidden="true">
+                  <svg width="15" height="15" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="3.5" y="4.5" width="4" height="11" rx="2" fill="currentColor" opacity="0.9" />
+                    <rect x="9.5" y="6" width="7" height="8" rx="3.5" stroke="currentColor" strokeWidth="1.5" />
+                  </svg>
+                </span>
+                <span className="sidebar-reopen-label">Chats</span>
+              </button>
+            )}
+
+            {shouldShowSidebar && (
+              <ChatSidebar
+                creators={existingCreators}
+                threadsByCreator={threadsByCreator}
+                activeThreadId={activeChatId}
+                activeCreatorIdProp={activeCreatorId}
+                onSelectThread={handleSelectThreadWrapper}
+                onNewThread={handleNewThreadWrapper}
+                onToggleSidebar={setSidebarCollapsed}
+                onRenameThread={handleRenameThread}
+                onArchiveThread={handleArchiveThread}
+                onRestoreThread={handleRestoreThread}
+                onDeleteThread={handleDeleteThread}
+                archivedThreadsByCreator={archivedThreadsByCreator}
+                onLoadArchived={refreshArchivedThreads}
+                onNewCreator={() => {
+                  resetWorkflowSession({ step: 1, isDraft: false });
+                }}
+                onDeleteCreators={handleDeleteCreators}
+                canCreateCreator={!workflowSessionActive}
+                collapsed={sidebarCollapsed}
+              />
+            )}
             <div className="chat-main-area">
               {/* Empty state when no creators exist (requirement #3) */}
               {!hasCreators && !activeChat ? (
                 <div className="empty-creator-state">
-                  <div className="empty-icon">
-                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="1.5">
-                      <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" />
-                    </svg>
+                  <div className="empty-creator-shell">
+                    <div className="empty-creator-copy">
+                      <div className="empty-kicker">Creator workspace</div>
+                      <div className="empty-icon">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="1.5">
+                          <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" />
+                        </svg>
+                      </div>
+                      <h1 className="empty-title">No creators yet</h1>
+                      <p className="empty-subtitle">Build one voice, approve what matters, and this space turns into a clean thread library instead of a blank chat.</p>
+                      <div className="empty-creator-actions">
+                        <button
+                          onClick={() => resetWorkflowSession({ step: 1, isDraft: false })}
+                          className="create-creator-btn"
+                          disabled={workflowSessionActive}
+                        >
+                          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                            <path d="M10 4V16M4 10H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                          </svg>
+                          New Creator
+                        </button>
+                        <button
+                          type="button"
+                          className="empty-secondary-btn"
+                          onClick={() => setEmptyCreatorFocus("memory")}
+                        >
+                          Preview flow
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="empty-creator-interactive" role="group" aria-label="Creator bot preview">
+                      <div className="empty-preview-tabs">
+                        {Object.entries(emptyCreatorDetails).map(([key, detail]) => (
+                          <button
+                            key={key}
+                            type="button"
+                            className={`empty-preview-chip ${emptyCreatorFocus === key ? "active" : ""}`}
+                            onClick={() => setEmptyCreatorFocus(key)}
+                          >
+                            {detail.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="empty-preview-card">
+                        <div className="empty-preview-card-top">
+                          <span className="empty-preview-badge">{emptyCreatorDetails[emptyCreatorFocus].label}</span>
+                          <span className="empty-preview-dot" aria-hidden="true"></span>
+                        </div>
+                        <h2 className="empty-preview-title">{emptyCreatorDetails[emptyCreatorFocus].title}</h2>
+                        <p className="empty-preview-text">{emptyCreatorDetails[emptyCreatorFocus].description}</p>
+                      </div>
+
+                      <div className="empty-preview-points">
+                        <div className="empty-preview-point">Minimal setup, not a cluttered dashboard</div>
+                        <div className="empty-preview-point">Content approval stays in your control</div>
+                        <div className="empty-preview-point">Chat opens only once there is something real to talk to</div>
+                      </div>
+                    </div>
                   </div>
-                  <h1 className="empty-title">No creators yet</h1>
-                  <p className="empty-subtitle">Create a creator to start chatting</p>
-                  <button
-                    onClick={() => resetWorkflowSession({ step: 1, isDraft: false })}
-                    className="create-creator-btn"
-                    disabled={workflowSessionActive}
-                  >
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M10 4V16M4 10H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                    New Creator
-                  </button>
                 </div>
               ) : activeChat ? (
                 <ChatPanel

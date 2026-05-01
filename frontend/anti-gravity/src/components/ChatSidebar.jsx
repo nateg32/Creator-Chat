@@ -22,9 +22,10 @@ export function ChatSidebar({
     archivedThreadsByCreator = {},
     onLoadArchived, // (creatorId) => void
     canCreateCreator = true,
+    collapsed = false,
 }) {
     const { confirm, toast } = useFeedback();
-    const [isCollapsed, setIsCollapsed] = useState(false);
+    const [isCollapsed, setIsCollapsed] = useState(collapsed);
     const [expandedCreators, setExpandedCreators] = useState({});
 
     // Delete Mode State
@@ -94,6 +95,10 @@ export function ChatSidebar({
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
+
+    useEffect(() => {
+        setIsCollapsed(collapsed);
+    }, [collapsed]);
 
     const handleToggle = () => {
         setIsCollapsed(!isCollapsed);
@@ -305,56 +310,57 @@ export function ChatSidebar({
             <div className="sidebar-header">
                 {!isCollapsed && (
                     <div className="header-actions-left">
-                        <div className="sidebar-title-group">
-                            <h3>{isArchiveMode ? "Archived" : "Chats"}</h3>
-                        </div>
-
                         {!isDeleteMode ? (
-                            <div className="sidebar-toolbar" role="toolbar" aria-label="Chat actions">
-                                {canCreateCreator && (
-                                    <button
-                                        onClick={onNewCreator}
-                                        className="icon-btn new-creator-btn"
-                                        title="New Creator"
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M12 5V19M5 12H19" strokeLinecap="round" strokeLinejoin="round" />
-                                        </svg>
-                                    </button>
-                                )}
-                                <div className="sidebar-overflow-wrap">
-                                    <button
-                                        ref={headerMenuButtonRef}
-                                        onClick={() => setShowHeaderMenu((prev) => !prev)}
-                                        className={`icon-btn overflow-btn ${showHeaderMenu ? 'active' : ''}`}
-                                        title="More actions"
-                                    >
-                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                                            <circle cx="12" cy="5" r="1.8" />
-                                            <circle cx="12" cy="12" r="1.8" />
-                                            <circle cx="12" cy="19" r="1.8" />
-                                        </svg>
-                                    </button>
-                                    {showHeaderMenu && (
-                                        <div className="sidebar-overflow-menu" ref={headerMenuRef}>
-                                            <button
-                                                type="button"
-                                                className={`menu-item ${isArchiveMode ? 'active' : ''}`}
-                                                onClick={toggleArchiveMode}
-                                            >
-                                                Archived
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="menu-item delete"
-                                                onClick={toggleDeleteMode}
-                                            >
-                                                Delete
-                                            </button>
-                                        </div>
-                                    )}
+                            <>
+                                <div className="sidebar-title-group">
+                                    <h3>{isArchiveMode ? "Archived" : "Chats"}</h3>
                                 </div>
-                            </div>
+                                <div className="sidebar-toolbar" role="toolbar" aria-label="Chat actions">
+                                    {canCreateCreator && (
+                                        <button
+                                            onClick={onNewCreator}
+                                            className="icon-btn new-creator-btn"
+                                            title="New Creator"
+                                        >
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                <path d="M12 5V19M5 12H19" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                        </button>
+                                    )}
+                                    <div className="sidebar-overflow-wrap">
+                                        <button
+                                            ref={headerMenuButtonRef}
+                                            onClick={() => setShowHeaderMenu((prev) => !prev)}
+                                            className={`icon-btn overflow-btn ${showHeaderMenu ? 'active' : ''}`}
+                                            title="More actions"
+                                        >
+                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                                <circle cx="12" cy="5" r="1.8" />
+                                                <circle cx="12" cy="12" r="1.8" />
+                                                <circle cx="12" cy="19" r="1.8" />
+                                            </svg>
+                                        </button>
+                                        {showHeaderMenu && (
+                                            <div className="sidebar-overflow-menu" ref={headerMenuRef}>
+                                                <button
+                                                    type="button"
+                                                    className={`menu-item ${isArchiveMode ? 'active' : ''}`}
+                                                    onClick={toggleArchiveMode}
+                                                >
+                                                    Archived
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="menu-item delete"
+                                                    onClick={toggleDeleteMode}
+                                                >
+                                                    Delete
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </>
                         ) : (
                             <div className="delete-actions">
                                 <span className="delete-count">{selectedCreators.size} selected</span>
@@ -378,23 +384,13 @@ export function ChatSidebar({
                         )}
                     </div>
                 )}
-                <button onClick={handleToggle} className="toggle-button" title={isCollapsed ? "Expand" : "Collapse"}>
-                    {isCollapsed ? (
-                        <>
-                            <span className="toggle-button-icon" aria-hidden="true">
-                                <svg width="15" height="15" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <rect x="3.5" y="4.5" width="4" height="11" rx="2" fill="currentColor" opacity="0.9" />
-                                    <rect x="9.5" y="6" width="7" height="8" rx="3.5" stroke="currentColor" strokeWidth="1.5" />
-                                </svg>
-                            </span>
-                            <span className="toggle-button-label">Chats</span>
-                        </>
-                    ) : (
+                {!isCollapsed && (
+                    <button onClick={handleToggle} className="toggle-button" title="Collapse">
                         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M13 4L7 10L13 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
-                    )}
-                </button>
+                    </button>
+                )}
             </div>
 
             {!isCollapsed && (

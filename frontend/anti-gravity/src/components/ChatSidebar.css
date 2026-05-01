@@ -114,7 +114,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
+  width: 100%;
+  justify-content: flex-end;
+  margin-left: 0;
 }
 
 .delete-count {
@@ -122,6 +124,7 @@
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
+  margin-right: auto;
 }
 
 .confirm-delete-btn,
