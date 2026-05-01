@@ -366,8 +366,8 @@
 }
 
 .input-error {
-  border-color: rgba(220, 38, 38, 0.35) !important;
-  background: #fff7f7 !important;
+  border-color: rgba(16, 24, 40, 0.22) !important;
+  background: rgba(16, 24, 40, 0.02) !important;
 }
 
 .validation-error,
@@ -378,13 +378,14 @@
 }
 
 .validation-error {
-  color: #c2410c;
+  color: rgba(16, 24, 40, 0.86);
+  font-weight: 500;
 }
 
 .validation-hint,
 .validation-suggestion,
 .muted {
-  color: var(--text-soft);
+  color: rgba(16, 24, 40, 0.58);
 }
 
 .platform-checkboxes {

@@ -765,12 +765,13 @@
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px;
-  border-radius: 20px;
-  border: 1px solid #f3d0d0;
-  background: #fff7f7;
-  color: #b42318;
+  border-radius: 18px;
+  border: 1px solid rgba(16, 24, 40, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  color: rgba(16, 24, 40, 0.82);
   font-size: 14px;
   line-height: 1.55;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
 }
 
 .gemini-input-area {
@@ -797,10 +798,12 @@
   transform: translateX(-50%) translateY(8px);
   padding: 9px 14px;
   border-radius: 999px;
-  background: rgba(17, 24, 39, 0.92);
-  color: #ffffff;
+  border: 1px solid rgba(16, 24, 40, 0.12);
+  background: rgba(255, 255, 255, 0.98);
+  color: rgba(16, 24, 40, 0.78);
   font-size: 12px;
   font-weight: 600;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
