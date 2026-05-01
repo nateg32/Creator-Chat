@@ -5915,6 +5915,48 @@ def _is_social_request(user_text: str) -> Optional[str]:
     
     return None
 
+
+def _extract_stream_chunk_text(chunk: Any) -> str:
+    """Best-effort text extraction across OpenAI-compatible streaming chunk shapes."""
+    choices = getattr(chunk, "choices", None) or []
+    if not choices:
+        return ""
+
+    choice = choices[0]
+    delta = getattr(choice, "delta", None)
+
+    def _coerce_content(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts: List[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text_value = item.get("text") or item.get("content") or ""
+                else:
+                    text_value = getattr(item, "text", None) or getattr(item, "content", None) or ""
+                if isinstance(text_value, str) and text_value:
+                    parts.append(text_value)
+            return "".join(parts)
+        return str(value or "")
+
+    if delta is not None:
+        content = _coerce_content(getattr(delta, "content", None))
+        if content:
+            return content
+
+    message = getattr(choice, "message", None)
+    content = _coerce_content(getattr(message, "content", None))
+    if content:
+        return content
+
+    return _coerce_content(getattr(choice, "text", None))
+
 async def grounded_rag_stream(
     creator_id: int,
     question: str,
@@ -6730,12 +6772,37 @@ async def grounded_rag_stream(
 
     streamed_parts: List[str] = []
     async for chunk in stream:
-        content = chunk.choices[0].delta.content
+        content = _extract_stream_chunk_text(chunk)
         if content:
             streamed_parts.append(content)
             yield content
 
     final_stream_text = "".join(streamed_parts)
+    if not final_stream_text.strip():
+        logger.warning("Streaming renderer produced empty output for route %s. Falling back to non-streaming renderer.", route)
+        plan_obj = interaction_engine.build_interaction_plan(
+            question,
+            conversation_history or [],
+            creator_row,
+            support_set,
+        )
+        final_stream_text = interaction_engine.render_response(
+            plan_obj,
+            creator_row,
+            support_set,
+            creator_id,
+            user_id,
+            thread_id or "new",
+            user_name=user_name,
+            user_msg=question,
+            persona=persona,
+            history=conversation_history or [],
+            user_preferences=user_preferences,
+            voice_chunks=voice_support_set,
+        )
+        if final_stream_text:
+            yield final_stream_text
+
     if no_online_fallback and _contains_placeholder_link_artifacts(final_stream_text):
         final_stream_text = no_online_fallback
         yield f"__FINAL_CONTENT__{final_stream_text}"

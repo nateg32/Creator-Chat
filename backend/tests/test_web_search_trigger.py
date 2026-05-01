@@ -8,6 +8,7 @@ These tests cover two layers:
    when the search provider returns nothing.
 """
 
+import asyncio
 import importlib.util
 import pathlib
 import sys
@@ -438,6 +439,7 @@ def _load_grounded_rag(
     _stub_module(
         "backend.services.out_of_domain_rules",
         default_bridge_question=lambda *args, **kwargs: "",
+        detect_general_knowledge_topic=lambda *args, **kwargs: False,
         detect_external_live_fact_topic=lambda *args, **kwargs: False,
         recent_bridge_topic=lambda *args, **kwargs: "",
         should_redirect_general_knowledge=lambda *args, **kwargs: False,
@@ -738,6 +740,51 @@ class WebSearchTriggerTests(unittest.TestCase):
 
         self.assertFalse(provider.calls, "Web search should stay off in ingested-only mode")
         self.assertEqual(result.get("answer"), "I don't have that in my ingested content right now.")
+
+    def test_streaming_falls_back_to_render_response_when_stream_empty(self):
+        module, _ = _load_grounded_rag(search_results=[], retrieved_chunks=[])
+        sys.modules["backend.services.out_of_domain_rules"].detect_general_knowledge_topic = lambda *args, **kwargs: False
+
+        async def _create_embedding(*args, **kwargs):
+            return types.SimpleNamespace(data=[types.SimpleNamespace(embedding=[0.0])])
+
+        async def _search_with_embedding_async(*args, **kwargs):
+            return []
+
+        async def _fake_stream_gen():
+            if False:
+                yield None
+
+        async def _fake_stream(*args, **kwargs):
+            return _fake_stream_gen()
+
+        module.rag.get_async_client = lambda: types.SimpleNamespace(
+            embeddings=types.SimpleNamespace(create=_create_embedding)
+        )
+        module.fetch_all_document_titles = lambda *args, **kwargs: []
+        module.interaction_engine.classify_route = lambda *args, **kwargs: "ROUTE_2_TASK"
+        module.interaction_engine.memory = types.SimpleNamespace(
+            search_with_embedding_async=_search_with_embedding_async
+        )
+        module.interaction_engine.render_combined_pass_stream_async = _fake_stream
+
+        async def _collect():
+            parts = []
+            async for item in module.grounded_rag_stream(
+                creator_id=1,
+                question="help me build leverage",
+                thread_id="thread-1",
+                conversation_history=[],
+                user_preferences=None,
+                user_name="Nathan",
+                user_id=1,
+            ):
+                parts.append(item)
+            return parts
+
+        output = asyncio.run(_collect())
+        joined = " ".join(str(item) for item in output)
+        self.assertIn("I don't have that.", joined)
 
 
 if __name__ == "__main__":
