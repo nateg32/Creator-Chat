@@ -256,9 +256,7 @@ export function ApprovalGate({ items, onSave, onBack, loading, progress, forceSh
         <div className="approval-content">
           <div className="items-grid">
             {filteredItems.length === 0 ? (
-              <div className="empty-state">
-                <p>No items match your filters.</p>
-              </div>
+              <div className="empty-state" aria-hidden="true" />
             ) : (
               filteredItems.map((item) => {
                 const itemKey = item.item_id || item.queue_id;

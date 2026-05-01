@@ -179,6 +179,13 @@
   gap: 14px;
 }
 
+.empty-state {
+  min-height: 170px;
+  border-radius: 24px;
+  border: 1px dashed #d9e1ee;
+  background: linear-gradient(180deg, rgba(249, 250, 252, 0.9), rgba(255, 255, 255, 0.82));
+}
+
 .approval-card {
   display: flex;
   flex-direction: column;
@@ -373,13 +380,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 220px;
-  padding: 22px;
+  min-height: 170px;
+  padding: 0;
   border-radius: 24px;
-  border: 1px dashed var(--border-strong);
-  background: rgba(251, 251, 253, 0.92);
-  color: var(--text-soft);
-  text-align: center;
+  border: 1px dashed #d9e1ee;
+  background: linear-gradient(180deg, rgba(249, 250, 252, 0.9), rgba(255, 255, 255, 0.82));
 }
 
 .empty-state p {

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { DayPicker } from "react-day-picker";
+import "react-day-picker/style.css";
 import {
   getPlatforms,
   validatePlatformUrl,
@@ -17,6 +19,13 @@ const TIME_MODES = [
   { value: "last_days", label: "Last X days" },
   { value: "since", label: "Since date" },
 ];
+
+function formatDateInputValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export function CreatorSetup({
   onSaveConfig,
@@ -51,18 +60,22 @@ export function CreatorSetup({
   const [savedConfigSignature, setSavedConfigSignature] = useState("");
   const [hasSavedInSession, setHasSavedInSession] = useState(false);
   const [actionFeedback, setActionFeedback] = useState(null); // 'success' | 'error' | null
+  const [openDatePickerFor, setOpenDatePickerFor] = useState(null);
   const nameInputRef = useRef(null);
   const isExistingCreatorRef = useRef(Boolean(savedCreatorId));
   const platformUrlRefs = useRef(new Map());
   const preserveSaveGateRef = useRef(false);
+  const datePopoverRef = useRef(null);
   const setPlatformUrlRef = useCallback((key, el) => {
     if (el) platformUrlRefs.current.set(key, el);
     else platformUrlRefs.current.delete(key);
   }, []);
   const visiblePlatforms = useMemo(
-    () => platforms.filter((platform) => platform.key !== "reddit"),
+    () => platforms.filter((platform) => platform.key !== "reddit" && platform.key !== "custom"),
     [platforms]
   );
+  const today = useMemo(() => new Date(), []);
+  const todayIso = useMemo(() => formatDateInputValue(today), [today]);
   const selectedPlatformDetails = useMemo(
     () => visiblePlatforms.filter((platform) => selected.has(platform.key)),
     [selected, visiblePlatforms]
@@ -124,6 +137,17 @@ export function CreatorSetup({
     return "All available";
   }, []);
 
+  const formatDateLabel = useCallback((value) => {
+    if (!value) return "Pick a date";
+    const parsed = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return new Intl.DateTimeFormat("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(parsed);
+  }, []);
+
   const buildSearchSummary = useCallback((platformConfigOverride = null) => {
     const platform_configs = platformConfigOverride || buildPlatformConfigs();
     const summary = [];
@@ -165,7 +189,7 @@ export function CreatorSetup({
       .then((data) => {
         console.log("Platforms loaded:", data);
         const nextPlatforms = Array.isArray(data)
-          ? data.filter((platform) => platform.key !== "reddit")
+          ? data.filter((platform) => platform.key !== "reddit" && platform.key !== "custom")
           : [];
         if (nextPlatforms.length > 0) {
           setPlatforms(nextPlatforms);
@@ -249,6 +273,19 @@ export function CreatorSetup({
   useEffect(() => {
     // Reserved for future per-platform side-effects when selection changes.
   }, [selectedPlatformDetails]);
+
+  useEffect(() => {
+    if (!openDatePickerFor) return undefined;
+
+    function handleClickOutside(event) {
+      if (datePopoverRef.current && !datePopoverRef.current.contains(event.target)) {
+        setOpenDatePickerFor(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [openDatePickerFor]);
 
   const togglePlatform = (key) => {
     setSelected((prev) => {
@@ -367,12 +404,6 @@ export function CreatorSetup({
       if (!value) {
         nextStatuses[key] = "Enter a URL first";
         invalidMessages.push(platform.label);
-        continue;
-      }
-      if (key === "custom") {
-        const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
-        nextStatuses[key] = lines.length ? "Ready" : "Enter at least one link";
-        if (!lines.length) invalidMessages.push(platform.label);
         continue;
       }
 
@@ -506,11 +537,6 @@ export function CreatorSetup({
     for (const key of selected) {
       const value = (config[key]?.url || "").trim();
       if (!value) return false;
-      if (key === "custom") {
-        const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
-        if (!lines.length) return false;
-        continue;
-      }
       if (!isLinkValidated(key)) return false;
     }
     return true;
@@ -524,9 +550,6 @@ export function CreatorSetup({
       selectedPlatformDetails.filter((platform) => {
         const value = String(config[platform.key]?.url || "").trim();
         if (!value) return false;
-        if (platform.key === "custom") {
-          return value.split("\n").map((line) => line.trim()).filter(Boolean).length > 0;
-        }
         return isLinkValidated(platform.key);
       }).length,
     [config, isLinkValidated, selectedPlatformDetails]
@@ -948,16 +971,66 @@ export function CreatorSetup({
                           {cfg.timeFilter?.mode === "since" && (
                             <>
                               <label>Since</label>
-                              <input
-                                type="date"
-                                value={cfg.timeFilter?.since || ""}
-                                onChange={(e) =>
-                                  updatePlatformConfig(platform.key, {
-                                    timeFilter: { ...(cfg.timeFilter || {}), since: e.target.value },
-                                  })
-                                }
-                                disabled={saveLoading}
-                              />
+                              <div className="date-picker-shell" ref={openDatePickerFor === platform.key ? datePopoverRef : null}>
+                                <button
+                                  type="button"
+                                  className={`date-picker-trigger ${openDatePickerFor === platform.key ? "open" : ""}`}
+                                  onClick={() => setOpenDatePickerFor((current) => current === platform.key ? null : platform.key)}
+                                  disabled={saveLoading}
+                                >
+                                  <span>{formatDateLabel(cfg.timeFilter?.since || "")}</span>
+                                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                    <path d="M6 2.75V5.25M14 2.75V5.25M3.75 7.25H16.25M5.5 4.25H14.5C15.6046 4.25 16.5 5.14543 16.5 6.25V14.5C16.5 15.6046 15.6046 16.5 14.5 16.5H5.5C4.39543 16.5 3.5 15.6046 3.5 14.5V6.25C3.5 5.14543 4.39543 4.25 5.5 4.25Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                </button>
+                                {openDatePickerFor === platform.key && (
+                                  <div className="date-picker-popover">
+                                    <DayPicker
+                                      mode="single"
+                                      selected={cfg.timeFilter?.since ? new Date(`${cfg.timeFilter.since}T00:00:00`) : undefined}
+                                      onSelect={(date) => {
+                                        if (!date) return;
+                                        const nextDate = formatDateInputValue(date);
+                                        updatePlatformConfig(platform.key, {
+                                          timeFilter: { ...(cfg.timeFilter || {}), since: nextDate },
+                                        });
+                                        setOpenDatePickerFor(null);
+                                      }}
+                                      month={cfg.timeFilter?.since ? new Date(`${cfg.timeFilter.since}T00:00:00`) : today}
+                                      disabled={{ after: today }}
+                                      captionLayout="dropdown"
+                                      startMonth={new Date(2010, 0)}
+                                      endMonth={today}
+                                    />
+                                    <div className="date-picker-popover-footer">
+                                      <button
+                                        type="button"
+                                        className="date-picker-clear"
+                                        onClick={() => {
+                                          updatePlatformConfig(platform.key, {
+                                            timeFilter: { ...(cfg.timeFilter || {}), since: "" },
+                                          });
+                                          setOpenDatePickerFor(null);
+                                        }}
+                                      >
+                                        Clear
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="date-picker-today"
+                                        onClick={() => {
+                                          updatePlatformConfig(platform.key, {
+                                            timeFilter: { ...(cfg.timeFilter || {}), since: todayIso },
+                                          });
+                                          setOpenDatePickerFor(null);
+                                        }}
+                                      >
+                                        Today
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             </>
                           )}
                         </div>

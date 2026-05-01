@@ -320,7 +320,6 @@ function AppInner() {
   const [workflowOrigin, setWorkflowOrigin] = useState({ fromChat: false, threadId: null, creatorId: null });
   const [workflowHasDetectedChanges, setWorkflowHasDetectedChanges] = useState(false);
   const [workflowRequiresApproval, setWorkflowRequiresApproval] = useState(false);
-  const [emptyCreatorFocus, setEmptyCreatorFocus] = useState("voice");
   const scrapedItemsRef = useRef(state.scrapedItems);
   const backendProbeFailuresRef = useRef(0);
 
@@ -1364,24 +1363,6 @@ function AppInner() {
   const hasCreators = existingCreators.length > 0;
   const shouldShowSidebar = hasCreators || Boolean(activeChatId);
 
-  const emptyCreatorDetails = {
-    voice: {
-      label: "Voice",
-      title: "Shape a creator voice",
-      description: "Start with a handle, approve source material, and the chat learns how the creator actually sounds.",
-    },
-    memory: {
-      label: "Memory",
-      title: "Build a usable knowledge base",
-      description: "Pull in content, clean it up, and turn it into grounded replies instead of filler.",
-    },
-    chat: {
-      label: "Chat",
-      title: "Open a real thread space",
-      description: "Once one creator exists, this surface becomes a clean conversation library instead of an empty rail.",
-    },
-  };
-
   useEffect(() => {
     if (!shouldShowSidebar) {
       setSidebarCollapsed(false);
@@ -1698,20 +1679,15 @@ function AppInner() {
                 collapsed={sidebarCollapsed}
               />
             )}
-            <div className="chat-main-area">
+            <div className={`chat-main-area ${shouldShowSidebar && sidebarCollapsed ? "chat-main-area-with-sidebar-toggle" : ""}`}>
               {/* Empty state when no creators exist (requirement #3) */}
               {!hasCreators && !activeChat ? (
                 <div className="empty-creator-state">
                   <div className="empty-creator-shell">
                     <div className="empty-creator-copy">
                       <div className="empty-kicker">Creator workspace</div>
-                      <div className="empty-icon">
-                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="1.5">
-                          <path d="M12 4L14.4 9.6L20 12L14.4 14.4L12 20L9.6 14.4L4 12L9.6 9.6L12 4Z" />
-                        </svg>
-                      </div>
-                      <h1 className="empty-title">No creators yet</h1>
-                      <p className="empty-subtitle">Build one voice, approve what matters, and this space turns into a clean thread library instead of a blank chat.</p>
+                      <h1 className="empty-title">Start the first conversation surface</h1>
+                      <p className="empty-subtitle">Add one creator, approve the right material, and the blank canvas turns into a live chat room.</p>
                       <div className="empty-creator-actions">
                         <button
                           onClick={() => resetWorkflowSession({ step: 1, isDraft: false })}
@@ -1723,43 +1699,20 @@ function AppInner() {
                           </svg>
                           New Creator
                         </button>
-                        <button
-                          type="button"
-                          className="empty-secondary-btn"
-                          onClick={() => setEmptyCreatorFocus("memory")}
-                        >
-                          Preview flow
-                        </button>
                       </div>
                     </div>
 
-                    <div className="empty-creator-interactive" role="group" aria-label="Creator bot preview">
-                      <div className="empty-preview-tabs">
-                        {Object.entries(emptyCreatorDetails).map(([key, detail]) => (
-                          <button
-                            key={key}
-                            type="button"
-                            className={`empty-preview-chip ${emptyCreatorFocus === key ? "active" : ""}`}
-                            onClick={() => setEmptyCreatorFocus(key)}
-                          >
-                            {detail.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="empty-preview-card">
-                        <div className="empty-preview-card-top">
-                          <span className="empty-preview-badge">{emptyCreatorDetails[emptyCreatorFocus].label}</span>
-                          <span className="empty-preview-dot" aria-hidden="true"></span>
-                        </div>
-                        <h2 className="empty-preview-title">{emptyCreatorDetails[emptyCreatorFocus].title}</h2>
-                        <p className="empty-preview-text">{emptyCreatorDetails[emptyCreatorFocus].description}</p>
-                      </div>
-
-                      <div className="empty-preview-points">
-                        <div className="empty-preview-point">Minimal setup, not a cluttered dashboard</div>
-                        <div className="empty-preview-point">Content approval stays in your control</div>
-                        <div className="empty-preview-point">Chat opens only once there is something real to talk to</div>
+                      <div className="empty-creator-interactive" role="img" aria-label="Animated creator chat prompt preview">
+                        <div className="empty-orbit-stage">
+                          <div className="empty-orbit-ring empty-orbit-ring-outer" aria-hidden="true"></div>
+                          <div className="empty-orbit-ring empty-orbit-ring-inner" aria-hidden="true"></div>
+                          <div className="empty-orbit-core">
+                            <span className="empty-orbit-core-label">Chat opens here</span>
+                            <strong>Ready when one creator exists</strong>
+                          </div>
+                          <div className="empty-floating-prompt empty-floating-prompt-a">Ask how they frame offers</div>
+                          <div className="empty-floating-prompt empty-floating-prompt-b">Pull grounded replies from approved content</div>
+                          <div className="empty-floating-prompt empty-floating-prompt-c">Turn one handle into a voice you can question</div>
                       </div>
                     </div>
                   </div>
