@@ -37,6 +37,7 @@ export function UserSettingsModal({
   onClose,
   userSettings,
   onUpdateUserSettings,
+  onLogout,
 }) {
   const { toast } = useFeedback();
   const [displayName, setDisplayName] = useState(userSettings?.display_name || "");
@@ -44,6 +45,7 @@ export function UserSettingsModal({
   const [presets, setPresets] = useState(userSettings?.response_preferences?.presets || []);
   const [customPref, setCustomPref] = useState(userSettings?.response_preferences?.custom || "");
   const [saving, setSaving] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -94,6 +96,20 @@ export function UserSettingsModal({
       toast.error(`Failed to save: ${err.message}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (!onLogout) return;
+
+    setLoggingOut(true);
+    try {
+      await onLogout();
+    } catch (err) {
+      console.error("Failed to log out:", err);
+      toast.error(`Failed to log out: ${err.message}`);
+    } finally {
+      setLoggingOut(false);
     }
   };
 
@@ -235,10 +251,18 @@ export function UserSettingsModal({
         </div>
 
         <div className="user-settings-footer">
+          <button
+            type="button"
+            className="user-settings-logout"
+            onClick={handleLogout}
+            disabled={loggingOut || saving}
+          >
+            {loggingOut ? "Logging out..." : "Log Out"}
+          </button>
           <button type="button" className="secondary-button" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="primary-button" onClick={handleSave} disabled={saving}>
+          <button type="button" className="primary-button" onClick={handleSave} disabled={saving || loggingOut}>
             {saving ? "Saving..." : "Save Settings"}
           </button>
         </div>

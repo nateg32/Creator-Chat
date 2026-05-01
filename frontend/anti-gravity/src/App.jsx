@@ -38,6 +38,7 @@ import {
   getCreatorConfig,
   updateThread,
   deleteCreator,
+  logout,
 } from "./api/client";
 import "./App.css";
 
@@ -233,20 +234,26 @@ function AppInner() {
   const [authStatus, setAuthStatus] = useState("checking");
   const isAuthenticated = authStatus === "authenticated";
 
+  const clearAuthenticatedState = useCallback(() => {
+    setAuthStatus("unauthenticated");
+    setShowUserSettings(false);
+    setUserSettings(null);
+    setUserAvatarUrl("");
+    setExistingCreators([]);
+    setThreadsByCreator({});
+    setArchivedThreadsByCreator({});
+    setChats([]);
+    setActiveChatId(null);
+  }, []);
+
   useEffect(() => {
     const handleAuthRequired = () => {
-      setAuthStatus("unauthenticated");
-      setUserSettings(null);
-      setExistingCreators([]);
-      setThreadsByCreator({});
-      setArchivedThreadsByCreator({});
-      setChats([]);
-      setActiveChatId(null);
+      clearAuthenticatedState();
     };
 
     window.addEventListener("auth-required", handleAuthRequired);
     return () => window.removeEventListener("auth-required", handleAuthRequired);
-  }, []);
+  }, [clearAuthenticatedState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -292,6 +299,18 @@ function AppInner() {
       showToast("Failed to save settings: " + err.message, "error");
       throw err;
     }
+  }
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } catch (err) {
+      console.error("Failed to logout:", err);
+      showToast("Failed to log out: " + err.message, "error");
+      throw err;
+    }
+
+    clearAuthenticatedState();
   }
 
   useEffect(() => {
@@ -1835,6 +1854,7 @@ function AppInner() {
         onClose={() => setShowUserSettings(false)}
         userSettings={userSettings}
         onUpdateUserSettings={handleUpdateUserSettings}
+        onLogout={handleLogout}
       />
     </div>
     )

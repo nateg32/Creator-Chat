@@ -295,6 +295,25 @@
   background: rgba(255, 255, 255, 0.98);
 }
 
+.user-settings-logout {
+  margin-right: auto;
+  border: 0;
+  background: transparent;
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0;
+}
+
+.user-settings-logout:hover:not(:disabled) {
+  color: #912018;
+}
+
+.user-settings-logout:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .user-settings-footer .secondary-button,
 .user-settings-footer .primary-button {
   display: inline-flex;
@@ -357,6 +376,11 @@
 
   .user-settings-footer {
     flex-direction: column-reverse;
+  }
+
+  .user-settings-logout {
+    margin-right: 0;
+    align-self: flex-start;
   }
 
   .user-settings-footer .secondary-button,
