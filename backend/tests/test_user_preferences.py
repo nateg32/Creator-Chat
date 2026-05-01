@@ -40,6 +40,7 @@ def load_interaction_engine_module():
     fake_pydantic.BaseModel = FakeBaseModel
     fake_pydantic.Field = lambda default=None, default_factory=None, **kwargs: default_factory() if default_factory is not None else default
     fake_pydantic.validator = lambda *args, **kwargs: (lambda fn: fn)
+    fake_pydantic.field_validator = lambda *args, **kwargs: (lambda fn: fn)
 
     fake_rag = types.ModuleType("backend.rag")
     fake_rag.generate_chat_completion = lambda *args, **kwargs: ""
@@ -160,6 +161,28 @@ normalize_user_preferences = prompt_guard_module.normalize_user_preferences
 
 
 class UserPreferenceTests(unittest.TestCase):
+    def test_render_greeting_falls_back_when_llm_returns_empty(self):
+        plan = InteractionPlan(route="ROUTE_0_GREETING", next_question="What are you working on right now?")
+        creator_profile = {
+            "name": "Brez Scales",
+            "creator_category": "business",
+            "voice_profile": {},
+            "style_fingerprint": {},
+        }
+
+        with patch.object(interaction_engine, "_generate_completion_with_compat", return_value=""):
+            greeting = interaction_engine._render_greeting(
+                plan,
+                creator_profile,
+                user_msg="hey",
+                user_name="Nathan",
+                history=[],
+            )
+
+        self.assertTrue(greeting.strip())
+        self.assertIn("Nathan", greeting)
+        self.assertIn("?", greeting)
+
     def test_normalize_user_preferences_filters_invalid_and_malicious_lines(self):
         prefs = normalize_user_preferences(
             {

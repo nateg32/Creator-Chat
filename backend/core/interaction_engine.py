@@ -2254,6 +2254,19 @@ Output ONLY your response to the user."""
         voice_profile = _coerce_profile_dict(creator_profile.get("voice_profile"))
         style_fingerprint = _coerce_profile_dict(creator_profile.get("style_fingerprint"))
 
+        def _deterministic_greeting_fallback() -> str:
+            direct_greeting = greeting_service.generate_greeting(
+                known_user_name,
+                voice_profile,
+                include_question=True,
+                creator_name=creator_name,
+                creator_category=creator_category,
+                style_fingerprint=style_fingerprint,
+                conversation_history=history or [],
+                creator_profile=creator_profile,
+            )
+            return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
+
         # ── Build voice signals for LLM-based greeting ──
         greeting_voice_dna = build_voice_dna_block(
             creator_profile, mode="greeting",
@@ -2339,22 +2352,16 @@ Output ONLY your response."""
                 temperature=0.7,
                 max_tokens=60,
             )
-            return self._enforce_greeting_limits(response.strip(), creator_profile=creator_profile)
+            visible_response = self._enforce_greeting_limits(response.strip(), creator_profile=creator_profile)
+            if visible_response:
+                return visible_response
+            logger.warning("LLM greeting returned empty output, falling back to deterministic greeting.")
+            return _deterministic_greeting_fallback()
         except Exception as e:
             logger.error(f"LLM greeting failed, falling back to deterministic: {e}")
             # Fall back to deterministic greeting service
             try:
-                direct_greeting = greeting_service.generate_greeting(
-                    known_user_name,
-                    voice_profile,
-                    include_question=True,
-                    creator_name=creator_name,
-                    creator_category=creator_category,
-                    style_fingerprint=style_fingerprint,
-                    conversation_history=history or [],
-                    creator_profile=creator_profile,
-                )
-                return self._enforce_greeting_limits(direct_greeting.strip(), creator_profile=creator_profile)
+                return _deterministic_greeting_fallback()
             except Exception as e2:
                 logger.error(f"Deterministic greeting also failed: {e2}")
                 _BROADCAST_FILLER = ("my channel", "the channel", "this channel", "welcome back to", "back to my",
