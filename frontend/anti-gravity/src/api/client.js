@@ -199,8 +199,35 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
   let finalContent = null;
   let completed = false;
 
-  const completeStream = () => {
-    const completedAnswer = finalContent || fullAnswer;
+  const recoverWithNonStreamingAsk = async () => {
+    const fallback = await postJson("/ask", body);
+    const fallbackAnswer = String(fallback?.answer || "").trim();
+    if (!fallbackAnswer) return null;
+
+    const fallbackCards = Array.isArray(fallback?.cards) ? fallback.cards : [];
+    const fallbackCitations = Array.isArray(fallback?.citations)
+      ? fallback.citations
+      : Array.isArray(fallback?.sources)
+        ? fallback.sources
+        : [];
+
+    fullAnswer = fallbackAnswer;
+    finalContent = fallbackAnswer;
+    finalCards = fallbackCards;
+    finalCitations = fallbackCitations;
+    if (onToken) onToken(fallbackAnswer);
+    return { answer: fallbackAnswer, cards: fallbackCards, citations: fallbackCitations };
+  };
+
+  const completeStream = async () => {
+    let completedAnswer = finalContent || fullAnswer;
+    if (!String(completedAnswer || "").trim()) {
+      const recovered = await recoverWithNonStreamingAsk();
+      if (recovered) {
+        completedAnswer = recovered.answer;
+      }
+    }
+
     if (onComplete) {
       onComplete(completedAnswer, {
         cards: finalCards || [],
@@ -212,7 +239,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     return { answer: completedAnswer, cards: finalCards || [], citations: finalCitations || [] };
   };
 
-  const processEventBlock = (part) => {
+  const processEventBlock = async (part) => {
     if (!part.startsWith("data: ")) return null;
 
     const dataStr = part.slice(6);
@@ -268,7 +295,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
       buffer = parts.pop() || "";
 
       for (const part of parts) {
-        const result = processEventBlock(part);
+        const result = await processEventBlock(part);
         if (result) {
           return result;
         }
@@ -277,7 +304,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
       if (done) {
         const trailing = buffer.trim();
         if (trailing) {
-          const result = processEventBlock(trailing);
+          const result = await processEventBlock(trailing);
           if (result) {
             return result;
           }
