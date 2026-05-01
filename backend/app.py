@@ -598,6 +598,13 @@ async def startup():
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS content_corpus_checksum TEXT")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_corpus_checksum TEXT")
+        # Content/creator archetype detection (drives fingerprint policy)
+        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS item_archetype TEXT")
+        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_confidence FLOAT")
+        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_signals JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS creator_archetype TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS archetype_distribution JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS archetype_updated_at TIMESTAMPTZ")
     except Exception as e:
         print(f"[STARTUP] Migration warning: {e}")
 
@@ -4416,6 +4423,36 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                             yield f"data: {json.dumps({'stage': 'paraphrase_linked', 'current': current_item, 'total': total_items, 'related_count': len(related_links), 'message': f'Item {current_item} linked to {len(related_links)} cross-platform paraphrase(s).'})}\n\n"
                     except Exception as _link_exc:
                         logger.warning(f"paraphrase link skipped for doc {document_id}: {_link_exc}")
+
+                    # Content archetype detection: classify what kind of
+                    # content this is (podcast / music / documentary / vlog /
+                    # short / etc). Drives the per-creator fingerprint policy
+                    # so we don't (e.g.) run web research on a music video or
+                    # treat song lyrics as conversational voice.
+                    try:
+                        from backend.services.content_archetype import classify_and_persist_smart
+                        item_meta_for_arch = item.get("metadata") or {}
+                        if not isinstance(item_meta_for_arch, dict):
+                            item_meta_for_arch = {}
+                        arch_input = {
+                            "title": title,
+                            "transcript": item.get("raw_text") or text_content or "",
+                            "caption": item.get("caption") or item_meta_for_arch.get("caption") or "",
+                            "platform": platform,
+                            "content_type": item.get("content_type"),
+                            "duration_sec": (
+                                item.get("duration_sec")
+                                or item_meta_for_arch.get("duration_sec")
+                                or item_meta_for_arch.get("duration")
+                                or item_meta_for_arch.get("video_duration")
+                            ),
+                            "hashtags": item.get("hashtags") or item_meta_for_arch.get("hashtags") or [],
+                            "metadata": item_meta_for_arch,
+                        }
+                        arch_result = await classify_and_persist_smart(str(item_id), arch_input)
+                        yield f"data: {json.dumps({'stage': 'archetype_classified', 'current': current_item, 'total': total_items, 'archetype': arch_result.get('archetype'), 'confidence': arch_result.get('confidence'), 'source': arch_result.get('source', 'rule')})}\n\n"
+                    except Exception as _arch_exc:
+                        logger.warning(f"archetype classify skipped for item {item_id}: {_arch_exc}")
                     
                     # Update search_items status
                     update_status_query = """
@@ -4452,6 +4489,16 @@ async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_t
                     (creator_id,)
                 )
                 refresh_creator_corpus_state(creator_id, sync_fingerprint=(changed_item_count == 0))
+
+            # Recompute creator archetype now that fresh items are classified.
+            # Cheap aggregation query — safe to run even when nothing changed.
+            try:
+                from backend.services.content_archetype import compute_and_persist_creator_archetype_smart
+                creator_arch = await compute_and_persist_creator_archetype_smart(int(creator_id))
+                profile = creator_arch.get('llm_profile') or {}
+                yield f"data: {json.dumps({'stage': 'creator_archetype', 'archetype': creator_arch.get('creator_archetype'), 'confidence': creator_arch.get('confidence'), 'distribution': creator_arch.get('distribution'), 'descriptive_label': profile.get('descriptive_label'), 'format_blend': profile.get('format_blend')})}\n\n"
+            except Exception as _carch_exc:
+                logger.warning(f"creator archetype recompute skipped for {creator_id}: {_carch_exc}")
 
             result = {
                 'stage': 'complete',

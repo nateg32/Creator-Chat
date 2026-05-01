@@ -615,16 +615,23 @@ class FingerprintService:
         creator_name: str,
         approved_content: List[Dict[str, Any]],
         voice_fingerprint: Dict[str, Any],
+        persona_modifier: str = "",
     ) -> Dict[str, Any]:
         if not settings.OPENAI_API_KEY or not approved_content:
             return {}
+
+        modifier_block = (
+            f"\n\nARCHETYPE GUIDANCE (overrides default voice assumptions):\n{persona_modifier.strip()}\n"
+            if persona_modifier and persona_modifier.strip()
+            else ""
+        )
 
         prompt = f"""
 You are extracting a runtime voice pattern packet for creator {creator_name}.
 
 Use only the approved creator content and existing fingerprint context below.
 This packet will be merged into the creator's style fingerprint and used at runtime.
-Be concrete, creator-specific, and avoid generic coaching language.
+Be concrete, creator-specific, and avoid generic coaching language.{modifier_block}
 
 Return JSON only with this exact shape:
 {{
@@ -1288,7 +1295,8 @@ Rules:
                 SELECT name, handle, platform_configs, official_domains, course_domains, course_base_urls,
                        youtube_channel_id, youtube_handle, research_summary,
                        style_fingerprint, identity_fingerprint, soul_md, fingerprint_updated_at,
-                       content_corpus_checksum, fingerprint_corpus_checksum
+                       content_corpus_checksum, fingerprint_corpus_checksum,
+                       creator_archetype, archetype_distribution
                 FROM creators
                 WHERE id = %s
                 """,
@@ -1306,6 +1314,31 @@ Rules:
             fingerprint_updated_at = creator.get("fingerprint_updated_at")
             content_corpus_checksum = str(creator.get("content_corpus_checksum") or "").strip()
             fingerprint_corpus_checksum = str(creator.get("fingerprint_corpus_checksum") or "").strip()
+
+            # Load archetype-derived policy. Drives whether we run web research
+            # phases at all and how to weight transcripts. Falls back to a
+            # safe "vlogger" policy if the archetype is missing or import fails.
+            try:
+                from backend.services.fingerprint_policy import get_policy
+                arch_dist_raw = creator.get("archetype_distribution")
+                arch_dist = _load_jsonish(arch_dist_raw) or {}
+                policy = get_policy(
+                    creator_archetype=creator.get("creator_archetype") or "vlogger",
+                    confidence=float(arch_dist.get("confidence") or 0.0),
+                    distribution=arch_dist.get("distribution") or {},
+                    llm_profile=arch_dist.get("llm_profile"),
+                )
+                logger.info(
+                    f"FingerprintService: Policy for {name} ({creator_id}) — "
+                    f"archetype={policy.archetype} conf={policy.confidence} "
+                    f"link_research={policy.enable_link_research} google={policy.enable_google_expansion} "
+                    f"voice_w={policy.voice_signal_weight} register={policy.voice_register}"
+                )
+            except Exception as _pol_exc:  # noqa: BLE001
+                logger.warning(f"FingerprintService: policy load failed, using defaults: {_pol_exc}")
+                from backend.services.fingerprint_policy import FingerprintPolicy
+                policy = FingerprintPolicy()
+
 
             if incremental_mode and existing_style_fingerprint and content_corpus_checksum and content_corpus_checksum == fingerprint_corpus_checksum:
                 logger.info(f"FingerprintService: Corpus checksum unchanged for {name} ({creator_id}); skipping incremental rebuild.")
@@ -1355,25 +1388,44 @@ Rules:
                 research_quality = "incremental_cached"
             else:
                 # PHASE 1: Link-First Research (Identity & Surface)
-                _set_fingerprint_progress(
-                    creator_id,
-                    status="processing",
-                    percent=22,
-                    stage="link_scan",
-                    message="Walking public links, domains, and profile surfaces for identity clues.",
-                )
-                logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
-                if hasattr(self.researcher, "research_links"):
-                    link_identity = self.researcher.research_links(links, name)
-                    if not isinstance(link_identity, dict):
-                        link_identity = {}
-                else:
-                    logger.warning("FingerprintService: active research provider has no research_links(); skipping link scan.")
+                if not policy.enable_link_research:
+                    logger.info(
+                        f"FingerprintService Phase 1: SKIPPED for {name} per policy "
+                        f"(archetype={policy.archetype}). Identity will rely on "
+                        f"approved-content signals only."
+                    )
+                    _set_fingerprint_progress(
+                        creator_id,
+                        status="processing",
+                        percent=22,
+                        stage="link_scan_skipped",
+                        message=f"Skipping web link research — {policy.archetype} archetype favors content-first analysis.",
+                    )
                     link_identity = {}
-                investigative_dossier = {}
-                creator_claims = link_identity.get("creator_claims", [])
-                unknown_fields = link_identity.get("unknown_fields", [])
-                research_quality = "full"
+                    investigative_dossier = {}
+                    creator_claims = []
+                    unknown_fields = []
+                    research_quality = "policy_skipped"
+                else:
+                    _set_fingerprint_progress(
+                        creator_id,
+                        status="processing",
+                        percent=22,
+                        stage="link_scan",
+                        message="Walking public links, domains, and profile surfaces for identity clues.",
+                    )
+                    logger.info(f"FingerprintService Phase 1: Deep link scan for {name}...")
+                    if hasattr(self.researcher, "research_links"):
+                        link_identity = self.researcher.research_links(links, name)
+                        if not isinstance(link_identity, dict):
+                            link_identity = {}
+                    else:
+                        logger.warning("FingerprintService: active research provider has no research_links(); skipping link scan.")
+                        link_identity = {}
+                    investigative_dossier = {}
+                    creator_claims = link_identity.get("creator_claims", [])
+                    unknown_fields = link_identity.get("unknown_fields", [])
+                    research_quality = "full"
 
             # PHASE 2: Content-Truth Mining (Voice & Worldview)
             _set_fingerprint_progress(
@@ -1417,13 +1469,14 @@ Rules:
                     name,
                     approved_content_samples,
                     voice_fingerprint,
+                    persona_modifier=policy.persona_prompt_modifier,
                 )
                 if voice_pattern_packet:
                     voice_fingerprint = _merge_voice_pattern_packet(voice_fingerprint, voice_pattern_packet)
 
             # PHASE 3: Targeted Google Expansion (Fill Gaps)
             agentic_bundle: Dict[str, Any] = {}
-            if not reuse_cached_research and not incremental_mode:
+            if not reuse_cached_research and not incremental_mode and policy.enable_persona_agent and policy.enable_google_expansion:
                 _set_fingerprint_progress(
                     creator_id,
                     status="processing",
