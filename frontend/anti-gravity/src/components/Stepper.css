@@ -20,17 +20,26 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 4px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #0f172a;
   flex-shrink: 0;
+  transition: transform 180ms ease, background 180ms ease;
+}
+
+.app-branding:hover {
+  transform: translateY(-1px);
+  background: #1e293b;
 }
 
 .app-branding-mark {
   display: block;
-  width: clamp(26px, 1.95vw, 30px);
-  height: clamp(26px, 1.95vw, 30px);
+  width: 22px;
+  height: 22px;
   object-fit: contain;
+  /* Invert the dark mark to white when sitting on the dark pill */
+  filter: invert(1) brightness(2);
 }
 
 .nav-steps-container {
@@ -135,9 +144,9 @@
   }
 
   .app-branding {
-    min-width: 38px;
-    min-height: 38px;
-    padding: 3px;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
   }
 
   .nav-steps-container {
