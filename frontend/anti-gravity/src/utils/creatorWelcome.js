@@ -224,31 +224,5 @@ export function buildCreatorStarterMessage(creatorName = "Creator", styleFingerp
 }
 
 export function buildCreatorWelcomeBody(styleFingerprint = {}, creatorName = "Creator") {
-  const vibe = inferCreatorVibe(styleFingerprint);
-  const seed = `${creatorName}|body|${JSON.stringify(styleFingerprint || {})}`;
-  const greetingExamples = extractGreetingExamples(styleFingerprint);
-
-  // Priority 1: Use the creator's own question from golden examples / mode_matrix
-  // but only if it's actually a question (ends with ?) and isn't a style description
-  const validQuestions = (greetingExamples.questions || []).filter((q) => {
-    const trimmed = q.trim();
-    if (!trimmed.endsWith("?")) return false;
-    if (trimmed.split(" ").length > 15) return false;
-    // Reject style descriptions masquerading as questions
-    if (/\b(the messy version|the real question|bring me|give me the|skip the fluff|unpack|unfinished thought)\b/i.test(trimmed)) return false;
-    return true;
-  });
-  if (validQuestions.length) {
-    return validQuestions[stableIndex(seed, validQuestions.length)];
-  }
-
-  // Priority 2: Build a topic-seeded question if topics exist
-  const topics = extractTopicSeeds(styleFingerprint);
-  if (topics.length) {
-    const topicLine = buildTopicQuestion(vibe, topics[0], `${seed}|topic`);
-    if (topicLine) return topicLine;
-  }
-
-  // Priority 3: Short natural template
-  return pickTemplate(vibe, seed, BODY_TEMPLATES);
+  return "Ask me anything about my content.";
 }
