@@ -417,6 +417,19 @@ def _internal_server_error(exc: Exception, fallback: str = "Unexpected server er
     return HTTPException(status_code=500, detail=fallback)
 
 
+LOCAL_DEV_ORIGIN_REGEX = r"^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$"
+
+
+def _is_local_dev_origin(origin_value: Optional[str]) -> bool:
+    if not origin_value:
+        return False
+    parsed = urlparse(origin_value)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    normalized_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return bool(re.match(LOCAL_DEV_ORIGIN_REGEX, normalized_origin, re.IGNORECASE))
+
+
 def _get_cors_origins() -> List[str]:
     """Allow localhost in dev plus deployed frontend URLs via env vars."""
     default_origins = [
@@ -445,6 +458,7 @@ def _get_cors_origins() -> List[str]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
+    allow_origin_regex=LOCAL_DEV_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Session-Id", "Accept"],
@@ -558,6 +572,8 @@ def _is_allowed_request_origin(origin_value: Optional[str]) -> bool:
     if not parsed.scheme or not parsed.netloc:
         return False
     normalized_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/").lower()
+    if _is_local_dev_origin(normalized_origin):
+        return True
     allowed_origins = {origin.rstrip("/").lower() for origin in _get_cors_origins()}
     return normalized_origin in allowed_origins
 
