@@ -1,0 +1,514 @@
+/* ─────────────────────────────────────────────────────────────────────
+ * Cosy Premium Theme
+ * A warm, minimalist overlay that re-skins the entire chat UI without
+ * touching component markup. Loaded after every other stylesheet so
+ * its rules win cleanly. Remove this single import to revert.
+ *
+ * Palette philosophy:
+ *  - Warm ivory paper background (subtle paper grain)
+ *  - Deep warm charcoal text (no harsh black)
+ *  - Bronze/amber accent (warm, low-saturation, premium)
+ *  - Soft sepia-tinted shadows for depth without coldness
+ *  - Generous radii and air; no neon, no glassmorphism overload
+ * ──────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Warm paper neutrals */
+  --bg: #f6f1e8;
+  --surface: #fffdf9;
+  --surface-muted: #f9f4ec;
+  --surface-soft: #f1ebde;
+  --border: #ece3d2;
+  --border-strong: #ddd0b8;
+
+  /* Warm charcoal text */
+  --text: #2a2520;
+  --text-soft: #6b6055;
+  --text-muted: #a39685;
+
+  /* Bronze accent — warm, refined */
+  --accent: #b8662e;
+  --accent-soft: #fbf3e8;
+  --accent-strong: #9a4f1e;
+
+  /* Status — warm-toned */
+  --success: #5b8c4f;
+  --success-soft: #eef5e8;
+  --danger: #b54328;
+  --danger-soft: #fbeee9;
+
+  /* Sepia-tinted shadows */
+  --shadow-sm: 0 2px 8px rgba(86, 66, 38, 0.06);
+  --shadow-md: 0 14px 38px rgba(86, 66, 38, 0.08);
+  --shadow-warm: 0 24px 60px rgba(86, 66, 38, 0.10);
+}
+
+html, body {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(184, 102, 46, 0.045), transparent 36%),
+    radial-gradient(circle at 92% 96%, rgba(86, 66, 38, 0.04), transparent 40%),
+    linear-gradient(180deg, #faf6ee 0%, #f4eedf 100%);
+  color: var(--text);
+}
+
+/* Subtle paper grain — purely decorative, behind everything */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.55  0 0 0 0 0.42  0 0 0 0 0.25  0 0 0 0.04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+#root { position: relative; z-index: 1; }
+
+/* Selection: warm amber */
+::selection {
+  background: rgba(184, 102, 46, 0.18);
+  color: var(--text);
+}
+
+/* Scrollbars: warm + thin */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(86, 66, 38, 0.18) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(86, 66, 38, 0.16);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(86, 66, 38, 0.28); }
+
+/* ── App shell ────────────────────────────────────────────────────── */
+.app-shell,
+.gemini-shell,
+.chat-shell {
+  background: transparent;
+}
+
+/* ── Sidebar (ChatSidebar) ────────────────────────────────────────── */
+.chat-sidebar,
+.sidebar,
+aside.sidebar,
+.gemini-sidebar {
+  background: rgba(255, 253, 249, 0.65);
+  backdrop-filter: saturate(140%) blur(10px);
+  -webkit-backdrop-filter: saturate(140%) blur(10px);
+  border-right: 1px solid rgba(236, 227, 210, 0.7);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.4);
+}
+
+.chat-sidebar .sidebar-header,
+.chat-sidebar-header {
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid rgba(236, 227, 210, 0.6);
+}
+
+.chat-sidebar h1,
+.chat-sidebar h2,
+.chat-sidebar h3,
+.chat-sidebar .sidebar-title {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  font-size: 15px;
+}
+
+/* Sidebar action icon buttons (+, trash, archive, collapse) */
+.chat-sidebar button.icon-btn,
+.chat-sidebar .sidebar-action,
+.chat-sidebar .icon-button,
+.sidebar-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+  color: var(--text-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 160ms ease, color 160ms ease;
+}
+.chat-sidebar button.icon-btn:hover,
+.chat-sidebar .sidebar-action:hover,
+.chat-sidebar .icon-button:hover,
+.sidebar-icon-btn:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+/* Creator rows in sidebar */
+.chat-sidebar .creator-row,
+.chat-sidebar .creator-item,
+.chat-sidebar .sidebar-creator,
+.chat-sidebar [class*="creator-row"],
+.chat-sidebar [class*="creator-item"] {
+  margin: 4px 8px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background 160ms ease, border-color 160ms ease, transform 120ms ease;
+  color: var(--text);
+}
+.chat-sidebar .creator-row:hover,
+.chat-sidebar .creator-item:hover,
+.chat-sidebar .sidebar-creator:hover,
+.chat-sidebar [class*="creator-row"]:hover,
+.chat-sidebar [class*="creator-item"]:hover {
+  background: rgba(255, 253, 249, 0.85);
+  border-color: var(--border);
+}
+.chat-sidebar .creator-row.active,
+.chat-sidebar .creator-item.active,
+.chat-sidebar .sidebar-creator.active,
+.chat-sidebar [class*="creator-row"].active,
+.chat-sidebar [class*="creator-item"].active,
+.chat-sidebar [class*="creator-row"][aria-selected="true"],
+.chat-sidebar [class*="creator-item"][aria-selected="true"] {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-sidebar .creator-avatar,
+.chat-sidebar .avatar,
+.chat-sidebar [class*="avatar"] {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #efe6d4 0%, #e4d8bf 100%);
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(86, 66, 38, 0.05);
+  overflow: hidden;
+}
+.chat-sidebar .creator-avatar img,
+.chat-sidebar .avatar img,
+.chat-sidebar [class*="avatar"] img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.chat-sidebar .creator-name,
+.chat-sidebar .creator-label,
+.chat-sidebar [class*="creator-name"] {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+
+/* "New Chat" pill at top of sidebar */
+.chat-sidebar .new-chat-btn,
+.chat-sidebar [class*="new-chat"] {
+  margin: 10px 8px;
+  padding: 11px 14px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.chat-sidebar .new-chat-btn:hover,
+.chat-sidebar [class*="new-chat"]:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* ── Chat header (override premium-refresh blue) ──────────────────── */
+.gemini-header {
+  background: rgba(255, 253, 249, 0.72);
+  backdrop-filter: saturate(140%) blur(12px);
+  -webkit-backdrop-filter: saturate(140%) blur(12px);
+  border-bottom: 1px solid rgba(236, 227, 210, 0.7);
+}
+
+.gemini-title .header-avatar {
+  background: linear-gradient(135deg, #f4ead4 0%, #e9d8b5 100%);
+  box-shadow: 0 0 0 1px rgba(86, 66, 38, 0.06), var(--shadow-sm);
+}
+
+.title-text {
+  color: var(--text);
+}
+
+.gemini-actions .action-icon-btn {
+  color: var(--text-soft);
+}
+.gemini-actions .action-icon-btn:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+/* The text-link looking actions ("Reset Chat", "Persona") */
+.gemini-actions button:not(.action-icon-btn) {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-soft);
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 999px;
+  transition: color 160ms ease, background 160ms ease;
+}
+.gemini-actions button:not(.action-icon-btn):hover {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+/* ── Welcome screen — warm, intimate ──────────────────────────────── */
+.welcome-message > svg:first-child {
+  filter: drop-shadow(0 8px 22px rgba(184, 102, 46, 0.32));
+}
+/* Tint the sparkle warm */
+.welcome-message > svg:first-child path {
+  fill: var(--accent) !important;
+}
+
+.welcome-message h1 {
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  color: var(--text);
+}
+
+.welcome-message p {
+  color: var(--text-muted);
+  font-size: 14.5px;
+}
+
+/* Quick action chips in welcome */
+.quick-action-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+.quick-action-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
+  color: var(--accent-strong);
+}
+
+/* ── Sparkle / brand icons (re-tint cool blue → warm amber) ───────── */
+.gemini-header .gemini-title svg path[fill="#4285F4"],
+.gemini-header svg path[fill="#4285F4"],
+.welcome-message svg path[fill="#4285F4"],
+.msg-avatar svg path[fill="#4285F4"] {
+  fill: var(--accent);
+}
+
+/* Header sparkle backdrop */
+.gemini-header .gemini-title > div:first-child {
+  background: var(--accent-soft);
+  border-radius: 999px;
+}
+
+/* ── Message bubbles — warm DM feel ───────────────────────────────── */
+.msg-row.msg-assistant .msg-text-blocks,
+.msg-row.msg-assistant .msg-text {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+}
+
+/* User bubble — warm bronze gradient instead of cool blue */
+.msg-row.msg-user .msg-text-blocks,
+.msg-row.msg-user .msg-text {
+  background: linear-gradient(135deg, #c87842 0%, #a8531f 100%);
+  color: #fffaf2;
+  box-shadow: 0 8px 18px rgba(184, 102, 46, 0.22);
+}
+
+.msg-row.msg-assistant .msg-avatar {
+  background: linear-gradient(135deg, #f4ead4 0%, #e9d8b5 100%);
+  box-shadow: 0 0 0 1px rgba(86, 66, 38, 0.05);
+}
+
+.msg-pending-bubble {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Inline links in assistant bubbles → warm amber */
+.msg-row.msg-assistant .chat-inline-link,
+.msg-row.msg-assistant .chat-link {
+  color: var(--accent);
+  text-decoration-color: rgba(184, 102, 46, 0.35);
+}
+
+/* Source chips — softer, warmer */
+.chat-source-chip {
+  background: var(--surface-soft);
+  border-color: transparent;
+  color: var(--text-soft);
+}
+.chat-source-chip:hover {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+.chat-source-chip-index {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-radius: 999px;
+}
+
+/* Suggestion chips below welcome */
+.suggestion-chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  box-shadow: var(--shadow-sm);
+}
+.suggestion-chip:hover {
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
+  color: var(--accent-strong);
+}
+
+/* ── Composer — cosy pill with warm focus ─────────────────────────── */
+.gemini-input-area {
+  background: linear-gradient(180deg, rgba(250, 246, 238, 0) 0%, rgba(250, 246, 238, 0.92) 38%, #faf6ee 100%);
+  border-top: 1px solid rgba(236, 227, 210, 0.5);
+}
+
+.input-pill {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset, var(--shadow-md);
+}
+
+.input-pill:focus-within {
+  border-color: rgba(184, 102, 46, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(184, 102, 46, 0.10),
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    var(--shadow-md);
+}
+
+.gemini-input {
+  color: var(--text);
+}
+.gemini-input::placeholder {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.gemini-attach-btn {
+  color: var(--text-soft);
+}
+.gemini-attach-btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--accent);
+}
+
+/* Send button — warm bronze gradient */
+.gemini-send-btn {
+  background: linear-gradient(135deg, #c87842 0%, #a8531f 100%);
+  color: #fffaf2;
+  box-shadow: 0 6px 14px rgba(184, 102, 46, 0.30);
+}
+.gemini-send-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #b86a36 0%, #944817 100%);
+  color: #fffaf2;
+  box-shadow: 0 10px 22px rgba(184, 102, 46, 0.36);
+}
+.gemini-send-btn:disabled {
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.gemini-footer-note {
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* ── Modals (reuse warm palette) ──────────────────────────────────── */
+.modal-overlay,
+.user-settings-overlay {
+  background: rgba(42, 37, 32, 0.32);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.modal-content,
+.user-settings-content,
+.creator-settings-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-warm);
+  border-radius: var(--radius-lg);
+}
+
+/* ── Feedback toasts — warm tint ──────────────────────────────────── */
+.fb-toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-warm);
+  color: var(--text);
+}
+.fb-toast--success { border-left: 3px solid var(--success); }
+.fb-toast--error   { border-left: 3px solid var(--danger); }
+.fb-toast--info    { border-left: 3px solid var(--accent); }
+
+/* ── Form controls (warm focus ring) ──────────────────────────────── */
+input[type="text"]:focus-visible,
+input[type="email"]:focus-visible,
+input[type="password"]:focus-visible,
+input[type="search"]:focus-visible,
+input[type="url"]:focus-visible,
+input[type="number"]:focus-visible,
+input[type="tel"]:focus-visible,
+input[type="date"]:focus-visible,
+input[type="time"]:focus-visible,
+input[type="datetime-local"]:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(184, 102, 46, 0.14), var(--shadow-sm);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+button:focus-visible {
+  outline-color: var(--accent);
+}
+
+/* Confirm dialog — warm primary button */
+.fb-confirm__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.fb-confirm__btn--primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.fb-confirm--danger .fb-confirm__btn--primary {
+  background: var(--danger);
+  border-color: var(--danger);
+}
