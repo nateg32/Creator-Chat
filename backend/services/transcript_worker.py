@@ -1,11 +1,14 @@
 import traceback
 import os
+import ipaddress
+import socket
 from typing import List, Dict, Any, Optional
 from backend.db import db
 import tempfile
 import subprocess
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 from backend.services.transcript_quality import assess_transcript_quality
 
 
@@ -54,8 +57,35 @@ def _set_search_progress(search_id: str, data: Dict[str, Any]):
     except Exception:
         pass
 
+
+def _is_safe_remote_url(url: str) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if host in {"localhost", "localhost.localdomain"}:
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_private
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        for item in resolved:
+            raw_addr = (item[4] or [""])[0].split("%", 1)[0]
+            try:
+                addr = ipaddress.ip_address(raw_addr)
+            except ValueError:
+                continue
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified:
+                return False
+        return True
+
 def synthesize_media_url(source_url: str, platform: str) -> Optional[str]:
     """Attempt to get an actual media URL if needed. For now, rely on yt-dlp if available."""
+    if not _is_safe_remote_url(source_url):
+        return None
     try:
         # Use yt-dlp to extract the actual direct media url
         result = subprocess.run(
@@ -63,7 +93,8 @@ def synthesize_media_url(source_url: str, platform: str) -> Optional[str]:
             capture_output=True, text=True, timeout=15
         )
         if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip().split('\n')[0]
+            candidate = result.stdout.strip().split('\n')[0]
+            return candidate if _is_safe_remote_url(candidate) else None
     except Exception as e:
         print(f"yt-dlp extract failed for {source_url}: {e}")
     return source_url
@@ -90,6 +121,8 @@ def transcribe_with_whisper(media_url_or_path: str) -> Optional[str]:
         # Download media first if it's a URL
         tmp_path = None
         if media_url_or_path.startswith("http"):
+            if not _is_safe_remote_url(media_url_or_path):
+                return None
             import requests
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

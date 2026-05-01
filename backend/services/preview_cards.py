@@ -1,8 +1,10 @@
 import html
+import ipaddress
 import re
+import socket
 from functools import lru_cache
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 MARKDOWN_LINK_RE = re.compile(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', re.IGNORECASE)
 HTTP_URL_RE = re.compile(r'''https?://[^\s)\]>\'\"]+''', re.IGNORECASE)
@@ -42,6 +44,8 @@ TITLE_META_PATTERNS = (
     re.compile(r'<meta[^>]+content=["\'](.*?)["\'][^>]+name=["\']twitter:title["\']', re.IGNORECASE | re.DOTALL),
 )
 TITLE_TAG_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
+TITLE_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+MAX_TITLE_FETCH_REDIRECTS = 3
 
 
 def _trim_url(url: str) -> str:
@@ -64,6 +68,58 @@ def _looks_like_public_url(url: str) -> bool:
     parsed = urlparse(url or '')
     host = (parsed.netloc or '').strip().lower()
     return bool(host and '.' in host and not host.endswith('.local'))
+
+
+def _is_safe_title_lookup_url(url: str) -> bool:
+    parsed = urlparse(url or '')
+    host = (parsed.hostname or '').strip().lower()
+    if parsed.scheme not in {'http', 'https'} or not host:
+        return False
+    if not _looks_like_public_url(url):
+        return False
+    if host in {'localhost', 'localhost.localdomain'}:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified)
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        for item in resolved:
+            raw_addr = (item[4] or [''])[0].split('%', 1)[0]
+            try:
+                addr = ipaddress.ip_address(raw_addr)
+            except ValueError:
+                continue
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified:
+                return False
+        return True
+
+
+def _fetch_remote_title_response(url: str):
+    import requests
+
+    current = url
+    for _ in range(MAX_TITLE_FETCH_REDIRECTS + 1):
+        if not _is_safe_title_lookup_url(current):
+            return None
+        response = requests.get(
+            current,
+            headers=TITLE_FETCH_HEADERS,
+            timeout=(3.05, 4.5),
+            allow_redirects=False,
+        )
+        if response.status_code in TITLE_REDIRECT_STATUS_CODES:
+            location = (response.headers.get('Location') or '').strip()
+            if not location:
+                return None
+            current = urljoin(current, location)
+            continue
+        response.raise_for_status()
+        return response
+    return None
 
 
 def _video_id_from_url(url: str) -> str:
@@ -200,19 +256,13 @@ def _extract_remote_title(body: str, url: str) -> str:
 
 @lru_cache(maxsize=128)
 def _lookup_remote_title(url: str) -> str:
-    import requests
-
     normalized = _normalize_url(url)
-    if not normalized:
+    if not normalized or not _is_safe_title_lookup_url(normalized):
         return ''
     try:
-        response = requests.get(
-            normalized,
-            headers=TITLE_FETCH_HEADERS,
-            timeout=(3.05, 4.5),
-            allow_redirects=True,
-        )
-        response.raise_for_status()
+        response = _fetch_remote_title_response(normalized)
+        if response is None:
+            return ''
         content_type = (response.headers.get('Content-Type') or '').lower()
         if content_type and 'html' not in content_type and 'xml' not in content_type:
             return ''

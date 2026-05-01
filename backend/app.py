@@ -2,6 +2,9 @@ import logging
 import base64
 import hmac
 import hashlib
+from contextlib import asynccontextmanager
+import ipaddress
+import socket
 from fastapi import FastAPI, HTTPException, Cookie, Depends, Response, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -15,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import asyncio
 from fastapi import BackgroundTasks
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from backend.models import (
     AskRequest, AskResponse,
     IngestRequest, IngestResponse,
@@ -86,11 +89,66 @@ from starlette.middleware.base import BaseHTTPMiddleware
 logger = logging.getLogger(__name__)
 
 _IS_PRODUCTION = os.getenv("RENDER", "") != "" or os.getenv("ENV", "").lower() == "production"
+_DEFAULT_JWT_SECRET = "change-me-before-prod"
+
+
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    print("[STARTUP] Backend ready", flush=True)
+    if settings.JWT_SECRET_KEY == _DEFAULT_JWT_SECRET:
+        message = (
+            "JWT_SECRET_KEY is set to the default insecure value. "
+            "Set the JWT_SECRET_KEY environment variable before running in production."
+        )
+        if _IS_PRODUCTION:
+            raise RuntimeError(message)
+        logger.warning(message)
+
+    if settings.COOKIE_SAMESITE == "none" and not settings.COOKIE_SECURE:
+        message = "COOKIE_SAMESITE=none requires COOKIE_SECURE=true."
+        if _IS_PRODUCTION:
+            raise RuntimeError(message)
+        logger.warning(message)
+
+    try:
+        db.execute_query("SELECT 1")
+        print("[STARTUP] DB connection OK")
+    except Exception as e:
+        print(f"[STARTUP] DB connection warning: {e}")
+
+    try:
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS creator_category TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS identity_fingerprint JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS style_fingerprint JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS soul_md TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS research_summary JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_status TEXT DEFAULT 'idle'")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_progress JSONB DEFAULT '{}'::jsonb")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS content_corpus_checksum TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_corpus_checksum TEXT")
+        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS item_archetype TEXT")
+        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_confidence FLOAT")
+        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_signals JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS creator_archetype TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS archetype_distribution JSONB")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS archetype_updated_at TIMESTAMPTZ")
+    except Exception as e:
+        print(f"[STARTUP] Migration warning: {e}")
+
+    try:
+        yield
+    finally:
+        db.close()
+
+
 app = FastAPI(
     title="Creator Bot API",
     docs_url=None if _IS_PRODUCTION else "/docs",
     redoc_url=None if _IS_PRODUCTION else "/redoc",
     openapi_url=None if _IS_PRODUCTION else "/openapi.json",
+    lifespan=app_lifespan,
 )
 
 limiter = Limiter(key_func=get_remote_address)
@@ -131,13 +189,9 @@ def _creator_select_expr(column_name: str) -> str:
     return column_name if _creator_column_exists(column_name) else f"NULL AS {column_name}"
 
 
-def _get_creator_cleaning_profile(creator_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
-    query = f"SELECT {_creator_select_expr('voice_patterns')} FROM creators WHERE id = %s"
-    params: List[Any] = [creator_id]
-    if user_id is not None:
-        query += " AND user_id = %s"
-        params.append(user_id)
-    return db.execute_one(query, tuple(params)) or {}
+def _get_creator_cleaning_profile(creator_id: int, user_id: int) -> Dict[str, Any]:
+    query = f"SELECT {_creator_select_expr('voice_patterns')} FROM creators WHERE id = %s AND user_id = %s"
+    return db.execute_one(query, (creator_id, user_id)) or {}
 
 
 def _find_stream_emit_boundary(text: str, tail_size: int = 24) -> int:
@@ -166,16 +220,8 @@ async def global_exception_handler(request, exc):
     from fastapi import HTTPException
     if isinstance(exc, HTTPException):
         raise exc  # Let FastAPI handle HTTPException normally
-    import traceback
-    print(f"[ERROR] Unhandled exception: {exc}", flush=True)
-    traceback.print_exc()
-    return JSONResponse(status_code=500, content={"detail": _safe_error_detail(exc)})
-
-
-@app.on_event("startup")
-def startup_event():
-    """Minimal startup - DB table created on first use to avoid blocking app start."""
-    print("[STARTUP] Backend ready", flush=True)
+    logger.exception("Unhandled exception", exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Unexpected server error"})
 
 
 # In-memory progress tracking for search (key: search_id, value: progress dict)
@@ -368,8 +414,7 @@ def _safe_error_detail(exc: Exception, fallback: str = "Unexpected server error"
 
 def _internal_server_error(exc: Exception, fallback: str = "Unexpected server error") -> HTTPException:
     logger.exception(fallback, exc_info=exc)
-    detail = fallback if _IS_PRODUCTION else _safe_error_detail(exc, fallback)
-    return HTTPException(status_code=500, detail=detail)
+    return HTTPException(status_code=500, detail=fallback)
 
 
 def _get_cors_origins() -> List[str]:
@@ -414,10 +459,14 @@ def verify_password(password: str, hashed: str) -> bool:
     """Verify a password against a hash"""
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 def create_session(user_id: int) -> str:
     """Create a new session and return session ID"""
     session_id = str(uuid.uuid4())
-    expires_at = datetime.utcnow() + timedelta(days=30)
+    expires_at = _utc_now() + timedelta(days=30)
     
     query = """
         INSERT INTO sessions (id, user_id, expires_at)
@@ -434,7 +483,7 @@ def _jwt_b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode((value + padding).encode("ascii"))
 
 def create_access_token(user_id: int, email: str) -> str:
-    now = datetime.utcnow()
+    now = _utc_now()
     payload = {
         "sub": str(user_id),
         "email": email,
@@ -462,7 +511,12 @@ def normalize_creator_handle(handle: Optional[str]) -> Optional[str]:
 def get_user_from_bearer(authorization: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
-    token = authorization.split(" ", 1)[1].strip()
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    token = parts[1].strip()
+    if not token:
+        return None
     try:
         header_b64, payload_b64, signature_b64 = token.split(".")
         signing_input = f"{header_b64}.{payload_b64}"
@@ -474,7 +528,7 @@ def get_user_from_bearer(authorization: Optional[str] = None) -> Optional[Dict[s
         if not hmac.compare_digest(expected_sig, _jwt_b64decode(signature_b64)):
             return None
         payload = json.loads(_jwt_b64decode(payload_b64).decode("utf-8"))
-        if int(payload.get("exp", 0)) <= int(datetime.utcnow().timestamp()):
+        if int(payload.get("exp", 0)) <= int(_utc_now().timestamp()):
             return None
         user_id = int(payload.get("sub"))
     except Exception:
@@ -496,17 +550,34 @@ def get_user_from_session(session_id: Optional[str] = None) -> Optional[Dict[str
     result = db.execute_one(query, (session_id,))
     return result
 
+
+def _is_allowed_request_origin(origin_value: Optional[str]) -> bool:
+    if not origin_value:
+        return True
+    parsed = urlparse(origin_value)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    normalized_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/").lower()
+    allowed_origins = {origin.rstrip("/").lower() for origin in _get_cors_origins()}
+    return normalized_origin in allowed_origins
+
 def require_auth(
+    request: Request,
     session_id: Optional[str] = Cookie(None),
     authorization: Optional[str] = Header(None),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
 ) -> Dict[str, Any]:
     """Dependency to require authentication"""
-    user = (
-        get_user_from_bearer(authorization)
-        or get_user_from_session(session_id)
-        or get_user_from_session(x_session_id)
-    )
+    bearer_user = get_user_from_bearer(authorization)
+    if bearer_user:
+        return bearer_user
+
+    if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and (session_id or x_session_id):
+        origin = request.headers.get("origin") or request.headers.get("referer")
+        if origin and not _is_allowed_request_origin(origin):
+            raise HTTPException(status_code=403, detail="Invalid request origin")
+
+    user = get_user_from_session(session_id) or get_user_from_session(x_session_id)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
@@ -584,47 +655,6 @@ def _history_message_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(citations, list) and citations:
         message["citations"] = citations
     return message
-
-@app.on_event("startup")
-async def startup():
-    """Initialize database connection"""
-    try:
-        if settings.JWT_SECRET_KEY == "change-me-before-prod":
-            raise RuntimeError(
-                "JWT_SECRET_KEY is set to the default insecure value. "
-                "Set the JWT_SECRET_KEY environment variable before running in production."
-            )
-        db.execute_query("SELECT 1")
-        print("[STARTUP] DB connection OK")
-    except Exception as e:
-        print(f"[STARTUP] DB connection warning: {e}")
-    # Migration: Add soul and fingerprint columns if missing
-    try:
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS creator_category TEXT")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS identity_fingerprint JSONB")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS style_fingerprint JSONB")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS soul_md TEXT")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS research_summary JSONB")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_status TEXT DEFAULT 'idle'")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_progress JSONB DEFAULT '{}'::jsonb")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS content_corpus_checksum TEXT")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_corpus_checksum TEXT")
-        # Content/creator archetype detection (drives fingerprint policy)
-        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS item_archetype TEXT")
-        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_confidence FLOAT")
-        db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_signals JSONB")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS creator_archetype TEXT")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS archetype_distribution JSONB")
-        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS archetype_updated_at TIMESTAMPTZ")
-    except Exception as e:
-        print(f"[STARTUP] Migration warning: {e}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Close database connection"""
-    db.close()
 
 # ============================================================================
 # Helper Functions
@@ -743,6 +773,100 @@ def _extract_html_title(body: str) -> str:
         return ""
 
 
+def _host_resolves_to_private_address(host: str) -> bool:
+    normalized = (host or "").strip().strip("[]").split("%", 1)[0].lower()
+    if not normalized:
+        return True
+    if normalized in {"localhost", "localhost.localdomain"}:
+        return True
+
+    addresses: List[Any] = []
+    try:
+        addresses.append(ipaddress.ip_address(normalized))
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(normalized, None)
+        except socket.gaierror:
+            return False
+        for item in resolved:
+            raw_addr = (item[4] or [""])[0].split("%", 1)[0]
+            try:
+                addresses.append(ipaddress.ip_address(raw_addr))
+            except ValueError:
+                continue
+
+    return any(
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+        for address in addresses
+    )
+
+
+def _is_safe_validation_target(url: str, platform_key: str, valid_hosts: Dict[str, List[str]]) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if platform_key in valid_hosts and not _host_matches(host, valid_hosts[platform_key]):
+        return False
+    if _host_resolves_to_private_address(host):
+        return False
+    return True
+
+
+def _read_limited_response_text(response: requests.Response, max_bytes: int = 512_000) -> str:
+    chunks: List[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=16_384):
+        if not chunk:
+            continue
+        remaining = max_bytes - total
+        if remaining <= 0:
+            break
+        piece = chunk[:remaining]
+        chunks.append(piece)
+        total += len(piece)
+        if total >= max_bytes:
+            break
+
+    payload = b"".join(chunks)
+    encoding = response.encoding or "utf-8"
+    return payload.decode(encoding, errors="ignore")
+
+
+def _safe_validation_fetch(url: str, platform_key: str, timeout: int, valid_hosts: Dict[str, List[str]], max_redirects: int = 3) -> Dict[str, Any]:
+    current_url = url
+    for _ in range(max_redirects + 1):
+        if not _is_safe_validation_target(current_url, platform_key, valid_hosts):
+            raise requests.RequestException("Unsafe validation target")
+
+        response = requests.get(
+            current_url,
+            headers=_VALIDATION_HEADERS,
+            timeout=timeout,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            if 300 <= response.status_code < 400 and response.headers.get("Location"):
+                current_url = urljoin(current_url, response.headers["Location"])
+                continue
+
+            return {
+                "status_code": response.status_code,
+                "url": response.url or current_url,
+                "text": _read_limited_response_text(response),
+            }
+        finally:
+            response.close()
+
+    raise requests.RequestException("Too many redirects during validation")
+
+
 def _handle_from_profile_url(url: str, platform_key: str) -> str:
     try:
         handle = extract_handle(url, platform_key) or ""
@@ -835,9 +959,28 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
 
     tiktok_handle = _handle_from_profile_url(url, "tiktok") if platform_key == "tiktok" else ""
 
+    valid_hosts = {
+        "youtube": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+        "youtube_shorts": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+        "instagram": ["instagram.com", "www.instagram.com"],
+        "tiktok": ["tiktok.com", "www.tiktok.com", "m.tiktok.com"],
+        "facebook": ["facebook.com", "www.facebook.com", "m.facebook.com", "fb.com"],
+        "twitter": ["twitter.com", "www.twitter.com", "x.com", "www.x.com"],
+        "linkedin": ["linkedin.com", "www.linkedin.com"],
+        "reddit": ["reddit.com", "www.reddit.com"],
+    }
+
+    if not _is_safe_validation_target(url, platform_key, valid_hosts):
+        return {
+            "exists": False,
+            "error": "Link invalid",
+            "checked_via": "target_validation",
+            "resolved_url": url,
+        }
+
     timeout = 3 if platform_key == "tiktok" else 12
     try:
-        response = requests.get(url, headers=_VALIDATION_HEADERS, timeout=timeout, allow_redirects=True)
+        response_data = _safe_validation_fetch(url, platform_key, timeout, valid_hosts)
     except requests.RequestException:
         if platform_key == "tiktok":
             tiktok_result = verify_tiktok_profile(url, tiktok_handle, fetch_posts_fn=None)
@@ -860,9 +1003,10 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
             "warning": "Valid format. Live verification is unavailable right now.",
         }
 
-    final_url = response.url or url
+    final_url = response_data["url"] or url
     final_host = (urlparse(final_url).netloc or "").lower()
-    body = (response.text or "").lower()
+    response_text = response_data["text"] or ""
+    body = response_text.lower()
 
     invalid_markers = {
         "youtube": ["this page isn't available", "video unavailable", "channel not found", "this channel does not exist"],
@@ -874,19 +1018,8 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
         "linkedin": ["page not found", "profile unavailable"],
         "reddit": ["sorry, nobody on reddit goes by that name", "page not found"],
     }
-    valid_hosts = {
-        "youtube": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
-        "youtube_shorts": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
-        "instagram": ["instagram.com", "www.instagram.com"],
-        "tiktok": ["tiktok.com", "www.tiktok.com", "m.tiktok.com"],
-        "facebook": ["facebook.com", "www.facebook.com", "m.facebook.com", "fb.com"],
-        "twitter": ["twitter.com", "www.twitter.com", "x.com", "www.x.com"],
-        "linkedin": ["linkedin.com", "www.linkedin.com"],
-        "reddit": ["reddit.com", "www.reddit.com"],
-    }
-
-    if response.status_code >= 400:
-        if response.status_code in {401, 403, 429, 500, 502, 503, 504, 999}:
+    if response_data["status_code"] >= 400:
+        if response_data["status_code"] in {401, 403, 429, 500, 502, 503, 504, 999}:
             return {
                 "exists": True,
                 "checked_via": "http_fetch_soft",
@@ -914,8 +1047,8 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
                 url,
                 tiktok_handle,
                 resolved_url=final_url,
-                page_title=_extract_html_title(response.text or ""),
-                page_body=response.text or "",
+                page_title=_extract_html_title(response_text),
+                page_body=response_text,
             )
             if tiktok_result.get("confirmed"):
                 return {
@@ -944,7 +1077,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
             "resolved_url": final_url,
         }
 
-    title = _extract_html_title(response.text or "")
+    title = _extract_html_title(response_text)
 
     # YouTube channel pages often contain "video unavailable" for individual
     # video thumbnails even when the channel itself is perfectly valid.
@@ -1006,7 +1139,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
             tiktok_handle,
             resolved_url=final_url,
             page_title=title,
-            page_body=response.text or "",
+            page_body=response_text,
         )
         if tiktok_result.get("confirmed"):
             return {
@@ -1021,7 +1154,7 @@ def _validate_platform_availability(platform_key: str, url: str) -> Dict[str, An
             "resolved_url": final_url,
         }
 
-    if not _page_has_positive_profile_signal(platform_key, url, final_url, response.text or ""):
+    if not _page_has_positive_profile_signal(platform_key, url, final_url, response_text):
         return {
             "exists": True,
             "checked_via": "profile_signal_soft",
@@ -1280,7 +1413,9 @@ async def get_session(
     return SessionResponse(user_id=user["id"], email=user["email"], valid=True)
 
 @app.post("/auth/logout")
+@limiter.limit("20/minute")
 async def logout(
+    request: Request,
     response: Response,
     session_id: Optional[str] = Cookie(None),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
@@ -1380,7 +1515,8 @@ def validate_platform_url(key: str, url: str = ""):
 # ============================================================================
 
 @app.get("/creators", response_model=CreatorsListResponse)
-async def list_creators(current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("60/minute")
+async def list_creators(request: Request, current_user: Dict[str, Any] = Depends(require_auth)):
     """List all creators"""
     try:
         dcol = _creator_display_column()
@@ -1416,18 +1552,19 @@ async def list_creators(current_user: Dict[str, Any] = Depends(require_auth)):
         return CreatorsListResponse(creators=[])
 
 @app.post("/creators", response_model=Creator)
-async def create_creator(request: CreateCreatorRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("20/minute")
+async def create_creator(request: Request, payload: CreateCreatorRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Create a new creator (not used in simplified UI)"""
     try:
         # Name validation and normalization
-        name_raw = request.name
+        name_raw = payload.name
         norm_res = normalize_creator_name(name_raw)
         if not norm_res.is_valid:
             raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
         name = norm_res.normalized
         
-        handle = normalize_creator_handle(request.handle)
-        platforms_json = json.dumps(request.platforms or [])
+        handle = normalize_creator_handle(payload.handle)
+        platforms_json = json.dumps(payload.platforms or [])
 
         if handle:
             existing = db.execute_one(
@@ -1603,10 +1740,11 @@ def _slugify_creator_name(name: str) -> Optional[str]:
 
 
 @app.post("/creators/config", response_model=CreatorWithConfigResponse)
-async def create_creator_with_config(request: CreateCreatorWithConfigRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("20/minute")
+async def create_creator_with_config(request: Request, payload: CreateCreatorWithConfigRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Create creator with platform_configs. Validate & normalize URLs, then save."""
     try:
-        configs = _validate_and_normalize_platform_configs(request.platform_configs)
+        configs = _validate_and_normalize_platform_configs(payload.platform_configs)
         if not configs:
             raise HTTPException(status_code=400, detail="At least one enabled platform with URL is required.")
         
@@ -1617,14 +1755,14 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
         updated_profile = autofill_creator_identity(0, dummy_profile)
         configs = updated_profile.get("platform_configs", configs)
 
-        name_raw = request.name
+        name_raw = payload.name
         if not name_raw:
             raise HTTPException(status_code=400, detail={"field": "name", "message": "Creator name is required."})
         norm_res = normalize_creator_name(name_raw)
         if not norm_res.is_valid:
             raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
         name = norm_res.normalized
-        handle = normalize_creator_handle(request.handle or _derive_handle_from_configs(configs) or _slugify_creator_name(name))
+        handle = normalize_creator_handle(payload.handle or _derive_handle_from_configs(configs) or _slugify_creator_name(name))
         if not handle:
             raise HTTPException(status_code=400, detail="Could not derive a stable creator id from the selected URLs or name.")
 
@@ -1698,12 +1836,12 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
                     "course_base_urls",
                 ])
                 insert_vals.extend([
-                    request.profile_picture_url,
-                    request.youtube_channel_id,
-                    request.youtube_handle,
-                    request.official_domains,
-                    request.course_domains,
-                    request.course_base_urls,
+                    payload.profile_picture_url,
+                    payload.youtube_channel_id,
+                    payload.youtube_handle,
+                    payload.official_domains,
+                    payload.course_domains,
+                    payload.course_base_urls,
                 ])
 
                 if has_pc:
@@ -1740,10 +1878,14 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
         if not creator_id:
             raise HTTPException(status_code=500, detail="Failed to create creator.")
 
-        creator = db.execute_one(f"SELECT id, handle, {dcol} AS display_name, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s", (creator_id,))
+        creator = db.execute_one(
+            f"SELECT id, handle, {dcol} AS display_name, {_creator_select_expr('platform_configs')}, style_fingerprint, created_at, youtube_channel_id, youtube_handle, official_domains, course_domains, course_base_urls FROM creators WHERE id = %s AND user_id = %s",
+            (creator_id, user_id),
+        )
+        if not creator:
+            raise HTTPException(status_code=404, detail="Creator not found.")
         if has_pc:
-            pc = db.execute_one("SELECT platform_configs FROM creators WHERE id = %s", (creator_id,))
-            configs_out = pc.get("platform_configs") if pc else configs
+            configs_out = creator.get("platform_configs") if creator else configs
             if hasattr(configs_out, "copy"):
                 configs_out = dict(configs_out) if configs_out else {}
             else:
@@ -1751,7 +1893,7 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
         else:
             configs_out = configs
 
-        vc = creator.get("visual_config") or request.visual_config
+        vc = creator.get("visual_config") or payload.visual_config
         if isinstance(vc, str):
             vc = json.loads(vc)
         elif not isinstance(vc, dict):
@@ -1787,7 +1929,8 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
 
 
 @app.put("/creators/{creator_id}", response_model=CreatorWithConfigResponse)
-async def update_creator(creator_id: int, request: UpdateCreatorRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("30/minute")
+async def update_creator(request: Request, creator_id: int, payload: UpdateCreatorRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Update creator name, handle, and/or platform_configs."""
     try:
         dcol = _creator_display_column()
@@ -1795,34 +1938,34 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest, current
         if not existing:
             raise HTTPException(status_code=404, detail="Creator not found.")
 
-        print(f"[DEBUG] update_creator id={creator_id} request={request.dict(exclude={'profile_picture_url'})} has_pic={bool(request.profile_picture_url)}", flush=True)
+        print(f"[DEBUG] update_creator id={creator_id} request={payload.dict(exclude={'profile_picture_url'})} has_pic={bool(payload.profile_picture_url)}", flush=True)
 
         updates = []
         params = []
         content_affecting_change = False
         name_raw = None
         norm_res = None
-        if request.name is not None:
-            name_raw = request.name
+        if payload.name is not None:
+            name_raw = payload.name
             norm_res = normalize_creator_name(name_raw)
             if not norm_res.is_valid:
                 raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
             if _values_differ(existing.get("display_name"), norm_res.normalized):
                 updates.append(f"{dcol} = %s")
                 params.append(norm_res.normalized)
-        if request.handle is not None:
-            normalized_handle = normalize_creator_handle(request.handle)
+        if payload.handle is not None:
+            normalized_handle = normalize_creator_handle(payload.handle)
             if _values_differ(existing.get("handle"), normalized_handle):
                 updates.append("handle = %s")
                 params.append(normalized_handle)
                 content_affecting_change = True
-        if request.profile_picture_url is not None:
-            normalized_profile_picture_url = _normalize_optional_string(request.profile_picture_url)
+        if payload.profile_picture_url is not None:
+            normalized_profile_picture_url = _normalize_optional_string(payload.profile_picture_url)
             if _values_differ(existing.get("profile_picture_url"), normalized_profile_picture_url):
                 updates.append("profile_picture_url = %s")
                 params.append(normalized_profile_picture_url)
-        if request.platform_configs is not None:
-            configs = _validate_and_normalize_platform_configs(request.platform_configs)
+        if payload.platform_configs is not None:
+            configs = _validate_and_normalize_platform_configs(payload.platform_configs)
             # Identity Auto-Fill Hook
             dummy_profile = {"platform_configs": configs}
             updated_profile = autofill_creator_identity(creator_id, dummy_profile)
@@ -1840,41 +1983,41 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest, current
                 if _values_differ(existing_configs, configs):
                     updates.append("platform_configs = %s")
                     params.append(json.dumps(configs))
-        if request.visual_config is not None:
+        if payload.visual_config is not None:
             existing_visual_config = _jsonish_to_plain(existing.get("visual_config") or {})
-            if _values_differ(existing_visual_config, request.visual_config or {}):
+            if _values_differ(existing_visual_config, payload.visual_config or {}):
                 updates.append("visual_config = %s")
-                params.append(json.dumps(request.visual_config))
+                params.append(json.dumps(payload.visual_config))
 
-        if request.youtube_channel_id is not None:
-            normalized_youtube_channel_id = _normalize_optional_string(request.youtube_channel_id)
+        if payload.youtube_channel_id is not None:
+            normalized_youtube_channel_id = _normalize_optional_string(payload.youtube_channel_id)
             if _values_differ(existing.get("youtube_channel_id"), normalized_youtube_channel_id):
                 updates.append("youtube_channel_id = %s")
                 params.append(normalized_youtube_channel_id)
                 content_affecting_change = True
-        if request.youtube_handle is not None:
-            normalized_youtube_handle = _normalize_optional_string(request.youtube_handle)
+        if payload.youtube_handle is not None:
+            normalized_youtube_handle = _normalize_optional_string(payload.youtube_handle)
             if _values_differ(existing.get("youtube_handle"), normalized_youtube_handle):
                 updates.append("youtube_handle = %s")
                 params.append(normalized_youtube_handle)
                 content_affecting_change = True
-        if request.official_domains is not None:
-            if _values_differ(existing.get("official_domains") or [], request.official_domains or []):
+        if payload.official_domains is not None:
+            if _values_differ(existing.get("official_domains") or [], payload.official_domains or []):
                 updates.append("official_domains = %s")
-                params.append(request.official_domains)
+                params.append(payload.official_domains)
                 content_affecting_change = True
-        if request.course_domains is not None:
-            if _values_differ(existing.get("course_domains") or [], request.course_domains or []):
+        if payload.course_domains is not None:
+            if _values_differ(existing.get("course_domains") or [], payload.course_domains or []):
                 updates.append("course_domains = %s")
-                params.append(request.course_domains)
+                params.append(payload.course_domains)
                 content_affecting_change = True
-        if request.course_base_urls is not None:
-            if _values_differ(existing.get("course_base_urls") or [], request.course_base_urls or []):
+        if payload.course_base_urls is not None:
+            if _values_differ(existing.get("course_base_urls") or [], payload.course_base_urls or []):
                 updates.append("course_base_urls = %s")
-                params.append(request.course_base_urls)
+                params.append(payload.course_base_urls)
                 content_affecting_change = True
-        if request.search_mode is not None:
-            normalized_search_mode = _normalize_optional_string(request.search_mode)
+        if payload.search_mode is not None:
+            normalized_search_mode = _normalize_optional_string(payload.search_mode)
             if _values_differ(existing.get("search_mode") or "hybrid", normalized_search_mode or "hybrid"):
                 updates.append("search_mode = %s")
                 params.append(normalized_search_mode)
@@ -1969,7 +2112,8 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest, current
 
 
 @app.delete("/creators/{creator_id}")
-async def delete_creator(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("20/minute")
+async def delete_creator(request: Request, creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Delete a creator and all associated data."""
     try:
         # Check if creator exists (simple check)
@@ -2017,7 +2161,8 @@ async def delete_creator(creator_id: int, current_user: Dict[str, Any] = Depends
 
 
 @app.get("/creators/{creator_id}/config", response_model=CreatorWithConfigResponse)
-async def get_creator_config(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("90/minute")
+async def get_creator_config(request: Request, creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
     """Get creator with platform_configs."""
     dcol = _creator_display_column()
     row = db.execute_one(
@@ -2748,7 +2893,7 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
         import traceback
         logger.error(f"Streaming failed before started: {e}")
         logger.debug(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=_safe_error_detail(e, "Chat stream failed before start"))
+        raise HTTPException(status_code=500, detail="Chat stream failed before start")
 
 def _extract_stream_cards(answer: str):
     """Best-effort card extraction for streamed answers."""
@@ -4759,7 +4904,8 @@ def retry_transcript(item_id: str, background_tasks: BackgroundTasks, current_us
 # --- Thread Management Endpoints ---
 
 @app.post("/threads", response_model=ThreadResponse)
-def create_thread_endpoint(req: CreateThreadRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("30/minute")
+def create_thread_endpoint(request: Request, req: CreateThreadRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     status_obj = get_creator_status(req.creator_id)
     if not status_obj["ready_to_chat"]:
         raise HTTPException(status_code=409, detail={"error": "not_ready", "message": status_obj["block_reason"], "status": status_obj})
@@ -4793,7 +4939,8 @@ def create_thread_endpoint(req: CreateThreadRequest, current_user: Dict[str, Any
     )
 
 @app.put("/threads/{thread_id}", response_model=ThreadResponse)
-def update_thread_endpoint(thread_id: str, req: UpdateThreadRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("60/minute")
+def update_thread_endpoint(request: Request, thread_id: str, req: UpdateThreadRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     user_id = current_user["id"]
     updates = []
     params = []
@@ -4831,7 +4978,8 @@ def update_thread_endpoint(thread_id: str, req: UpdateThreadRequest, current_use
     )
 
 @app.get("/creators/{creator_id}/threads", response_model=List[ThreadResponse])
-def list_threads_endpoint(creator_id: int, archived: bool = False, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("120/minute")
+def list_threads_endpoint(request: Request, creator_id: int, archived: bool = False, current_user: Dict[str, Any] = Depends(require_auth)):
     ensure_creator_access(creator_id, current_user["id"])
     user_id = current_user["id"]
     # Filter by archived status. handling NULL as false.
@@ -4858,7 +5006,8 @@ def list_threads_endpoint(creator_id: int, archived: bool = False, current_user:
     ]
 
 @app.get("/threads/{thread_id}/messages", response_model=List[MessageResponse])
-def list_thread_messages_endpoint(thread_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("180/minute")
+def list_thread_messages_endpoint(request: Request, thread_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
     thread = db.execute_one("SELECT id FROM chat_threads WHERE id = %s AND user_id = %s", (thread_id, current_user["id"]))
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -4892,7 +5041,8 @@ def list_thread_messages_endpoint(thread_id: str, current_user: Dict[str, Any] =
     return results
 
 @app.delete("/threads/{thread_id}")
-def delete_thread_endpoint(thread_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
+@limiter.limit("30/minute")
+def delete_thread_endpoint(request: Request, thread_id: str, current_user: Dict[str, Any] = Depends(require_auth)):
     user_id = current_user["id"]
     # Hard delete (Permanent removal as requested)
     # First verify ownership

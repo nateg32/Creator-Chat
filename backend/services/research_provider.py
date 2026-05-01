@@ -1,7 +1,9 @@
 import hashlib
+import ipaddress
 import json
 import logging
 import re
+import socket
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Set
@@ -30,6 +32,34 @@ _GROUNDING_REDIRECT_QUERY_KEYS = (
     "redirect_url",
 )
 _BARE_DOMAIN_RE = re.compile(r"^(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/[^\s]*)?$")
+
+
+def _is_safe_public_url(url: str, allowed_hosts: Optional[Set[str]] = None) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if allowed_hosts and host not in allowed_hosts:
+        return False
+    if host in {"localhost", "localhost.localdomain"}:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified)
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        for item in resolved:
+            raw_addr = (item[4] or [""])[0].split("%", 1)[0]
+            try:
+                addr = ipaddress.ip_address(raw_addr)
+            except ValueError:
+                continue
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified:
+                return False
+        return True
 
 
 def _normalize_grounding_url(raw_url: str, title: str = "") -> str:
@@ -1584,6 +1614,8 @@ class OpenAIResearchProvider(ResearchProvider):
         """Validate a YouTube URL via oEmbed. Returns the real video title if valid, None if invalid/deleted."""
         import urllib.request
         import urllib.parse
+        if not _is_safe_public_url(url, {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}):
+            return None
         try:
             oembed_url = f"https://noembed.com/embed?url={urllib.parse.quote(url, safe='')}"
             req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -1602,15 +1634,15 @@ class OpenAIResearchProvider(ResearchProvider):
 
     def _validate_web_url(self, url: str) -> bool:
         """Validate a non-YouTube URL via HEAD request. Returns True if reachable (2xx/3xx)."""
-        import urllib.request
+        if not _is_safe_public_url(url):
+            return False
         try:
-            req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=3) as response:
-                status = response.getcode()
-                if status and status < 400:
-                    return True
-                logger.warning(f"[URL-VALIDATE] Web URL returned {status}: {url}")
-                return False
+            response = requests.head(url, allow_redirects=False, timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
+            status = response.status_code
+            if status and status < 400:
+                return True
+            logger.warning(f"[URL-VALIDATE] Web URL returned {status}: {url}")
+            return False
         except Exception as e:
             logger.warning(f"[URL-VALIDATE] Web URL unreachable: {url} — {e}")
             return False

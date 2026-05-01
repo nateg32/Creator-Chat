@@ -47,20 +47,17 @@ class UserPriorityService:
         self, 
         question: str, 
         history: Optional[List[Dict[str, str]]] = None,
-        current_memory: Optional[Dict[str, Any]] = None
+        current_memory: Optional[Dict[str, Any]] = None,
+        creator_profile: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Stage 1: Detect user skill, confusion, and clarity from history.
         Uses comprehensive classifiers.
         """
         from backend.services.classifiers import classifiers
-        from backend.db import db
-        
-        # Resolve creator profile for context
-        # In a real scenario, this would be passed in or fetched by creator_id
-        # For parity with existing call sites, we fetch a default or handle errors
+
         try:
-            creator_row = db.execute_one("SELECT name, handle FROM creators") or {}
+            creator_row = creator_profile or {}
             return classifiers.classify_all(question, history or [], creator_row)
         except Exception as e:
             logger.error(f"User state detection failed: {e}")

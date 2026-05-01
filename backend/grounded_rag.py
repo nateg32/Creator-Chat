@@ -3663,7 +3663,12 @@ def generate_grounded_answer(
     # --- User Priority & Real Conversation Engine ---
     # Use passed state if available, else detect
     if not user_state:
-        user_state = user_priority_service.detect_user_state(question, conversation_history, current_memory=current_memory)
+        user_state = user_priority_service.detect_user_state(
+            question,
+            conversation_history,
+            current_memory=current_memory,
+            creator_profile=creator_profile,
+        )
     
     conv_mode = user_priority_service.select_response_mode(user_state, q_type, mvc_score)
     mode_constraints = user_priority_service.get_mode_constraints(conv_mode, user_state)

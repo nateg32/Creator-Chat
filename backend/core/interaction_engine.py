@@ -9,7 +9,7 @@ import random
 import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import backend.rag as rag
 from backend.settings import settings
 from backend.db import db
@@ -133,11 +133,11 @@ class InteractionPlan(BaseModel):
     persona_controls: PersonaControls = Field(default_factory=PersonaControls)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 
-    @validator("missing_info")
+    @field_validator("missing_info")
     def cap_missing_info(cls, v):
         return v[:2]
 
-    @validator("answer_outline")
+    @field_validator("answer_outline")
     def cap_answer_outline(cls, v):
         return v[:5]
 

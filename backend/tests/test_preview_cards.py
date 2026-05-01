@@ -1,5 +1,6 @@
 import importlib.util
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -16,6 +17,24 @@ preview_cards = _load_module()
 
 
 class PreviewCardTests(unittest.TestCase):
+    def test_remote_title_lookup_rejects_private_hosts(self):
+        with mock.patch('requests.get', side_effect=AssertionError('should not fetch private hosts')):
+            self.assertEqual(preview_cards._lookup_remote_title('http://127.0.0.1/internal'), '')
+
+    def test_remote_title_lookup_rejects_redirects_to_private_hosts(self):
+        class RedirectResponse:
+            status_code = 302
+            headers = {'Location': 'http://127.0.0.1/admin'}
+            url = 'https://example.com/start'
+            text = ''
+
+            def raise_for_status(self):
+                return None
+
+        with mock.patch('requests.get', return_value=RedirectResponse()) as mocked_get:
+            self.assertEqual(preview_cards._lookup_remote_title('https://example.com/start'), '')
+            self.assertEqual(mocked_get.call_count, 1)
+
     def test_extracts_markdown_link_card(self):
         cards = preview_cards.extract_preview_cards('Watch [this clip](https://example.com/watch?v=1) now.')
         self.assertEqual(len(cards), 1)
