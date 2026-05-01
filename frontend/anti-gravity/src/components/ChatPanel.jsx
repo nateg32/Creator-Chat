@@ -300,6 +300,8 @@ export function ChatPanel({
   const [imageZoom, setImageZoom] = useState(1);
   const [attachmentError, setAttachmentError] = useState(null);
   const errorTimeoutRef = useRef(null);
+  const displayCreatorName = formatCreatorName(creatorDisplayName);
+  const displayUserName = String(userName || "").trim() || "You";
 
   const loading = localLoading;
   const normalizedSearchMode = String(searchMode || "hybrid").toLowerCase() === "ingested"
@@ -600,8 +602,20 @@ export function ChatPanel({
       });
 
     } catch (e) {
-      setApprovalRequired(false);
-      setError(e.message);
+      const rawMessage = e?.message || "Something went wrong.";
+      const needsApproval = /approve content to continue/i.test(rawMessage);
+      const friendlyMessage = needsApproval
+        ? "Changes were detected for this creator. Review and confirm the current approvals before chatting again."
+        : `Sorry, something went wrong: ${rawMessage}`;
+      setApprovalRequired(needsApproval);
+      setError(friendlyMessage);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? { ...msg, content: friendlyMessage, text: friendlyMessage, status: "error" }
+            : msg
+        )
+      );
       if (debug) setDebugInfo(null);
       setLocalLoading(false);
     }
@@ -675,22 +689,22 @@ export function ChatPanel({
                     onClick={() => handleAvatarClick(m.role === "assistant" ? "creator" : "user")}
                   >
                     {m.role === "assistant" ? (
-                      creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={creatorDisplayName} className="avatar-img" /> : <SparkleIcon />
+                      creatorAvatarUrl ? <img src={creatorAvatarUrl} alt={displayCreatorName} className="avatar-img" /> : <SparkleIcon />
                     ) : (
-                      userAvatarUrl ? <img src={userAvatarUrl} alt={userName} className="avatar-img" /> : <UserIcon />
+                      userAvatarUrl ? <img src={userAvatarUrl} alt={displayUserName} className="avatar-img" /> : <UserIcon />
                     )}
                   </div>
                   <div className="msg-bubble">
                     <div className="msg-header" style={{ color: m.role === "assistant" ? (visualConfig?.creatorNameColor || "#1a73e8") : (visualConfig?.userNameColor || "#5f6368") }}>
                       <div className="msg-sender">
-                        {m.role === "assistant" ? formatCreatorName(creatorDisplayName) : (userName || "User")}
+                        {m.role === "assistant" ? displayCreatorName : displayUserName}
                       </div>
                       {isTypingMessage && m.role === "assistant" && (
                         <span
                           className="typing-name-indicator"
                           role="status"
                           aria-live="polite"
-                          aria-label={`${formatCreatorName(creatorDisplayName)} ${pendingStatus.ariaLabel}`}
+                          aria-label={`${displayCreatorName} ${pendingStatus.ariaLabel}`}
                         >
                           <span className="typing-name-dot" aria-hidden="true"></span>
                           <span className="typing-name-dot" aria-hidden="true"></span>

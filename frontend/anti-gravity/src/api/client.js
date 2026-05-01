@@ -125,8 +125,12 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     });
   } catch (err) {
     if (timeoutId) clearTimeout(timeoutId);
-    if (err.name === "AbortError") throw new Error(timeoutMessage);
-    throw err;
+      const requestError = err.name === "AbortError" ? new Error(timeoutMessage) : err;
+      if (onError) {
+        onError(requestError);
+        return null;
+      }
+      throw requestError;
   }
 
   if (!response.ok) {
@@ -134,8 +138,23 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     handleUnauthorizedResponse(response);
     const details = await readErrorPayload(response);
     const msg = details ? `Request failed (${response.status}): ${details}` : `Request failed (${response.status})`;
-    throw new Error(msg);
+      const responseError = new Error(msg);
+      if (onError) {
+        onError(responseError);
+        return null;
+      }
+      throw responseError;
   }
+
+    if (!response.body) {
+      if (timeoutId) clearTimeout(timeoutId);
+      const streamError = new Error("Streaming response body was empty.");
+      if (onError) {
+        onError(streamError);
+        return null;
+      }
+      throw streamError;
+    }
 
   resetTimeout(STREAM_IDLE_TIMEOUT_MS, "Response took too long to continue. Please try again.");
 
