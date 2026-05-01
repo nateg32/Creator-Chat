@@ -144,7 +144,7 @@
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(250, 251, 253, 0.84);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .setup-section::before {
@@ -359,7 +359,8 @@
 
 .date-picker-popover {
   position: absolute;
-  top: calc(100% + 10px);
+  bottom: calc(100% + 10px);
+  top: auto;
   right: 0;
   z-index: 20;
   padding: 14px;

@@ -996,7 +996,7 @@ export function CreatorSetup({
                                         });
                                         setOpenDatePickerFor(null);
                                       }}
-                                      month={cfg.timeFilter?.since ? new Date(`${cfg.timeFilter.since}T00:00:00`) : today}
+                                      defaultMonth={cfg.timeFilter?.since ? new Date(`${cfg.timeFilter.since}T00:00:00`) : today}
                                       disabled={{ after: today }}
                                       captionLayout="dropdown"
                                       startMonth={new Date(2010, 0)}
