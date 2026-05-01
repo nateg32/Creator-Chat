@@ -2595,7 +2595,11 @@ async def health():
     """Health check endpoint - minimal, no DB dependency."""
     try:
         print("[HEALTH] GET /health - request received", flush=True)
-        return {"ok": True}
+        return {
+            "ok": True,
+            "chat_empty_stream_fallback": True,
+            "render_git_commit": os.getenv("RENDER_GIT_COMMIT", ""),
+        }
     except Exception as e:
         print(f"[HEALTH] ERROR: {e}", flush=True)
         import traceback
@@ -2903,6 +2907,8 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                     full_answer,
                     explicit_support or _card_chunks_for_integrity(cards),
                 )
+                if not raw_streamed_answer.strip() and full_answer.strip():
+                    yield f"data: {json.dumps({'content': full_answer})}\n\n"
                 if full_answer != raw_streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
                 if payload.thread_id:
