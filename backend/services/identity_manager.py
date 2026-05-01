@@ -1,7 +1,7 @@
 import re
 import logging
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 

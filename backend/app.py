@@ -366,6 +366,12 @@ def _safe_error_detail(exc: Exception, fallback: str = "Unexpected server error"
     return fallback
 
 
+def _internal_server_error(exc: Exception, fallback: str = "Unexpected server error") -> HTTPException:
+    logger.exception(fallback, exc_info=exc)
+    detail = fallback if _IS_PRODUCTION else _safe_error_detail(exc, fallback)
+    return HTTPException(status_code=500, detail=detail)
+
+
 def _get_cors_origins() -> List[str]:
     """Allow localhost in dev plus deployed frontend URLs via env vars."""
     default_origins = [
@@ -443,6 +449,15 @@ def create_access_token(user_id: int, email: str) -> str:
         hashlib.sha256,
     ).digest()
     return f"{signing_input}.{_jwt_b64encode(signature)}"
+
+
+def normalize_user_email(email: Optional[str]) -> str:
+    return str(email or "").strip().lower()
+
+
+def normalize_creator_handle(handle: Optional[str]) -> Optional[str]:
+    value = str(handle or "").strip().lower().lstrip("@")
+    return value or None
 
 def get_user_from_bearer(authorization: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -1058,31 +1073,35 @@ def _creators_has_platforms_column() -> bool:
     return _CREATORS_HAS_PLATFORMS_CACHE
 
 
-def get_or_create_creator_for_handle(handle: str, platform: str = "instagram") -> int:
+def get_or_create_creator_for_handle(handle: str, user_id: int, platform: str = "instagram") -> int:
     """
     Find or create a creator row for the given handle.
     This lets us have separate personas and stats per creator instead of hardcoding id=1.
     """
+    handle = normalize_creator_handle(handle)
+    if not handle:
+        raise ValueError("Creator handle is required")
+
     has_platforms = _creators_has_platforms_column()
 
-    # Try to find existing creator by handle
+    # Try to find existing creator by handle for this user only.
     existing = None
     try:
         if has_platforms:
             existing = db.execute_one(
-                "SELECT id, platforms FROM creators WHERE handle = %s LIMIT 1",
-                (handle,),
+                "SELECT id, platforms FROM creators WHERE user_id = %s AND handle = %s LIMIT 1",
+                (user_id, handle),
             )
         else:
             existing = db.execute_one(
-                "SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1",
-                (handle,),
+                "SELECT id, platform_configs FROM creators WHERE user_id = %s AND handle = %s LIMIT 1",
+                (user_id, handle),
             )
     except Exception:
         # If schema differs unexpectedly, fall back to minimal select
         existing = db.execute_one(
-            "SELECT id, platform_configs FROM creators WHERE handle = %s LIMIT 1",
-            (handle,),
+            "SELECT id, platform_configs FROM creators WHERE user_id = %s AND handle = %s LIMIT 1",
+            (user_id, handle),
         )
     if existing:
         # Ensure platform is recorded (only if column exists)
@@ -1098,9 +1117,6 @@ def get_or_create_creator_for_handle(handle: str, platform: str = "instagram") -
                 )
         return existing["id"]
 
-    # No existing creator: attach to first user (or 1 as fallback)
-    user_row = db.execute_one("SELECT id FROM users ORDER BY id LIMIT 1", ())
-    user_id = user_row["id"] if user_row and "id" in user_row else 1
     has_name_col = _creator_has_column("name")
     has_display_name_col = _creator_has_column("display_name")
 
@@ -1176,8 +1192,9 @@ def mark_queue_ingested(conn, creator_id: int, queue_ids: List[int]):
 async def login(request: Request, payload: LoginRequest, response: Response):
     """Login and create session"""
     try:
+        email = normalize_user_email(payload.email)
         query = "SELECT id, password_hash FROM users WHERE email = %s"
-        user = db.execute_one(query, (payload.email,))
+        user = db.execute_one(query, (email,))
         
         if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -1199,27 +1216,30 @@ async def login(request: Request, payload: LoginRequest, response: Response):
         return LoginResponse(
             session_id=session_id,
             user_id=user["id"],
-            access_token=create_access_token(user["id"], payload.email),
+            access_token=create_access_token(user["id"], email),
             token_type="bearer",
         )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Login failed")
 
 @app.post("/auth/register")
 @limiter.limit("5/minute")
 async def register(request: Request, payload: LoginRequest, response: Response):
     """Register a new user"""
     try:
+        email = normalize_user_email(payload.email)
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
         query = "SELECT id FROM users WHERE email = %s"
-        existing = db.execute_one(query, (payload.email,))
+        existing = db.execute_one(query, (email,))
         if existing:
             raise HTTPException(status_code=400, detail="User already exists")
         
         password_hash = hash_password(payload.password)
         query = "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id"
-        user_id = db.execute_insert(query, (payload.email, password_hash))
+        user_id = db.execute_insert(query, (email, password_hash))
         
         session_id = create_session(user_id)
         
@@ -1235,13 +1255,13 @@ async def register(request: Request, payload: LoginRequest, response: Response):
         return LoginResponse(
             session_id=session_id,
             user_id=user_id,
-            access_token=create_access_token(user_id, payload.email),
+            access_token=create_access_token(user_id, email),
             token_type="bearer",
         )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Registration failed")
 
 @app.get("/auth/session", response_model=SessionResponse)
 async def get_session(
@@ -1310,7 +1330,7 @@ def list_platforms():
         import traceback
         print(f"Error in /platforms: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to load platforms: {str(e)}")
+        raise _internal_server_error(e, "Failed to load platforms")
 
 
 @app.get("/platforms/{key}/validate")
@@ -1406,13 +1426,23 @@ async def create_creator(request: CreateCreatorRequest, current_user: Dict[str, 
             raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
         name = norm_res.normalized
         
+        handle = normalize_creator_handle(request.handle)
         platforms_json = json.dumps(request.platforms or [])
+
+        if handle:
+            existing = db.execute_one(
+                "SELECT id FROM creators WHERE user_id = %s AND handle = %s LIMIT 1",
+                (current_user["id"], handle),
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="You already have a creator with that handle.")
+
         query = """
             INSERT INTO creators (user_id, name, handle, platforms)
             VALUES (%s, %s, %s, %s)
             RETURNING id, name, handle, platforms, created_at
         """
-        result = db.execute_query(query, (current_user["id"], name, request.handle, platforms_json))
+        result = db.execute_query(query, (current_user["id"], name, handle, platforms_json))
         
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create creator")
@@ -1433,9 +1463,7 @@ async def create_creator(request: CreateCreatorRequest, current_user: Dict[str, 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create creator")
 
 def get_creator_status(creator_id: int) -> dict:
     row = db.execute_one(
@@ -1596,7 +1624,7 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
         if not norm_res.is_valid:
             raise HTTPException(status_code=400, detail={"field": "name", "message": norm_res.error})
         name = norm_res.normalized
-        handle = request.handle or _derive_handle_from_configs(configs) or _slugify_creator_name(name)
+        handle = normalize_creator_handle(request.handle or _derive_handle_from_configs(configs) or _slugify_creator_name(name))
         if not handle:
             raise HTTPException(status_code=400, detail="Could not derive a stable creator id from the selected URLs or name.")
 
@@ -1628,11 +1656,12 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
                 params.append(name)
             return params
 
-        # If creator already exists for this handle, update config instead of failing on unique constraint.
-        existing = db.execute_one("SELECT id, platform_configs, user_id FROM creators WHERE handle = %s LIMIT 1", (handle,))
+        # If creator already exists for this user + handle, update config instead of failing on unique constraint.
+        existing = db.execute_one(
+            "SELECT id, platform_configs FROM creators WHERE user_id = %s AND handle = %s LIMIT 1",
+            (user_id, handle),
+        )
         if existing and existing.get("id"):
-            if existing.get("user_id") != user_id:
-                raise HTTPException(status_code=409, detail="A creator with that handle already exists for another account.")
             creator_id = existing["id"]
             updates = _creator_name_updates()
             params = _creator_name_params()
@@ -1687,13 +1716,14 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
                     tuple(insert_vals),
                 )
             except Exception as e:
-                # Handle races / uniqueness: if handle already exists, update it instead.
+                # Handle races / uniqueness: if this user already has the handle, update it instead.
                 msg = str(e)
                 if "duplicate key value" in msg and "handle" in msg:
-                    existing = db.execute_one("SELECT id, platform_configs, user_id FROM creators WHERE handle = %s LIMIT 1", (handle,))
+                    existing = db.execute_one(
+                        "SELECT id, platform_configs FROM creators WHERE user_id = %s AND handle = %s LIMIT 1",
+                        (user_id, handle),
+                    )
                     if existing and existing.get("id"):
-                        if existing.get("user_id") != user_id:
-                            raise HTTPException(status_code=409, detail="A creator with that handle already exists for another account.")
                         creator_id = existing["id"]
                         updates = _creator_name_updates()
                         params = _creator_name_params()
@@ -1753,7 +1783,7 @@ async def create_creator_with_config(request: CreateCreatorWithConfigRequest, cu
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to create creator with config")
 
 
 @app.put("/creators/{creator_id}", response_model=CreatorWithConfigResponse)
@@ -1781,7 +1811,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest, current
                 updates.append(f"{dcol} = %s")
                 params.append(norm_res.normalized)
         if request.handle is not None:
-            normalized_handle = _normalize_optional_string(request.handle)
+            normalized_handle = normalize_creator_handle(request.handle)
             if _values_differ(existing.get("handle"), normalized_handle):
                 updates.append("handle = %s")
                 params.append(normalized_handle)
@@ -1935,7 +1965,7 @@ async def update_creator(creator_id: int, request: UpdateCreatorRequest, current
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to update creator")
 
 
 @app.delete("/creators/{creator_id}")
@@ -1983,9 +2013,7 @@ async def delete_creator(creator_id: int, current_user: Dict[str, Any] = Depends
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to delete creator")
 
 
 @app.get("/creators/{creator_id}/config", response_model=CreatorWithConfigResponse)
@@ -2276,7 +2304,7 @@ async def get_creator_stats(creator_id: int, current_user: Dict[str, Any] = Depe
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load creator stats")
 
 
 @app.get("/creators/{creator_id}/evidence-dashboard")
@@ -2321,7 +2349,7 @@ async def get_creator_evidence_dashboard(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load creator evidence dashboard")
 
 # ============================================================================
 # Core Endpoints
@@ -2973,10 +3001,10 @@ async def generate_fingerprint_endpoint(creator_id: int, current_user: Dict[str,
         )
         return {"job_id": job_id, "status": "queued"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to enqueue fingerprint job")
 
 @app.post("/ask", response_model=AskResponse)
-async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
+async def ask_endpoint(payload: AskRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
     # Pre-chat check: Ensure soul assets exist
     ensure_creator_access(payload.creator_id, current_user["id"])
     creator_row = db.execute_one("SELECT soul_md, fingerprint_status FROM creators WHERE id = %s", (payload.creator_id,))
@@ -3194,14 +3222,12 @@ async def ask_endpoint(request: AskRequest, background_tasks: BackgroundTasks, c
             "debug_info": result.get("debug") if payload.debug else None,
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to answer chat request")
 
 
 @app.post("/recommendations/feedback")
 async def recommendation_feedback_endpoint(
-    request: RecommendationFeedbackRequest,
+    payload: RecommendationFeedbackRequest,
     current_user: Dict[str, Any] = Depends(require_auth),
 ):
     ensure_creator_access(payload.creator_id, current_user["id"])
@@ -3221,7 +3247,7 @@ async def recommendation_feedback_endpoint(
     return {"ok": True, "event_id": event_id}
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest(request: IngestRequest, current_user: Dict[str, Any] = Depends(require_auth)):
+async def ingest(payload: IngestRequest, current_user: Dict[str, Any] = Depends(require_auth)):
     """Ingest a single document"""
     try:
         ensure_creator_access(payload.creator_id, current_user["id"])
@@ -3237,7 +3263,7 @@ async def ingest(request: IngestRequest, current_user: Dict[str, Any] = Depends(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to ingest document")
 
 # ============================================================================
 # Scraping Endpoints
@@ -3552,11 +3578,11 @@ async def search_endpoint(request: Request, payload: SearchRequest, background_t
             mode = parsed.get("mode") or "profile"
             if not settings.APIFY_TOKEN:
                 raise HTTPException(status_code=500, detail="APIFY_TOKEN is not set.")
-            creator_id = get_or_create_creator_for_handle(handle, platform="instagram")
+            creator_id = get_or_create_creator_for_handle(handle, current_user["id"], platform="instagram")
             try:
                 normalized_items = search_instagram_reels(handle, reel_id, limit)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Apify scraping failed: {str(e)}.")
+                raise _internal_server_error(e, "Apify scraping failed")
             if not normalized_items:
                 raise HTTPException(status_code=404, detail=f"No Instagram reels found for @{handle}")
             search_run_id, response_items, failed_items = _execute_search_run(
@@ -3679,7 +3705,7 @@ async def get_search_items(search_id: str, current_user: Dict[str, Any] = Depend
             "platform_statuses": platform_statuses or {},
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load search items")
 
 # ============================================================================
 # Approval & Ingestion Endpoints
@@ -3829,7 +3855,7 @@ async def approve_ingest(request: ApproveIngestRequestNew, current_user: Dict[st
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to approve ingest queue")
 
 @app.post("/approvals/{creator_id}/commit")
 async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestRequestV2, current_user: Dict[str, Any] = Depends(require_auth)):
@@ -3946,7 +3972,7 @@ async def commit_approvals_endpoint(creator_id: int, request: ApproveIngestReque
             
         return {"job_id": job_id, "approved": len(pending_approved_item_ids)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to commit approvals")
 
 
 @app.get("/jobs/{job_id}/progress")
@@ -3974,7 +4000,7 @@ async def get_job_progress(job_id: str, current_user: Dict[str, Any] = Depends(r
         }
     except Exception as e:
         if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load job progress")
 
 @app.post("/approve_ingest_v2/stream")
 async def approve_ingest_v2_stream(request: ApproveIngestRequestV2, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(require_auth)):
@@ -4583,7 +4609,7 @@ async def save_persona_endpoint(creator_id: int, request: PersonaRequest, curren
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load persona")
 
 @app.get("/creator/{creator_id}/queue")
 async def get_queue_items(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):
@@ -5053,7 +5079,7 @@ async def run_scrape(request: ScrapeRunRequest, background_tasks: BackgroundTask
         return {"message": "Scrape started", "platforms": [c["platform_key"] for c in configs]}
     except Exception as e:
         print(f"[ScrapeRun] Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to start scrape")
 
 @app.get("/scrape/runs")
 async def get_scrape_runs(creator_id: int, limit: int = 10, current_user: Dict[str, Any] = Depends(require_auth)):
@@ -5071,7 +5097,7 @@ async def get_scrape_runs(creator_id: int, limit: int = 10, current_user: Dict[s
         )
         return {"runs": runs}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load scrape runs")
 
 @app.get("/ingest/jobs")
 async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: int = 50, current_user: Dict[str, Any] = Depends(require_auth)):
@@ -5091,7 +5117,7 @@ async def get_ingest_jobs(creator_id: int, status: Optional[str] = None, limit: 
         jobs = db.execute_query(query, tuple(params))
         return {"jobs": jobs}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_server_error(e, "Failed to load ingest jobs")
 
 @app.get("/creators/{creator_id}/fingerprint/status")
 async def get_fingerprint_status(creator_id: int, current_user: Dict[str, Any] = Depends(require_auth)):

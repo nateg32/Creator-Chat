@@ -1,7 +1,6 @@
 import sys
 import os
 import psycopg
-from urllib.parse import urlparse
 
 # Add backend directory to path so imports work
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,14 +10,32 @@ sys.path.append(os.path.join(current_dir, 'backend'))
 
 from settings import settings
 
-def run_migration():
+
+def _resolve_migration_path(raw_name: str) -> str:
+    candidate = raw_name.strip()
+    if not candidate:
+        raise ValueError("Migration name is required")
+
+    if os.path.isabs(candidate):
+        return candidate
+
+    if not candidate.endswith(".sql"):
+        candidate = f"{candidate}.sql"
+
+    if os.path.dirname(candidate):
+        return os.path.join(current_dir, candidate)
+
+    return os.path.join(current_dir, "backend", "migrations", candidate)
+
+def run_migration(migration_name: str):
+    migration_path = _resolve_migration_path(migration_name)
     print(f"Connecting to DB: {settings.DB_HOST}")
-    
-    # Read migration file
-    with open(os.path.join(current_dir, 'backend/migrations/006_chat_threads.sql'), 'r') as f:
+    print(f"Using migration: {migration_path}")
+
+    with open(migration_path, 'r', encoding='utf-8') as f:
         sql = f.read()
 
-    conn_str = f"postgresql://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
+    conn_str = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or f"postgresql://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
     try:
         conn = psycopg.connect(conn_str)
         cur = conn.cursor()
@@ -37,4 +54,5 @@ def run_migration():
             conn.close()
 
 if __name__ == "__main__":
-    run_migration()
+    migration_name = sys.argv[1] if len(sys.argv) > 1 else "006_chat_threads.sql"
+    run_migration(migration_name)

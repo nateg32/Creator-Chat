@@ -1,9 +1,12 @@
+import logging
 import os
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from typing import Optional, List, Dict, Any
 from backend.settings import settings
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
@@ -36,8 +39,7 @@ class Database:
                     cur.execute(query, params)
                     return cur.fetchall()
                 except Exception as e:
-                    print(f"[DB] execute_query error: {e}")
-                    print(f"[DB] Query: {query}")
+                    logger.exception("[DB] execute_query failed", exc_info=e)
                     conn.rollback()
                     raise
     
@@ -55,8 +57,7 @@ class Database:
                     conn.commit()
                     return cur.rowcount
                 except Exception as e:
-                    print(f"[DB] execute_update error: {e}")
-                    print(f"[DB] Query: {query}")
+                    logger.exception("[DB] execute_update failed", exc_info=e)
                     conn.rollback()
                     raise
     
@@ -70,8 +71,7 @@ class Database:
                     result = cur.fetchone()
                     return result[list(result.keys())[0]] if result else None
                 except Exception as e:
-                    print(f"[DB] execute_insert error: {e}")
-                    print(f"[DB] Query: {query}")
+                    logger.exception("[DB] execute_insert failed", exc_info=e)
                     conn.rollback()
                     raise
     

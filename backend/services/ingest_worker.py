@@ -1,6 +1,8 @@
 import time
 import asyncio
 from datetime import datetime, timezone, timedelta
+from typing import Dict, List
+
 from backend.db import db
 import logging
 
