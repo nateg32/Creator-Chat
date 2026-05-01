@@ -1350,28 +1350,29 @@
   object-fit: cover;
 }
 
-/* ── Assistant bubble (left, neutral) ─────────────────────────────── */
+/* ── Assistant message (left, plain text — no bubble) ─────────────── */
 .msg-row.msg-assistant {
   grid-template-columns: 32px minmax(0, 1fr);
 }
 
 .msg-row.msg-assistant .msg-bubble {
-  max-width: 86%;
+  max-width: 100%;
 }
 
 .msg-row.msg-assistant .msg-text-blocks,
 .msg-row.msg-assistant .msg-text {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 22px 22px 22px 6px;
-  padding: 11px 16px;
-  box-shadow: var(--shadow-sm);
-  font-size: 14.5px;
-  line-height: 1.65;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
   text-wrap: pretty;
 }
 
-/* ── User bubble (right, accent) ──────────────────────────────────── */
+/* ── User message (right-aligned, subtle) ─────────────────────────── */
 .msg-row.msg-user {
   grid-template-columns: minmax(0, 1fr);
   justify-items: end;
@@ -1394,20 +1395,20 @@
 
 .msg-row.msg-user .msg-text-blocks,
 .msg-row.msg-user .msg-text {
-  background: linear-gradient(135deg, #2a63d6 0%, #1f4cb0 100%);
-  color: #ffffff;
-  border-radius: 22px 22px 6px 22px;
-  padding: 10px 16px;
+  background: var(--surface-soft);
+  color: var(--text);
+  border-radius: 18px;
+  padding: 9px 14px;
   font-size: 14.5px;
-  line-height: 1.6;
-  box-shadow: 0 6px 16px rgba(36, 87, 197, 0.18);
-  border: none;
+  line-height: 1.55;
+  box-shadow: none;
+  border: 1px solid var(--border);
 }
 
 .msg-row.msg-user .chat-inline-link,
 .msg-row.msg-user .chat-link {
-  color: #ffffff;
-  text-decoration-color: rgba(255, 255, 255, 0.55);
+  color: var(--accent);
+  text-decoration-color: rgba(36, 87, 197, 0.35);
 }
 
 .msg-row.msg-user .msg-images-container {
@@ -1415,18 +1416,18 @@
 }
 
 .msg-row.msg-user .msg-image-wrapper {
-  border-radius: 18px;
+  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+  box-shadow: var(--shadow-sm);
 }
 
-/* Pending / typing bubble — match assistant skin */
+/* Pending / typing — same plain-text feel */
 .msg-pending-bubble {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 22px 22px 22px 6px;
-  padding: 12px 16px;
-  box-shadow: var(--shadow-sm);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
 }
 
 /* Copy button: less visible until hover, rounder */
