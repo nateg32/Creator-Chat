@@ -214,6 +214,30 @@ def _find_stream_emit_boundary(text: str, tail_size: int = 24) -> int:
     return 0
 
 
+def _empty_stream_answer_fallback(creator_id: int, user_id: int, question: str) -> str:
+    creator_row = db.execute_one(
+        f"""
+        SELECT name, handle, {_creator_select_expr('creator_category')}
+        FROM creators
+        WHERE id = %s AND user_id = %s
+        """,
+        (creator_id, user_id),
+    ) or {}
+    creator_name = str(creator_row.get("name") or creator_row.get("handle") or "the creator").strip()
+    creator_category = str(creator_row.get("creator_category") or "business").strip().lower()
+    lowered = str(question or "").strip().lower()
+
+    if any(token in lowered for token in ("who are you", "what's your name", "what is your name", "tell me about yourself")):
+        if creator_name and creator_name != "the creator":
+            return f"I'm {creator_name}. Ask me what you want to dig into."
+        return "I'm here as this creator's assistant. Ask me what you want to dig into."
+
+    if "business" in lowered or creator_category in {"business", "entrepreneurship", "marketing", "sales"}:
+        return "Start with one clear customer, one painful problem, and one simple offer. Then test demand before you build anything bigger."
+
+    return "Give me one specific angle and I'll answer it directly."
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """Log all unhandled exceptions so they appear in the terminal."""
@@ -2808,6 +2832,9 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                     pending_stream_text = ""
                 raw_streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 streamed_answer = raw_streamed_answer
+                if not streamed_answer.strip():
+                    logger.warning("Chat stream completed without visible content; applying app-level fallback.")
+                    streamed_answer = _empty_stream_answer_fallback(payload.creator_id, current_user["id"], payload.question)
                 # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
                 streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, payload.question)
                 recovered_citations = []
@@ -2866,6 +2893,9 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                     cards=cards,
                     support_chunks=explicit_support,
                 )
+                if not str(full_answer or "").strip():
+                    logger.warning("Chat final cleanup produced empty content; applying app-level fallback.")
+                    full_answer = _empty_stream_answer_fallback(payload.creator_id, current_user["id"], payload.question)
                 quality_report = _score_saved_answer_quality(
                     payload.creator_id,
                     current_user["id"],
