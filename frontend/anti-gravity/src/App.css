@@ -42,6 +42,10 @@
   overflow: hidden;
 }
 
+.chat-fullscreen.sidebar-collapsed {
+  gap: 0;
+}
+
 .chat-main-area {
   flex: 1;
   display: flex;

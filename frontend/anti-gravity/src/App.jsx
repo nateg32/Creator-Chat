@@ -306,6 +306,7 @@ function AppInner() {
   const [threadsByCreator, setThreadsByCreator] = useState({});
   const [archivedThreadsByCreator, setArchivedThreadsByCreator] = useState({});
   const [activeCreatorId, setActiveCreatorId] = useState(null); // Track active creator for sidebar expansion
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // ... (Other state) ...
   const [topK, setTopK] = useState(5);
@@ -1630,7 +1631,7 @@ function AppInner() {
 
       <div className="main-content-area">
         {showChatInterface ? (
-          <div className="chat-fullscreen">
+          <div className={`chat-fullscreen ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
             <ChatSidebar
               creators={existingCreators}
               threadsByCreator={threadsByCreator}
@@ -1638,7 +1639,7 @@ function AppInner() {
               activeCreatorIdProp={activeCreatorId}
               onSelectThread={handleSelectThreadWrapper}
               onNewThread={handleNewThreadWrapper}
-              onToggleSidebar={() => { }}
+              onToggleSidebar={setSidebarCollapsed}
               onRenameThread={handleRenameThread}
               onArchiveThread={handleArchiveThread}
               onRestoreThread={handleRestoreThread}

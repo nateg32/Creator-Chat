@@ -23,7 +23,7 @@ export function ChatSidebar({
     onLoadArchived, // (creatorId) => void
     canCreateCreator = true,
 }) {
-    const { confirm } = useFeedback();
+    const { confirm, toast } = useFeedback();
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [expandedCreators, setExpandedCreators] = useState({});
 
@@ -40,7 +40,10 @@ export function ChatSidebar({
     // Rename state
     const [renamingId, setRenamingId] = useState(null);
     const [renameValue, setRenameValue] = useState("");
+    const [showHeaderMenu, setShowHeaderMenu] = useState(false);
     const menuRef = useRef(null);
+    const headerMenuRef = useRef(null);
+    const headerMenuButtonRef = useRef(null);
 
     // Auto-expand the active creator
     useEffect(() => {
@@ -78,6 +81,14 @@ export function ChatSidebar({
         function handleClickOutside(event) {
             if (menuRef.current && !menuRef.current.contains(event.target)) {
                 setActiveMenu(null);
+            }
+            if (
+                headerMenuRef.current &&
+                !headerMenuRef.current.contains(event.target) &&
+                headerMenuButtonRef.current &&
+                !headerMenuButtonRef.current.contains(event.target)
+            ) {
+                setShowHeaderMenu(false);
             }
         }
         document.addEventListener("mousedown", handleClickOutside);
@@ -120,6 +131,7 @@ export function ChatSidebar({
     const toggleArchiveMode = () => {
         const newMode = !isArchiveMode;
         setIsArchiveMode(newMode);
+        setShowHeaderMenu(false);
         // If switching to archive mode, trigger load for all expanded creators
         if (newMode && onLoadArchived) {
             Object.keys(expandedCreators).forEach(cId => {
@@ -205,13 +217,17 @@ export function ChatSidebar({
         if (!activeMenu) return;
         const url = `${window.location.origin}/?thread=${activeMenu.thread.id}`;
         navigator.clipboard.writeText(url)
-            .then(() => alert("Link copied to clipboard"))
-            .catch(err => console.error("Failed to copy", err));
+            .then(() => toast.success("Link copied to clipboard"))
+            .catch(err => {
+                console.error("Failed to copy", err);
+                toast.error("Failed to copy link");
+            });
         setActiveMenu(null);
     }
 
     // Toggle Delete Mode
     const toggleDeleteMode = () => {
+        setShowHeaderMenu(false);
         if (isDeleteMode) {
             // Cancel/Exit
             setIsDeleteMode(false);
@@ -306,26 +322,38 @@ export function ChatSidebar({
                                         </svg>
                                     </button>
                                 )}
-                                <button
-                                    onClick={toggleDeleteMode}
-                                    className="icon-btn delete-mode-btn"
-                                    title="Delete Creators"
-                                >
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
-                                    </svg>
-                                </button>
-                                <button
-                                    onClick={toggleArchiveMode}
-                                    className={`icon-btn archive-mode-btn ${isArchiveMode ? 'active' : ''}`}
-                                    title={isArchiveMode ? "Show Active Chats" : "Show Archived Chats"}
-                                >
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <polyline points="21 8 21 21 3 21 3 8" />
-                                        <rect x="1" y="3" width="22" height="5" />
-                                        <line x1="10" y1="12" x2="14" y2="12" />
-                                    </svg>
-                                </button>
+                                <div className="sidebar-overflow-wrap">
+                                    <button
+                                        ref={headerMenuButtonRef}
+                                        onClick={() => setShowHeaderMenu((prev) => !prev)}
+                                        className={`icon-btn overflow-btn ${showHeaderMenu ? 'active' : ''}`}
+                                        title="More actions"
+                                    >
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                            <circle cx="12" cy="5" r="1.8" />
+                                            <circle cx="12" cy="12" r="1.8" />
+                                            <circle cx="12" cy="19" r="1.8" />
+                                        </svg>
+                                    </button>
+                                    {showHeaderMenu && (
+                                        <div className="sidebar-overflow-menu" ref={headerMenuRef}>
+                                            <button
+                                                type="button"
+                                                className="menu-item"
+                                                onClick={toggleArchiveMode}
+                                            >
+                                                {isArchiveMode ? "Show active chats" : "Show archived chats"}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="menu-item delete"
+                                                onClick={toggleDeleteMode}
+                                            >
+                                                Delete creators
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         ) : (
                             <div className="delete-actions">
@@ -410,6 +438,11 @@ export function ChatSidebar({
                                         <div className="creator-info">
                                             <div className="creator-name">
                                                 {formatCreatorName(creator.name || creator.handle || "Unknown")}
+                                            </div>
+                                            <div className="creator-meta">
+                                                {threads.length === 0
+                                                    ? (isArchiveMode ? "No archived chats" : "No chats yet")
+                                                    : `${threads.length} ${threads.length === 1 ? "chat" : "chats"}`}
                                             </div>
                                         </div>
 
