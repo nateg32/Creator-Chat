@@ -186,6 +186,38 @@ function getPendingStatusMeta(status) {
   };
 }
 
+function isGreetingLikeMessage(text = "") {
+  const normalized = String(text || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return new Set([
+    "hi",
+    "hello",
+    "hey",
+    "hey there",
+    "hi there",
+    "yo",
+    "hiya",
+    "howdy",
+    "sup",
+    "what's up",
+    "whats up",
+    "good morning",
+    "good afternoon",
+    "good evening",
+  ]).has(normalized);
+}
+
+function buildEmptyAssistantFallback(question, userName) {
+  const safeUserName = String(userName || "").trim();
+  if (isGreetingLikeMessage(question)) {
+    return safeUserName && safeUserName !== "You"
+      ? `Hey ${safeUserName}, what's on your mind?`
+      : "Hey, what's on your mind?";
+  }
+
+  return "Sorry, I didn't get a usable reply back. Try sending that again.";
+}
+
 function inferPlatformFromUrl(url = "") {
   const domain = getDomainLabel(url);
   if (domain.includes("youtube.com") || domain.includes("youtu.be")) return "youtube";
@@ -572,10 +604,11 @@ export function ChatPanel({
           const finalText = typeof meta.finalContent === "string" && meta.finalContent.length > 0
             ? meta.finalContent
             : fullAnswer;
+          const safeFinalText = String(finalText || "").trim() || buildEmptyAssistantFallback(q, displayUserName);
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId
-                ? { ...msg, content: finalText, text: finalText, status: "done", cards: meta.cards || [], citations: meta.citations || [] }
+                ? { ...msg, content: safeFinalText, text: safeFinalText, status: "done", cards: meta.cards || [], citations: meta.citations || [] }
                 : msg
             )
           );
