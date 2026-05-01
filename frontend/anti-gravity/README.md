@@ -32,3 +32,9 @@ npm run dev
 
 ### Environment
 Ensure the environment variables point to the correctly running backend (default `localhost:8000`).
+
+### Production Deployments
+- Set `VITE_API_BASE_URL` in Vercel to the deployed backend origin. If you omit it, the frontend can build against the wrong host and chat requests will never reach Render.
+- Keep backend auth compatible with cross-site requests: `COOKIE_SAMESITE=none` and `COOKIE_SECURE=true`.
+- Add your deployed frontend origin to backend `CORS_ORIGINS` or `FRONTEND_URL`. Multiple origins can be comma-separated.
+- The client now sends the bearer token returned by `/auth/login` as a fallback when the browser drops the cross-site session cookie, so login and chat remain functional in stricter browser privacy modes.

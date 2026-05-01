@@ -339,17 +339,17 @@ export function ChatSidebar({
                                         <div className="sidebar-overflow-menu" ref={headerMenuRef}>
                                             <button
                                                 type="button"
-                                                className="menu-item"
+                                                className={`menu-item ${isArchiveMode ? 'active' : ''}`}
                                                 onClick={toggleArchiveMode}
                                             >
-                                                {isArchiveMode ? "Show active chats" : "Show archived chats"}
+                                                Archived
                                             </button>
                                             <button
                                                 type="button"
                                                 className="menu-item delete"
                                                 onClick={toggleDeleteMode}
                                             >
-                                                Delete creators
+                                                Delete
                                             </button>
                                         </div>
                                     )}
@@ -379,13 +379,21 @@ export function ChatSidebar({
                     </div>
                 )}
                 <button onClick={handleToggle} className="toggle-button" title={isCollapsed ? "Expand" : "Collapse"}>
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        {isCollapsed ? (
-                            <path d="M7 4L13 10L7 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        ) : (
+                    {isCollapsed ? (
+                        <>
+                            <span className="toggle-button-icon" aria-hidden="true">
+                                <svg width="15" height="15" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <rect x="3.5" y="4.5" width="4" height="11" rx="2" fill="currentColor" opacity="0.9" />
+                                    <rect x="9.5" y="6" width="7" height="8" rx="3.5" stroke="currentColor" strokeWidth="1.5" />
+                                </svg>
+                            </span>
+                            <span className="toggle-button-label">Chats</span>
+                        </>
+                    ) : (
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M13 4L7 10L13 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        )}
-                    </svg>
+                        </svg>
+                    )}
                 </button>
             </div>
 
@@ -445,20 +453,6 @@ export function ChatSidebar({
                                                     : `${threads.length} ${threads.length === 1 ? "chat" : "chats"}`}
                                             </div>
                                         </div>
-
-                                        {!isDeleteMode && (
-                                            <div className="creator-toggle-icon">
-                                                <svg
-                                                    width="16" height="16" viewBox="0 0 24 24"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    strokeWidth="2"
-                                                    style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
-                                                >
-                                                    <path d="M9 18L15 12L9 6" strokeLinecap="round" strokeLinejoin="round" />
-                                                </svg>
-                                            </div>
-                                        )}
                                     </div>
 
                                     {!isDeleteMode && isExpanded && (

@@ -379,15 +379,13 @@ def _get_cors_origins() -> List[str]:
         "http://127.0.0.1:5175",
     ]
 
-    configured_origins = [
-        origin.strip().rstrip("/")
-        for origin in os.getenv("CORS_ORIGINS", "").split(",")
-        if origin.strip()
-    ]
-
-    frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
-    if frontend_url:
-        configured_origins.append(frontend_url)
+    configured_origins: List[str] = []
+    for env_name in ("CORS_ORIGINS", "FRONTEND_URL", "FRONTEND_URLS"):
+        configured_origins.extend(
+            origin.strip().rstrip("/")
+            for origin in os.getenv(env_name, "").split(",")
+            if origin.strip()
+        )
 
     return list(dict.fromkeys(default_origins + configured_origins))
 

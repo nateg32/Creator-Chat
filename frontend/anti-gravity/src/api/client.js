@@ -5,10 +5,35 @@ import {
 } from "../config";
 
 const USER_ID_KEY = "user_id";
+const ACCESS_TOKEN_KEY = "access_token";
+
+function getStoredAccessToken() {
+  try {
+    return localStorage.getItem(ACCESS_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function persistAuthPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+
+  try {
+    if (payload.user_id != null) {
+      localStorage.setItem(USER_ID_KEY, String(payload.user_id));
+    }
+    if (typeof payload.access_token === "string" && payload.access_token.trim()) {
+      localStorage.setItem(ACCESS_TOKEN_KEY, payload.access_token.trim());
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+}
 
 function clearStoredAuth() {
   try {
     localStorage.removeItem(USER_ID_KEY);
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
   } catch {
     // Ignore storage failures.
   }
@@ -28,8 +53,13 @@ function handleUnauthorizedResponse(res) {
 }
 
 function buildHeaders(headers = {}) {
-  // Auth is handled by the HttpOnly session_id cookie sent automatically via credentials: "include".
-  return { ...headers };
+  // Prefer the HttpOnly session_id cookie, but also send the persisted bearer token as a fallback.
+  const nextHeaders = { ...headers };
+  const accessToken = getStoredAccessToken();
+  if (accessToken && !nextHeaders.Authorization) {
+    nextHeaders.Authorization = `Bearer ${accessToken}`;
+  }
+  return nextHeaders;
 }
 
 async function readErrorPayload(res) {
@@ -82,7 +112,9 @@ async function postJson(path, body) {
   }
 
   try {
-    return await res.json();
+    const data = await res.json();
+    persistAuthPayload(data);
+    return data;
   } catch {
     throw new Error("Invalid JSON response from server");
   }
@@ -555,8 +587,7 @@ export function getScrapeProgress(scrape_id) {
 }
 
 // Auth functions
-// Note: Auth is handled via the HttpOnly session_id cookie set by the backend.
-// The access_token in the response is unused on the client.
+// Auth prefers the HttpOnly session_id cookie, with bearer-token fallback for cross-site deployments.
 export async function login(email, password) {
   return postJson("/auth/login", { email, password });
 }
