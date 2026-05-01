@@ -5125,6 +5125,36 @@ Message: {answer_text[:500]}"""
     stronghold_config = creator_row.get("stronghold_json") or {}
     if isinstance(stronghold_config, str): stronghold_config = json.loads(stronghold_config)
 
+    light_plan = interaction_engine.build_interaction_plan(
+        question,
+        conversation_history or [],
+        creator_row,
+        [],
+    )
+    if light_plan.route in {"ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK"}:
+        logger.info("Pipeline Step 2: Deterministic light route %s. Skipping off-domain guards.", light_plan.route)
+        answer = interaction_engine.render_response(
+            light_plan,
+            creator_row,
+            [],
+            creator_id,
+            user_id,
+            thread_id,
+            user_name=user_name,
+            user_msg=question,
+            persona=persona,
+            history=conversation_history or [],
+            user_preferences=user_preferences,
+            voice_chunks=[],
+        )
+        return apply_final_polish({
+            "answer": answer,
+            "retrieved": [],
+            "sources": [],
+            "cards": [],
+            "meta": {"route": light_plan.route},
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=0, plan=light_plan)
+
     # --- Step 2: Classify + Route (GPT-4.1) ---
     # Launch embedding early (runs in parallel with classify_all)
     import concurrent.futures as _cf
