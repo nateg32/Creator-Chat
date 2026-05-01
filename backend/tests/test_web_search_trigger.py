@@ -786,6 +786,43 @@ class WebSearchTriggerTests(unittest.TestCase):
         joined = " ".join(str(item) for item in output)
         self.assertIn("I don't have that.", joined)
 
+    def test_streaming_identity_path_falls_back_when_personal_answer_empty(self):
+        module, _ = _load_grounded_rag(search_results=[], retrieved_chunks=[])
+        sys.modules["backend.services.out_of_domain_rules"].detect_general_knowledge_topic = lambda *args, **kwargs: False
+
+        async def _create_embedding(*args, **kwargs):
+            return types.SimpleNamespace(data=[types.SimpleNamespace(embedding=[0.0])])
+
+        module.rag.get_async_client = lambda: types.SimpleNamespace(
+            embeddings=types.SimpleNamespace(create=_create_embedding)
+        )
+        module.interaction_engine.classify_route = lambda *args, **kwargs: "ROUTE_2_TASK"
+        module.decision_service.classify_question = lambda *args, **kwargs: ("personal_bio", "identity", 3)
+        module.personal_bio_service.handle_personal_question = lambda *args, **kwargs: {
+            "answer": "",
+            "confidence": "LOW",
+            "sources": [],
+            "move": "ANSWER_DIRECTLY",
+        }
+
+        async def _collect():
+            parts = []
+            async for item in module.grounded_rag_stream(
+                creator_id=1,
+                question="who are you",
+                thread_id="thread-1",
+                conversation_history=[],
+                user_preferences=None,
+                user_name="Nathan",
+                user_id=1,
+            ):
+                parts.append(item)
+            return parts
+
+        output = asyncio.run(_collect())
+        joined = " ".join(str(item) for item in output)
+        self.assertIn("I'm Dan Martell", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

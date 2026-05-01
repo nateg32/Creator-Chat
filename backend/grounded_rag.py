@@ -237,6 +237,22 @@ def _normalize_personal_sources(sources: Optional[List[Dict[str, Any]]]) -> List
     return normalized
 
 
+def _personal_answer_or_fallback(answer: Any, question: str, creator_row: Optional[Dict[str, Any]]) -> str:
+    text = str(answer or "").strip()
+    if text:
+        return text
+
+    creator_row = creator_row or {}
+    creator_name = str(creator_row.get("name") or creator_row.get("handle") or "the creator").strip()
+    lowered = str(question or "").lower()
+    if any(token in lowered for token in ("who are you", "what's your name", "what is your name", "tell me about yourself")):
+        if creator_name and creator_name != "the creator":
+            return f"I'm {creator_name}. Ask me what you want to dig into."
+        return "I'm here as this creator's assistant. Ask me what you want to dig into."
+
+    return "I haven't really talked about that publicly, so I wouldn't want to guess."
+
+
 def _platform_from_url(url: str) -> str:
     """Derive platform key from URL. Ensures platform always matches canonical_url domain."""
     if not url or not isinstance(url, str):
@@ -5341,8 +5357,9 @@ Message: {answer_text[:500]}"""
             allow_web=(_normalize_creator_search_mode(creator_row.get("search_mode")) == "hybrid"),
         )
         personal_sources = _normalize_personal_sources(personal_result.get("sources"))
+        personal_answer = _personal_answer_or_fallback(personal_result.get("answer"), question, creator_row)
         return apply_final_polish({
-            "answer": personal_result.get("answer", "I haven't really talked about that publicly."),
+            "answer": personal_answer,
             "retrieved": [],
             "sources": personal_sources,
             "cards": [],
@@ -6091,7 +6108,7 @@ async def grounded_rag_stream(
     # LATENCY: Launch embedding early for ROUTE_2_TASK so it runs in parallel
     # with domain checks instead of waiting for them to finish first.
     early_embedding_task = None
-    if route == "ROUTE_2_TASK":
+    if route == "ROUTE_2_TASK" and route_q_type != "personal_bio" and rule_intent not in {"personal_bio_question", "identity"}:
         question_for_search = question
         if conversation_history:
             last_msg = ""
@@ -6280,7 +6297,7 @@ async def grounded_rag_stream(
         personal_sources = _normalize_personal_sources(personal_result.get("sources"))
         if personal_sources:
             yield f"__CITATIONS__{json.dumps(personal_sources)}"
-        yield personal_result.get("answer", "I haven't really talked about that publicly.")
+        yield _personal_answer_or_fallback(personal_result.get("answer"), question, creator_row)
         return
     
     if route == "ROUTE_2_TASK":
