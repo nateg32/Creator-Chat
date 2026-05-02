@@ -57,22 +57,24 @@ class Settings:
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
     # --- Creator Bot model stack ---
+    # NOTE: defaults must be REAL OpenAI model IDs. Override per-tier via env vars
+    # if you want to swap in newer models without touching code.
     # Routing / guardrails: cheap, fast classification and safety helpers.
-    MODEL_CLASSIFICATION: str = os.getenv("MODEL_CLASSIFICATION", "gpt-5.4-nano")
-    MODEL_MEMORY: str = os.getenv("MODEL_MEMORY", "gpt-5.4-nano")
-    MODEL_VERIFY: str = os.getenv("MODEL_VERIFY", "gpt-5.4-nano")
+    MODEL_CLASSIFICATION: str = os.getenv("MODEL_CLASSIFICATION", "gpt-5-nano")
+    MODEL_MEMORY: str = os.getenv("MODEL_MEMORY", "gpt-5-nano")
+    MODEL_VERIFY: str = os.getenv("MODEL_VERIFY", "gpt-5-nano")
 
     # Live persona chat: default production model for grounded creator replies.
-    MODEL_SYNTHESIS: str = os.getenv("MODEL_SYNTHESIS", "gpt-5.4-mini")
-    MODEL_MAIN_REPLY: str = os.getenv("MODEL_MAIN_REPLY", "gpt-5.4-mini")
+    MODEL_SYNTHESIS: str = os.getenv("MODEL_SYNTHESIS", "gpt-5-mini")
+    MODEL_MAIN_REPLY: str = os.getenv("MODEL_MAIN_REPLY", "gpt-5-mini")
 
     # Persona / style fingerprint creation: deeper, less frequent analysis pass.
-    MODEL_PERSONA_ANALYSIS: str = os.getenv("MODEL_PERSONA_ANALYSIS", "gpt-5.4")
-    MODEL_PERSONA_ANALYSIS_ADVANCED: str = os.getenv("MODEL_PERSONA_ANALYSIS_ADVANCED", "gpt-5.5")
+    MODEL_PERSONA_ANALYSIS: str = os.getenv("MODEL_PERSONA_ANALYSIS", "gpt-5")
+    MODEL_PERSONA_ANALYSIS_ADVANCED: str = os.getenv("MODEL_PERSONA_ANALYSIS_ADVANCED", "gpt-5")
     
     # Fallback models if above fail
-    MODEL_FALLBACK_FAST: str = os.getenv("MODEL_FALLBACK_FAST", "gpt-5.4-nano")
-    MODEL_FALLBACK_SMART: str = os.getenv("MODEL_FALLBACK_SMART", "gpt-5.4-mini")
+    MODEL_FALLBACK_FAST: str = os.getenv("MODEL_FALLBACK_FAST", "gpt-5-nano")
+    MODEL_FALLBACK_SMART: str = os.getenv("MODEL_FALLBACK_SMART", "gpt-5-mini")
 
     # Legacy settings (mapped for backward compatibility)
     CHAT_MODEL: str = MODEL_MAIN_REPLY

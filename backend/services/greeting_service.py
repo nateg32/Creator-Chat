@@ -387,21 +387,26 @@ class GreetingService:
         hype = float(tone.get("hype", 0.0) or 0.0)
 
         if not know_name:
-            # Use power_position and energy to flavor the name ask
+            # Use power_position and energy to flavor the name ask.
+            # NOTE: avoid form-feel phrasings like "What should I call you?",
+            # "What's your name?", "What do you want me to call you?" — those
+            # make the bot sound like an intake assistant. Prefer openers a
+            # real person would type in a DM.
             power = str(signals.get("power_position") or "").lower()
             energy = signals.get("energy", "medium")
             tone = signals.get("tone_traits", {})
             blunt = float(tone.get("blunt", 0.0) or 0.0)
             hype = float(tone.get("hype", 0.0) or 0.0)
+            supportive = float(tone.get("supportive", 0.0) or 0.0)
             if blunt >= 0.65 or "authority" in power:
-                return ["Who do I have here?", "What's your name?", "Who am I talking to?"]
+                return ["Who am I talking to?", "Who do I have here?", "Who's this?"]
             if hype >= 0.65 or energy == "high":
-                return ["What's your name?", "Who am I talking to?", "What should I call you?"]
+                return ["Who am I talking to?", "Who do I have on the other end?", "Who's this?"]
             if "peer" in power or "equal" in power:
-                return ["What should I call you?", "What's your name?", "Who am I talking to?"]
-            if "coach" in power or "mentor" in power:
-                return ["What's your name?", "Who do I have here?", "What should I call you?"]
-            return ["What should I call you?", "What's your name?", "Who am I talking to?"]
+                return ["Who am I talking to?", "Who do I have here?", "Who's on the other end?"]
+            if supportive >= 0.7 or "coach" in power or "mentor" in power:
+                return ["Who do I have here?", "Who am I talking to?", "Who's on the other side?"]
+            return ["Who am I talking to?", "Who do I have here?", "Who's this?"]
 
         # Check if mode_greeting_rules has specific question guidance
         greeting_rules = signals.get("mode_greeting_rules") or {}

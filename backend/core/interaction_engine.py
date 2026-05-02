@@ -2314,22 +2314,59 @@ Output ONLY your response to the user."""
         high_words = list(lexical.get("high_signal_words") or [])[:4]
         identity_sig = style_fingerprint.get("identity_signature") or {}
         power_pos = identity_sig.get("power_position") or ""
+        audience_model = identity_sig.get("audience_model") or identity_sig.get("audience") or ""
         anti = style_fingerprint.get("anti_persona") or {}
         forbidden = list(anti.get("forbidden_generic_coach_lines") or [])[:3]
 
+        # Deeper greeting-specific signals
+        dna = style_fingerprint.get("linguistic_dna") or {}
+        energy_lvl = str(dna.get("energy") or "").strip().lower()
+        swearing = str(dna.get("swearing") or "").strip().lower()
+        emoji_use = str(dna.get("emoji") or dna.get("emoji_use") or "").strip().lower()
+        mode_matrix = style_fingerprint.get("mode_matrix") or {}
+        greeting_rules = mode_matrix.get("greeting") or {}
+        opening_move = str(greeting_rules.get("opening_move") or "").strip()
+        greeting_energy = str(greeting_rules.get("energy") or "").strip()
+        golden = (style_fingerprint.get("golden_examples") or {}).get("greeting") or []
+        golden_openers = [str(g).strip() for g in golden if str(g).strip()][:2]
+
         persona_anchors = ""
         if sig_phrases:
-            persona_anchors += f"\nSIGNATURE PHRASES (weave in naturally if it fits): {', '.join(sig_phrases)}"
+            persona_anchors += f"\nSIGNATURE PHRASES (weave in only if it lands naturally, never forced): {', '.join(sig_phrases)}"
         if high_words:
-            persona_anchors += f"\nVOCABULARY: Prefer these words: {', '.join(high_words)}"
+            persona_anchors += f"\nVOCABULARY YOU NATURALLY USE: {', '.join(high_words)}"
         if power_pos:
             persona_anchors += f"\nPOWER POSITION: {power_pos}"
+        if audience_model:
+            persona_anchors += f"\nWHO YOU'RE TALKING TO: {audience_model}"
+        if energy_lvl:
+            persona_anchors += f"\nYOUR DEFAULT ENERGY: {energy_lvl}"
+        if swearing in {"frequent", "often", "strong", "heavy", "yes", "casual"}:
+            persona_anchors += f"\nSWEARING: you do this in your real content ({swearing}). Don't soften it here just because it's a greeting — but don't force it either. Use it the way you actually do."
+        if emoji_use:
+            persona_anchors += f"\nEMOJI USE: {emoji_use}"
+        if opening_move:
+            persona_anchors += f"\nHOW YOU TYPICALLY OPEN: {opening_move}"
+        if greeting_energy:
+            persona_anchors += f"\nGREETING ENERGY: {greeting_energy}"
+        if golden_openers:
+            persona_anchors += "\nREAL EXAMPLES OF HOW YOU OPEN (style reference, do not copy verbatim):"
+            for g in golden_openers:
+                persona_anchors += f"\n  - {g}"
         if forbidden:
-            persona_anchors += f"\nNEVER SAY: {', '.join(forbidden)}"
+            persona_anchors += f"\nNEVER SAY THESE (they sound like a generic coach, not you): {', '.join(forbidden)}"
 
-        # Determine the question to ask
-        domain_q = get_greeting_question(creator_profile)
         returning = bool(history and len(history) > 2)
+
+        # Read the user's actual message to mirror their energy + length
+        user_msg_clean = (user_msg or "").strip()
+        user_word_count = len(user_msg_clean.split())
+        if user_word_count <= 2:
+            mirror_hint = "They sent something tiny (one or two words). Match that — keep yours short and low-friction. Don't over-greet."
+        elif user_word_count <= 6:
+            mirror_hint = "They sent something brief and casual. Match that energy — short, human, no fanfare."
+        else:
+            mirror_hint = "They wrote a real sentence. You can match with a slightly fuller opener, but still keep it tight."
 
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
@@ -2340,17 +2377,44 @@ Output ONLY your response to the user."""
 
         # Build the name instruction
         if known_user_name:
-            name_instruction = f"The user's name is {known_user_name}. Use it naturally once."
-            question_instruction = f"Then ask this question in your own words: \"{domain_q}\""
+            name_instruction = (
+                f"You already know their name: {known_user_name}. "
+                f"Drop it in once, naturally, the way a real person would in a DM. Don't over-use it."
+            )
+            domain_q = get_greeting_question(creator_profile)
+            question_instruction = (
+                f"Open the door to a real conversation. You can ask something in the spirit of: \"{domain_q}\" — "
+                f"but ask it in YOUR own words, the way YOU would actually phrase it on a normal day."
+            )
         else:
-            name_instruction = "You don't know their name yet."
-            question_instruction = "Ask what they want to be called. Do not jump into advice or a domain question yet."
+            name_instruction = (
+                "You don't know their name yet. Ask once, casually, in YOUR voice — "
+                "the way you'd actually ask a stranger who just slid into your DMs. "
+                "Don't make it sound like a form. Don't make it sound like an assistant intake question."
+            )
+            question_instruction = (
+                "Just get their name this turn. Don't pile on a second question. Don't pivot to a topic yet."
+            )
 
         returning_note = ""
         if returning:
-            returning_note = "This is a returning user. Acknowledge that naturally (e.g. 'good to have you back') but keep it brief."
+            returning_note = "This is a returning user. Acknowledge it briefly and naturally (e.g. the way you'd greet someone you've spoken to before). Don't restart from zero."
 
-        system_prompt = f"""You are {creator_name}. You're greeting someone in a one to one DM.
+        # Anti-form-feel ban list — phrasings that make the bot sound like an
+        # intake assistant instead of the actual creator.
+        banned_name_asks = [
+            "What do you like to be called?",
+            "What do you want me to call you?",
+            "What should I call you?",
+            "What's your name?",
+            "May I have your name?",
+            "Could you tell me your name?",
+            "Hi there!",
+            "Hello! How can I help you today?",
+            "How can I assist you today?",
+        ]
+
+        system_prompt = f"""You are {creator_name}. You're greeting someone in a one to one DM. Not a stage. Not a podcast. Not a YouTube intro. A real one-on-one message.
 
 {greeting_voice_dna}
 
@@ -2361,19 +2425,34 @@ YOUR VOICE:
 {pref_instructions}
 {safety_block}
 
+THE USER JUST SENT: {user_msg_clean!r}
+{mirror_hint}
+
 {name_instruction}
 {returning_note}
 {question_instruction}
 
-Rules:
-Max 2 short sentences. Exactly 1 question mark. Max 30 words.
-No advice. No frameworks. No teaching. No lists. Just greet them like YOU would.
-Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.
-No "welcome back to my channel" or any YouTube broadcast language.
-No inline hyphens, en dashes, or em dashes inside sentences. Use commas or periods instead.
-Sound like a real person opening a DM, not a bot or a host.
+HUMAN CONVERSATION PRINCIPLES (non negotiable):
+- Mirror their energy and length. If they wrote two words, you write a few words back. If they're chill, you're chill.
+- Sound like a person, not a script. Real DMs are short, slightly imperfect, and have a specific voice.
+- Don't ask two questions at once. One thing at a time.
+- Don't perform. No "Hi there!", no "How can I help you today?", no smiley-face customer-service energy.
+- Vary how you open. If you've greeted before, don't reuse the same line.
+- Reference something concrete from your world ONLY if it lands naturally. Otherwise just be human.
 
-Output ONLY your response."""
+NEVER ASK FOR THEIR NAME LIKE THIS (these phrasings are banned because they sound like a form, not like you):
+{chr(10).join(f"  - {b}" for b in banned_name_asks)}
+Instead, ask in YOUR OWN voice — short, natural, the way you'd type it on your phone.
+
+HARD RULES:
+Max 2 short sentences. At most 1 question mark. Max 30 words.
+No advice. No frameworks. No teaching. No lists.
+Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.
+No "welcome back to my channel" or any broadcast language.
+No inline hyphens, en dashes, or em dashes inside sentences. Use commas or periods.
+No "as an AI", no "I'm here to help", no assistant disclaimers.
+
+Output ONLY your reply text. No quotes, no labels, no preamble."""
 
         try:
             response = self._generate_completion_with_compat(
@@ -2382,8 +2461,8 @@ Output ONLY your response."""
                     {"role": "user", "content": user_msg},
                 ],
                 model=self._reply_model_for_route(plan.route),
-                temperature=0.7,
-                max_tokens=60,
+                temperature=0.95,
+                max_tokens=80,
             )
             visible_response = self._enforce_greeting_limits(response.strip(), creator_profile=creator_profile)
             if visible_response:
