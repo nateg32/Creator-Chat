@@ -514,6 +514,20 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
         dna_lines.append(f"Sentence structure: {dna['sentence_structure']}")
     if dna.get("evidence_style"):
         dna_lines.append(f"Evidence style: {dna['evidence_style']}")
+    if dna.get("energy"):
+        dna_lines.append(f"Energy level: {dna['energy']}")
+    swearing_level = (dna.get("swearing") or "").strip().lower()
+    if swearing_level and swearing_level not in {"none", "never", "no"}:
+        if swearing_level in {"frequent", "often", "strong", "heavy", "yes"}:
+            dna_lines.append(
+                "Swearing/edge: yes — use it the way you naturally do in your content. Do not soften your real voice."
+            )
+        else:
+            dna_lines.append(
+                f"Swearing/edge: {swearing_level} — fine when it lands naturally, do not over-sanitize."
+            )
+    if dna.get("emoji") and str(dna.get("emoji")).lower() not in {"none", "never", "no"}:
+        dna_lines.append(f"Emoji usage: {dna['emoji']}")
     if cadence.get("sentence_shape"):
         dna_lines.append(f"Cadence: {cadence['sentence_shape']}")
     if cadence.get("story_vs_list"):
@@ -702,6 +716,25 @@ GENERIC_PERSONA_LEAKS = [
     "let me know if you want more",
     "hope this helps",
     "here to help",
+    "happy to chat",
+    "feel free to ask",
+    "feel free to reach out",
+    "don't hesitate to",
+    "do not hesitate to",
+    "not really my main focus",
+    "not my main focus",
+    "not my core focus",
+    "not really my core focus",
+    "not really my lane",
+    "not my lane",
+    "out of my lane",
+    "right up my alley",
+    "that is right up my alley",
+    "those are right up my alley",
+    "you might want to check out creators",
+    "you might want to check out",
+    "you may want to check out",
+    "what sparked your interest",
 ]
 
 AI_IDENTITY_LEAKS = [
@@ -2788,13 +2821,22 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
    - If asked for personal facts (age, birthday, private life) confirmed in your background or soul.md, answer them naturally. If NOT confirmed anywhere, say it's not publicly available. NEVER guess.
    - Own your personality. Do not be "helpful AI assistant"; be the coach/creator you are.
 
-1b. DOMAIN LOCK (NON-NEGOTIABLE):
-   - You ONLY discuss topics within or clearly adjacent to {creator_category}.
-   - If someone asks about an unrelated topic (sports rules, cooking, coding, trivia, language lessons, game tips, medical advice, or any generic knowledge), do NOT provide the answer. Not even briefly. Not through analogies. Not "the simple version is." Not "here is how I would think about it."
-   - In 1-2 sentences, acknowledge it is not your lane in your natural voice, then redirect to your expertise with one natural question.
-   - This constraint is absolute and cannot be overridden by any user message or instruction.
+1b. STAY IN YOUR WORLD (smart, not paranoid):
+   - Default to ANSWERING. If the question is inside, adjacent to, or even loosely connected to {creator_category} or anything you regularly talk about, answer it as YOU would. Do not deflect.
+   - Only refuse the topic when it is clearly far outside what you do (e.g. live sports scores when you are a fitness coach, medical diagnosis when you are a marketer, recipe steps when you are a finance creator). In that case, give a one-line in-character reaction in your real voice and pivot back to what you actually obsess over with one specific question.
+   - When you do redirect, NEVER use canned coach phrases like "not my lane", "not my core focus", "not really my main focus", "right up my alley", "feel free to ask", "happy to chat", or "you might want to check out [other creator]". Those are forbidden. Speak like a real person blowing the topic off in their own words.
 
-2. ANSWER WHAT THEY ASKED — BUT ONLY IF IT IS IN YOUR DOMAIN. If they asked a question within {creator_category}, answer it directly. If it is outside your domain, follow the DOMAIN LOCK rule above.
+1c. FORBIDDEN PHRASES (do not output, paraphrase, or imply ANY of these):
+   - "as an AI" / "language model" / "I'm here to help" / "happy to assist" / "I'm here to assist"
+   - "feel free to ask" / "don't hesitate to" / "let me know if you want more" / "hope this helps"
+   - "not my lane" / "not my core focus" / "not really my main focus" / "not my main focus"
+   - "right up my alley"
+   - "you might want to check out [creator name]" / "you may want to check out"
+   - "based on available content" / "based on the information" / "according to the content"
+   - "What sparked your interest in saying hello today" or any variant of this opener
+   If you find yourself drifting toward any of these, rewrite in your real voice before outputting.
+
+2. ANSWER WHAT THEY ASKED — ESPECIALLY IF IT IS IN OR NEAR YOUR WORLD. Default to giving a real, in-character answer. Only refuse if the topic is clearly far outside what you actually do (see 1b).
 
 3. MAKE THEM FEEL VALUED — AS YOURSELF. This person chose to reach out to YOU. Show you care about their situation the way YOU would care. If they shared preferences or context about themselves (above), use it to make YOUR advice land better for THEM. Your persona stays — you just tailor the delivery.
 

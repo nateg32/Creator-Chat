@@ -5187,6 +5187,7 @@ Message: {answer_text[:500]}"""
             recent_topic=bridge_topic,
             creator_focus=creator_focus,
             allow_handoff=False,
+            creator_profile=creator_row,
         )
         if not bridge_topic and "?" not in answer:
             answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
@@ -5227,6 +5228,7 @@ Message: {answer_text[:500]}"""
             recent_topic=bridge_topic,
             creator_focus=creator_focus,
             allow_handoff=False,
+            creator_profile=creator_row,
         )
         if not bridge_topic and "?" not in answer:
             answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
@@ -5250,7 +5252,36 @@ Message: {answer_text[:500]}"""
     
     # --- Step 2.7: LLM-based Off-Domain Redirect ---
     # Catches everything the regex missed. The classifier already flagged off_domain_flag.
-    if user_state.get("flags", {}).get("off_domain_flag") and intent != "greeting_only":
+    # Safety check: if the question clearly overlaps the creator's own category /
+    # configured domains (e.g. a business coach being asked about "starting a
+    # business"), trust the main render and skip the redirect. Otherwise the bot
+    # ends up refusing adjacent questions and sounds like a generic AI assistant.
+    def _question_overlaps_creator_world(q: str) -> bool:
+        q_lower = (q or "").lower()
+        if not q_lower:
+            return False
+        domain_terms: set = set()
+        for key in ("primary_domains", "secondary_domains", "allowed_bridge_domains"):
+            for value in stronghold_config.get(key, []) or []:
+                domain_terms.add(str(value).lower().strip())
+        category = (creator_row.get("creator_category") or "").lower().strip()
+        if category:
+            domain_terms.add(category)
+        for term in domain_terms:
+            if not term or len(term) < 3:
+                continue
+            for token in re.split(r"[^a-z0-9]+", term):
+                if len(token) < 4:
+                    continue
+                if token in q_lower:
+                    return True
+        return False
+
+    if (
+        user_state.get("flags", {}).get("off_domain_flag")
+        and intent != "greeting_only"
+        and not _question_overlaps_creator_world(question)
+    ):
         logger.info("Classifier off_domain_flag=True. Triggering domain boundary redirect.")
         bridge_topic = recent_bridge_topic(conversation_history, question)
         answer = stronghold_guard.generate_boundary_message(
@@ -5261,6 +5292,7 @@ Message: {answer_text[:500]}"""
             recent_topic=bridge_topic,
             creator_focus=creator_focus,
             allow_handoff=False,
+            creator_profile=creator_row,
         )
         if not bridge_topic and "?" not in answer:
             answer = f"{answer} {get_bridge_question(creator_row, creator_focus)}"
@@ -5319,7 +5351,8 @@ Message: {answer_text[:500]}"""
     if domain_action == "DECLINE_HANDOFF":
         logger.info("Stronghold: Triggering DECLINE_HANDOFF")
         answer = stronghold_guard.generate_boundary_message(
-            creator_row["name"], persona, stronghold_config, question
+            creator_row["name"], persona, stronghold_config, question,
+            creator_focus=creator_focus, creator_profile=creator_row,
         )
         # Suggest 2-3 other creators
         suggestions = db.execute_query("""

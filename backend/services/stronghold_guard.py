@@ -1,6 +1,7 @@
 
 import logging
 import json
+import random
 from typing import Dict, Any, Optional
 import backend.rag as rag
 from backend.settings import settings
@@ -44,10 +45,12 @@ class StrongholdGuardService:
         if detected_domain in out_of_scope:
             return "DECLINE_HANDOFF"
 
-        # Default: if the detected domain doesn't match any configured domain,
-        # treat it as off-domain and decline. This prevents the bot from acting
-        # as a generic AI wrapper for topics the creator doesn't specialize in.
-        return "DECLINE_HANDOFF"
+        # Default: when the detected domain isn't explicitly listed, ANSWER.
+        # The dedicated general-knowledge and live-fact rules already block
+        # clearly off-scope topics; defaulting to DECLINE here makes the bot
+        # refuse adjacent questions (e.g. a business coach being asked about
+        # "starting a business") and sound like a robotic assistant.
+        return "ANSWER"
 
     def generate_boundary_message(
         self,
@@ -58,43 +61,98 @@ class StrongholdGuardService:
         recent_topic: Optional[str] = None,
         creator_focus: Optional[str] = None,
         allow_handoff: bool = True,
+        creator_profile: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
-        Generates a short in character boundary or bridge message when a request is out of scope.
+        Generates a short in character boundary or bridge message when a request
+        is genuinely outside the creator's world.
+
+        The output must sound like the actual creator brushing the topic off in
+        their own voice — not a polite assistant reading a script. Hardcoded
+        phrases like "not my lane", "not my core focus", "right up my alley",
+        and "you might want to check out creators" are explicitly forbidden.
         """
-        style = stronghold_config.get("style_for_decline", "short")
-        focus_text = (creator_focus or "their core lane").strip()
-        pivot_instruction = ""
+        focus_text = (creator_focus or "the stuff you actually care about").strip()
+
+        # Pull persona-specific signals so the decline sounds like THIS creator.
+        style_fp = (creator_profile or {}).get("style_fingerprint") or {}
+        if isinstance(style_fp, str):
+            try:
+                style_fp = json.loads(style_fp)
+            except Exception:
+                style_fp = {}
+        lexical = style_fp.get("lexical_rules") or {}
+        anti = style_fp.get("anti_persona") or {}
+        dna = style_fp.get("linguistic_dna") or {}
+        signature_phrases = list(lexical.get("signature_phrases") or style_fp.get("signature_phrases") or [])[:6]
+        high_signal_words = list(lexical.get("high_signal_words") or style_fp.get("lexicon") or [])[:8]
+        forbidden_lines = list(anti.get("forbidden_generic_coach_lines") or [])[:6]
+        swearing = (dna.get("swearing") or "").strip().lower()
+        energy = (dna.get("energy") or "").strip()
+
+        signature_hint = (
+            f"Signature phrases you might draw on if it fits: {', '.join(signature_phrases)}."
+            if signature_phrases else ""
+        )
+        vocab_hint = (
+            f"Prefer your real vocabulary: {', '.join(high_signal_words)}."
+            if high_signal_words else ""
+        )
+        forbidden_hint = (
+            "PHRASES YOU NEVER USE: " + "; ".join(forbidden_lines)
+            if forbidden_lines else ""
+        )
+        swearing_hint = (
+            "Swearing/edge: you may use it the way you naturally do in your content."
+            if swearing in {"frequent", "often", "yes", "strong", "heavy"} else (
+                "Swearing/edge: light, only if it lands naturally."
+                if swearing in {"occasional", "some", "mild"} else ""
+            )
+        )
+        energy_hint = f"Energy level: {energy}." if energy else ""
+
         if recent_topic:
             pivot_instruction = (
-                f"Pivot naturally back to this recent topic from the conversation: {recent_topic!r}. "
-                "Use one short bridging line, then one grounded follow up question tied to that topic."
+                f"Steer back to what they were actually working on: {recent_topic!r}. "
+                "One bridging beat, then a sharp follow up question about that."
             )
         elif allow_handoff:
-            pivot_instruction = "If helpful, invite the user to ask about your core lane or switch to a better fit creator."
+            pivot_instruction = (
+                "Invite them back to what you actually obsess over with one specific question."
+            )
         else:
-            pivot_instruction = "Do not suggest apps, exchanges, search tips, or another creator. End by steering back to your own lane with one natural question."
-
-        handoff_instruction = "You may suggest a better fit creator if that feels natural." if allow_handoff else "Do not suggest a different creator."
+            pivot_instruction = (
+                "Do not point them to another creator, app, or search. Pull the conversation "
+                "back to what you actually care about with one specific question."
+            )
 
         prompt = f"""
-You are {creator_name}.
-User asked: {user_message!r}
+You are {creator_name}. Reply in your real voice. Do not narrate that you are an AI.
+User said: {user_message!r}
 
-This topic is outside your real lane. Your focus is: {focus_text}.
-Your goal is to respond in character, briefly, and naturally.
+This is not really what you talk about. Your world is: {focus_text}.
 
-Constraints:
-- Style: {style}
-- Length: 2 to 4 sentences.
-- Sound like a real person, not a search tool or support agent.
-- Acknowledge that this is not your lane without sounding robotic.
-- {handoff_instruction}
-- {pivot_instruction}
-- Do not say you lack access, cannot browse, or cannot provide live information.
-- CRITICAL: DO NOT answer the question. DO NOT provide any instructions, steps, code, commands, recipes, formulas, or factual answers about the out of scope topic. Not even a brief summary. Not even "the simple version is." Zero teaching on the topic.
-- Your ONLY job is to decline naturally and redirect to your own lane.
-- If you catch yourself starting to explain the topic, STOP.
+Write a short, natural reply (1-3 sentences) that:
+- Sounds like YOU on a podcast or in a DM, not like a customer support agent.
+- Gives your honest, in-character reaction in one beat (a take, a one-liner, a quick reframe). It is fine to lightly engage with the topic, but do not give a tutorial, steps, recipe, formula, code, or detailed how-to.
+- Then pivots. {pivot_instruction}
+
+ABSOLUTELY FORBIDDEN PHRASING (do not output, paraphrase, or imply any of these):
+- "not my lane" / "not really my lane" / "out of my lane"
+- "not my core focus" / "not really my main focus" / "not my main focus"
+- "right up my alley" / "that is right up my alley"
+- "happy to chat" / "feel free to ask" / "let me know if"
+- "you might want to check out" + any creator name
+- "as an AI" / "language model" / "I'm here to help"
+- "What sparked your interest in"
+
+{forbidden_hint}
+{signature_hint}
+{vocab_hint}
+{swearing_hint}
+{energy_hint}
+
+Do not say you lack access, cannot browse, or cannot provide live information. Just answer in character.
 
 Creator Persona:
 {persona}
@@ -104,14 +162,23 @@ Creator Persona:
             resp = rag.generate_chat_completion(
                 messages=[{"role": "system", "content": prompt}],
                 model=settings.MODEL_MAIN_REPLY,
-                temperature=0.7
+                temperature=0.85,
             )
             return resp.strip()
         except Exception as e:
             logger.error(f"Failed to generate boundary message: {e}")
+            # Last-resort fallbacks. These purposely avoid the banned cliches.
             if recent_topic:
-                return f"That is not really my lane. Let's come back to {recent_topic}. What are you actually trying to figure out there?"
-            return "That is not really my lane. Ask me something closer to what I actually talk about."
+                return (
+                    f"Honestly, that is not what I spend my time on. "
+                    f"Let's go back to {recent_topic} — what is the actual move you are stuck on?"
+                )
+            generic_pivots = [
+                "Honestly, that is not what I spend my time on. What are you actually trying to build right now?",
+                "Not really the stuff I dig into. What is the real problem you are working through?",
+                "That is outside what I obsess over. What were you actually trying to get to?",
+            ]
+            return random.choice(generic_pivots)
 
 
 stronghold_guard = StrongholdGuardService()

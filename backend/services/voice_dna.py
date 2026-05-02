@@ -77,6 +77,23 @@ _GENERIC_SWAPS: Dict[str, List[str]] = {
     "hope this helps": [],
     "let me know if you": [],
     "feel free to": [],
+    "happy to chat": [],
+    "happy to help": [],
+    "feel free to ask": [],
+    "don't hesitate to": [],
+    "do not hesitate to": [],
+    "not my lane": [],
+    "not really my lane": [],
+    "out of my lane": [],
+    "not my core focus": [],
+    "not really my core focus": [],
+    "not my main focus": [],
+    "not really my main focus": [],
+    "right up my alley": [],
+    "those are right up my alley": [],
+    "you might want to check out": [],
+    "you may want to check out": [],
+    "what sparked your interest": [],
 }
 
 # Banned AI-assistant phrases (remove entirely, no replacement)
