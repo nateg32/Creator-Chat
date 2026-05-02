@@ -162,7 +162,7 @@ def _load_grounded_rag():
         extract_requested_platforms=lambda *args, **kwargs: [],
         needs_fresh_public_web_search=lambda *args, **kwargs: False,
     )
-    _stub_module("backend.utils.url_health", check_url_alive_sync=lambda *args, **kwargs: True)
+    _stub_module("backend.utils.url_health", check_url_alive_sync=lambda *args, **kwargs: True, is_url_known_dead=lambda *args, **kwargs: False)
     _stub_module(
         "backend.services.rag_text_matcher",
         extract_named_resource_fragments=lambda *args, **kwargs: [],

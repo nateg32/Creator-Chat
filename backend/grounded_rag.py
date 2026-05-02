@@ -39,7 +39,7 @@ from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.assumption_blocker import assumption_blocker
 from backend.services.image_identity_service import image_identity_service
 from backend.services.voice_dna import build_voice_echo_block
-from backend.utils.url_health import check_url_alive_sync
+from backend.utils.url_health import check_url_alive_sync, is_url_known_dead
 from backend.services.live_search_rules import (
     build_live_search_query,
     extract_requested_platforms,
@@ -748,8 +748,8 @@ def _preview_card_from_resource(title: str, url: str) -> Optional[Dict[str, str]
     url = (url or "").strip()
     if not url:
         return None
-    # ── URL health-check: skip dead links ──
-    if not check_url_alive_sync(url):
+    # ── Non-blocking dead-link filter: drop only known-dead URLs ──
+    if is_url_known_dead(url):
         logger.info("Dead link filtered from card: %s", url)
         return None
     if _resource_title_quality(title, url) < 0.45:
@@ -7044,13 +7044,16 @@ def _build_marker_citation_entries(
         out.append(entry)
         if len(out) >= limit:
             break
-    # URL health-check
+    # Non-blocking dead-link filter: only drops URLs we've previously verified
+    # dead. Unknown URLs are kept and a background HEAD warms the cache for
+    # next time. Saves up to ~600ms per response with citations.
     alive: List[Dict[str, Any]] = []
     for cit in out:
-        if check_url_alive_sync(cit.get("url") or ""):
-            alive.append(cit)
-        else:
-            logger.info("Dead link filtered from marker citation: %s", cit.get("url"))
+        url = cit.get("url") or ""
+        if is_url_known_dead(url):
+            logger.info("Dead link filtered from marker citation: %s", url)
+            continue
+        alive.append(cit)
     return alive
 
 
@@ -7146,11 +7149,12 @@ def build_inline_citations(
     _MIN_CITATION_SCORE = 0.28
     ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
-    # ── URL health-check: drop dead links from citations ──
+    # ── Non-blocking dead-link filter ──
     alive_ranked: List[Dict[str, Any]] = []
     for cit in ranked:
-        if check_url_alive_sync(cit.get("url") or ""):
-            alive_ranked.append(cit)
-        else:
-            logger.info("Dead link filtered from citation: %s", cit.get("url"))
+        url = cit.get("url") or ""
+        if is_url_known_dead(url):
+            logger.info("Dead link filtered from citation: %s", url)
+            continue
+        alive_ranked.append(cit)
     return alive_ranked[:limit]

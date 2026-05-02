@@ -131,3 +131,53 @@ def check_url_alive_sync(url: str) -> bool:
         alive = False
     _cache_set(url, alive)
     return alive
+
+
+# ── Hot-path helpers (no blocking network I/O) ────────────────
+import threading
+
+_BG_INFLIGHT: set = set()
+_BG_LOCK = threading.Lock()
+
+
+def is_url_known_dead(url: str) -> bool:
+    """Non-blocking check: True only if we've previously verified the URL dead.
+
+    Unknown URLs return False (treat-as-alive) so the request path never
+    waits on an HTTP HEAD. A background check is scheduled to populate
+    the cache for next time.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return True  # malformed -> treat as dead
+    if _should_skip(url):
+        return False
+    cached = _cache_get(url)
+    if cached is None:
+        # Unknown -> assume alive, but warm the cache in the background.
+        _schedule_background_check(url)
+        return False
+    return not cached
+
+
+def _schedule_background_check(url: str) -> None:
+    """Fire-and-forget HEAD so the in-memory cache is populated for future calls."""
+    with _BG_LOCK:
+        if url in _BG_INFLIGHT:
+            return
+        _BG_INFLIGHT.add(url)
+
+    def _runner(u: str) -> None:
+        try:
+            check_url_alive_sync(u)
+        except Exception:
+            pass
+        finally:
+            with _BG_LOCK:
+                _BG_INFLIGHT.discard(u)
+
+    try:
+        t = threading.Thread(target=_runner, args=(url,), daemon=True)
+        t.start()
+    except Exception:
+        with _BG_LOCK:
+            _BG_INFLIGHT.discard(url)

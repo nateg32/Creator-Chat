@@ -393,7 +393,7 @@ def _load_grounded_rag(
     _stub_module("backend.services.image_identity_service", image_identity_service=types.SimpleNamespace(maybe_answer_from_image=lambda *args, **kwargs: None))
     _stub_module("backend.services.voice_dna", build_voice_echo_block=lambda *args, **kwargs: "")
     _stub_module("backend.services.conversation_closure", get_bridge_question=lambda *args, **kwargs: "")
-    _stub_module("backend.utils.url_health", check_url_alive_sync=lambda *args, **kwargs: True)
+    _stub_module("backend.utils.url_health", check_url_alive_sync=lambda *args, **kwargs: True, is_url_known_dead=lambda *args, **kwargs: False)
 
     live_rules_path = BASE_DIR / "services" / "live_search_rules.py"
     live_rules_spec = importlib.util.spec_from_file_location(
