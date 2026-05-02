@@ -666,6 +666,146 @@ def build_voice_instructions(creator_profile: Dict[str, Any], mode: str = "task"
     return "\n\n".join(parts)
 
 
+def build_voice_card(creator_profile: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Distill a creator's voice into a tight ~150-token crystal the model can hold in
+    working memory. Pulls from existing fingerprint fields — no DB migration required.
+    """
+    style_fp = creator_profile.get("style_fingerprint") or {}
+    if isinstance(style_fp, str):
+        try:
+            style_fp = json.loads(style_fp)
+        except Exception:
+            style_fp = {}
+
+    voice_profile = creator_profile.get("voice_profile") or {}
+    if isinstance(voice_profile, str):
+        try:
+            voice_profile = json.loads(voice_profile)
+        except Exception:
+            voice_profile = {}
+
+    identity = style_fp.get("identity_signature") or {}
+    worldview = style_fp.get("worldview") or {}
+    belief_graph = style_fp.get("belief_graph") or {}
+    lexical = style_fp.get("lexical_rules") or {}
+    anti = style_fp.get("anti_persona") or {}
+    value_model = style_fp.get("value_model") or {}
+    dna = style_fp.get("linguistic_dna") or {}
+    cadence = style_fp.get("cadence_rules") or {}
+    golden = style_fp.get("golden_examples") or {}
+
+    stance = (
+        identity.get("power_position")
+        or identity.get("self_concept")
+        or (worldview.get("core_beliefs") or [None])[0]
+        or (belief_graph.get("core_beliefs") or [None])[0]
+        or ""
+    )
+
+    openers: List[str] = []
+    for src in (golden.get("greeting") or []) + (golden.get("teaching") or []):
+        text = str(src or "").strip()
+        if not text:
+            continue
+        # Take the opener — first sentence, capped
+        first = re.split(r"(?<=[.!?])\s+", text)[0].strip()
+        if 4 <= len(first) <= 120 and first not in openers:
+            openers.append(first)
+        if len(openers) >= 3:
+            break
+    if len(openers) < 3:
+        for phrase in (voice_profile.get("signature_phrases") or []) + (lexical.get("signature_phrases") or []):
+            text = str(phrase or "").strip()
+            if text and text not in openers:
+                openers.append(text)
+            if len(openers) >= 3:
+                break
+
+    cadence_bits: List[str] = []
+    if cadence.get("sentence_shape"):
+        cadence_bits.append(str(cadence["sentence_shape"]).strip())
+    if dna.get("energy"):
+        cadence_bits.append(str(dna["energy"]).strip())
+    if dna.get("sentence_structure") and not cadence_bits:
+        cadence_bits.append(str(dna["sentence_structure"]).strip())
+
+    use_words: List[str] = []
+    seen_use = set()
+    for src in (lexical.get("high_signal_words") or []) + (voice_profile.get("common_words") or []) + (style_fp.get("lexicon") or []):
+        text = str(src or "").strip()
+        key = text.lower()
+        if not text or key in seen_use:
+            continue
+        seen_use.add(key)
+        use_words.append(text)
+        if len(use_words) >= 8:
+            break
+
+    never_words: List[str] = []
+    seen_never = set()
+    for src in (anti.get("forbidden_generic_coach_lines") or []) + (lexical.get("banned_frames") or []):
+        text = str(src or "").strip()
+        key = text.lower()
+        if not text or key in seen_never:
+            continue
+        seen_never.add(key)
+        never_words.append(text)
+        if len(never_words) >= 5:
+            break
+
+    real_line = ""
+    for src in (style_fp.get("evidence_snippets") or []) + (lexical.get("signature_phrases") or []):
+        text = str(src or "").strip()
+        if 8 <= len(text) <= 200:
+            real_line = text
+            break
+
+    decision_rule = ""
+    for src in (value_model.get("decision_heuristics") or []) + (belief_graph.get("non_negotiables") or []):
+        text = str(src or "").strip()
+        if 4 <= len(text) <= 200:
+            decision_rule = text
+            break
+
+    return {
+        "stance": stance.strip() if isinstance(stance, str) else "",
+        "openers": openers[:3],
+        "cadence": " · ".join(cadence_bits[:2]),
+        "use_words": use_words,
+        "never_words": never_words,
+        "real_line": real_line,
+        "decision_rule": decision_rule,
+    }
+
+
+def format_voice_card_for_prompt(card: Dict[str, Any], creator_name: str) -> str:
+    """Render a Voice Card dict as a compact prompt block (~150 tokens)."""
+    if not card:
+        return ""
+    has_content = any(card.get(k) for k in ("stance", "openers", "use_words", "never_words", "real_line", "decision_rule"))
+    if not has_content:
+        return ""
+
+    lines = [f"VOICE CARD — {creator_name} (anchor every reply to this):"]
+    if card.get("stance"):
+        lines.append(f"- Stance: {card['stance']}")
+    if card.get("openers"):
+        lines.append(f"- How you open (real patterns): {' · '.join(card['openers'])}")
+    if card.get("cadence"):
+        lines.append(f"- Cadence: {card['cadence']}")
+    if card.get("use_words"):
+        lines.append(f"- Words you USE: {', '.join(card['use_words'])}")
+    if card.get("never_words"):
+        lines.append(f"- Lines you NEVER use: {', '.join(card['never_words'])}")
+    if card.get("real_line"):
+        lines.append(f"- A real line of yours: \"{card['real_line']}\"")
+    if card.get("decision_rule"):
+        lines.append(f"- Rule you live by: \"{card['decision_rule']}\"")
+    lines.append("Open this reply by anchoring to ONE pattern above (a stance beat, an opener cadence, or your real line) — never by restating the user's topic.")
+    return "\n".join(lines)
+
+
 def _build_voice_examples(creator_profile: Dict[str, Any], mode: str = "task") -> str:
     """
     Extract 1-2 golden examples from the style fingerprint for the current mode.
@@ -1971,7 +2111,7 @@ Generate InteractionPlan JSON."""
                 {"role": "user", "content": user_msg}
             ],
             model=self._reply_model_for_route(route),
-            temperature=0.7,
+            temperature=(0.85 if route in ("ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK") else 0.7),
             stream=True,
             max_tokens=int(reply_budget["max_tokens"]),
         )
@@ -2012,7 +2152,7 @@ Generate InteractionPlan JSON."""
                 {"role": "user", "content": user_msg}
             ],
             model=self._reply_model_for_route(route),
-            temperature=0.7,
+            temperature=(0.85 if route in ("ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK") else 0.7),
             stream=True,
             max_tokens=int(reply_budget["max_tokens"]),
         )
@@ -2099,6 +2239,7 @@ DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not
 Output ONLY your response."""
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
+        voice_card_block = format_voice_card_for_prompt(build_voice_card(creator_profile), creator_name)
         voice_dna_block = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
         voice_echo_block = build_voice_echo_block(rag_chunks)
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
@@ -2346,6 +2487,8 @@ STRICT IDENTITY LOCK:
         return f"""IDENTITY: You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
+
+{voice_card_block}
 
 {voice_dna_block}
 {voice_echo_block}
@@ -2626,6 +2769,7 @@ Output ONLY your reply text. No quotes, no labels, no preamble."""
         creator_name = creator_profile.get("name", "the creator")
         voice_instructions = build_voice_instructions(creator_profile, mode="small_talk")
         voice_examples = _build_voice_examples(creator_profile, mode="small_talk")
+        voice_card_block = format_voice_card_for_prompt(build_voice_card(creator_profile), creator_name)
         small_talk_voice_dna = build_voice_dna_block(creator_profile, mode="small_talk", conversation_tracker=self._get_voice_tracker(thread_id))
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         pref_instructions = self._build_user_pref_instructions(normalized_prefs)
@@ -2658,6 +2802,8 @@ Output ONLY your reply text. No quotes, no labels, no preamble."""
 
         system_prompt = f"""You are {creator_name}. You're having a casual one to one conversation in DMs.
 
+{voice_card_block}
+
 {small_talk_voice_dna}
 
 YOUR VOICE:
@@ -2687,7 +2833,7 @@ Output only the response."""
                     {"role": "user", "content": user_msg}
                 ],
                 model=self._reply_model_for_route(plan.route),
-                temperature=0.7,
+                temperature=0.85,
                 max_tokens=80,
             )
             return self._enforce_small_talk_limits(response.strip(), creator_profile=creator_profile)
@@ -2783,6 +2929,7 @@ Output only the response."""
         creator_category = creator_profile.get("creator_category", "general")
         voice_instructions = build_voice_instructions(creator_profile, mode="task")
         voice_examples = _build_voice_examples(creator_profile, mode="task")
+        voice_card_block = format_voice_card_for_prompt(build_voice_card(creator_profile), creator_name)
         legacy_voice_dna = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
         legacy_voice_echo = build_voice_echo_block(voice_source_chunks)
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
@@ -2986,6 +3133,8 @@ CURRENT TURN HAS IMAGE CONTEXT:
 You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
+
+{voice_card_block}
 
 {legacy_voice_dna}
 {legacy_voice_echo}

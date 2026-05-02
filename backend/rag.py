@@ -1,9 +1,69 @@
 import openai
 from typing import List, Dict, Any, Optional
+from collections import OrderedDict
+from threading import Lock
 from backend.db import db
 from backend.settings import settings
 import re
 from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+
+# In-process LRU cache for query embeddings. Keyed by (normalized_text, model).
+# Bounded so it cannot grow unbounded under load.
+_QUERY_EMBEDDING_CACHE: "OrderedDict[tuple, List[float]]" = OrderedDict()
+_QUERY_EMBEDDING_CACHE_LOCK = Lock()
+_QUERY_EMBEDDING_CACHE_MAX = 512
+
+
+def _normalize_embedding_key(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _cache_get_embedding(text: str, model: str) -> Optional[List[float]]:
+    key = (_normalize_embedding_key(text), model)
+    if not key[0]:
+        return None
+    with _QUERY_EMBEDDING_CACHE_LOCK:
+        vec = _QUERY_EMBEDDING_CACHE.get(key)
+        if vec is not None:
+            _QUERY_EMBEDDING_CACHE.move_to_end(key)
+        return vec
+
+
+def _cache_put_embedding(text: str, model: str, vector: List[float]) -> None:
+    key = (_normalize_embedding_key(text), model)
+    if not key[0] or not vector:
+        return
+    with _QUERY_EMBEDDING_CACHE_LOCK:
+        _QUERY_EMBEDDING_CACHE[key] = vector
+        _QUERY_EMBEDDING_CACHE.move_to_end(key)
+        while len(_QUERY_EMBEDDING_CACHE) > _QUERY_EMBEDDING_CACHE_MAX:
+            _QUERY_EMBEDDING_CACHE.popitem(last=False)
+
+
+def embed_query_cached(text: str, model: str = settings.EMBEDDING_MODEL) -> List[float]:
+    """Sync query-embedding helper backed by an LRU cache."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    cached = _cache_get_embedding(text, model)
+    if cached is not None:
+        return cached
+    response = get_client().embeddings.create(model=model, input=text)
+    vec = response.data[0].embedding
+    _cache_put_embedding(text, model, vec)
+    return vec
+
+
+async def embed_query_cached_async(text: str, model: str = settings.EMBEDDING_MODEL) -> List[float]:
+    """Async query-embedding helper backed by the same LRU cache."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    cached = _cache_get_embedding(text, model)
+    if cached is not None:
+        return cached
+    response = await get_async_client().embeddings.create(model=model, input=text)
+    vec = response.data[0].embedding
+    _cache_put_embedding(text, model, vec)
+    return vec
 
 _client = None
 _async_client = None
@@ -96,11 +156,7 @@ def create_embedding(text: str, model: str = settings.EMBEDDING_MODEL) -> List[f
     """Backward-compatible embedding helper used across older services."""
     if not isinstance(text, str) or not text.strip():
         raise ValueError("text must be a non-empty string")
-    response = get_client().embeddings.create(
-        model=model,
-        input=text,
-    )
-    return response.data[0].embedding
+    return embed_query_cached(text, model)
 
 
 def generate_chat_completion(

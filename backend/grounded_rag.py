@@ -1279,8 +1279,8 @@ def _hybrid_retrieve_recommendation_chunks(
             if base_embedding and base_query and query.strip().lower() == base_query.strip().lower():
                 q_emb = base_embedding
             else:
-                emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=query)
-                q_emb = emb_resp.data[0].embedding
+                from backend.rag import embed_query_cached
+                q_emb = embed_query_cached(query, settings.EMBEDDING_MODEL)
             dense_chunks = retrieve_candidates(
                 creator_id,
                 q_emb,
@@ -4740,10 +4740,9 @@ def recommend_one_content(
     # Stage 1: Candidate retrieval (Broad + Fast)
     # Get embedding for semantic search
     if not q_emb:
-        from backend.rag import get_client
+        from backend.rag import embed_query_cached
         try:
-            emb_resp = get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=q_search)
-            q_emb = emb_resp.data[0].embedding
+            q_emb = embed_query_cached(q_search, settings.EMBEDDING_MODEL)
         except Exception as e:
             logger.error(f"Embedding failed: {e}")
             return {"answer": "I'm having trouble searching my content right now.", "recommended": None}
