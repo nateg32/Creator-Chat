@@ -110,10 +110,15 @@ def get_platform(key: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _strip_tracking(u: str) -> str:
+def _strip_tracking(u: str, *, preserve_trailing_slash: bool = False) -> str:
     try:
         parsed = urlparse(u)
-        path = parsed.path.rstrip("/") if parsed.path != "/" else "/"
+        if parsed.path == "/":
+            path = "/"
+        elif preserve_trailing_slash and parsed.path.endswith("/"):
+            path = parsed.path
+        else:
+            path = parsed.path.rstrip("/")
         return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
     except Exception:
         return u
@@ -169,7 +174,7 @@ def normalize_url(url: str, platform_key: str) -> str:
     # --- Bare @handle / handle → full URL (per-platform) ---
     if platform_key == "instagram" and re.match(r"^@?[\w.]+$", u):
         h = u.lstrip("@")
-        return f"https://www.instagram.com/{h}"
+        return f"https://www.instagram.com/{h}/"
 
     if platform_key in ("youtube", "youtube_shorts") and re.match(r"^@?[\w.-]+$", u):
         h = u.lstrip("@")
@@ -231,7 +236,11 @@ def normalize_url(url: str, platform_key: str) -> str:
 
     if not u.startswith("http"):
         u = "https://" + u
-    return _strip_tracking(u)
+    # Instagram canonical profile URLs end in a trailing slash
+    # (e.g. https://www.instagram.com/blakefakhoury/). Preserve it so we don't
+    # accidentally produce a non-canonical form that fails downstream equality
+    # checks against Instagram's own redirect targets.
+    return _strip_tracking(u, preserve_trailing_slash=(platform_key == "instagram"))
 
 
 def choose_valid_normalized_url(platform_key: str, requested_url: str, resolved_url: str = "") -> str:

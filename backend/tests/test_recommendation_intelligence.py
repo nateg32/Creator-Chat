@@ -11,8 +11,20 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _stub_package(name: str):
+    # Try to preserve the real package's __path__ if it exists on disk so that
+    # submodules we did NOT explicitly stub can still be imported normally
+    # (e.g. backend.services.voice_dna). Falling back to an empty __path__
+    # would break submodule auto-import for anything we forgot to stub.
+    real_path = []
+    try:
+        parts = name.split(".")
+        candidate = BACKEND_ROOT.parent.joinpath(*parts)
+        if candidate.is_dir():
+            real_path = [str(candidate)]
+    except Exception:
+        real_path = []
     module = types.ModuleType(name)
-    module.__path__ = []  # type: ignore[attr-defined]
+    module.__path__ = real_path  # type: ignore[attr-defined]
     sys.modules[name] = module
     return module
 
@@ -36,6 +48,12 @@ def _load_module(name: str, relative_path: str):
 
 
 def _load_grounded_rag():
+    # Track which sys.modules entries were introduced by this loader so we can
+    # restore the prior state in tearDownClass. Otherwise the heavyweight stubs
+    # we install leak into unrelated test modules that load after us and cause
+    # phantom ImportErrors / AttributeErrors.
+    _modules_before = dict(sys.modules)
+
     _stub_package("backend.prompts")
     _stub_package("backend.services")
     _stub_package("backend.core")
@@ -63,6 +81,9 @@ def _load_grounded_rag():
                 create=lambda **kwargs: types.SimpleNamespace(data=[types.SimpleNamespace(embedding=[0.0])])
             )
         ),
+        get_async_client=lambda: types.SimpleNamespace(),
+        get_chat_client=lambda *args, **kwargs: types.SimpleNamespace(),
+        get_async_chat_client=lambda *args, **kwargs: types.SimpleNamespace(),
     )
     _stub_module("backend.prompts.creator_base_prompt", CREATOR_BASE_SYSTEM_PROMPT="")
     _stub_module("backend.services.style_distiller", StyleDistiller=type("StyleDistiller", (), {}))
@@ -97,7 +118,7 @@ def _load_grounded_rag():
         retrieve_sparse_text_matches=lambda *args, **kwargs: [],
         retrieve_exact_text_matches=lambda *args, **kwargs: [],
     )
-    _stub_module("backend.services.out_of_domain_rules", default_bridge_question=lambda *args, **kwargs: "", detect_external_live_fact_topic=lambda *args, **kwargs: False, recent_bridge_topic=lambda *args, **kwargs: "", should_soft_decline_external_live_fact=lambda *args, **kwargs: False)
+    _stub_module("backend.services.out_of_domain_rules", default_bridge_question=lambda *args, **kwargs: "", detect_external_live_fact_topic=lambda *args, **kwargs: False, recent_bridge_topic=lambda *args, **kwargs: "", should_soft_decline_external_live_fact=lambda *args, **kwargs: False, detect_general_knowledge_topic=lambda *args, **kwargs: None, should_redirect_general_knowledge=lambda *args, **kwargs: False)
     regurgitation_guard = _load_module("backend.services.regurgitation_guard", "services/regurgitation_guard.py")
     sys.modules["backend.services.regurgitation_guard"] = regurgitation_guard
     recommendation_asset = _load_module("backend.services.recommendation_asset_service", "services/recommendation_asset_service.py")
@@ -110,6 +131,17 @@ def _load_grounded_rag():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+
+    # Capture every sys.modules entry we introduced or replaced so tearDown can
+    # restore the original real modules and avoid polluting other test files.
+    _modules_after = set(sys.modules.keys())
+    introduced = _modules_after - set(_modules_before.keys())
+    replaced = {
+        name for name in _modules_after & set(_modules_before.keys())
+        if sys.modules.get(name) is not _modules_before.get(name)
+    }
+    module.__test_stub_introduced__ = introduced
+    module.__test_stub_replaced__ = {name: _modules_before[name] for name in replaced}
     return module
 
 
@@ -119,6 +151,17 @@ class RecommendationIntelligenceTests(unittest.TestCase):
         cls.grounded_rag = _load_grounded_rag()
         cls.asset_service = _load_module("recommendation_asset_service_tests", "services/recommendation_asset_service.py")
         cls.eval_service = _load_module("recommendation_eval_service_tests", "services/recommendation_eval_service.py")
+
+    @classmethod
+    def tearDownClass(cls):
+        # Roll back the heavyweight stub installs so other test modules see the
+        # real backend.* modules instead of inheriting our SimpleNamespace stubs.
+        introduced = getattr(cls.grounded_rag, "__test_stub_introduced__", set())
+        replaced = getattr(cls.grounded_rag, "__test_stub_replaced__", {})
+        for name in introduced:
+            sys.modules.pop(name, None)
+        for name, original in replaced.items():
+            sys.modules[name] = original
 
     def test_query_variants_expand_named_resource_and_medium(self):
         variants = self.grounded_rag._build_recommendation_query_variants(

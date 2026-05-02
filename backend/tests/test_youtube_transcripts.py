@@ -21,9 +21,14 @@ def _load_module(name: str, relative_path: str):
 
 
 sys.modules.setdefault("backend.settings", SimpleNamespace(settings=SimpleNamespace(APIFY_TOKEN="test-token")))
-backend_services_pkg = types.ModuleType("backend.services")
-backend_services_pkg.__path__ = []  # type: ignore[attr-defined]
-sys.modules.setdefault("backend.services", backend_services_pkg)
+# If backend.services isn't loaded yet, install a lightweight package stub but
+# point __path__ at the REAL services directory so submodule auto-imports keep
+# working for downstream tests (otherwise test_security_hardening can't find
+# backend.services.transcript_worker).
+if "backend.services" not in sys.modules:
+    backend_services_pkg = types.ModuleType("backend.services")
+    backend_services_pkg.__path__ = [str(BACKEND_ROOT / "services")]  # type: ignore[attr-defined]
+    sys.modules["backend.services"] = backend_services_pkg
 transcript_quality_module = _load_module("backend.services.transcript_quality", "services/transcript_quality.py")
 sys.modules.setdefault("backend.services.transcript_quality", transcript_quality_module)
 apify_service = _load_module("apify_service_youtube_tests", "apify_service.py")

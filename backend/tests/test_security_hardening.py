@@ -1,3 +1,53 @@
+import sys as _sys
+
+# Other test modules in this suite install lightweight stubs into sys.modules
+# for backend.* packages and submodules. Evict any of those stubs (anything
+# whose loaded file isn't the real backend/services/*.py on disk) so this
+# module always exercises the real production code paths.
+import os as _os
+_BACKEND_DIR = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+
+def _is_stub(module) -> bool:
+    try:
+        file_path = getattr(module, "__file__", None) or ""
+    except Exception:
+        file_path = ""
+    if file_path:
+        return not _os.path.normcase(_os.path.abspath(file_path)).startswith(_os.path.normcase(_BACKEND_DIR))
+    # Modules with no ``__file__`` and no usable ``__spec__.origin`` are
+    # almost always hand-rolled ``types.ModuleType(...)`` stubs installed by
+    # other test modules. Evict them so the real implementation gets imported
+    # on demand.
+    spec = getattr(module, "__spec__", None)
+    spec_origin = getattr(spec, "origin", None) if spec is not None else None
+    if not spec_origin or spec_origin == "namespace":
+        try:
+            path_attr = list(getattr(module, "__path__", None) or [])
+        except Exception:
+            return True
+        # A package with a real ``__path__`` is allowed to act as a namespace
+        # parent (Python will resolve submodules against its directory), but a
+        # leaf module that lacks both ``__file__`` and ``__spec__.origin`` is
+        # always a stub.
+        if not path_attr:
+            return True
+        for entry in path_attr:
+            if entry and _os.path.normcase(_os.path.abspath(entry)).startswith(_os.path.normcase(_BACKEND_DIR)):
+                return False
+        return True
+    return False
+
+
+for _name in list(_sys.modules.keys()):
+    if not _name.startswith("backend"):
+        continue
+    if _name == "backend.tests" or _name.startswith("backend.tests."):
+        continue
+    _mod = _sys.modules.get(_name)
+    if _mod is not None and _is_stub(_mod):
+        _sys.modules.pop(_name, None)
+
 import pytest
 import httpx
 
@@ -5,6 +55,43 @@ from backend import app as app_module
 from backend.services import research_provider as research_provider_module
 from backend.services import transcript_worker as transcript_worker_module
 from backend.services.user_priority_service import user_priority_service
+
+
+def _purge_backend_stubs():
+    """Drop any backend.* stub modules other tests have installed and ensure
+    the real ``backend`` / ``backend.services`` packages are present so
+    ``importlib`` can resolve submodules on demand.
+    """
+    for name in list(_sys.modules.keys()):
+        if not name.startswith("backend"):
+            continue
+        if name == "backend.tests" or name.startswith("backend.tests."):
+            continue
+        mod = _sys.modules.get(name)
+        if mod is not None and _is_stub(mod):
+            _sys.modules.pop(name, None)
+    # Reinstate the real ``backend`` and ``backend.services`` parent packages
+    # so deferred ``from backend.X import Y`` lookups work.
+    import importlib as _importlib
+    for _pkg in ("backend", "backend.services"):
+        _mod = _sys.modules.get(_pkg)
+        if _mod is None or _is_stub(_mod):
+            _sys.modules.pop(_pkg, None)
+            _importlib.import_module(_pkg)
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_backend_modules():
+    """Before every test in this file, drop any backend.* stub modules that
+    other test files may have installed in sys.modules. The module-level
+    imports above already captured the real implementations into the
+    ``app_module`` / ``research_provider_module`` / ``transcript_worker_module``
+    / ``user_priority_service`` globals before any test runs, so we just need
+    to make sure ``monkeypatch.setattr("backend.…")`` and similar string-based
+    lookups also resolve to the real modules.
+    """
+    _purge_backend_stubs()
+    yield
 
 
 @pytest.fixture

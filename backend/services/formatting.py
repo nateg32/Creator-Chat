@@ -1,7 +1,35 @@
 import json
+import os
 import re
+import sys
 from typing import Any, List
 from urllib.parse import urlparse
+
+
+def _load_text_sanitizer():
+    """Resolve ``backend.services.text_sanitizer`` even when test stubs have
+    replaced the parent package with one whose ``__path__`` no longer points
+    at the real ``backend/services`` directory on disk.
+    """
+    mod = sys.modules.get("backend.services.text_sanitizer")
+    if mod is not None and getattr(mod, "finalize_generated_text", None) is not None:
+        return mod
+    try:
+        from backend.services import text_sanitizer as mod  # type: ignore
+        return mod
+    except (ImportError, ModuleNotFoundError):
+        pass
+    import importlib.util
+    real_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "text_sanitizer.py")
+    spec = importlib.util.spec_from_file_location(
+        "backend.services.text_sanitizer", real_path
+    )
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError("backend.services.text_sanitizer")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["backend.services.text_sanitizer"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 _TIMESTAMP_PATTERN = re.compile(r"\b\d{1,2}:\d{2}\b")
@@ -361,17 +389,19 @@ def prepare_chat_response(
     cleaned = _normalize_list_lines(cleaned)
     cleaned = _paragraphize_prose(cleaned)
 
-    if cards:
-        from backend.services.text_sanitizer import strip_card_attachment_artifacts
+    # Imported lazily but with a robust fallback: when test stubs leave
+    # ``backend.services`` with an empty ``__path__`` the deferred import path
+    # would otherwise raise ``ModuleNotFoundError`` even though the real
+    # module exists on disk.
+    _text_sanitizer = _load_text_sanitizer()
 
-        cleaned = strip_card_attachment_artifacts(cleaned, cards)
+    if cards:
+        cleaned = _text_sanitizer.strip_card_attachment_artifacts(cleaned, cards)
         cleaned = clean_response(cleaned, strip_hyphens=strip_hyphens)
         cleaned = _normalize_list_lines(cleaned)
         cleaned = _paragraphize_prose(cleaned)
 
-    from backend.services.text_sanitizer import finalize_generated_text
-
-    cleaned = finalize_generated_text(cleaned, allow_model_cleanup=allow_model_cleanup)
+    cleaned = _text_sanitizer.finalize_generated_text(cleaned, allow_model_cleanup=allow_model_cleanup)
     cleaned = clean_response(cleaned, strip_hyphens=strip_hyphens)
     cleaned = _normalize_list_lines(cleaned)
     cleaned = _paragraphize_prose(cleaned)

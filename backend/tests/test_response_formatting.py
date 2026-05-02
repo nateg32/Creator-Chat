@@ -68,16 +68,26 @@ rhythm_shaper_spec = importlib.util.spec_from_file_location(
 )
 rhythm_shaper_module = importlib.util.module_from_spec(rhythm_shaper_spec)
 assert rhythm_shaper_spec.loader is not None
-backend_package = types.ModuleType("backend")
-services_package = types.ModuleType("backend.services")
-backend_package.services = services_package
-services_package.formatting = formatting
-services_package.text_sanitizer = text_sanitizer_module
-sys.modules["backend"] = backend_package
-sys.modules["backend.services"] = services_package
-sys.modules["backend.services.formatting"] = formatting
-sys.modules["backend.services.text_sanitizer"] = text_sanitizer_module
-rhythm_shaper_spec.loader.exec_module(rhythm_shaper_module)
+
+# Patch sys.modules just for the rhythm_shaper exec, then restore. This avoids
+# permanently clobbering the real backend / backend.services packages, which
+# used to leak stubs into other test modules (e.g. test_security_hardening).
+_rhythm_overrides = {
+    "backend.services.formatting": formatting,
+    "backend.services.text_sanitizer": text_sanitizer_module,
+}
+# Only fabricate package-level stubs if real ones aren't already loaded.
+if "backend" not in sys.modules:
+    _stub_backend = types.ModuleType("backend")
+    _stub_backend.__path__ = [str(BACKEND_ROOT)]  # type: ignore[attr-defined]
+    _rhythm_overrides["backend"] = _stub_backend
+if "backend.services" not in sys.modules:
+    _stub_services = types.ModuleType("backend.services")
+    _stub_services.__path__ = [str(BACKEND_ROOT / "services")]  # type: ignore[attr-defined]
+    _rhythm_overrides["backend.services"] = _stub_services
+
+with patch.dict(sys.modules, _rhythm_overrides):
+    rhythm_shaper_spec.loader.exec_module(rhythm_shaper_module)
 RhythmShaper = rhythm_shaper_module.RhythmShaper
 
 

@@ -101,11 +101,16 @@ def load_fingerprint_service_module(fake_async_client):
         MODEL_CLASSIFICATION="test-classify",
         MODEL_VERIFY="test-verify",
         CHAT_MODEL="test-chat",
+        MODEL_PERSONA_ANALYSIS_ADVANCED="test-persona-advanced",
+        MODEL_PERSONA_ANALYSIS="test-persona",
+        MODEL_PERSONA_SYNTHESIS="test-persona-synth",
     )
 
     fake_rag = types.ModuleType("backend.rag")
     fake_rag.get_client = lambda: types.SimpleNamespace()
     fake_rag.get_async_client = lambda: fake_async_client
+    fake_rag.get_chat_client = lambda *args, **kwargs: types.SimpleNamespace()
+    fake_rag.get_async_chat_client = lambda *args, **kwargs: fake_async_client
 
     with patch.dict(
         sys.modules,

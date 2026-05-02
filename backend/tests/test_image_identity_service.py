@@ -3,21 +3,30 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "services" / "image_identity_service.py"
-sys.modules.setdefault("backend.rag", types.SimpleNamespace())
-sys.modules.setdefault(
-    "backend.settings",
-    types.SimpleNamespace(settings=types.SimpleNamespace(VISION_MODEL="gpt-4o", ROUTER_MODEL="gpt-4o-mini", FINAL_RESPONSE_MODEL="gpt-4o-mini")),
-)
-sys.modules.setdefault(
-    "backend.services.research_provider",
-    types.SimpleNamespace(get_research_provider=lambda: types.SimpleNamespace(search=lambda *args, **kwargs: [])),
-)
+
+# Use patch.dict so any stubs we install for the module-load step are torn down
+# after exec, instead of leaking into other test modules (e.g. tests that need
+# the real backend.rag.get_persona).
+_image_overrides = {}
+if "backend.rag" not in sys.modules:
+    _image_overrides["backend.rag"] = types.SimpleNamespace()
+if "backend.settings" not in sys.modules:
+    _image_overrides["backend.settings"] = types.SimpleNamespace(
+        settings=types.SimpleNamespace(VISION_MODEL="gpt-4o", ROUTER_MODEL="gpt-4o-mini", FINAL_RESPONSE_MODEL="gpt-4o-mini")
+    )
+if "backend.services.research_provider" not in sys.modules:
+    _image_overrides["backend.services.research_provider"] = types.SimpleNamespace(
+        get_research_provider=lambda: types.SimpleNamespace(search=lambda *args, **kwargs: [])
+    )
+
 spec = importlib.util.spec_from_file_location("image_identity_service_module", MODULE_PATH)
 image_identity_service_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(image_identity_service_module)
+with patch.dict(sys.modules, _image_overrides):
+    spec.loader.exec_module(image_identity_service_module)
 
 extract_relation_hints = image_identity_service_module.extract_relation_hints
 looks_like_image_identity_question = image_identity_service_module.looks_like_image_identity_question

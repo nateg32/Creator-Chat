@@ -223,6 +223,14 @@ def _load_grounded_rag(
         create_embedding=lambda *args, **kwargs: [0.0],
         generate_chat_completion=lambda *args, **kwargs: '{"classification": "SUFFICIENT"}',
         get_persona=lambda *args, **kwargs: "",
+        # Provided so that other test files which load ``grounded_rag`` and
+        # later call into deferred ``from backend.rag import get_client`` paths
+        # still find the symbol when this module's stub happens to win the
+        # ``sys.modules`` slot during collection ordering.
+        get_client=lambda *args, **kwargs: None,
+        get_async_client=lambda *args, **kwargs: None,
+        get_chat_client=lambda *args, **kwargs: None,
+        get_async_chat_client=lambda *args, **kwargs: None,
     )
 
     class _Provider:

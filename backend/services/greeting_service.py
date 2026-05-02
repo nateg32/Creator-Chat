@@ -659,21 +659,59 @@ class GreetingService:
         )
 
         final = self._safety_check(candidate, user_name, signals, returning)
-        if not variation_seed:
-            recent = self._recent_greetings[key]
-            if final in recent:
-                alternate_questions = self._ordered(questions[1:] or questions, f"{key}|alt")
-                if alternate_questions:
-                    candidate = self._compose_candidate(
+        # Cross-call de-duplication. Even when a variation_seed is supplied (so
+        # strategy + opener picks are deterministic per seed), two different
+        # seeds can still land on the same opener+question combo and produce a
+        # near-identical greeting that only differs by punctuation. Walk the
+        # alternative openers and questions until we find one that doesn't
+        # word-overlap >=0.85 with anything already emitted for this creator.
+        recent = self._recent_greetings[key]
+
+        def _word_set(text: str) -> set:
+            return set(re.findall(r"[a-z']+", str(text or "").lower()))
+
+        def _too_similar(candidate_text: str) -> bool:
+            cand_words = _word_set(candidate_text)
+            if not cand_words:
+                return False
+            for prev in recent:
+                # Identical greeting (same seed replayed) is fine — only rotate
+                # when we'd emit a near-identical-but-different greeting that
+                # would feel like the bot is paraphrasing itself.
+                if prev == candidate_text:
+                    return False
+                prev_words = _word_set(prev)
+                universe = cand_words | prev_words
+                if not universe:
+                    continue
+                overlap = len(cand_words & prev_words) / len(universe)
+                if overlap >= 0.85:
+                    return True
+            return False
+
+        if _too_similar(final):
+            opener_pool_full = self._ordered(opener_pool, opener_seed) or [opener]
+            question_pool_full = self._ordered(questions, question_seed) or [question]
+            for q_alt in question_pool_full:
+                for o_alt in opener_pool_full:
+                    if o_alt == opener and q_alt == question:
+                        continue
+                    alt_candidate = self._compose_candidate(
                         strategy,
-                        opener,
-                        alternate_questions[0],
+                        o_alt,
+                        q_alt,
                         user_name or "",
                         address,
                         returning,
                     )
-                    final = self._safety_check(candidate, user_name, signals, returning)
-            recent.append(final)
+                    alt_final = self._safety_check(alt_candidate, user_name, signals, returning)
+                    if alt_final and not _too_similar(alt_final):
+                        final = alt_final
+                        break
+                else:
+                    continue
+                break
+        recent.append(final)
         return final
 
 

@@ -9,8 +9,16 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _stub_package(name: str):
+    # Preserve the real package's __path__ if the package exists on disk so
+    # that submodules we did NOT explicitly stub can still be auto-imported by
+    # other tests that run after this module is collected.
+    real_path = []
+    parts = name.split(".")
+    candidate = BACKEND_ROOT.parent.joinpath(*parts)
+    if candidate.is_dir():
+        real_path = [str(candidate)]
     module = types.ModuleType(name)
-    module.__path__ = []  # type: ignore[attr-defined]
+    module.__path__ = real_path  # type: ignore[attr-defined]
     sys.modules[name] = module
     return module
 
@@ -24,6 +32,11 @@ def _stub_module(name: str, **attrs):
 
 
 def _load_grounded_rag():
+    # Snapshot sys.modules so we can restore real backend.* modules after the
+    # heavyweight stub install. Otherwise these stubs leak into other test
+    # modules that get collected after us.
+    _modules_before = dict(sys.modules)
+
     backend_package = _stub_package("backend")
     prompts_package = _stub_package("backend.prompts")
     services_package = _stub_package("backend.services")
@@ -207,6 +220,31 @@ def _load_grounded_rag():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+
+    # Capture every sys.modules entry we introduced or replaced so the test
+    # class can reinstate them in setUp (other test files reorder things
+    # underneath us between collection and execution).
+    _modules_after = set(sys.modules.keys())
+    introduced = _modules_after - set(_modules_before.keys())
+    replaced = {
+        name for name in _modules_after & set(_modules_before.keys())
+        if sys.modules.get(name) is not _modules_before.get(name)
+    }
+    snapshot_names = introduced | replaced
+    module.__test_stub_snapshot__ = {
+        name: sys.modules[name] for name in snapshot_names if name in sys.modules
+    }
+    module.__test_stub_replaced_originals__ = {
+        name: _modules_before[name] for name in replaced
+    }
+
+    # Restore previously-loaded real modules so other test files don't inherit
+    # our stubs. Anything we introduced that wasn't loaded before (e.g. small
+    # helper modules) is left in place because the loaded `module` may still
+    # reference them internally.
+    for name, original in _modules_before.items():
+        if sys.modules.get(name) is not original:
+            sys.modules[name] = original
     return module
 
 
@@ -214,6 +252,15 @@ grounded_rag = _load_grounded_rag()
 
 
 class ResourceLinkPolicyTests(unittest.TestCase):
+    def setUp(self):
+        # Other test modules reshuffle ``sys.modules`` between our collection
+        # and execution. Reinstate the heavyweight stubs we set up in
+        # ``_load_grounded_rag`` so deferred ``from backend.rag import …``
+        # imports inside ``grounded_rag`` keep finding the symbols we
+        # promised them.
+        for name, module in getattr(grounded_rag, "__test_stub_snapshot__", {}).items():
+            sys.modules[name] = module
+
     def test_force_resource_fallback_when_no_safe_link_exists(self):
         self.assertTrue(
             grounded_rag._should_force_resource_fallback(
