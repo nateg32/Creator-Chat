@@ -194,23 +194,24 @@ def _get_creator_cleaning_profile(creator_id: int, user_id: int) -> Dict[str, An
     return db.execute_one(query, (creator_id, user_id)) or {}
 
 
-def _find_stream_emit_boundary(text: str, tail_size: int = 24) -> int:
+def _find_stream_emit_boundary(text: str, tail_size: int = 6) -> int:
+    """Return the index up to which it is safe to flush text to the SSE client.
+
+    We flush at the last whitespace before the trailing ``tail_size`` chars so
+    words appear as the upstream model produces them \u2014 no multi-second pauses
+    waiting for a sentence-ending period. The trailing partial word stays in
+    the buffer until the next chunk or until the stream ends.
+    """
     if not text:
         return 0
-
-    last_sentence_break = None
-    for match in re.finditer(r"(?<=[.!?])\s+|\n", text):
-        last_sentence_break = match
-    if last_sentence_break:
-        return last_sentence_break.end()
-
     if len(text) <= tail_size:
-        return 0
-
-    limit = len(text) - tail_size
-    for index in range(limit, 0, -1):
-        if text[index - 1].isspace():
-            return index
+        nl = text.rfind("\n")
+        return nl + 1 if nl >= 0 else 0
+    cutoff = len(text) - tail_size
+    # Find last whitespace at or before cutoff
+    for idx in range(cutoff, 0, -1):
+        if text[idx - 1].isspace():
+            return idx
     return 0
 
 
@@ -2845,7 +2846,9 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                             yield f"data: {json.dumps({'content': safe_chunk})}\n\n"
 
                 # 4. Finalize (Post-stream)
-                # After the stream is exhausted, we do the background work
+                # After the stream is exhausted, get cards/citations to the user
+                # ASAP, then move the heavy save + integrity work into a
+                # background task so the SSE generator can close immediately.
                 if pending_stream_text:
                     assembled.append(pending_stream_text)
                     yield f"data: {json.dumps({'content': pending_stream_text})}\n\n"
@@ -2855,120 +2858,48 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                 if not streamed_answer.strip():
                     logger.warning("Chat stream completed without visible content; applying app-level fallback.")
                     streamed_answer = _empty_stream_answer_fallback(payload.creator_id, current_user["id"], payload.question)
-                # ── Post-stream biography guard: catch metadata-as-biography hallucinations ──
+                    yield f"data: {json.dumps({'content': streamed_answer})}\n\n"
+
+                # Fast (regex-only) hallucination check. Cheap; safe to keep inline
+                # because it usually doesn't fire and never makes a network call.
                 streamed_answer, metadata_bio_fallback_applied = _repair_metadata_biography(streamed_answer, payload.question)
-                recovered_citations = []
-                if metadata_bio_fallback_applied:
-                    recovery_profile = db.execute_one(
-                        f"""
-                        SELECT
-                            name,
-                            handle,
-                            search_mode,
-                            {_creator_select_expr('voice_profile')},
-                            {_creator_select_expr('decision_policy')}
-                        FROM creators
-                        WHERE id = %s AND user_id = %s
-                        """,
-                        (payload.creator_id, current_user["id"]),
-                    )
-                    recovery_result = recover_streamed_creator_fact_answer(
-                        user_id=current_user["id"],
-                        creator_id=payload.creator_id,
-                        question=payload.question,
-                        creator_row=recovery_profile,
-                        conversation_history=safe_history,
-                    )
-                    recovered_answer = str(recovery_result.get("answer") or "").strip()
-                    if recovered_answer:
-                        logger.info("Recovered creator fact answer after metadata-biography fallback for streamed response.")
-                        streamed_answer = recovered_answer
-                        metadata_bio_fallback_applied = False
-                        recovered_citations = list(recovery_result.get("citations") or [])
+
+                # Build cards WITHOUT remote OpenGraph enrichment so we can yield
+                # them immediately. Enrichment runs in the background save task
+                # and is reflected in saved history on the next page load.
                 cards = (
-                    merge_preview_cards(explicit_cards, enrich_titles=True)
+                    merge_preview_cards(explicit_cards, enrich_titles=False)
                     if explicit_cards
-                    else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=True)
+                    else merge_preview_cards(_extract_stream_cards(streamed_answer), enrich_titles=False)
                 )
-                citations = recovered_citations if recovered_citations else (explicit_citations if explicit_citations else [])
-                if metadata_bio_fallback_applied:
-                    citations = []
-                full_answer = prepare_chat_response(
-                    streamed_answer,
-                    cards=cards,
-                    strip_hyphens=strip_hyphens,
-                )
-                
-                # P2.3: Apply rhythm shaper before creator integrity 
-                full_answer = rhythm_shaper.apply_rhythm(
-                    full_answer,
-                    profile=creator_cleaning_profile,
-                )
-                
-                full_answer = _apply_stream_creator_integrity(
-                    payload.creator_id,
-                    current_user["id"],
-                    payload.question,
-                    full_answer,
-                    cards=cards,
-                    support_chunks=explicit_support,
-                )
-                if not str(full_answer or "").strip():
-                    logger.warning("Chat final cleanup produced empty content; applying app-level fallback.")
-                    full_answer = _empty_stream_answer_fallback(payload.creator_id, current_user["id"], payload.question)
-                # Quality scoring is pure telemetry — defer to a background task
-                # so the SSE stream can close as soon as the user-visible content
-                # is delivered. The score is logged after the response, not
-                # written into the saved message metadata.
-                quality_report = None
-                background_tasks.add_task(
-                    _log_saved_answer_quality,
-                    payload.creator_id,
-                    current_user["id"],
-                    payload.question,
-                    full_answer,
-                    explicit_support or _card_chunks_for_integrity(cards),
-                )
-                if not raw_streamed_answer.strip() and full_answer.strip():
-                    yield f"data: {json.dumps({'content': full_answer})}\n\n"
-                # Only swap the visible answer when the streamed text was missing
-                # or contained placeholder/metadata-bio artifacts. Otherwise keep
-                # exactly what the user already saw streamed in — avoids the
-                # jarring "answer rewrites itself a few seconds later" effect.
-                streamed_was_unusable = (
-                    (not raw_streamed_answer.strip())
-                    or _contains_placeholder_link_artifacts(raw_streamed_answer)
-                    or metadata_bio_fallback_applied
-                )
-                if streamed_was_unusable and full_answer != raw_streamed_answer:
-                    yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
-                else:
-                    # Keep the streamed text as the source of truth so saving and
-                    # display match what the user actually saw. The integrity /
-                    # rhythm passes still ran for logging/quality scoring.
-                    full_answer = raw_streamed_answer
-                if payload.thread_id:
-                    finalize_stream_interaction(
-                        payload.thread_id,
-                        payload.question,
-                        full_answer,
-                        cards=cards,
-                        citations=citations,
-                        user_metadata=user_image_metadata,
-                        user_id=current_user["id"],
-                        quality_report=quality_report,
-                        creator_profile=creator_cleaning_profile,
-                    )
-                    # Check for title update
-                    thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (payload.thread_id,))
-                    if thread and thread['title'] == 'New conversation' and not thread['title_locked']:
-                        background_tasks.add_task(_update_thread_title_background, payload.thread_id)
-                
+                citations = explicit_citations if explicit_citations else []
+
+                # Yield cards / citations / [DONE] right now. Anything still
+                # required for the SAVED record runs after this in a background
+                # task and never blocks the user-visible response.
                 if cards:
                     yield f"data: {json.dumps({'cards': cards})}\n\n"
                 if citations:
                     yield f"data: {json.dumps({'citations': citations})}\n\n"
                 yield "data: [DONE]\n\n"
+
+                background_tasks.add_task(
+                    _finalize_chat_turn_async,
+                    payload.creator_id,
+                    current_user["id"],
+                    payload.question,
+                    raw_streamed_answer,
+                    streamed_answer,
+                    cards,
+                    citations,
+                    explicit_support,
+                    metadata_bio_fallback_applied,
+                    safe_history,
+                    user_image_metadata,
+                    payload.thread_id,
+                    creator_cleaning_profile,
+                    strip_hyphens,
+                )
             except Exception as stream_err:
                 logger.error(f"Error mid-stream: {stream_err}", exc_info=True)
                 yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
@@ -3094,6 +3025,136 @@ def _log_saved_answer_quality(
         )
     except Exception as exc:
         logger.warning("Background quality scoring failed: %s", exc)
+
+
+def _finalize_chat_turn_async(
+    creator_id: int,
+    user_id: int,
+    question: str,
+    raw_streamed_answer: str,
+    streamed_answer: str,
+    cards: List[Dict[str, Any]],
+    citations: List[Dict[str, Any]],
+    explicit_support: List[Dict[str, Any]],
+    metadata_bio_fallback_applied: bool,
+    safe_history: List[Dict[str, Any]],
+    user_image_metadata: Dict[str, Any],
+    thread_id: Optional[str],
+    creator_cleaning_profile: Dict[str, Any],
+    strip_hyphens: bool,
+) -> None:
+    """Run all post-stream cleanup and persistence after the SSE stream closes.
+
+    User-visible latency is unaffected by anything in here. We:
+      1. Recover from metadata-as-biography hallucinations (extra LLM call).
+      2. Enrich card titles via OpenGraph (HTTP fetches).
+      3. Apply rhythm + creator-integrity rewrites for the SAVED record.
+      4. Score quality + write the chat_messages rows + bump thread metadata.
+    """
+    try:
+        recovered_citations: List[Dict[str, Any]] = []
+        if metadata_bio_fallback_applied:
+            recovery_profile = db.execute_one(
+                f"""
+                SELECT
+                    name,
+                    handle,
+                    search_mode,
+                    {_creator_select_expr('voice_profile')},
+                    {_creator_select_expr('decision_policy')}
+                FROM creators
+                WHERE id = %s AND user_id = %s
+                """,
+                (creator_id, user_id),
+            )
+            recovery_result = recover_streamed_creator_fact_answer(
+                user_id=user_id,
+                creator_id=creator_id,
+                question=question,
+                creator_row=recovery_profile,
+                conversation_history=safe_history,
+            )
+            recovered_answer = str(recovery_result.get("answer") or "").strip()
+            if recovered_answer:
+                streamed_answer = recovered_answer
+                metadata_bio_fallback_applied = False
+                recovered_citations = list(recovery_result.get("citations") or [])
+
+        # Enrich card titles for the saved record (HTTP, can be slow)
+        enriched_cards = merge_preview_cards(cards, enrich_titles=True) if cards else []
+        save_citations = recovered_citations or citations
+        if metadata_bio_fallback_applied:
+            save_citations = []
+
+        full_answer = prepare_chat_response(
+            streamed_answer,
+            cards=enriched_cards,
+            strip_hyphens=strip_hyphens,
+        )
+        full_answer = rhythm_shaper.apply_rhythm(full_answer, profile=creator_cleaning_profile)
+        full_answer = _apply_stream_creator_integrity(
+            creator_id,
+            user_id,
+            question,
+            full_answer,
+            cards=enriched_cards,
+            support_chunks=explicit_support,
+        )
+        if not str(full_answer or "").strip():
+            full_answer = _empty_stream_answer_fallback(creator_id, user_id, question)
+
+        # If the streamed text was usable, save what the user actually saw so
+        # history matches the live experience. Only swap to the rewritten
+        # version when the streamed text was empty or contained artifacts.
+        streamed_was_unusable = (
+            (not raw_streamed_answer.strip())
+            or _contains_placeholder_link_artifacts(raw_streamed_answer)
+            or metadata_bio_fallback_applied
+        )
+        saved_answer = full_answer if streamed_was_unusable else raw_streamed_answer
+
+        try:
+            quality_report = _score_saved_answer_quality(
+                creator_id,
+                user_id,
+                question,
+                saved_answer,
+                explicit_support or _card_chunks_for_integrity(enriched_cards),
+            )
+            logger.info(
+                "answer_quality creator_id=%s user_id=%s grade=%s score=%s",
+                creator_id,
+                user_id,
+                quality_report.get("grade"),
+                quality_report.get("score"),
+            )
+        except Exception as exc:
+            quality_report = None
+            logger.warning("Background quality scoring failed: %s", exc)
+
+        if thread_id:
+            finalize_stream_interaction(
+                thread_id,
+                question,
+                saved_answer,
+                cards=enriched_cards,
+                citations=save_citations,
+                user_metadata=user_image_metadata,
+                user_id=user_id,
+                quality_report=quality_report,
+                creator_profile=creator_cleaning_profile,
+            )
+            try:
+                thread = db.execute_one(
+                    "SELECT title, title_locked FROM chat_threads WHERE id = %s",
+                    (thread_id,),
+                )
+                if thread and thread.get("title") == "New conversation" and not thread.get("title_locked"):
+                    _update_thread_title_background(thread_id)
+            except Exception as exc:
+                logger.warning("Thread title update skipped: %s", exc)
+    except Exception as exc:
+        logger.error("Background chat finalize failed: %s", exc, exc_info=True)
 
 
 import re as _re_app
