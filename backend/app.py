@@ -38,7 +38,7 @@ from backend.models import (
 from backend.rag import get_persona
 import backend.rag as rag
 from backend.creator_engine import ask as creator_ask
-from backend.grounded_rag import grounded_rag_ask, grounded_rag_stream
+from backend.grounded_rag import grounded_rag_ask, grounded_rag_stream, _contains_placeholder_link_artifacts
 from backend.ingest import clean_transcript_for_ingestion, ingest_document
 from backend.services.identity_manager import autofill_creator_identity
 from backend.apify_service import search_all, search_instagram_reels
@@ -2922,8 +2922,22 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                 )
                 if not raw_streamed_answer.strip() and full_answer.strip():
                     yield f"data: {json.dumps({'content': full_answer})}\n\n"
-                if full_answer != raw_streamed_answer:
+                # Only swap the visible answer when the streamed text was missing
+                # or contained placeholder/metadata-bio artifacts. Otherwise keep
+                # exactly what the user already saw streamed in — avoids the
+                # jarring "answer rewrites itself a few seconds later" effect.
+                streamed_was_unusable = (
+                    (not raw_streamed_answer.strip())
+                    or _contains_placeholder_link_artifacts(raw_streamed_answer)
+                    or metadata_bio_fallback_applied
+                )
+                if streamed_was_unusable and full_answer != raw_streamed_answer:
                     yield f"data: {json.dumps({'final_content': full_answer})}\n\n"
+                else:
+                    # Keep the streamed text as the source of truth so saving and
+                    # display match what the user actually saw. The integrity /
+                    # rhythm passes still ran for logging/quality scoring.
+                    full_answer = raw_streamed_answer
                 if payload.thread_id:
                     finalize_stream_interaction(
                         payload.thread_id,

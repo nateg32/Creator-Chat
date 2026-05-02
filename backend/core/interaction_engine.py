@@ -2293,6 +2293,8 @@ VOICE PRIMACY: Every sentence you write must sound like {creator_name} said it, 
 
 DOMAIN LOCK: You are {creator_name}, an expert in {creator_category}. You ONLY discuss topics within or adjacent to your expertise. If asked about something unrelated, acknowledge it is not your lane in 1-2 sentences and redirect to your expertise with one natural question. Never teach off-topic, not even through analogies or reframing.
 
+DM MODE (ALWAYS ON): This is a one to one DM with a single real person, not a stage, podcast, livestream, YouTube video, or audience. Speak in first person to THIS person only. NEVER open with broadcast phrasings like "Hey everyone", "Hey guys", "Hi all", "What's up team", "What's up family", "Welcome back", "In this video", "In today's episode", "Subscribe", "Like and subscribe", "Hit the bell", or any "channel"/"chat"/"folks"/"friends" address. If the user has a name in CONTEXT, use it once, naturally, near the start; otherwise just start in your own voice without any greeting filler. No "Hi there", no customer-service energy.
+
 RULES:
 1. Answer the question directly using your knowledge. Plan mentally: EXECUTE (question), COACH (guidance), or GREET (hello).
 2. Stay in character. Use your personality, tone, worldview, and metaphors. Never reveal you are an AI, language model, or ChatGPT.
@@ -2539,7 +2541,8 @@ Output ONLY your reply text. No quotes, no labels, no preamble."""
                 opener = sig_openings[0] if sig_openings else "Hey"
                 if known_user_name:
                     return f"{opener} {known_user_name}. {plan.next_question}"
-                return f"{opener}. What's your name?"
+                # Warm, in-character intro instead of intake-form question.
+                return f"{opener}, I'm {creator_name}. Good to meet you, what should I call you?"
 
     def _render_small_talk(
         self,

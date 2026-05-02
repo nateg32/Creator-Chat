@@ -7144,11 +7144,16 @@ def build_inline_citations(
 
         ranked.append(citation_entry)
 
-    # Filter to sources that meaningfully contributed to the answer before sorting.
-    # Prevents all retrieved chunks from appearing as citations when only 1-2 were used.
-    _MIN_CITATION_SCORE = 0.28
-    ranked = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
+    # Sort first, then apply a soft filter. We always keep at least the single
+    # highest-scoring entry ("closest match") when any support exists, so the
+    # user sees a source card even when the LLM did not emit explicit markers.
+    _MIN_CITATION_SCORE = 0.18
     ranked.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    if ranked:
+        kept = [item for item in ranked if float(item.get("score") or 0.0) >= _MIN_CITATION_SCORE]
+        if not kept:
+            kept = ranked[:1]
+        ranked = kept
     # ── Non-blocking dead-link filter ──
     alive_ranked: List[Dict[str, Any]] = []
     for cit in ranked:
