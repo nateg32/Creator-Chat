@@ -40,7 +40,7 @@ class Settings:
     
     # Search API (e.g. Brave Search, Google, Serper)
     SEARCH_API_KEY: Optional[str] = os.getenv("SEARCH_API_KEY", os.getenv("SERPAPI_API_KEY"))
-    LIVE_SEARCH_PROVIDER: str = os.getenv("LIVE_SEARCH_PROVIDER", "auto").lower()
+    LIVE_SEARCH_PROVIDER: str = os.getenv("LIVE_SEARCH_PROVIDER", "gemini").lower()
 
     # Auth / JWT
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "change-me-before-prod")
@@ -56,16 +56,23 @@ class Settings:
     # Embedding model
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
-    # --- Production-Grade Model Router Tiering ---
-    MODEL_CLASSIFICATION: str = os.getenv("MODEL_CLASSIFICATION", "gpt-4o-mini")       # Intent, Emotion, Domain, User State (FAST)
-    MODEL_MEMORY: str = os.getenv("MODEL_MEMORY", "gpt-4o-mini")               # Memory update & Extraction (FAST)
-    MODEL_SYNTHESIS: str = os.getenv("MODEL_SYNTHESIS", "gpt-5.1")            # RAG Synthesis
-    MODEL_VERIFY: str = os.getenv("MODEL_VERIFY", "gpt-4o-mini")               # Web Search & Fact Verify (FAST)
-    MODEL_MAIN_REPLY: str = os.getenv("MODEL_MAIN_REPLY", "gpt-5.2")           # Final Creator Persona Output
+    # --- Creator Bot model stack ---
+    # Routing / guardrails: cheap, fast classification and safety helpers.
+    MODEL_CLASSIFICATION: str = os.getenv("MODEL_CLASSIFICATION", "gpt-5.4-nano")
+    MODEL_MEMORY: str = os.getenv("MODEL_MEMORY", "gpt-5.4-nano")
+    MODEL_VERIFY: str = os.getenv("MODEL_VERIFY", "gpt-5.4-nano")
+
+    # Live persona chat: default production model for grounded creator replies.
+    MODEL_SYNTHESIS: str = os.getenv("MODEL_SYNTHESIS", "gpt-5.4-mini")
+    MODEL_MAIN_REPLY: str = os.getenv("MODEL_MAIN_REPLY", "gpt-5.4-mini")
+
+    # Persona / style fingerprint creation: deeper, less frequent analysis pass.
+    MODEL_PERSONA_ANALYSIS: str = os.getenv("MODEL_PERSONA_ANALYSIS", "gpt-5.4")
+    MODEL_PERSONA_ANALYSIS_ADVANCED: str = os.getenv("MODEL_PERSONA_ANALYSIS_ADVANCED", "gpt-5.5")
     
     # Fallback models if above fail
-    MODEL_FALLBACK_FAST: str = os.getenv("MODEL_FALLBACK_FAST", "gpt-4o-mini")
-    MODEL_FALLBACK_SMART: str = os.getenv("MODEL_FALLBACK_SMART", "gpt-4o")
+    MODEL_FALLBACK_FAST: str = os.getenv("MODEL_FALLBACK_FAST", "gpt-5.4-nano")
+    MODEL_FALLBACK_SMART: str = os.getenv("MODEL_FALLBACK_SMART", "gpt-5.4-mini")
 
     # Legacy settings (mapped for backward compatibility)
     CHAT_MODEL: str = MODEL_MAIN_REPLY

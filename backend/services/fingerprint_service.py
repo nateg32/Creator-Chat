@@ -462,7 +462,7 @@ def _fallback_openai_dossier(
     if not hits:
         return {}
 
-    client = get_chat_client(settings.MODEL_MEMORY)
+    client = get_chat_client(settings.MODEL_PERSONA_ANALYSIS)
     prompt = f"""
 You are building a public-domain investigative dossier for {creator_name}.
 
@@ -507,7 +507,7 @@ Return JSON only:
 }}
 """
     response = client.chat.completions.create(
-        model=settings.MODEL_CLASSIFICATION,
+        model=settings.MODEL_PERSONA_ANALYSIS,
         messages=[
             {"role": "system", "content": prompt},
         ],
@@ -698,8 +698,8 @@ APPROVED CONTENT:
 """
 
         try:
-            response = await get_async_chat_client(settings.MODEL_CLASSIFICATION).chat.completions.create(
-                model=settings.MODEL_CLASSIFICATION,
+            response = await get_async_chat_client(settings.MODEL_PERSONA_ANALYSIS).chat.completions.create(
+                model=settings.MODEL_PERSONA_ANALYSIS,
                 messages=[
                     {
                         "role": "system",
@@ -1069,8 +1069,8 @@ APPROVED CONTENT SAMPLES:
 {json.dumps((context.get("approved_content") or [])[:6])}
 """
         try:
-            response = await get_async_chat_client(settings.MODEL_CLASSIFICATION).chat.completions.create(
-                model=settings.MODEL_CLASSIFICATION,
+            response = await get_async_chat_client(settings.MODEL_PERSONA_ANALYSIS_ADVANCED).chat.completions.create(
+                model=settings.MODEL_PERSONA_ANALYSIS_ADVANCED,
                 messages=[
                     {
                         "role": "system",
@@ -1214,8 +1214,8 @@ Rules:
                 stage="persona_agent",
                 message=f"Persona agent iteration {iteration}: gathering evidence and checking creator-specific signals.",
             )
-            response = await get_async_chat_client(settings.MODEL_CLASSIFICATION).chat.completions.create(
-                model=settings.MODEL_VERIFY,
+            response = await get_async_chat_client(settings.MODEL_PERSONA_ANALYSIS_ADVANCED).chat.completions.create(
+                model=settings.MODEL_PERSONA_ANALYSIS_ADVANCED,
                 messages=messages,
                 tools=self._fingerprint_agent_tools(),
                 tool_choice="auto",

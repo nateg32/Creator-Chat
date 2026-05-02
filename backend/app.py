@@ -2599,6 +2599,19 @@ async def health():
             "ok": True,
             "chat_empty_stream_fallback": True,
             "render_git_commit": os.getenv("RENDER_GIT_COMMIT", ""),
+            "live_search_provider": settings.LIVE_SEARCH_PROVIDER,
+            "gemini_configured": bool(settings.GOOGLE_API_KEY),
+            "gemini_grounding_model": settings.GEMINI_GROUNDING_MODEL,
+            "model_stack": {
+                "classification": settings.MODEL_CLASSIFICATION,
+                "memory": settings.MODEL_MEMORY,
+                "verify": settings.MODEL_VERIFY,
+                "synthesis": settings.MODEL_SYNTHESIS,
+                "main_reply": settings.MODEL_MAIN_REPLY,
+                "persona_analysis": settings.MODEL_PERSONA_ANALYSIS,
+                "persona_analysis_advanced": settings.MODEL_PERSONA_ANALYSIS_ADVANCED,
+                "embedding": settings.EMBEDDING_MODEL,
+            },
         }
     except Exception as e:
         print(f"[HEALTH] ERROR: {e}", flush=True)

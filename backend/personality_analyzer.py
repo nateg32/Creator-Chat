@@ -482,7 +482,7 @@ class PersonalityAnalyzer:
             return _default_fingerprint()
 
         corpus = PersonalityAnalyzer._build_corpus(docs)
-        client = get_chat_client(settings.MODEL_CLASSIFICATION)
+        client = get_chat_client(settings.MODEL_PERSONA_ANALYSIS)
         name_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (creator_id,))
         display_name = name_row.get("name") or name_row.get("handle") or "The Creator"
 
@@ -685,7 +685,7 @@ Return JSON only with this schema:
 
         try:
             response = client.chat.completions.create(
-                model=settings.MODEL_CLASSIFICATION,
+                model=settings.MODEL_PERSONA_ANALYSIS,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Creator Corpus:\n{corpus}"},
