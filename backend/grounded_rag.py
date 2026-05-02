@@ -5437,8 +5437,13 @@ Message: {answer_text[:500]}"""
         }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
 
     # --- Step 5: Personal / Factual Check (Web Verify) ---
+    # NOTE: legacy branch. The personal-bio routing above (should_route_personal)
+    # already handles personal/biographical questions through PersonalBioService.
+    # The classifier-driven web-verify path was removed; the variables
+    # `route_personal_from_classifier` / `route_personal_from_rules` no longer
+    # exist, so this branch is intentionally disabled.
     verified_fact_data = None
-    if route_personal_from_classifier or route_personal_from_rules:
+    if False:
         logger.info("Pipeline Step 5: Web Verifying Personal Question...")
         verified_fact_data = web_verify.verify_fact(
             question,

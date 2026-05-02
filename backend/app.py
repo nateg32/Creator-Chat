@@ -2803,25 +2803,25 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                         continue
                     if isinstance(chunk, str) and chunk.startswith("__CARDS__"):
                         try:
-                            payload = json.loads(chunk[len("__CARDS__"):])
-                            if isinstance(payload, list):
-                                explicit_cards = merge_preview_cards(explicit_cards, payload, enrich_titles=True)
+                            cards_payload = json.loads(chunk[len("__CARDS__"):])
+                            if isinstance(cards_payload, list):
+                                explicit_cards = merge_preview_cards(explicit_cards, cards_payload, enrich_titles=True)
                         except Exception:
                             logger.warning("Failed to parse streamed cards payload.")
                         continue
                     if isinstance(chunk, str) and chunk.startswith("__CITATIONS__"):
                         try:
-                            payload = json.loads(chunk[len("__CITATIONS__"):])
-                            if isinstance(payload, list):
-                                explicit_citations = payload
+                            citations_payload = json.loads(chunk[len("__CITATIONS__"):])
+                            if isinstance(citations_payload, list):
+                                explicit_citations = citations_payload
                         except Exception:
                             logger.warning("Failed to parse streamed citations payload.")
                         continue
                     if isinstance(chunk, str) and chunk.startswith("__SUPPORT__"):
                         try:
-                            payload = json.loads(chunk[len("__SUPPORT__"):])
-                            if isinstance(payload, list):
-                                explicit_support = payload
+                            support_payload = json.loads(chunk[len("__SUPPORT__"):])
+                            if isinstance(support_payload, list):
+                                explicit_support = support_payload
                         except Exception:
                             logger.warning("Failed to parse streamed support payload.")
                         continue
