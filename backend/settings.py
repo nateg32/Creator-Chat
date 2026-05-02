@@ -67,6 +67,10 @@ class Settings:
     # Live persona chat: default production model for grounded creator replies.
     MODEL_SYNTHESIS: str = os.getenv("MODEL_SYNTHESIS", "gpt-5-mini")
     MODEL_MAIN_REPLY: str = os.getenv("MODEL_MAIN_REPLY", "gpt-5-mini")
+    # Faster small model used on light routes (greeting / small talk) where
+    # quality requirements are lower and TTFB matters most. Defaults to the
+    # synthesis model so behavior is unchanged unless the operator opts in.
+    MODEL_FAST_REPLY: str = os.getenv("MODEL_FAST_REPLY", os.getenv("MODEL_SYNTHESIS", "gpt-5-mini"))
 
     # Persona / style fingerprint creation: deeper, less frequent analysis pass.
     MODEL_PERSONA_ANALYSIS: str = os.getenv("MODEL_PERSONA_ANALYSIS", "gpt-5")

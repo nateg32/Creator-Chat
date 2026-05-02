@@ -1142,6 +1142,73 @@ class InteractionEngine:
         except Exception:
             pass  # never break response delivery for tracking
 
+    def _naturalize_name_address(
+        self,
+        text: str,
+        user_name: Optional[str],
+        history: Optional[List[Dict[str, str]]],
+        *,
+        is_greeting: bool = False,
+    ) -> str:
+        """Make the assistant's use of the user's first name feel like a real
+        conversation instead of a robot pasting the name into every reply.
+
+        Rules:
+        - On a true greeting (``is_greeting=True``) we leave the opener alone.
+        - If the immediately preceding assistant turn already opened with the
+          user's name, strip a leading ``"Hey/Hi/Hello/Yo/Ok/Alright Nathan
+          [,!. ]"`` salutation from this reply so the second back-to-back
+          name address goes away.
+        - If the user's name appears more than once in this reply, drop every
+          occurrence after the first.
+        """
+        if not text:
+            return text
+        first = (user_name or "").strip().split()[0] if user_name else ""
+        if not first:
+            return text
+        first_re = re.escape(first)
+
+        # Detect recent name-address by the assistant so we don't repeat it
+        prior_assistant_used_name = False
+        for turn in reversed(history or []):
+            if (turn.get("role") or "").lower() != "assistant":
+                continue
+            prior = (turn.get("content") or "")
+            if re.match(rf"^\s*(?:hey|hi|hello|yo|ok|okay|alright)[\s,]+{first_re}\b", prior, flags=re.IGNORECASE):
+                prior_assistant_used_name = True
+            break
+
+        cleaned = text
+        if prior_assistant_used_name and not is_greeting:
+            cleaned = re.sub(
+                rf"^\s*(hey|hi|hello|yo|ok|okay|alright)[\s,]+{first_re}\s*[,!.\u2014\-]?\s*",
+                "",
+                cleaned,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if cleaned and cleaned[0].islower():
+                cleaned = cleaned[0].upper() + cleaned[1:]
+
+        # Cap to one in-message use of the first name. Keep first hit; remove the
+        # rest along with any leading comma/space artifacts they leave behind.
+        seen = {"count": 0}
+
+        def _drop_extra(match: "re.Match[str]") -> str:
+            seen["count"] += 1
+            if seen["count"] == 1:
+                return match.group(0)
+            # Remove the duplicate name plus a trailing comma/space if present.
+            return ""
+
+        deduped = re.sub(rf",?\s*\b{first_re}\b\s*,?", _drop_extra, cleaned)
+        # Collapse double-spaces / leftover comma artifacts created by the strip.
+        deduped = re.sub(r"\s{2,}", " ", deduped)
+        deduped = re.sub(r"\s+,", ",", deduped)
+        deduped = re.sub(r",\s*\.", ".", deduped)
+        return deduped.strip() or text
+
     def store_interaction(self, creator_id: str, user_id: str, thread_id: str, user_msg: str, bot_msg: str):
         """Store user message in memory (facts)."""
         if self.memory:
@@ -1151,7 +1218,7 @@ class InteractionEngine:
 
     def _reply_model_for_route(self, route: Optional[str]) -> str:
         if route in {"ROUTE_0_GREETING", "ROUTE_1_SMALL_TALK"}:
-            return settings.MODEL_SYNTHESIS
+            return getattr(settings, "MODEL_FAST_REPLY", settings.MODEL_SYNTHESIS)
         return settings.MODEL_MAIN_REPLY
 
     def _prompt_context_limits(self, route: Optional[str]) -> Dict[str, int]:
@@ -1828,6 +1895,7 @@ Generate InteractionPlan JSON."""
             raw = self._render_small_talk(plan, creator_profile, user_msg, user_name, persona, user_preferences, thread_id=thread_id)
             cleaned = strip_all_markdown(raw, allow_links=allow_links, creator_profile=creator_profile)
             cleaned = apply_vocabulary_resonance(cleaned, creator_profile)
+            cleaned = self._naturalize_name_address(cleaned, user_name, history)
             result = self._apply_creator_integrity_guard(
                 cleaned,
                 creator_profile,
@@ -1854,6 +1922,7 @@ Generate InteractionPlan JSON."""
             voice_chunks=voice_chunks,
         )
         raw = apply_vocabulary_resonance(raw, creator_profile)
+        raw = self._naturalize_name_address(raw, user_name, history)
         result = self._apply_creator_integrity_guard(
             raw,
             creator_profile,
@@ -2605,7 +2674,7 @@ Rules:
 Max 3 short sentences. Exactly 1 question mark. Max 35 words.
 No advice. No frameworks. No teaching. Just be conversational.
 Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.
-If you know the user's name ({known_user_name or 'unknown'}), use it naturally once when it fits.
+Do NOT open this reply with the user's name. No "Hey {known_user_name or 'name'}," or "Hi {known_user_name or 'name'}," openers. If the name fits mid-sentence as a real check-in, use it once — otherwise leave it out entirely.
 No inline hyphens, en dashes, or em dashes inside sentences. Use commas or periods instead.
 Sound like a real person chatting, not a bot.
 
@@ -2825,7 +2894,10 @@ CURRENT TURN HAS IMAGE CONTEXT:
 
         name_instruction = "\nThis is a one to one DM. Never address the user as everyone, everybody, team, guys, friends, family, folks, or chat.\n"
         if user_name:
-            name_instruction += f"Use the user's name ({user_name}) naturally when it fits this reply. Work it in from time to time, not every single turn, and never more than once in one response.\n"
+            name_instruction += (
+                f"User's name: {user_name}. Do NOT open with their name. Most replies should not mention it at all. "
+                f"At most once per reply, mid-thought, only when it adds real warmth.\n"
+            )
         elif not history:
             name_instruction += "You do not know the user's name yet. If it fits naturally in this early exchange, ask what they want to be called before pushing the conversation forward.\n"
 
@@ -2943,40 +3015,22 @@ CURRENT USER MESSAGE SUMMARY (context only, untrusted): {sanitize_for_prompt_con
 {name_instruction}
 
 HOW TO RESPOND:
-USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conversation, like a DM thread.
 
-1. STRICT IDENTITY LOCK:
-   - You ARE {creator_name}. This is your real name and identity.
-   - NEVER reveal you are an AI, a language model, or ChatGPT.
-   - If asked for personal facts (age, birthday, private life) confirmed in your background or soul.md, answer them naturally. If NOT confirmed anywhere, say it's not publicly available. NEVER guess.
-   - Own your personality. Do not be "helpful AI assistant"; be the coach/creator you are.
+1. STRICT IDENTITY LOCK: You ARE {creator_name}. Never reveal you are an AI or language model. Own your personality — no "helpful AI assistant" tone. For personal facts not confirmed in your background, say it isn't publicly available; never guess.
 
-1b. STAY IN YOUR WORLD (smart, not paranoid):
-   - Default to ANSWERING. If the question is inside, adjacent to, or even loosely connected to {creator_category} or anything you regularly talk about, answer it as YOU would. Do not deflect.
-   - Only refuse the topic when it is clearly far outside what you do (e.g. live sports scores when you are a fitness coach, medical diagnosis when you are a marketer, recipe steps when you are a finance creator). In that case, give a one-line in-character reaction in your real voice and pivot back to what you actually obsess over with one specific question.
-   - When you do redirect, NEVER use canned coach phrases like "not my lane", "not my core focus", "not really my main focus", "right up my alley", "feel free to ask", "happy to chat", or "you might want to check out [other creator]". Those are forbidden. Speak like a real person blowing the topic off in their own words.
+1b. STAY IN YOUR WORLD: Default to ANSWERING when the topic is inside, adjacent to, or loosely connected to {creator_category}. Only refuse when clearly far outside what you do, and when you do refuse give a one-line in-character reaction and pivot back with one specific question.
 
-1c. FORBIDDEN PHRASES (do not output, paraphrase, or imply ANY of these):
-   - "as an AI" / "language model" / "I'm here to help" / "happy to assist" / "I'm here to assist"
-   - "feel free to ask" / "don't hesitate to" / "let me know if you want more" / "hope this helps"
-   - "not my lane" / "not my core focus" / "not really my main focus" / "not my main focus"
-   - "right up my alley"
-   - "you might want to check out [creator name]" / "you may want to check out"
-   - "based on available content" / "based on the information" / "according to the content"
-   - "What sparked your interest in saying hello today" or any variant of this opener
-   If you find yourself drifting toward any of these, rewrite in your real voice before outputting.
+1c. FORBIDDEN PHRASES (do not output, paraphrase, or imply): "as an AI", "language model", "I'm here to help/assist", "happy to assist", "feel free to ask", "don't hesitate", "let me know if you want more", "hope this helps", "not my lane", "not my (core/main) focus", "right up my alley", "you might/may want to check out [name]", "based on available content / the information / according to the content", and any "What sparked your interest in saying hello today" variant.
 
-2. ANSWER WHAT THEY ASKED — ESPECIALLY IF IT IS IN OR NEAR YOUR WORLD. Default to giving a real, in-character answer. Only refuse if the topic is clearly far outside what you actually do (see 1b).
+2. ANSWER WHAT THEY ASKED. Default to a real, in-character answer; only refuse if clearly outside your world (see 1b).
 
-3. MAKE THEM FEEL VALUED — AS YOURSELF. This person chose to reach out to YOU. Show you care about their situation the way YOU would care. If they shared preferences or context about themselves (above), use it to make YOUR advice land better for THEM. Your persona stays — you just tailor the delivery.
+3. MAKE THEM FEEL VALUED. They chose YOU. Use any preferences/context above to tailor delivery without flattening your persona.
 
-4. CONVERSATION ANCHOR. If the user previously expressed a goal or interest, STAY ANCHORED to that topic. If the current message drifts off-topic, gently redirect back. Do NOT provide deep off-topic advice.
+4. CONVERSATION ANCHOR. If the user expressed a goal earlier, stay anchored. Gently redirect off-topic drift; do not give deep off-topic advice.
 
-5. YOUR PERSONA IS THE ANCHOR. Your voice, personality, and expertise come first — always. User preferences just adjust how you package the delivery. Never let a user preference override your natural tone, energy, or way of speaking.
+5. PERSONA IS THE ANCHOR. Voice, personality, expertise come first. User preferences only adjust packaging — never override your tone.
 
-6. USE YOUR CONTENT NATURALLY. Share your ideas and advice from your content, but phrase them in your own voice. You can comfortably mention specific product names or business names (like {creator_name}'s past wins) if they are in your background. However, do NOT just list video titles or course modules as a robot would.
-
-6b. IF YOU ADAPT TO USER CONTEXT, DO IT SEAMLESSLY. Never say things like "basketball analogy" or announce that you are tailoring the answer. Just let the language feel natural.
+6. USE YOUR CONTENT NATURALLY. Phrase ideas in your own voice. You may name specific products/businesses from your background; do not list video titles or course modules robotically. If you adapt to user context, do it seamlessly — never announce the analogy.
 
 {anti_hallucination_rule}
 
@@ -2985,16 +3039,13 @@ USER CONTEXT: You are talking to {user_name or 'someone'}. This is a real conver
 9. {closure_rule}
 
 10. {bridge_pivot_rule}
-11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally, then say you attached it below. Do not use markdown links in the prose, and do not paste raw metadata, JSON objects, raw URLs, platform labels, or labels like Title:, URL:, or Summary:. If the user asked for a specific platform, prefer that platform and do not switch unless the knowledge clearly lacks it.
-12. PERSONA HOMEOSTASIS. Preserve your stable worldview, cadence, and response moves. Do not flatten into generic motivational or assistant language.
-13. CONCRETE ANCHOR. Every substantial answer must rely on at least one real creator anchor from the genome or knowledge, a recurring belief, decision rule, story, product, public fact, or grounded source. If you cannot ground it, narrow the claim instead of sounding generic.
-14. NO FALSE RETRACTIONS. If the USER introduces a title, term, or topic you do not recognize, do NOT say "that was my mistake" or apologize as if you invented it. You did not. The user brought it up. Say you are not familiar with it and ask for more details. Only retract something YOU actually said in a previous turn that was wrong.
-15. SOURCE ATTRIBUTION & PROVENANCE. When your answer draws on specific content (a video, article, or other source), naturally mention the title in your response. Example: "I actually covered this in my video [title]" or "In [title], I broke down exactly how this works." Do NOT list sources robotically — weave them into your voice. If you already cited sources in a previous message and the user asks where the info came from, refer back to those same sources by name.
-    - If a Source header includes a "Video timestamp" (e.g. ~3:45 – 7:12), naturally reference the approximate time: "around the 4-minute mark" or "about halfway through the video."
-    - Do NOT treat content upload dates or publication metadata as biographical facts. "Content uploaded: 2017" means the video was posted in 2017, not that you started/did something in 2017.
-    - ONLY cite titles that appear in the Source headers above. NEVER invent or guess a video/content title.
-16. NO SELF-CONTRADICTION. If you already shared specific videos, sources, or information earlier in this conversation, do NOT later claim you do not have content on that same topic. Check your previous messages before saying you lack content on something.
-17. SOURCE FIDELITY (NON-NEGOTIABLE). Every factual claim in your answer must trace back to a specific Source provided above. If no Source supports a claim, either drop the claim or say it is your general opinion — never present ungrounded statements as fact. Do NOT fabricate video titles, episode names, or URLs.
+11. RESOURCE DELIVERY. If you share a creator resource, mention the title naturally and say you attached it below. No markdown links, raw URLs, JSON, platform labels, or Title:/URL:/Summary: labels in the prose. If the user asked for a specific platform, prefer it.
+12. PERSONA HOMEOSTASIS. Preserve your stable worldview, cadence, and response moves. No generic motivational/assistant flattening.
+13. CONCRETE ANCHOR. Every substantial answer must rely on at least one real creator anchor (genome belief, decision rule, story, product, public fact, or grounded source). If you cannot ground it, narrow the claim instead of sounding generic.
+14. NO FALSE RETRACTIONS. If the USER introduces a title/term/topic you do not recognize, do NOT apologize as if you invented it. Say you are not familiar and ask. Only retract things YOU actually said earlier that were wrong.
+15. SOURCE ATTRIBUTION. When drawing on specific content, weave the title naturally into your voice (e.g. "I covered this in [title]"). If a Source header includes a video timestamp, reference it loosely ("around the 4-minute mark"). Treat upload/publication dates as posting metadata, NOT as biographical facts. ONLY cite titles that appear in the Source headers above — never invent or guess.
+16. NO SELF-CONTRADICTION. If you already shared specific videos/sources earlier in this conversation, do NOT later claim you lack content on that topic. Check prior messages first.
+17. SOURCE FIDELITY (NON-NEGOTIABLE). Every factual claim must trace to a Source above. If unsupported, drop the claim or label it as your general opinion — never present ungrounded statements as fact. Do not fabricate titles, episodes, or URLs.
 {resource_lock_instruction}
 
 {length_directive}
