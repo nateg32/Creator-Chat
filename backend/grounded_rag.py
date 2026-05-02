@@ -5626,8 +5626,11 @@ Message: {answer_text[:500]}"""
             if exact_text_matches:
                 support_set = merge_support_sets(support_set, exact_text_matches, limit=4)
                 voice_support_set = _build_voice_support_chunks(voice_support_set, exact_text_matches)
-        # --- Sparse keyword match for creator-context references (e.g. "lacy", "vegas") ---
-        if corpus_search_enabled and not resource_locked and _is_creator_context_reference(question):
+        # --- Sparse keyword match (hybrid retrieval): always run alongside dense
+        # retrieval to catch literal name/place/title hits that embeddings miss
+        # (e.g. "Lacy", "Vegas talk", a guest's last name). Cheap (~30ms) and
+        # rescued by merge_support_sets which dedupes by chunk identity. ---
+        if corpus_search_enabled and not resource_locked:
             sparse_text_matches = retrieve_sparse_text_matches(
                 creator_id,
                 question,
@@ -5967,6 +5970,7 @@ Message: {answer_text[:500]}"""
             support_set,
             question=question,
             answer_text=answer,
+            marker_provenance=getattr(interaction_engine, "get_prompt_provenance", lambda _t: [])(thread_id),
         ),
         "cards": card,
         "debug": gen_debug,
@@ -6936,6 +6940,7 @@ async def grounded_rag_stream(
         support_set,
         question=question,
         answer_text=final_stream_text,
+        marker_provenance=getattr(interaction_engine, "get_prompt_provenance", lambda _t: [])(thread_id),
     )
     if stream_citations:
         yield f"__CITATIONS__{json.dumps(stream_citations)}"
@@ -6978,13 +6983,102 @@ def build_regurgitation_support_payload(support_set: List[Dict[str, Any]]) -> Li
     return payload
 
 
+_CREATOR_VIDEO_PLATFORMS = {"youtube", "youtube_shorts", "tiktok", "instagram", "facebook", "twitter", "x"}
+_CREATOR_POST_CONTENT_TYPES = {"post", "article", "reel", "thread", "tweet", "blog"}
+
+
+def _classify_source_type(*, platform: str, content_type: str, is_live_web: bool, url: str = "") -> str:
+    """Tag a citation with one of: creator_video | creator_post | web_grounded | web."""
+    plat = (platform or "").lower()
+    ctype = (content_type or "").lower()
+    if is_live_web:
+        # Gemini-grounded answers vs raw URL fetches: both surface as live web today.
+        return "web_grounded" if ("grounded" in ctype or "gemini" in ctype) else "web"
+    if plat in _CREATOR_VIDEO_PLATFORMS or "video" in ctype:
+        return "creator_video"
+    if ctype in _CREATOR_POST_CONTENT_TYPES or plat in {"blog", "substack", "medium"}:
+        return "creator_post"
+    return "web"
+
+
+def _build_marker_citation_entries(
+    provenance: List[Dict[str, Any]],
+    cited_indices: List[int],
+    *,
+    limit: int = 4,
+) -> List[Dict[str, Any]]:
+    """Convert prompt-provenance entries (numbered chunks) + LLM-emitted [n] markers
+    into citation card dicts, in the order the model cited them."""
+    if not provenance or not cited_indices:
+        return []
+    by_n = {int(p.get("n") or 0): p for p in provenance if p.get("n")}
+    out: List[Dict[str, Any]] = []
+    seen_urls: set = set()
+    for n in cited_indices:
+        prov = by_n.get(int(n))
+        if not prov:
+            continue
+        url = str(prov.get("url") or "").strip()
+        if not url:
+            continue
+        url_key = url.lower()
+        if url_key in seen_urls:
+            continue
+        seen_urls.add(url_key)
+        platform = str(prov.get("platform") or _platform_from_url(url) or "web").strip().lower()
+        content_type = str(prov.get("content_type") or "").strip()
+        is_live_web = bool(prov.get("is_live_web"))
+        entry: Dict[str, Any] = {
+            "title": (str(prov.get("title") or "Source").strip())[:160],
+            "url": url,
+            "platform": platform,
+            "snippet": (str(prov.get("snippet") or "").strip())[:220],
+            "is_live_web": is_live_web,
+            "score": 1.0,  # model-asserted citation is treated as high confidence
+            "content_type": content_type or ("web" if is_live_web else "unknown"),
+            "source_type": _classify_source_type(
+                platform=platform, content_type=content_type, is_live_web=is_live_web, url=url,
+            ),
+            "marker_n": int(n),
+        }
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    # URL health-check
+    alive: List[Dict[str, Any]] = []
+    for cit in out:
+        if check_url_alive_sync(cit.get("url") or ""):
+            alive.append(cit)
+        else:
+            logger.info("Dead link filtered from marker citation: %s", cit.get("url"))
+    return alive
+
+
 def build_inline_citations(
     support_set: List[Dict[str, Any]],
     *,
     question: str = "",
     answer_text: str = "",
     limit: int = 4,
+    marker_provenance: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
+    # ── Marker-derived path (preferred): the LLM was instructed to append [n]
+    # citation markers tied to numbered KNOWLEDGE chunks. If we have both the
+    # provenance map and the answer text, derive citations from the markers the
+    # model actually used. This guarantees citation↔fact alignment.
+    if marker_provenance and answer_text:
+        try:
+            from backend.services.formatting import extract_citation_marker_indices
+            cited = extract_citation_marker_indices(answer_text)
+            if cited:
+                marker_cites = _build_marker_citation_entries(
+                    marker_provenance, cited, limit=limit,
+                )
+                if marker_cites:
+                    return marker_cites
+        except Exception as exc:
+            logger.warning("Marker citation derivation failed, falling back to score-based: %s", exc)
+
     ranked: List[Dict[str, Any]] = []
     seen = set()
     for idx, chunk in enumerate(support_set or []):
@@ -7034,6 +7128,9 @@ def build_inline_citations(
             "is_live_web": is_live_web,
             "score": score,
             "content_type": content_type or ("web" if is_live_web else "unknown"),
+            "source_type": _classify_source_type(
+                platform=platform, content_type=content_type, is_live_web=is_live_web, url=url,
+            ),
         }
         if published_at:
             citation_entry["published_at"] = str(published_at)

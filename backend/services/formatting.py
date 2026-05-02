@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any
+from typing import Any, List
 from urllib.parse import urlparse
 
 
@@ -93,6 +93,34 @@ def remove_emojis_safely(text: str) -> str:
     return text
 
 
+# Inline citation markers like [1], [2][3], [12] etc. that the model is
+# instructed to append after factual claims. They are stripped from the
+# user-visible text and replaced by structured citation cards downstream.
+_CITATION_MARKER_PATTERN = re.compile(r"\s?\[(\d{1,3})\](?:\s*\[(\d{1,3})\])*")
+
+
+def strip_citation_markers(text: str) -> str:
+    """Remove inline [n] / [n][m] citation markers from a string."""
+    if not text:
+        return text
+    return _CITATION_MARKER_PATTERN.sub("", text)
+
+
+def extract_citation_marker_indices(text: str) -> List[int]:
+    """Return ordered de-duplicated list of [n] indices that appear in text."""
+    if not text:
+        return []
+    seen: List[int] = []
+    for match in re.finditer(r"\[(\d{1,3})\]", text):
+        try:
+            idx = int(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if idx not in seen:
+            seen.append(idx)
+    return seen
+
+
 def clean_response(text: str, strip_hyphens: bool = False) -> str:
     """
     Single centralised cleaner. Called once on complete response text.
@@ -104,6 +132,7 @@ def clean_response(text: str, strip_hyphens: bool = False) -> str:
     text = _TIMESTAMP_PATTERN.sub("", text)
     text = _TRANSCRIPT_TAG_PATTERN.sub("", text)
     text = _STAGE_MARKER_PATTERN.sub("", text)
+    text = strip_citation_markers(text)
     text = remove_emojis_safely(text)
 
     if strip_hyphens:
@@ -361,6 +390,11 @@ def clean_for_stream_chunk(chunk: str) -> str:
         return chunk
     chunk = _TIMESTAMP_PATTERN.sub("", chunk)
     chunk = _TRANSCRIPT_TAG_PATTERN.sub("", chunk)
+    # Inline citation markers like [1] or [2][3] are short and almost always
+    # emitted as a single token by GPT-class models, so per-chunk stripping is
+    # safe in practice. Any partial that splits across chunks (e.g. "[" then
+    # "12]") will be left to the final clean_response pass to remove.
+    chunk = strip_citation_markers(chunk)
     return chunk
 
 

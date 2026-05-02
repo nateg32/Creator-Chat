@@ -288,6 +288,15 @@ def strip_all_markdown(
     if not text:
         return text
 
+    # Strip inline citation markers ([1], [2][3], etc.) the model was instructed
+    # to append after factual claims. They are converted into structured
+    # citation cards by build_inline_citations and must never reach the user.
+    try:
+        from backend.services.formatting import strip_citation_markers
+        text = strip_citation_markers(text)
+    except Exception:
+        pass
+
     # Remove markdown headers
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
@@ -1086,11 +1095,31 @@ class InteractionEngine:
         self._turn_log_available: Optional[bool] = None
         self._voice_trackers: Dict[str, ConversationVoiceTracker] = {}
         self._voice_tracker_max = 500  # cap to prevent unbounded growth
+        # Per-thread map: thread_id -> ordered list of {n, url, title, platform,
+        # content_type, is_live_web} that mirrors the [n] markers injected into
+        # the KNOWLEDGE block. Read by grounded_rag after the answer is rendered
+        # to convert inline [n] markers into structured citation entries.
+        self._prompt_provenance: Dict[str, List[Dict[str, Any]]] = {}
+        self._prompt_provenance_max = 500
         try:
             self.memory = MemoryIntegration()
         except:
             self.memory = None
             logger.error("Failed to init memory integration in engine")
+
+    def _set_prompt_provenance(self, thread_id: str, provenance: List[Dict[str, Any]]) -> None:
+        if not thread_id:
+            return
+        if len(self._prompt_provenance) >= self._prompt_provenance_max and thread_id not in self._prompt_provenance:
+            try:
+                oldest_key = next(iter(self._prompt_provenance))
+                del self._prompt_provenance[oldest_key]
+            except StopIteration:
+                pass
+        self._prompt_provenance[thread_id] = provenance
+
+    def get_prompt_provenance(self, thread_id: str) -> List[Dict[str, Any]]:
+        return list(self._prompt_provenance.get(thread_id) or [])
 
     def _get_voice_tracker(self, thread_id: str) -> ConversationVoiceTracker:
         """Get or create a ConversationVoiceTracker for a thread."""
@@ -2010,8 +2039,10 @@ Output ONLY your response."""
         source_context = ""
         available_video_titles: set = set()
         live_web_context = build_live_web_prompt_block(rag_chunks, source_items=context_limits["source_items"])
+        prompt_provenance: List[Dict[str, Any]] = []
         if rag_chunks:
             chunks_text = []
+            marker_n = 0
             for i, c in enumerate(rag_chunks[:context_limits["source_items"]]):
                 content = c.get("content", "")
                 
@@ -2019,24 +2050,40 @@ Output ONLY your response."""
                 url = c.get("url")
                 title = c.get("title", f"Source {i+1}")
                 
-                source_ref = c.get("source_ref")
+                source_ref = c.get("source_ref") if isinstance(c.get("source_ref"), dict) else {}
                 if source_ref:
                     if not url: url = source_ref.get("canonical_url")
-                    if "title" in source_ref and source_ref["title"]:
+                    if source_ref.get("title"):
                         title = source_ref["title"]
 
                 if content:
                     if content.startswith("[LIVE WEB SEARCH RESULT]"):
                         continue
-                    item_text = f"From your content: \"{content[:context_limits['source_chars']]}\""
+                    marker_n += 1
+                    item_text = f"[{marker_n}] From your content: \"{content[:context_limits['source_chars']]}\""
                     if url:
                         item_text += f"\n(Video Title: {title} | Link: {url})"
                     chunks_text.append(item_text)
                     if title and title != f"Source {i+1}":
                         available_video_titles.add(title.strip())
+                    prompt_provenance.append({
+                        "n": marker_n,
+                        "url": url or "",
+                        "title": title or "",
+                        "platform": (source_ref.get("platform") if isinstance(source_ref, dict) else None) or c.get("platform") or "",
+                        "content_type": (source_ref.get("content_type") if isinstance(source_ref, dict) else None) or "",
+                        "is_live_web": bool(c.get("is_live_web")),
+                        "snippet": (content or "")[:240],
+                    })
             source_context = "\n".join(chunks_text) if chunks_text else "No specific content retrieved."
         else:
             source_context = "No specific content retrieved. Answer from your general domain expertise."
+        # Stash provenance so grounded_rag can convert inline [n] markers in the
+        # answer into structured citation entries with verified URLs.
+        try:
+            self._set_prompt_provenance(thread_id, prompt_provenance)
+        except Exception:
+            pass
         has_image_context = any(c.get("is_image_context") for c in (rag_chunks or []))
 
         # Build a video inventory so the LLM knows which videos it has content from
@@ -2261,6 +2308,7 @@ RULES:
 12. If the USER introduces a title you do not recognize, do NOT retract or apologize. Say you are not familiar and ask for details.
 13. Write clean sentences. Every word must be one unbroken unit (correct: "Welcome", wrong: "We lcome"). No orphaned quotes, no dangling punctuation.
 14. FACT GROUNDING & BIOGRAPHY SAFETY: When the user asks a personal timeline question ("when did you start...", "how long have you been...", "when did you..."), you MUST answer ONLY from explicit first-person statements in your KNOWLEDGE transcript text (e.g., "I started trading when I was 19"). NEVER answer personal timeline questions from: (a) content upload dates, (b) video titles, (c) metadata fields, or (d) any "Published" or "Content uploaded" labels. If your transcript text does not explicitly state the biographical fact in first person, honestly say you don't remember the exact date or redirect: "I've talked about my journey in my content, but I don't want to give you the wrong date off the top of my head." NEVER say "I was published in [year]" — that phrase describes a book or video, not a person.
+15. CITATION DISCIPLINE: Each item in KNOWLEDGE is prefixed with a number in brackets like [1], [2], [3]. Whenever a sentence states a specific fact pulled from KNOWLEDGE (a video title, a quote, a number, a name, a date, a claim about what you said or did), append the matching marker at the end of that sentence (e.g. "I broke that down in my Vegas talk [2]."). Multiple sources for one fact: "[1][3]". Sentences that are purely your voice, opinion, or framing with no specific KNOWLEDGE-grounded fact must NOT carry a marker. The user will not see the brackets — they are stripped before display and turned into source cards. If you cannot back a factual claim with a [n], do not state it as fact.
 {resource_lock_instruction}
 {resource_type_instruction}
 
