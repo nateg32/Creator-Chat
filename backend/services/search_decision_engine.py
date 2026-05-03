@@ -50,6 +50,14 @@ CREATOR_OWN_WORLD_PATTERNS = [
     r"\bwhich books\b",
     r"\bhave you (written|published|authored)\b",
     r"\b(books|courses|programs)\s+(have\s+)?(you|he|she)\s+(written|published|made|created)\b",
+    # Catches "did u write any books", "did you publish a book", "did she author"
+    r"\bdid (you|u) (write|wrote|publish|author|make|create|start|launch|found|build|host|record)\b",
+    # Catches "any other books?", "any more courses?", "more programs?", "other podcasts?"
+    r"\b(any|other|more|another|else)\s+(books|courses|programs|podcasts|shows|channels|videos|businesses|companies|products|newsletters|memberships)\b",
+    # Catches "do you have any books", "do u have a course"
+    r"\b(do|did|have) (you|u) (have|got|own|run|host|launch|create|start|build|make|written|published|authored)\s+(any|a|some|the|other|more)?\s*(book|course|program|podcast|show|channel|business|company|newsletter|membership|video)s?\b",
+    # Catches "wrote any books", "published a book", "authored a course"
+    r"\b(wrote|written|publish|published|author|authored)\s+(any|a|an|some|other|more)?\s*(book|course|program|podcast|show|video)s?\b",
     r"\binvested in\b",
     r"\bvaluation\b",
     r"\bfounded\b",
@@ -112,8 +120,9 @@ class SearchDecisionEngine:
         confirmation_signal = bool(
             re.search(r"\b(do you know|do you have|have you heard of|is there|is .+ your|tell me about|what is|do you know about)\b", query_lower)
         )
-        if re.search(r"\bdo you have a\s+(book|course|program|podcast|show|newsletter)\b", query_lower):
-            return True
+        # Note: a bare "do you have a book?" used to short-circuit to True, but
+        # without checking that the creator's entity graph actually has a book it
+        # forced the model to invent one. Require an entity term match below.
         query_words = {
             word
             for word in re.findall(r"[a-z0-9']+", query_lower)
@@ -174,6 +183,12 @@ class SearchDecisionEngine:
                 phase="pre_retrieval",
                 confidence=1.0,
             )
+
+        # Normalize common chat shorthand so pattern matchers don't miss informal
+        # queries like "did u write any books?" or "do ur courses cover X".
+        query_lower = re.sub(r"\bu\b", "you", query_lower)
+        query_lower = re.sub(r"\bur\b", "your", query_lower)
+        query_lower = re.sub(r"\bya\b", "you", query_lower)
 
         if self._looks_like_entity_confirmation(query_lower):
             return SearchDecision(

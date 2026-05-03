@@ -181,6 +181,17 @@ def _should_route_personal_fact_question(
     route_creator_personal: bool = False,
     personal_question_flag: bool = False,
 ) -> bool:
+    # Hard guard: explicit resource/video lookup queries (e.g.
+    # "which video talks about that", "where in your videos do you cover X")
+    # must NOT route to PersonalBioService — they need full RAG retrieval over
+    # the ingested transcript chunks. Without this short-circuit the bio
+    # service deflects with a generic "check my official website" reply even
+    # when the chunks contain a clean answer.
+    try:
+        if _should_run_resource_recommender(question, None, ""):
+            return False
+    except Exception:
+        pass
     route_personal_from_classifier = bool(personal_question_flag and route_creator_personal)
     route_personal_from_rules = bool(route_q_type == "personal_bio" or rule_intent == "personal_bio_question")
     route_personal_from_timeline = _is_explicit_creator_timeline_query(question)
@@ -6474,17 +6485,13 @@ async def grounded_rag_stream(
         if _decision_is_creator_public_fact(pre_search_decision):
             intent_metadata = {"intent": "PUBLIC_CREATOR_FACT"}
         speculative_web_task = None
-        if search_mode == "hybrid" and (
-            pre_search_decision.should_search or _should_speculate_live_search(
-                question,
-                conversation_history,
-                explicit_link_request=explicit_link_request,
-                context_needs_video=context_needs_video,
-                should_run_recommender=should_run_recommender,
-            )
-        ):
-            if pre_search_decision.should_search:
-                log_search_decision(str(creator_id), question, pre_search_decision)
+        # Only fire the web call up-front when the pre-retrieval decision is
+        # confident we need it (fresh facts, public-creator facts). The earlier
+        # speculative branch fired too eagerly on borderline cases, paying a
+        # Gemini API call for queries that RAG ended up satisfying. Lazy-only
+        # speculation lets the post-retrieval check decide.
+        if search_mode == "hybrid" and pre_search_decision.should_search:
+            log_search_decision(str(creator_id), question, pre_search_decision)
             speculative_web_task = asyncio.create_task(
                 asyncio.to_thread(
                     _run_live_web_search,

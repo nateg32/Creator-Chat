@@ -127,7 +127,67 @@ MERGEABLE_CONNECTOR_SUFFIXES = ("and",)
 MERGED_TOKEN_BLOCKLIST = {
     "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
     "island", "remand", "remands", "strand", "strands",
+    # Common -and ending words that must NOT be split into "X and"
+    "understand", "understands", "understanding", "misunderstand", "misunderstands",
+    "husband", "husbands", "thousand", "thousands", "errand", "errands",
+    "headband", "headbands", "wristband", "wristbands", "armband", "armbands",
+    "garland", "garlands", "highland", "highlands", "lowland", "lowlands",
+    "mainland", "moorland", "outland", "wasteland", "homeland", "scotland",
+    "england", "ireland", "iceland", "finland", "poland", "thailand", "swaziland",
+    "rotterdam", "amsterdam",  # not -and but adjacent class
+    "errand", "demand", "remand", "ampersand", "contraband", "secondhand",
+    "beforehand", "underhand", "overhand", "shorthand", "longhand", "freehand",
+    "stagehand", "farmhand",
+    "withstand", "withstands", "notwithstanding",
+    "reprimand", "reprimands", "reprimanded",
+    "playland", "moorland", "fatherland", "motherland",
+    "quicksand", "ironclad",
+    "outstanding", "standstill",
 }
+# Real English words starting with capital "I" + lowercase that the LLM sometimes
+# emits as "I word" (e.g. "I dentify", "I nstead"). Merge back when the suffix
+# is NOT a standalone English word so we never collapse legitimate "I deal cards".
+_I_PREFIX_MERGE_WORDS = frozenset({
+    "instead", "identify", "identifies", "identified", "identifying", "identity",
+    "iterate", "iterates", "iterated", "iterating", "iteration", "iterations",
+    "ignite", "ignites", "ignited", "igniting",
+    "imagine", "imagines", "imagined", "imagining", "imagination",
+    "immediate", "immediately", "immerse", "immersed", "imminent",
+    "impact", "impacts", "impacted", "impacting", "impactful",
+    "important", "importantly", "improve", "improves", "improved", "improving", "improvement",
+    "include", "includes", "included", "including", "income", "increase", "increases",
+    "increased", "increasing", "incredible", "incredibly", "indeed",
+    "indicate", "indicates", "indicated", "indicating", "individual", "individuals",
+    "industry", "industries", "infinite", "influence", "influences", "influenced",
+    "inform", "informs", "informed", "informing", "information", "informative",
+    "ingest", "ingredient", "ingredients", "initial", "initially", "initiate",
+    "innovation", "innovate", "innovative",
+    "inquiry", "insight", "insights", "inspect", "inspire", "inspires", "inspired", "inspiring",
+    "install", "installs", "installed", "installing", "instance", "instances", "instant",
+    "instantly", "institute", "institution", "instruct", "instructions", "instrument",
+    "intact", "integrate", "integrates", "integrated", "integrating", "integration",
+    "intellect", "intelligent", "intend", "intends", "intended", "intent", "intention",
+    "interact", "interest", "interests", "interested", "interesting", "internal", "internet",
+    "interpret", "interrupt", "interview", "intricate",
+    "introduce", "introduces", "introduced", "introducing", "introduction",
+    "intuition", "intuitive", "invest", "invests", "invested", "investing", "investment",
+    "investor", "investors", "invite", "invites", "invited", "inviting", "involve", "involves",
+    "involved", "involving", "irrelevant", "irresistible", "isolate",
+    "issue", "issues", "issued", "issuing",
+})
+_I_PREFIX_MERGE_RE = re.compile(r"\bI\s+([a-z]{2,})\b")
+
+# Words like "Understand" / "Husband" that get emitted as "Underst and" / "Husb and".
+# Only merge when the combined form is in this allowlist so we don't collapse
+# legitimate "thousand and" or "demand and" sequences.
+_AND_MERGE_WORDS = frozenset({
+    "understand", "understands", "understanding", "misunderstand", "misunderstands",
+    "withstand", "withstands", "withstanding",
+    "reprimand", "reprimands",
+    "ampersand", "contraband", "secondhand",
+    "beforehand", "underhand", "overhand", "shorthand", "longhand", "freehand",
+})
+_AND_MERGE_RE = re.compile(r"\b([A-Za-z]{4,})\s+(and(?:s|ing)?)\b")
 MERGED_TRAILING_BLOCKLIST = {
     "software", "hardware", "aware", "beware", "elsewhere", "somewhere", "anywhere", "nowhere",
     "everywhere", "somewhat", "lathe", "loathe", "clothe", "unclothe", "writhe",
@@ -181,6 +241,28 @@ def _repair_split_word_fragments(text: str) -> str:
     repaired = text
 
     repaired = SPLIT_HEAD_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}", repaired)
+
+    # Merge stray "I word" sequences when they form a known English I-word
+    # (e.g. "I dentify" -> "Identify", "I nstead" -> "Instead"). Restricted to
+    # an allowlist so legitimate "I deal cards" / "I think" stay intact.
+    def _merge_i_prefix(match: re.Match[str]) -> str:
+        rest = match.group(1)
+        merged = "I" + rest
+        if merged.lower() in _I_PREFIX_MERGE_WORDS:
+            return merged
+        return match.group(0)
+
+    repaired = _I_PREFIX_MERGE_RE.sub(_merge_i_prefix, repaired)
+
+    def _merge_and_suffix(match: re.Match[str]) -> str:
+        stem = match.group(1)
+        tail = match.group(2)
+        merged = stem + tail
+        if merged.lower() in _AND_MERGE_WORDS:
+            return merged
+        return match.group(0)
+
+    repaired = _AND_MERGE_RE.sub(_merge_and_suffix, repaired)
 
     while True:
         next_repaired = SPLIT_MIDDLE_RE.sub(
