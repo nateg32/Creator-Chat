@@ -23,6 +23,10 @@ WORD_BREAK_DASH_RE = re.compile(rf"(?<=\w)(?:[{WORD_BREAK_DASH_CLASS}])(?=\w)")
 WORD_CLAUSE_DASH_RE = re.compile(rf"(?<=\w)(?:--+|[{CLAUSE_BREAK_DASH_CLASS}]+)(?=\w)")
 INLINE_TIGHT_DASH_RE = re.compile(rf"(?<=\S)(?:--+|[{DASH_CLASS}]+)(?=\S)")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?])")
+DANGLING_PREPOSITION_PUNCT_RE = re.compile(
+    r"\s+\b(of|for|with|to|from|at|by|about|into|onto|over|under|between|among)\s*([.!?])",
+    re.IGNORECASE,
+)
 LETTER_END_PUNCT_BOUNDARY_RE = re.compile(r"([A-Za-z][.!?])(?=[A-Z0-9])")
 REPEATED_COMMA_RE = re.compile(r",\s*,+")
 COMMA_BEFORE_END_PUNCT_RE = re.compile(r",\s*([.!?])")
@@ -126,6 +130,7 @@ _I_SPLIT_WORDS = MERGEABLE_COMMON_WORDS | {
 MERGEABLE_CONNECTOR_SUFFIXES = ("and",)
 MERGED_TOKEN_BLOCKLIST = {
     "command", "commands", "demand", "demands", "expand", "expands", "grand", "brand",
+    "mean", "meaning", "meanings",
     "island", "remand", "remands", "strand", "strands",
     # Common -and ending words that must NOT be split into "X and"
     "understand", "understands", "understanding", "misunderstand", "misunderstands",
@@ -188,6 +193,10 @@ _AND_MERGE_WORDS = frozenset({
     "beforehand", "underhand", "overhand", "shorthand", "longhand", "freehand",
 })
 _AND_MERGE_RE = re.compile(r"\b([A-Za-z]{4,})\s+(and(?:s|ing)?)\b")
+_ME_AN_MEAN_RE = re.compile(
+    r"\b(can|could|may|might|would|should|does|do|did|will|this|that|it|which|what)\s+me\s+an\b",
+    re.IGNORECASE,
+)
 MERGED_TRAILING_BLOCKLIST = {
     "software", "hardware", "aware", "beware", "elsewhere", "somewhere", "anywhere", "nowhere",
     "everywhere", "somewhat", "lathe", "loathe", "clothe", "unclothe", "writhe",
@@ -263,6 +272,7 @@ def _repair_split_word_fragments(text: str) -> str:
         return match.group(0)
 
     repaired = _AND_MERGE_RE.sub(_merge_and_suffix, repaired)
+    repaired = _ME_AN_MEAN_RE.sub(lambda m: f"{m.group(1)} mean", repaired)
 
     while True:
         next_repaired = SPLIT_MIDDLE_RE.sub(
@@ -328,6 +338,8 @@ def _repair_merged_common_word_pairs(text: str) -> str:
         lower = token.lower()
         if lower in MERGEABLE_COMMON_WORDS:
             return token
+        if lower in MERGED_TOKEN_BLOCKLIST:
+            return token
 
         for index in range(2, len(token) - 1):
             left = lower[:index]
@@ -335,12 +347,11 @@ def _repair_merged_common_word_pairs(text: str) -> str:
             if left in MERGEABLE_COMMON_WORDS and right in MERGEABLE_COMMON_WORDS:
                 return f"{token[:index]} {token[index:]}"
 
-        if lower not in MERGED_TOKEN_BLOCKLIST:
-            for suffix in MERGEABLE_CONNECTOR_SUFFIXES:
-                if lower.endswith(suffix):
-                    left = lower[: -len(suffix)]
-                    if len(left) >= 4 and re.search(r"[aeiou]", left, re.IGNORECASE):
-                        return f"{token[:len(left)]} {token[len(left):]}"
+        for suffix in MERGEABLE_CONNECTOR_SUFFIXES:
+            if lower.endswith(suffix):
+                left = lower[: -len(suffix)]
+                if len(left) >= 4 and re.search(r"[aeiou]", left, re.IGNORECASE):
+                    return f"{token[:len(left)]} {token[len(left):]}"
         return token
 
     return MERGED_COMMON_TOKEN_RE.sub(_split_token, repaired)
@@ -390,6 +401,7 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = INLINE_TIGHT_DASH_RE.sub(", ", cleaned)
     cleaned = REPEATED_COMMA_RE.sub(", ", cleaned)
     cleaned = COMMA_BEFORE_END_PUNCT_RE.sub(r"\1", cleaned)
+    cleaned = DANGLING_PREPOSITION_PUNCT_RE.sub(r"\2", cleaned)
     cleaned = SPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
     cleaned = LETTER_END_PUNCT_BOUNDARY_RE.sub(r"\1 ", cleaned)
     cleaned = LIST_NUMBER_SPACE_RE.sub(r"\1 ", cleaned)
@@ -581,6 +593,8 @@ def _has_suspicious_formatting(text: str) -> bool:
     if LETTER_END_PUNCT_BOUNDARY_RE.search(text):
         return True
     if CONTRACTION_BOUNDARY_RE.search(text):
+        return True
+    if DANGLING_PREPOSITION_PUNCT_RE.search(text) or _ME_AN_MEAN_RE.search(text):
         return True
     if (
         SPLIT_HEAD_RE.search(text)

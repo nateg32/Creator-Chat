@@ -161,6 +161,30 @@ class TextSanitizerTests(unittest.TestCase):
             "What do you sell and what's your current price?",
         )
 
+    def test_repairs_split_mean_fragment_after_modal(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("This could me an automating more tasks."),
+            "This could mean automating more tasks.",
+        )
+
+    def test_preserves_real_word_mean(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("This could mean automating more tasks."),
+            "This could mean automating more tasks.",
+        )
+
+    def test_preserves_normal_me_an_phrase(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Give me an example."),
+            "Give me an example.",
+        )
+
+    def test_repairs_dangling_preposition_sentence_end(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I'm Alex Hormozi. I'm the founder and managing partner of. I focus on growth."),
+            "I'm Alex Hormozi. I'm the founder and managing partner. I focus on growth.",
+        )
+
     def test_preserves_real_words_that_end_with_and(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("The command line matters."),

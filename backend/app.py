@@ -60,6 +60,7 @@ from backend.personality_analyzer import PersonalityAnalyzer
 from backend.core.interaction_engine import interaction_engine
 from backend.utils.name_formatter import normalize_creator_name
 from backend.services.formatting import clean_response, clean_for_stream_chunk, prepare_chat_response, should_strip_hyphens
+from backend.services.text_sanitizer import sanitize_stream_fragment
 from backend.services.rhythm_shaper import rhythm_shaper
 from backend.services.preview_cards import extract_preview_cards, merge_preview_cards
 from backend.services.tiktok_validator import verify_tiktok_profile, verify_tiktok_profile_with_actor
@@ -205,21 +206,33 @@ def _get_creator_cleaning_profile(creator_id: int, user_id: int) -> Dict[str, An
     return db.execute_one(query, (creator_id, user_id)) or {}
 
 
-def _find_stream_emit_boundary(text: str, tail_size: int = 6) -> int:
+_STREAM_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s+|\n+)")
+
+
+def _find_stream_emit_boundary(text: str, tail_size: int = 96, soft_char_limit: int = 220) -> int:
     """Return the index up to which it is safe to flush text to the SSE client.
 
-    We flush at the last whitespace before the trailing ``tail_size`` chars so
-    words appear as the upstream model produces them \u2014 no multi-second pauses
-    waiting for a sentence-ending period. The trailing partial word stays in
-    the buffer until the next chunk or until the stream ends.
+    Prefer sentence boundaries so short answers do not show visibly broken
+    clauses. If a model writes a very long sentence, fall back to a conservative
+    whitespace boundary after ``soft_char_limit`` chars.
     """
     if not text:
         return 0
-    if len(text) <= tail_size:
+
+    sentence_boundary = None
+    for match in _STREAM_SENTENCE_BOUNDARY_RE.finditer(text):
+        sentence_boundary = match
+    if sentence_boundary:
+        return sentence_boundary.end()
+
+    if len(text) <= min(tail_size, soft_char_limit):
         nl = text.rfind("\n")
         return nl + 1 if nl >= 0 else 0
+
+    if len(text) <= soft_char_limit:
+        return 0
+
     cutoff = len(text) - tail_size
-    # Find last whitespace at or before cutoff
     for idx in range(cutoff, 0, -1):
         if text[idx - 1].isspace():
             return idx
@@ -2945,7 +2958,7 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                             pending_stream_text += cleaned_chunk
                             emit_boundary = _find_stream_emit_boundary(pending_stream_text)
                             if emit_boundary > 0:
-                                safe_chunk = pending_stream_text[:emit_boundary]
+                                safe_chunk = sanitize_stream_fragment(pending_stream_text[:emit_boundary])
                                 pending_stream_text = pending_stream_text[emit_boundary:]
                                 assembled.append(safe_chunk)
                                 yield f"data: {json.dumps({'content': safe_chunk})}\n\n"
@@ -2958,8 +2971,9 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                 # ASAP, then move the heavy save + integrity work into a
                 # background task so the SSE generator can close immediately.
                 if pending_stream_text:
-                    assembled.append(pending_stream_text)
-                    yield f"data: {json.dumps({'content': pending_stream_text})}\n\n"
+                    final_pending_chunk = sanitize_stream_fragment(pending_stream_text)
+                    assembled.append(final_pending_chunk)
+                    yield f"data: {json.dumps({'content': final_pending_chunk})}\n\n"
                     pending_stream_text = ""
                 raw_streamed_answer = clean_response("".join(assembled), strip_hyphens=strip_hyphens)
                 streamed_answer = raw_streamed_answer

@@ -281,6 +281,62 @@ def _personal_answer_or_fallback(answer: Any, question: str, creator_row: Option
     return "I haven't really talked about that publicly, so I wouldn't want to guess."
 
 
+_CREATOR_IDENTITY_INTRO_RE = re.compile(
+    r"\b(who are you|what are you|what do you do|what(?:'s| is) your name|tell me about yourself)\b",
+    re.IGNORECASE,
+)
+
+
+def _coerce_json_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _is_creator_identity_intro_question(question: str) -> bool:
+    lowered = str(question or "").lower()
+    if re.search(r"\b(my name|know my name|who am i)\b", lowered):
+        return False
+    return bool(_CREATOR_IDENTITY_INTRO_RE.search(lowered))
+
+
+def _creator_identity_focus(creator_row: Dict[str, Any]) -> str:
+    stronghold = _coerce_json_object(creator_row.get("stronghold_json"))
+    domains = [str(item).strip().lower() for item in (stronghold.get("primary_domains") or []) if str(item).strip()]
+    category = str(creator_row.get("creator_category") or "").strip().lower()
+    focus_key = " ".join(domains + [category])
+
+    if any(term in focus_key for term in ("business", "entrepreneur", "sales", "marketing", "scale")):
+        return "building businesses, offers, sales, and systems"
+    if any(term in focus_key for term in ("fitness", "nutrition", "training", "health", "bodybuilding")):
+        return "training, nutrition, discipline, and getting results you can measure"
+    if any(term in focus_key for term in ("trading", "invest", "finance", "market")):
+        return "markets, risk, decision-making, and building a cleaner process"
+    if any(term in focus_key for term in ("faith", "church", "ministry", "christian")):
+        return "faith, leadership, and living with conviction"
+    if category and category != "general":
+        return category.replace("_", " ")
+    return "my work, ideas, and the lessons I've shared"
+
+
+def _creator_identity_intro_answer(creator_row: Optional[Dict[str, Any]]) -> str:
+    creator_row = creator_row or {}
+    creator_name = str(creator_row.get("name") or creator_row.get("handle") or "the creator").strip().lstrip("@")
+    if not creator_name or creator_name.lower() == "the creator":
+        return "I'm here as this creator's voice. Ask me what you want to dig into."
+
+    focus = _creator_identity_focus(creator_row)
+    return clean_response(
+        f"I'm {creator_name}. I talk about {focus}. What's the thing you're trying to figure out right now?"
+    )
+
+
 def _platform_from_url(url: str) -> str:
     """Derive platform key from URL. Ensures platform always matches canonical_url domain."""
     if not url or not isinstance(url, str):
@@ -5545,6 +5601,16 @@ Message: {answer_text[:500]}"""
         route_creator_personal=route_creator_personal,
         personal_question_flag=bool(user_state.get("flags", {}).get("personal_question_flag")),
     )
+    if _is_creator_identity_intro_question(question):
+        identity_answer = _creator_identity_intro_answer(creator_row)
+        return apply_final_polish({
+            "answer": identity_answer,
+            "retrieved": [],
+            "sources": [],
+            "cards": [],
+            "meta": {"question_type": "identity_intro"},
+        }, creator_row.get("rhythm_profile_json"), csm, mvc_score=mvc_score, plan=None)
+
     if should_route_personal:
         logger.info("Pipeline Step 5: Routing personal factual question through PersonalBioService...")
         personal_result = personal_bio_service.handle_personal_question(
@@ -6486,6 +6552,14 @@ async def grounded_rag_stream(
         route_creator_personal=route_creator_personal,
         personal_question_flag=False,
     )
+    if _is_creator_identity_intro_question(question):
+        creator_row = await creator_task
+        if not creator_row:
+            yield "I couldn't find information about that creator."
+            return
+        yield _creator_identity_intro_answer(creator_row)
+        return
+
     if should_route_personal:
         creator_row = await creator_task
         if not creator_row:
