@@ -160,6 +160,32 @@ class PersonalBioServiceTests(unittest.TestCase):
         self.assertNotIn("Dan Martell's", answer)
         self.assertTrue(answer.startswith("I "), answer)
 
+    def test_role_question_answers_from_profile_role_fact_before_web(self):
+        service, provider = _load_personal_bio_service([])
+
+        result = service.handle_personal_question(
+            user_id=1,
+            creator_id=1,
+            question="what do u manage again?",
+            voice_profile={},
+            creator_name="Alex Hormozi",
+            decision_policy={},
+            creator_profile={
+                "id": 1,
+                "name": "Alex Hormozi",
+                "identity_fingerprint": {
+                    "job_titles": ["Founder and Managing Partner of Acquisition AI"],
+                },
+            },
+            allow_web=True,
+        )
+
+        answer = result.get("answer", "")
+        self.assertIn("Acquisition AI", answer)
+        self.assertIn("Managing Partner", answer)
+        self.assertFalse(provider.grounded_calls or provider.calls)
+        self.assertNotIn("partner of,", answer)
+
     def test_public_book_question_does_not_use_web_when_caller_disables_it(self):
         service, provider = _load_personal_bio_service(
             [

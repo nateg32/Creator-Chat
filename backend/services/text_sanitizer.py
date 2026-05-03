@@ -27,6 +27,14 @@ DANGLING_PREPOSITION_PUNCT_RE = re.compile(
     r"\s+\b(of|for|with|to|from|at|by|about|into|onto|over|under|between|among)\s*([.!?])",
     re.IGNORECASE,
 )
+DANGLING_PREPOSITION_WHERE_RE = re.compile(
+    r"\s+\b(of|for|with|to|from|at|by|about|into|onto|over|under|between|among)\s*,\s*where\s+",
+    re.IGNORECASE,
+)
+DANGLING_PREPOSITION_COMMA_RE = re.compile(
+    r"\s+\b(of|for|with|to|from|at|by|about|into|onto|over|under|between|among)\s*,",
+    re.IGNORECASE,
+)
 LETTER_END_PUNCT_BOUNDARY_RE = re.compile(r"([A-Za-z][.!?])(?=[A-Z0-9])")
 REPEATED_COMMA_RE = re.compile(r",\s*,+")
 COMMA_BEFORE_END_PUNCT_RE = re.compile(r",\s*([.!?])")
@@ -401,6 +409,8 @@ def _sanitize_core(text: str, trim_line_edges: bool) -> str:
     cleaned = INLINE_TIGHT_DASH_RE.sub(", ", cleaned)
     cleaned = REPEATED_COMMA_RE.sub(", ", cleaned)
     cleaned = COMMA_BEFORE_END_PUNCT_RE.sub(r"\1", cleaned)
+    cleaned = DANGLING_PREPOSITION_WHERE_RE.sub(", and ", cleaned)
+    cleaned = DANGLING_PREPOSITION_COMMA_RE.sub(",", cleaned)
     cleaned = DANGLING_PREPOSITION_PUNCT_RE.sub(r"\2", cleaned)
     cleaned = SPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
     cleaned = LETTER_END_PUNCT_BOUNDARY_RE.sub(r"\1 ", cleaned)
@@ -594,7 +604,12 @@ def _has_suspicious_formatting(text: str) -> bool:
         return True
     if CONTRACTION_BOUNDARY_RE.search(text):
         return True
-    if DANGLING_PREPOSITION_PUNCT_RE.search(text) or _ME_AN_MEAN_RE.search(text):
+    if (
+        DANGLING_PREPOSITION_PUNCT_RE.search(text)
+        or DANGLING_PREPOSITION_WHERE_RE.search(text)
+        or DANGLING_PREPOSITION_COMMA_RE.search(text)
+        or _ME_AN_MEAN_RE.search(text)
+    ):
         return True
     if (
         SPLIT_HEAD_RE.search(text)

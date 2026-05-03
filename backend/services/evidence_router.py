@@ -59,6 +59,7 @@ _FACTUAL_PATTERNS = [
     re.compile(r"\bprice\b|\bcost\b|\bpricing\b", re.IGNORECASE),
     re.compile(r"\bpublish(?:ed|ing)?\b|\bpublication\b|\brelease(?:d)?\b|\blaunch(?:ed)?\b", re.IGNORECASE),
     re.compile(r"\bfollowers?\b|\bsubscribers?\b|\bmembers?\b|\bstudents?\b|\branking\b|\branked\b|\bvaluation\b", re.IGNORECASE),
+    re.compile(r"\b(?:founder|co-?founder|owner|ceo|partner|managing\s+partner|company|business|manage|run|own|operate|lead)\b", re.IGNORECASE),
 ]
 _TIMELINE_PATTERNS = [
     re.compile(r"\bwhen (?:did|was|were|is)\b", re.IGNORECASE),
@@ -120,6 +121,7 @@ _CREATOR_WORLD_HINTS = [
     re.compile(r"\b(your|my)\s+(book|course|program|podcast|show|newsletter|website|company|business|video|videos|channel)\b", re.IGNORECASE),
     re.compile(r"\b(your|my)\s+(?:full|real|legal|last)\s+name\b", re.IGNORECASE),
     re.compile(r"\bnet worth\b|\bemployees\b|\bfounded\b|\bvaluation\b|\bfollowers?\b|\bsubscribers?\b", re.IGNORECASE),
+    re.compile(r"\b(?:founder|co-?founder|owner|ceo|partner|managing\s+partner|what\s+do\s+(?:you|u)\s+manage|what\s+(?:company|business))\b", re.IGNORECASE),
 ]
 # Patterns indicating the user references something the creator specifically did, said,
 # or experienced — even without a factual interrogative ("how much", "when did", etc.).
@@ -443,6 +445,8 @@ class EvidenceRouter:
             return "direct_fact"
         if policy.kind == "identity":
             return "direct_fact"
+        if policy.kind == "role":
+            return "direct_fact"
         if _is_user_relationship_business_question(query):
             return "creator_take"
         if entity and entity.get("creator_owned"):
@@ -458,6 +462,8 @@ class EvidenceRouter:
             return "entity_catalog_lookup"
         if policy.kind == "identity":
             return "identity_lookup"
+        if policy.kind == "role":
+            return "role_lookup"
         if policy.kind in {"publication_timeline", "creator_start_timeline"}:
             return "timeline_lookup"
         if policy.kind == "creator_journey":
@@ -525,6 +531,9 @@ class EvidenceRouter:
 
         if query_goal == "identity_lookup":
             return "creator_world", [], True, False, True, "official_grounded_search"
+
+        if query_goal == "role_lookup":
+            return "creator_world", ["creator_memory"], True, True, True, "profile_then_official_search"
 
         if query_goal == "availability_lookup":
             has_official_urls = bool((entity or {}).get("official_urls"))

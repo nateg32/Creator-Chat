@@ -172,6 +172,7 @@ def _route_personal_via_evidence(route_evidence_plan: Optional[EvidencePlan]) ->
         and (
             route_evidence_plan.query_goal in {
                 "identity_lookup",
+                "role_lookup",
                 "entity_confirmation",
                 "entity_overview",
                 "entity_catalog_lookup",

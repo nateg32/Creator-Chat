@@ -49,6 +49,16 @@ IDENTITY_PATTERNS = [
     re.compile(r"\b(?:real|full|legal)\s+name\b", re.IGNORECASE),
 ]
 
+ROLE_PATTERNS = [
+    re.compile(r"\bwhat\s+do\s+(?:you|u)\s+(?:manage|run|own|operate|lead)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:company|business|companies|businesses)\s+do\s+(?:you|u)\s+(?:manage|run|own|operate|lead|found)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:are|were)\s+(?:you|u)\s+(?:founder|co-?founder|owner|ceo|partner|managing\s+partner)\s+of\b", re.IGNORECASE),
+    re.compile(r"\b(?:founder|co-?founder|owner|ceo|partner|managing\s+partner)\s+of\s+what\b", re.IGNORECASE),
+    re.compile(r"\b(?:your|ur)\s+(?:company|business|companies|businesses|role|job|title)\b", re.IGNORECASE),
+    re.compile(r"\b(?:what|which)\s+(?:company|business)\s+(?:are|were)\s+(?:you|u)\s+(?:with|at|part\s+of)\b", re.IGNORECASE),
+    re.compile(r"\b(?:managing\s+partner|founder|co-?founder|ceo)\b", re.IGNORECASE),
+]
+
 
 @dataclass(frozen=True)
 class CreatorFactPolicy:
@@ -118,6 +128,13 @@ def is_creator_identity_question(question: str) -> bool:
     return any(pattern.search(lowered) for pattern in IDENTITY_PATTERNS)
 
 
+def is_creator_role_question(question: str) -> bool:
+    lowered = str(question or "").strip().lower()
+    if not lowered:
+        return False
+    return any(pattern.search(lowered) for pattern in ROLE_PATTERNS)
+
+
 def is_timeline_question(question: str, query_goal: str = "") -> bool:
     lowered = str(question or "").lower()
     if query_goal == "timeline_lookup":
@@ -168,6 +185,16 @@ def classify_creator_fact_query(question: str, *, entity_type: str = "", query_g
             requires_verified_sources=True,
             is_personal=False,
             fact_field="full_name",
+        )
+
+    if is_creator_role_question(question):
+        return CreatorFactPolicy(
+            kind="role",
+            focus="creator_role",
+            requires_web=True,
+            requires_verified_sources=True,
+            is_personal=False,
+            fact_field="role",
         )
 
     if is_publication_timeline_question(question) and is_timeline_question(question, query_goal=query_goal):

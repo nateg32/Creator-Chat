@@ -80,6 +80,15 @@ class EvidenceRouterTests(unittest.TestCase):
         self.assertFalse(plan.should_search_corpus)
         self.assertTrue(plan.should_verify)
 
+    def test_role_query_routes_to_profile_and_creator_world(self):
+        plan = self.router.build_plan("what do u manage again?")
+        self.assertEqual(plan.query_goal, "role_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertEqual(plan.answer_mode, "direct_fact")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertTrue(plan.should_verify)
+
     def test_resource_lookup_enables_web_search(self):
         plan = self.router.build_plan("whats a key video youd recommend if i wanna start day trading from the basics")
         self.assertEqual(plan.query_goal, "resource_lookup")

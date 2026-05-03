@@ -185,6 +185,9 @@ def _extract_fact_value_from_text(fact_field: str, text: str) -> str:
         return ""
 
     lowered_field = str(fact_field or "").strip().lower()
+    if lowered_field == "role":
+        return _extract_role_value_from_text(candidate_text)
+
     if lowered_field == "full_name":
         for pattern in (
             re.compile(r"(?:full|real|legal)\s+name\s*(?:is|:)\s*([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3})"),
@@ -214,6 +217,62 @@ def _extract_fact_value_from_text(fact_field: str, text: str) -> str:
         if match:
             return match.group(0)
 
+    return ""
+
+
+_ROLE_WITH_ORG_RE = re.compile(
+    r"\b(?P<title>(?:co-?founder|founder|managing\s+partner|general\s+partner|partner|ceo|chief\s+executive\s+officer|owner|chairman|president)"
+    r"(?:\s+(?:and|&)\s+(?:co-?founder|founder|managing\s+partner|general\s+partner|partner|ceo|chief\s+executive\s+officer|owner|chairman|president))*)"
+    r"\s+(?:of|at|for)\s+"
+    r"(?P<company>[A-Z0-9][A-Za-z0-9&.' -]{1,90}?)"
+    r"(?=,|\s+-|\s+\||\.?\s+(?:and|where|who|which|that)\b|[.!?](?:\s|$)|$)",
+    re.IGNORECASE,
+)
+_ROLE_TITLE_ONLY_RE = re.compile(
+    r"\b(co-?founder|founder|managing\s+partner|general\s+partner|partner|ceo|chief\s+executive\s+officer|owner|chairman|president)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_role_title(value: str) -> str:
+    title = re.sub(r"\s+", " ", str(value or "").strip(" .,:;!?"))
+    replacements = {
+        "ceo": "CEO",
+        "chief executive officer": "Chief Executive Officer",
+        "co-founder": "Co-Founder",
+        "cofounder": "Co-Founder",
+        "founder": "Founder",
+        "managing partner": "Managing Partner",
+        "general partner": "General Partner",
+        "partner": "Partner",
+        "owner": "Owner",
+        "chairman": "Chairman",
+        "president": "President",
+    }
+    parts = re.split(r"\s+(and|&)\s+", title, flags=re.IGNORECASE)
+    normalized_parts: List[str] = []
+    for part in parts:
+        lower = part.lower().strip()
+        if lower in {"and", "&"}:
+            normalized_parts.append("and" if lower == "and" else "&")
+        else:
+            normalized_parts.append(replacements.get(lower, part[:1].upper() + part[1:]))
+    return " ".join(normalized_parts).replace(" & ", " & ").strip()
+
+
+def _extract_role_value_from_text(text: str) -> str:
+    candidate_text = re.sub(r"\s+", " ", str(text or "").strip())
+    if not candidate_text:
+        return ""
+    match = _ROLE_WITH_ORG_RE.search(candidate_text)
+    if match:
+        title = _normalize_role_title(match.group("title"))
+        company = re.sub(r"\s+", " ", match.group("company")).strip(" .,:;!?'")
+        if title and company:
+            return f"{title} of {company}"
+    match = _ROLE_TITLE_ONLY_RE.search(candidate_text)
+    if match:
+        return _normalize_role_title(match.group(1))
     return ""
 
 
@@ -431,6 +490,7 @@ class PersonalBioService:
                 and (evidence_plan.should_verify or evidence_plan.should_search_web)
             )
             or evidence_plan.query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup"}
+            or evidence_plan.query_goal == "role_lookup"
             or (
                 evidence_plan.query_goal in {"availability_lookup", "resource_lookup"}
                 and evidence_plan.should_search_web
@@ -558,6 +618,13 @@ class PersonalBioService:
             source_snippet=candidate_source_snippet,
         ):
             extracted_fact = None
+        if policy.kind == "role" and not extracted_fact:
+            extracted_fact = self._extract_structured_fact_candidate(
+                resolved_question,
+                internal_facts,
+                fact_field="role",
+                entity_subject=entity_subject or creator_name,
+            )
         web_facts = []
         if not extracted_fact and effective_allow_web and evidence_plan.should_search_web and (
             public_fact_query or self._needs_more_evidence(internal_facts) or evidence_plan.should_verify
@@ -950,10 +1017,15 @@ class PersonalBioService:
             })
 
         _push_fact("Bio", identity.get("bio"))
+        _push_fact("Roles", identity.get("job_titles"))
+        _push_fact("Background", identity.get("verified_background") or identity.get("achievements"))
+        _push_fact("Verified role facts", identity.get("role_facts") or identity.get("company_roles"))
         _push_fact("Mission", identity.get("mission"))
         _push_fact("Worldview", identity.get("worldview"))
         _push_fact("Verified facts", identity.get("verified_facts"))
         _push_fact("Public consensus", research.get("public_consensus"))
+        _push_fact("Public consensus facts", (research.get("investigative_dossier") or {}).get("public_consensus_facts") if isinstance(research.get("investigative_dossier"), dict) else None)
+        _push_fact("Biography", (research.get("investigative_dossier") or {}).get("biography") if isinstance(research.get("investigative_dossier"), dict) else None)
         _push_fact("Creator claims", research.get("creator_claims"))
         _push_fact("Themes", research.get("themes"))
         return facts
@@ -1090,7 +1162,7 @@ class PersonalBioService:
             return 4
         if query_goal == "journey_lookup" and policy_kind == "creator_journey":
             return 3
-        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup"}:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup", "role_lookup"}:
             return 2
         if query_goal in {"availability_lookup", "resource_lookup"}:
             return 2
@@ -1099,7 +1171,7 @@ class PersonalBioService:
     def _grounded_query_plan_limit(self, query_goal: str) -> int:
         if query_goal == "journey_lookup":
             return 2
-        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup"}:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup", "role_lookup"}:
             return 1
         if query_goal in {"availability_lookup", "resource_lookup"}:
             return 2
@@ -1110,7 +1182,7 @@ class PersonalBioService:
             return 12.0
         if query_goal == "journey_lookup" and policy_kind == "creator_journey":
             return 10.0
-        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup"}:
+        if query_goal in {"timeline_lookup", "price_lookup", "stat_lookup", "current_stat_lookup", "identity_lookup", "role_lookup"}:
             return 9.0
         return 8.0
 
@@ -1257,6 +1329,13 @@ class PersonalBioService:
                 f'{creator_name} real name',
                 f'{creator_name} legal name',
             ])
+        elif query_goal == "role_lookup":
+            queries.extend([
+                f'{creator_name} founder managing partner company',
+                f'{creator_name} managing partner of',
+                f'{creator_name} founder of company',
+                f'{creator_name} LinkedIn company role',
+            ])
 
         if subject_hint and subject_hint.lower() not in {"it", "that", "this", "the book", "your book"}:
             queries.append(f'{creator_name} "{subject_hint}"')
@@ -1283,6 +1362,8 @@ class PersonalBioService:
             if subject_hint:
                 queries.append(f'{creator_name} "{subject_hint}" current')
             queries.append(f"{creator_name} current public stats")
+        elif query_goal == "role_lookup":
+            queries.append(f"{creator_name} current role company")
         elif query_goal in {"availability_lookup", "resource_lookup"} and subject_hint:
             queries.extend([
                 f'{creator_name} "{subject_hint}" official',
@@ -1340,6 +1421,15 @@ class PersonalBioService:
         if query_goal in {"stat_lookup", "current_stat_lookup"}:
             if re.search(r"\b\d[\d,]*(?:\.\d+)?(?:\s?[kKmM])?\b", blob):
                 return 0.9
+            return 0.35
+
+        if query_goal == "role_lookup":
+            if _extract_role_value_from_text(blob):
+                return 0.95
+            if any(token in lowered_blob for token in ("founder", "co-founder", "managing partner", "ceo", "owner")) and any(
+                token in lowered_blob for token in ("company", "business", "acquisition", "linkedin", "official")
+            ):
+                return 0.82
             return 0.35
 
         if query_goal in {"availability_lookup", "resource_lookup"}:
@@ -1451,6 +1541,11 @@ class PersonalBioService:
 
         if fact_field == "full_name" and value:
             return f"My full name is {value}."
+
+        if fact_field == "role" and value:
+            role_value = re.sub(r"\s+", " ", value).strip(" .")
+            if role_value:
+                return f"I'm the {role_value}."
 
         if fact_field == "price" and value:
             return f"I've got {subject} at {value} right now."
@@ -1626,6 +1721,19 @@ class PersonalBioService:
                     confidence=0.94,
                 )
 
+        if fact_field == "role":
+            value = _extract_role_value_from_text(blob)
+            if value:
+                return StructuredFactCandidate(
+                    fact_field="role",
+                    subject=subject,
+                    value=value,
+                    answer_text=f"I'm the {value}.",
+                    source_url=source_url,
+                    source_title=source_title,
+                    confidence=0.92,
+                )
+
         if fact_field == "price":
             match = re.search(r"\$\s?\d[\d,]*(?:\.\d{2})?", blob)
             if match:
@@ -1770,6 +1878,11 @@ class PersonalBioService:
                 option_text = f"{options[0]}, {options[1]}, or {options[2]}"
             return f"You can get {subject} on {option_text}."
 
+        if policy.kind == "role":
+            role_value = _extract_role_value_from_text(blob)
+            if role_value:
+                return f"I'm the {role_value}."
+
         return ""
 
     def _synthesize_public_fact_answer(
@@ -1792,14 +1905,14 @@ class PersonalBioService:
         system_prompt = f"""
 You are {creator_name}.
 
-This is a public factual question about your own public work, products, books, releases, platforms, stats, or creator journey.
+This is a public factual question about your own public work, products, books, releases, platforms, stats, role/company, or creator journey.
 
 Voice Profile:
 {vp_json}
 
 RULES:
 1. Answer directly from the evidence in 1-2 sentences.
-2. If the evidence contains a date, title, platform, availability detail, or a clear reason or motivation from your public story, lead with that concrete point.
+2. If the evidence contains a date, title, platform, availability detail, role, company name, or a clear reason or motivation from your public story, lead with that concrete point.
 3. Never say "I haven't talked about that publicly" about your own public work.
 4. Never say "I don't have that in front of me" about your own book, product, or release.
 5. Never invent facts. If the evidence is still insufficient, direct the user to a concrete official source.

@@ -185,6 +185,14 @@ class TextSanitizerTests(unittest.TestCase):
             "I'm Alex Hormozi. I'm the founder and managing partner. I focus on growth.",
         )
 
+    def test_repairs_dangling_preposition_before_where_clause(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "I'm the founder and managing partner of, where I focus on helping businesses scale."
+            ),
+            "I'm the founder and managing partner, and I focus on helping businesses scale.",
+        )
+
     def test_preserves_real_words_that_end_with_and(self):
         self.assertEqual(
             text_sanitizer.strip_mid_sentence_hyphens("The command line matters."),
