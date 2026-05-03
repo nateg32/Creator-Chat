@@ -34,6 +34,20 @@ from backend.services.steering_service import steering_service
 from backend.services.classifiers import classifiers
 from backend.services.stronghold_guard import stronghold_guard
 from backend.core.interaction_engine import interaction_engine, InteractionPlan, strip_all_markdown
+try:
+    from backend.core.interaction_engine import (
+        build_creator_genome,
+        build_voice_card,
+        format_creator_genome_for_prompt,
+        format_turn_anchor_block,
+        format_voice_card_for_prompt,
+    )
+except ImportError:
+    build_creator_genome = None
+    build_voice_card = None
+    format_creator_genome_for_prompt = None
+    format_turn_anchor_block = None
+    format_voice_card_for_prompt = None
 from backend.services.web_verify import web_verify
 from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.assumption_blocker import assumption_blocker
@@ -3806,7 +3820,38 @@ def generate_grounded_answer(
     # --- Step 1: Meaning Draft (Neutral) ---
     logger.info(f"Generating Meaning Draft (Mode: {mode})...")
     
-    if conv_mode == "CURIOSITY_GATE" and creator_profile:
+    if intent in ["greeting", "greeting_only"] and conv_mode == "GREETING_MODE":
+        logger.info("Fast Path: Skipping Meaning Draft for greeting.")
+        try:
+            simple_greeting = greeting_service.generate_greeting(
+                user_name,
+                voice_profile or {},
+                creator_name=(creator_profile or {}).get("name"),
+                creator_category=(creator_profile or {}).get("creator_category"),
+                style_fingerprint=style_fingerprint or {},
+                conversation_history=conversation_history or [],
+                creator_profile=creator_profile or {},
+            )
+        except Exception as e:
+            logger.error(f"GreetingService failed: {e}")
+            simple_greeting = "Hey. What's on your mind?"
+        draft = {
+            "goal_guess": "Greet the user and open the conversation.",
+            "user_stage": "exploring",
+            "next_action": "Clarify",
+            "missing_info_request": None,
+            "help_format": "conversation",
+            "target_resource_title": None,
+            "answer_points": [simple_greeting],
+            "concrete_action_step": simple_greeting,
+            "uncertainty_handling": "admit_unknown",
+            "tone_guidance": "creator greeting",
+            "meaning_draft": simple_greeting,
+            "is_meaning_complete": True,
+            "facts_used": [],
+            "_deterministic_greeting": True,
+        }
+    elif conv_mode == "CURIOSITY_GATE" and creator_profile:
         curious_q = user_priority_service.get_curious_question(creator_profile, user_state)
         # Seed the draft with the curious question
         # If we have a goal in the current thread memory, acknowledge it. Otherwise, just ask.
@@ -3834,7 +3879,7 @@ def generate_grounded_answer(
         )
     
     # --- Step 1.5: Fast Path for Greetings (GreetingService) ---
-    if intent in ["greeting", "greeting_only"] and conv_mode == "GREETING_MODE":
+    if intent in ["greeting", "greeting_only"] and conv_mode == "GREETING_MODE" and not draft.get("_deterministic_greeting"):
         logger.info("Fast Path: Using GreetingService for greeting.")
         try:
             # Deterministic greeting to prevent hallucinations
@@ -3906,6 +3951,27 @@ def generate_grounded_answer(
         mode=runtime_mode,
         identity_packet=identity_packet,
     )
+    voice_card_block = ""
+    creator_genome_block = ""
+    turn_anchor_block = ""
+    if (
+        creator_profile
+        and build_voice_card
+        and format_voice_card_for_prompt
+        and build_creator_genome
+        and format_creator_genome_for_prompt
+        and format_turn_anchor_block
+    ):
+        try:
+            voice_card_block = format_voice_card_for_prompt(
+                build_voice_card(creator_profile),
+                creator_name or (creator_profile.get("name") or creator_profile.get("handle") or "the creator"),
+            )
+            creator_genome = build_creator_genome(creator_profile, rag_chunks=support_set, persona=persona)
+            creator_genome_block = format_creator_genome_for_prompt(creator_genome)
+            turn_anchor_block = format_turn_anchor_block(question, creator_genome)
+        except Exception as e:
+            logger.debug("Failed to build compact voice anchors: %s", e)
     stance_packet = identity_packet.get("stance") or {}
     
     resource_context = _resource_prompt_context(support_set, question)
@@ -4044,6 +4110,13 @@ STEERING: {steering_move} ({steering_guidance})
 MISSION:
 Rewrite the NEUTRAL CONTENT PLAN below into your unique voice and style.
 Strictly adhere to the STYLE DNA constraints.
+
+{voice_card_block}
+
+{creator_genome_block}
+{turn_anchor_block}
+
+VOICE PRIMACY: Every sentence must sound like {creator_name or 'the creator'}, not a generic expert. Anchor the reply to at least one creator-specific stance, phrase, rule, story, or grounded source when natural.
 
 {dna_instruction}
 
@@ -4226,27 +4299,15 @@ Rewrite the response to fix these violations.
         voice_profile=voice_profile
     )
     
-    # --- Step 6: Final Persona Surface Filter ---
-    # Guaranteed removal of system voice / meta-statements
-    final_response = apply_persona_surface_filter(
-        final_response,
-        intent,
-        voice_profile,
-        creator_name=creator_name or "The Creator",
-        style_fingerprint=style_fingerprint,
-    )
     final_response = clean_response(
         final_response, 
         strip_hyphens=should_strip_hyphens(creator_profile)
     )
 
-    regurgitation_report = check_for_regurgitation(final_response, support_set)
-    if not regurgitation_report.get("is_clean", True):
-        logger.warning(
-            "Transcript regurgitation guard flagged sync reply for creator_id=%s: %s",
-            creator_id,
-            regurgitation_report.get("reason"),
-        )
+    # The creator integrity guard is deterministic first and only calls the
+    # rewrite model when it detects drift, missing creator markers, leaks, or
+    # invented resources. That keeps the common path fast while preserving the
+    # heavier persona repair layer for responses that actually need it.
     if creator_profile:
         final_response = interaction_engine._apply_creator_integrity_guard(
             final_response,
@@ -4255,6 +4316,23 @@ Rewrite the response to fix these violations.
             question,
             allow_links=include_links_in_output,
             persona=persona,
+        )
+    else:
+        final_response = apply_persona_surface_filter(
+            final_response,
+            intent,
+            voice_profile,
+            creator_name=creator_name or "The Creator",
+            style_fingerprint=style_fingerprint,
+        )
+        final_response = clean_response(final_response, strip_hyphens=should_strip_hyphens(creator_profile))
+
+    regurgitation_report = check_for_regurgitation(final_response, support_set)
+    if not regurgitation_report.get("is_clean", True):
+        logger.warning(
+            "Transcript regurgitation guard flagged sync reply for creator_id=%s: %s",
+            creator_id,
+            regurgitation_report.get("reason"),
         )
     creator_markers: List[str] = []
     if creator_profile:

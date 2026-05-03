@@ -3,6 +3,8 @@ import json
 import random
 import logging
 import hashlib
+import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
 import random
@@ -40,6 +42,56 @@ from backend.services.conversation_closure import (
 )
 
 logger = logging.getLogger(__name__)
+
+_STATIC_VOICE_PROMPT_CACHE_MAX = 256
+_STATIC_VOICE_PROMPT_CACHE: OrderedDict[str, Dict[str, str]] = OrderedDict()
+
+
+def _stable_prompt_cache_digest(value: Any) -> str:
+    try:
+        raw = json.dumps(value, sort_keys=True, default=str, ensure_ascii=True)
+    except TypeError:
+        raw = repr(value)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _static_voice_cache_key(creator_profile: Dict[str, Any], creator_name: str, mode: str) -> str:
+    creator_profile = creator_profile or {}
+    payload = {
+        "id": creator_profile.get("id"),
+        "name": creator_name,
+        "mode": mode,
+        "config_version": creator_profile.get("config_version"),
+        "last_approved_version": creator_profile.get("last_approved_version"),
+        "fingerprint_updated_at": creator_profile.get("fingerprint_updated_at"),
+        "style_fingerprint": creator_profile.get("style_fingerprint"),
+        "voice_profile": creator_profile.get("voice_profile"),
+        "voice_patterns": creator_profile.get("voice_patterns"),
+        "behavioral_fingerprint": creator_profile.get("behavioral_fingerprint"),
+    }
+    return _stable_prompt_cache_digest(payload)
+
+
+def get_static_voice_prompt_blocks(
+    creator_profile: Dict[str, Any],
+    creator_name: str,
+    mode: str = "task",
+) -> tuple[Dict[str, str], bool]:
+    cache_key = _static_voice_cache_key(creator_profile, creator_name, mode)
+    cached = _STATIC_VOICE_PROMPT_CACHE.get(cache_key)
+    if cached is not None:
+        _STATIC_VOICE_PROMPT_CACHE.move_to_end(cache_key)
+        return dict(cached), True
+
+    blocks = {
+        "voice_instructions": build_voice_instructions(creator_profile, mode=mode),
+        "voice_examples": _build_voice_examples(creator_profile, mode=mode),
+        "voice_card_block": format_voice_card_for_prompt(build_voice_card(creator_profile), creator_name),
+    }
+    _STATIC_VOICE_PROMPT_CACHE[cache_key] = blocks
+    if len(_STATIC_VOICE_PROMPT_CACHE) > _STATIC_VOICE_PROMPT_CACHE_MAX:
+        _STATIC_VOICE_PROMPT_CACHE.popitem(last=False)
+    return dict(blocks), False
 
 # ──────────────────────────────────────────────────────────────
 # CANONICAL RESPONSE PRESETS
@@ -2094,6 +2146,7 @@ Generate InteractionPlan JSON."""
         HIGH-SPEED COMBINED PASS (Router + Planner + Renderer in one stream).
         Bypasses Step 2 (Classifier) and Step 7 (Planner) for maximum speed.
         """
+        t0 = time.perf_counter()
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         allow_lists = self._should_allow_lists(normalized_prefs)
         reply_budget = self._resolve_reply_budget(route or "ROUTE_2_TASK", user_msg, normalized_prefs, allow_lists=allow_lists)
@@ -2104,8 +2157,16 @@ Generate InteractionPlan JSON."""
             route=route,
             voice_chunks=voice_chunks,
         )
+        prompt_ms = (time.perf_counter() - t0) * 1000.0
+        logger.info(
+            "[LATENCY] combined_stream_prompt route=%s creator_id=%s prompt_chars=%s prompt_ms=%.1f",
+            route,
+            creator_id,
+            len(system_prompt),
+            prompt_ms,
+        )
 
-        return self._generate_completion_with_compat(
+        stream = self._generate_completion_with_compat(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
@@ -2115,6 +2176,13 @@ Generate InteractionPlan JSON."""
             stream=True,
             max_tokens=int(reply_budget["max_tokens"]),
         )
+        logger.info(
+            "[LATENCY] combined_stream_open route=%s creator_id=%s setup_ms=%.1f",
+            route,
+            creator_id,
+            (time.perf_counter() - t0) * 1000.0,
+        )
+        return stream
 
     async def render_combined_pass_stream_async(
         self,
@@ -2134,6 +2202,7 @@ Generate InteractionPlan JSON."""
         all_video_titles: Optional[List[str]] = None,
     ):
         """Async version of the combined pass."""
+        t0 = time.perf_counter()
         normalized_prefs = self._normalize_user_preferences(user_preferences)
         allow_lists = self._should_allow_lists(normalized_prefs)
         reply_budget = self._resolve_reply_budget(route or "ROUTE_2_TASK", user_msg, normalized_prefs, allow_lists=allow_lists)
@@ -2145,8 +2214,16 @@ Generate InteractionPlan JSON."""
             voice_chunks=voice_chunks,
             all_video_titles=all_video_titles,
         )
+        prompt_ms = (time.perf_counter() - t0) * 1000.0
+        logger.info(
+            "[LATENCY] combined_stream_prompt_async route=%s creator_id=%s prompt_chars=%s prompt_ms=%.1f",
+            route,
+            creator_id,
+            len(system_prompt),
+            prompt_ms,
+        )
 
-        return await self._generate_completion_with_compat_async(
+        stream = await self._generate_completion_with_compat_async(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
@@ -2156,6 +2233,13 @@ Generate InteractionPlan JSON."""
             stream=True,
             max_tokens=int(reply_budget["max_tokens"]),
         )
+        logger.info(
+            "[LATENCY] combined_stream_open_async route=%s creator_id=%s setup_ms=%.1f",
+            route,
+            creator_id,
+            (time.perf_counter() - t0) * 1000.0,
+        )
+        return stream
 
     def _build_combined_system_prompt(
         self,
@@ -2174,6 +2258,8 @@ Generate InteractionPlan JSON."""
         voice_chunks: Optional[List[Dict[str, Any]]] = None,
         all_video_titles: Optional[List[str]] = None,
     ) -> str:
+        prompt_t0 = time.perf_counter()
+        voice_cache_hit: Optional[bool] = None
         # ──────────────────────────────────────────────────────────────
         # IDENTITY RESOLUTION
         # ──────────────────────────────────────────────────────────────
@@ -2217,29 +2303,50 @@ Generate InteractionPlan JSON."""
         if route == "ROUTE_0_GREETING":
             dm_rule = "This is a one to one DM. Never address the user as everyone, team, guys, friends, family, or chat."
             greeting_voice_dna = build_voice_dna_block(creator_profile, mode="greeting", conversation_tracker=self._get_voice_tracker(thread_id))
+            static_voice_blocks, voice_cache_hit = get_static_voice_prompt_blocks(creator_profile, creator_name, mode="greeting")
+            voice_instructions = static_voice_blocks.get("voice_instructions") or build_voice_instructions(creator_profile, mode="greeting")
             if user_name:
                 domain_q = get_greeting_question(creator_profile)
-                return f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
+                prompt = f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
 
 {greeting_voice_dna}
 
-YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
+YOUR VOICE: {voice_instructions}
 {pref_instructions}
 {safety_block}
 DIRECTIVE: {dm_rule} Greet the user concisely and in character. Use their name, {user_name}, once naturally. Then ask one simple question: {domain_q}
 Output ONLY your response."""
-            return f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
+                logger.info(
+                    "[LATENCY] combined_prompt_built route=%s creator_id=%s prompt_chars=%s build_ms=%.1f voice_cache_hit=%s",
+                    route,
+                    creator_id,
+                    len(prompt),
+                    (time.perf_counter() - prompt_t0) * 1000.0,
+                    voice_cache_hit,
+                )
+                return prompt
+            prompt = f"""IDENTITY: You are {creator_name}. Not an AI pretending. YOU.
 
 {greeting_voice_dna}
 
-YOUR VOICE: {build_voice_instructions(creator_profile, mode="greeting")}
+YOUR VOICE: {voice_instructions}
 {pref_instructions}
 {safety_block}
 DIRECTIVE: {dm_rule} Greet the user concisely and in character. Since you do not know their name yet, ask what they want to be called. Do not jump into advice or a domain question yet.
 Output ONLY your response."""
-        voice_instructions = build_voice_instructions(creator_profile, mode="task")
-        voice_examples = _build_voice_examples(creator_profile, mode="task")
-        voice_card_block = format_voice_card_for_prompt(build_voice_card(creator_profile), creator_name)
+            logger.info(
+                "[LATENCY] combined_prompt_built route=%s creator_id=%s prompt_chars=%s build_ms=%.1f voice_cache_hit=%s",
+                route,
+                creator_id,
+                len(prompt),
+                (time.perf_counter() - prompt_t0) * 1000.0,
+                voice_cache_hit,
+            )
+            return prompt
+        static_voice_blocks, voice_cache_hit = get_static_voice_prompt_blocks(creator_profile, creator_name, mode="task")
+        voice_instructions = static_voice_blocks.get("voice_instructions") or build_voice_instructions(creator_profile, mode="task")
+        voice_examples = static_voice_blocks.get("voice_examples") or _build_voice_examples(creator_profile, mode="task")
+        voice_card_block = static_voice_blocks.get("voice_card_block") or format_voice_card_for_prompt(build_voice_card(creator_profile), creator_name)
         voice_dna_block = build_voice_dna_block(creator_profile, mode="task", conversation_tracker=self._get_voice_tracker(thread_id))
         voice_echo_block = build_voice_echo_block(rag_chunks)
         creator_genome = build_creator_genome(creator_profile, rag_chunks=rag_chunks, persona=persona)
