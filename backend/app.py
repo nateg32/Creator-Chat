@@ -2854,6 +2854,7 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                             citations=citations,
                             user_metadata=user_image_metadata,
                             user_id=current_user["id"],
+                            creator_id=payload.creator_id,
                             creator_profile=creator_cleaning_profile,
                         )
                         thread = db.execute_one("SELECT title, title_locked FROM chat_threads WHERE id = %s", (payload.thread_id,))
@@ -3248,6 +3249,7 @@ def _finalize_chat_turn_async(
                 citations=save_citations,
                 user_metadata=user_image_metadata,
                 user_id=user_id,
+                creator_id=creator_id,
                 quality_report=quality_report,
                 creator_profile=creator_cleaning_profile,
             )
@@ -3348,6 +3350,7 @@ def finalize_stream_interaction(
     citations=None,
     user_metadata=None,
     user_id: int = 1,
+    creator_id: Optional[int] = None,
     quality_report: Optional[Dict[str, Any]] = None,
     creator_profile: Optional[Dict[str, Any]] = None,
 ):
@@ -3388,9 +3391,8 @@ def finalize_stream_interaction(
             WHERE id = %s
         """, (preview, thread_id))
         
-        # Sync memory in background
-        from db import interaction_engine
-        interaction_engine.store_interaction(str(user_id), str(user_id), thread_id, question, answer)
+        memory_creator_id = creator_id if creator_id is not None else user_id
+        interaction_engine.store_interaction(str(memory_creator_id), str(user_id), thread_id, question, answer)
     except Exception as e:
         import traceback
         import logging

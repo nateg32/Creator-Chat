@@ -562,7 +562,7 @@ Return JSON only:
         import time
         for attempt in range(2): # Retry only for explicit rate limiting.
             try:
-                response = requests.post(url, json=payload, timeout=5.0)
+                response = requests.post(url, json=payload, timeout=settings.GEMINI_REST_TIMEOUT_SECONDS)
                 if response.status_code == 429:
                     wait = 1
                     logger.warning(f"GeminiResearch: 429 Rate Limit. Waiting {wait}s... (Attempt {attempt+1}/2)")
@@ -575,8 +575,11 @@ Return JSON only:
                 body = response.text[:500]
                 logger.info(f"[SEARCH_TRACE] provider_response: {body}")
                 return response.json()
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"[SEARCH_TRACE] provider_timeout timeout={settings.GEMINI_REST_TIMEOUT_SECONDS}s error={e}")
+                return None
             except Exception as e:
-                logger.error(f"[SEARCH_TRACE] provider_exception: {e}")
+                logger.warning(f"[SEARCH_TRACE] provider_exception: {e}")
                 return None
         return None
 

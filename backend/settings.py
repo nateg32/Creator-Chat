@@ -34,6 +34,7 @@ class Settings:
     # Google / Gemini
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
     GEMINI_GROUNDING_MODEL: str = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
+    GEMINI_REST_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_REST_TIMEOUT_SECONDS", "4.0"))
     
     # Apify
     APIFY_TOKEN: Optional[str] = os.getenv("APIFY_TOKEN", None)
