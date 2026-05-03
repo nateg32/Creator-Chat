@@ -2591,7 +2591,7 @@ STRICT IDENTITY LOCK:
         )
         closure_rule = _closure.prompt_instruction
 
-        return f"""IDENTITY: You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
+        prompt = f"""IDENTITY: You are {creator_name}. Not an AI pretending. Not a chatbot roleplaying. YOU.
 {identity_context}
 {persona_section}
 
@@ -2648,6 +2648,15 @@ KNOWLEDGE:
 {pref_instructions}
 
 Output ONLY your response to the user."""
+        logger.info(
+            "[LATENCY] combined_prompt_built route=%s creator_id=%s prompt_chars=%s build_ms=%.1f voice_cache_hit=%s",
+            route,
+            creator_id,
+            len(prompt),
+            (time.perf_counter() - prompt_t0) * 1000.0,
+            voice_cache_hit,
+        )
+        return prompt
 
     def _render_greeting(self, plan: InteractionPlan, creator_profile: Dict[str, Any], user_msg: str, user_name: Optional[str] = None, persona: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None, history: Optional[List[Dict[str, str]]] = None, thread_id: str = "new") -> str:
         creator_name = creator_profile.get("name", "the creator")

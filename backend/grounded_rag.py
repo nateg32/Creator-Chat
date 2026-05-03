@@ -9,6 +9,7 @@ import re
 import json
 import logging
 import math
+import time
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qs, urlparse
@@ -41,6 +42,7 @@ try:
         format_creator_genome_for_prompt,
         format_turn_anchor_block,
         format_voice_card_for_prompt,
+        get_static_voice_prompt_blocks,
     )
 except ImportError:
     build_creator_genome = None
@@ -48,6 +50,7 @@ except ImportError:
     format_creator_genome_for_prompt = None
     format_turn_anchor_block = None
     format_voice_card_for_prompt = None
+    get_static_voice_prompt_blocks = None
 from backend.services.web_verify import web_verify
 from backend.services.formatting import clean_response, should_strip_hyphens
 from backend.services.assumption_blocker import assumption_blocker
@@ -3695,6 +3698,22 @@ def generate_grounded_answer(
     3. Verification & Repair Loop
     """
     from backend.services.decision_service import decision_service
+    answer_t0 = time.perf_counter()
+    last_stage_t0 = answer_t0
+
+    def _log_answer_stage(stage: str) -> None:
+        nonlocal last_stage_t0
+        now = time.perf_counter()
+        logger.info(
+            "[LATENCY] grounded_answer_stage creator_id=%s intent=%s mode=%s stage=%s stage_ms=%.1f total_ms=%.1f",
+            creator_id,
+            intent,
+            mode,
+            stage,
+            (now - last_stage_t0) * 1000.0,
+            (now - answer_t0) * 1000.0,
+        )
+        last_stage_t0 = now
     
     # Resolve decision policy
     policy = decision_policy or decision_service.DEFAULT_POLICY
@@ -3798,6 +3817,7 @@ def generate_grounded_answer(
     context = "\n\n".join(context_parts) if context_parts else "No relevant content found."
     live_web_chunks = sum(1 for chunk in support_set if _is_live_web_chunk(chunk))
     logger.info(f"[SEARCH_TRACE] prompt_context: support_chunks={len(support_set)} live_web_chunks={live_web_chunks} context_len={len(context)}")
+    _log_answer_stage("context_build")
 
     # Fetch verified facts
     from backend.services.fact_verification import FactVerificationService
@@ -3816,6 +3836,7 @@ def generate_grounded_answer(
                 val = f.get('value', '')
                 slot = f.get('slot', '')
                 memory_context_str += f"- {slot}: {val}\n"
+    _log_answer_stage("facts_memory")
 
     # --- Step 1: Meaning Draft (Neutral) ---
     logger.info(f"Generating Meaning Draft (Mode: {mode})...")
@@ -3877,6 +3898,7 @@ def generate_grounded_answer(
             steering_move=steering_move,
             support_set=support_set,
         )
+    _log_answer_stage("meaning_draft")
     
     # --- Step 1.5: Fast Path for Greetings (GreetingService) ---
     if intent in ["greeting", "greeting_only"] and conv_mode == "GREETING_MODE" and not draft.get("_deterministic_greeting"):
@@ -3963,10 +3985,25 @@ def generate_grounded_answer(
         and format_turn_anchor_block
     ):
         try:
-            voice_card_block = format_voice_card_for_prompt(
-                build_voice_card(creator_profile),
-                creator_name or (creator_profile.get("name") or creator_profile.get("handle") or "the creator"),
-            )
+            resolved_creator_name = creator_name or (creator_profile.get("name") or creator_profile.get("handle") or "the creator")
+            if get_static_voice_prompt_blocks:
+                static_voice_blocks, voice_cache_hit = get_static_voice_prompt_blocks(
+                    creator_profile,
+                    resolved_creator_name,
+                    mode=runtime_mode,
+                )
+                voice_card_block = static_voice_blocks.get("voice_card_block", "")
+                logger.info(
+                    "[LATENCY] grounded_voice_cache creator_id=%s mode=%s hit=%s",
+                    creator_id,
+                    runtime_mode,
+                    voice_cache_hit,
+                )
+            else:
+                voice_card_block = format_voice_card_for_prompt(
+                    build_voice_card(creator_profile),
+                    resolved_creator_name,
+                )
             creator_genome = build_creator_genome(creator_profile, rag_chunks=support_set, persona=persona)
             creator_genome_block = format_creator_genome_for_prompt(creator_genome)
             turn_anchor_block = format_turn_anchor_block(question, creator_genome)
@@ -4085,6 +4122,7 @@ def generate_grounded_answer(
     if intent in ["greeting", "greeting_only", "small_talk"]:
         context = "No relevant context (Greeting Mode)."
         support_set = []
+    _log_answer_stage("voice_prompt_prep")
     
     # Construct Render Prompt
     render_system_prompt = f"""
@@ -4166,6 +4204,7 @@ NEUTRAL PLAN:
         temperature=0.7,
         max_tokens=1000
     )
+    _log_answer_stage("main_generation")
     
     # --- Human Compression Filter & Energy Check ---
     word_count = len(response_text.split())
@@ -4213,6 +4252,7 @@ NEUTRAL PLAN:
             model=settings.REWRITE_MODEL, # Fast edit
             temperature=0.3
         )
+        _log_answer_stage("compression_rewrite")
     
     # Verify
     score_result = scorer.score_response(response_text)
@@ -4246,6 +4286,7 @@ Rewrite the response to fix these violations.
             model=settings.REWRITE_MODEL, # Fast edit
             temperature=0.75
         )
+        _log_answer_stage("style_rewrite")
 
     # --- Step 4: Post-Processing ---
     # Strip URLs to enforce "No sources shown in chat" (just in case model hallucinated them)
@@ -4298,6 +4339,7 @@ Rewrite the response to fix these violations.
         intent,
         voice_profile=voice_profile
     )
+    _log_answer_stage("grounding_repair")
     
     final_response = clean_response(
         final_response, 
@@ -4326,6 +4368,7 @@ Rewrite the response to fix these violations.
             style_fingerprint=style_fingerprint,
         )
         final_response = clean_response(final_response, strip_hyphens=should_strip_hyphens(creator_profile))
+    _log_answer_stage("integrity_guard")
 
     regurgitation_report = check_for_regurgitation(final_response, support_set)
     if not regurgitation_report.get("is_clean", True):
@@ -4371,6 +4414,14 @@ Rewrite the response to fix these violations.
         "regurgitation_report": regurgitation_report,
         "quality_report": quality_report,
     }
+    logger.info(
+        "[LATENCY] grounded_answer_done creator_id=%s intent=%s mode=%s chars=%s total_ms=%.1f",
+        creator_id,
+        intent,
+        mode,
+        len(final_response or ""),
+        (time.perf_counter() - answer_t0) * 1000.0,
+    )
     
     return final_response, debug_info
 
@@ -6901,23 +6952,47 @@ async def grounded_rag_stream(
                 except Exception:
                     style_fingerprint = {}
 
-            # Use the interaction engine's LLM-based greeting for creator voice
-            from backend.services.conversation_closure import get_greeting_question
-            _greeting_plan = InteractionPlan(
-                route="ROUTE_0_GREETING",
-                next_question=get_greeting_question(creator_row),
-            )
-            greeting_text = await asyncio.to_thread(
-                interaction_engine._render_greeting,
-                _greeting_plan,
-                creator_row,
-                question,
-                user_name,
-                None,
-                user_preferences,
-                conversation_history or [],
-                thread_id or "new",
-            )
+            greeting_t0 = time.perf_counter()
+            try:
+                greeting_text = greeting_service.generate_greeting(
+                    user_name,
+                    voice_profile,
+                    include_question=True,
+                    creator_name=creator_row.get("name") or creator_row.get("handle"),
+                    creator_category=creator_row.get("creator_category"),
+                    style_fingerprint=style_fingerprint,
+                    variation_seed=thread_id or f"{creator_id}:{question}",
+                    conversation_history=conversation_history or [],
+                    creator_profile=creator_row,
+                )
+                logger.info(
+                    "[LATENCY] stream_greeting_deterministic creator_id=%s elapsed_ms=%.1f",
+                    creator_id,
+                    (time.perf_counter() - greeting_t0) * 1000.0,
+                )
+            except Exception as greeting_exc:
+                logger.warning("Deterministic greeting failed; falling back to LLM greeting: %s", greeting_exc)
+                from backend.services.conversation_closure import get_greeting_question
+                _greeting_plan = InteractionPlan(
+                    route="ROUTE_0_GREETING",
+                    next_question=get_greeting_question(creator_row),
+                )
+                greeting_text = await asyncio.to_thread(
+                    interaction_engine._render_greeting,
+                    _greeting_plan,
+                    creator_row,
+                    question,
+                    user_name,
+                    None,
+                    user_preferences,
+                    conversation_history or [],
+                    thread_id or "new",
+                )
+                logger.info(
+                    "[LATENCY] stream_greeting_llm_fallback creator_id=%s elapsed_ms=%.1f",
+                    creator_id,
+                    (time.perf_counter() - greeting_t0) * 1000.0,
+                )
             greeting_text = strip_all_markdown(greeting_text, creator_profile=creator_row)
             from backend.services.voice_dna import apply_vocabulary_resonance
             greeting_text = apply_vocabulary_resonance(greeting_text, creator_row)
@@ -6925,7 +7000,17 @@ async def grounded_rag_stream(
             return
 
     # 4. Async Synthesis Stream (Instant Start)
+    render_phase_t0 = time.perf_counter()
+    titles_t0 = time.perf_counter()
     all_video_titles = await asyncio.to_thread(fetch_all_document_titles, creator_id)
+    logger.info(
+        "[LATENCY] stream_titles_fetch route=%s creator_id=%s titles=%s elapsed_ms=%.1f",
+        route,
+        creator_id,
+        len(all_video_titles or []),
+        (time.perf_counter() - titles_t0) * 1000.0,
+    )
+    stream_setup_t0 = time.perf_counter()
     stream = await interaction_engine.render_combined_pass_stream_async(
         creator_profile=creator_row,
         rag_chunks=support_set,
@@ -6942,15 +7027,39 @@ async def grounded_rag_stream(
         voice_chunks=voice_support_set,
         all_video_titles=all_video_titles,
     )
+    logger.info(
+        "[LATENCY] stream_renderer_ready route=%s creator_id=%s setup_ms=%.1f total_pre_stream_ms=%.1f",
+        route,
+        creator_id,
+        (time.perf_counter() - stream_setup_t0) * 1000.0,
+        (time.perf_counter() - render_phase_t0) * 1000.0,
+    )
 
     streamed_parts: List[str] = []
+    first_content_logged = False
     async for chunk in stream:
         content = _extract_stream_chunk_text(chunk)
         if content:
+            if not first_content_logged:
+                first_content_logged = True
+                logger.info(
+                    "[LATENCY] stream_first_content route=%s creator_id=%s elapsed_ms=%.1f",
+                    route,
+                    creator_id,
+                    (time.perf_counter() - render_phase_t0) * 1000.0,
+                )
             streamed_parts.append(content)
             yield content
 
     final_stream_text = "".join(streamed_parts)
+    logger.info(
+        "[LATENCY] stream_renderer_done route=%s creator_id=%s chunks=%s chars=%s elapsed_ms=%.1f",
+        route,
+        creator_id,
+        len(streamed_parts),
+        len(final_stream_text),
+        (time.perf_counter() - render_phase_t0) * 1000.0,
+    )
     if not final_stream_text.strip():
         logger.warning("Streaming renderer produced empty output for route %s. Falling back to non-streaming renderer.", route)
         plan_obj = interaction_engine.build_interaction_plan(
