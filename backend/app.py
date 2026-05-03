@@ -170,17 +170,28 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 _CREATOR_COLUMN_CACHE: Dict[str, bool] = {}
+_TABLE_COLUMN_CACHE: Dict[tuple[str, str], bool] = {}
+
+
+def _table_column_exists(table_name: str, column_name: str) -> bool:
+    cache_key = (table_name, column_name)
+    cached = _TABLE_COLUMN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    row = db.execute_one(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+        (table_name, column_name),
+    )
+    exists = bool(row)
+    _TABLE_COLUMN_CACHE[cache_key] = exists
+    return exists
 
 
 def _creator_column_exists(column_name: str) -> bool:
     cached = _CREATOR_COLUMN_CACHE.get(column_name)
     if cached is not None:
         return cached
-    row = db.execute_one(
-        "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
-        ("creators", column_name),
-    )
-    exists = bool(row)
+    exists = _table_column_exists("creators", column_name)
     _CREATOR_COLUMN_CACHE[column_name] = exists
     return exists
 
@@ -2280,25 +2291,95 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
 
     handle = creator.get("handle")
     last_run = None
-    if handle:
+    scrape_runs_has_status = _table_column_exists("scrape_runs", "status")
+    scrape_runs_has_creator_id = _table_column_exists("scrape_runs", "creator_id")
+    scrape_runs_has_creator_handle = _table_column_exists("scrape_runs", "creator_handle")
+    scrape_runs_time_column = (
+        "started_at" if _table_column_exists("scrape_runs", "started_at")
+        else "created_at" if _table_column_exists("scrape_runs", "created_at")
+        else "id"
+    )
+    scrape_run_status_expr = "status" if scrape_runs_has_status else "'completed' AS status"
+    scrape_run_created_expr = (
+        f"{scrape_runs_time_column} AS created_at"
+        if scrape_runs_time_column != "id"
+        else "NULL AS created_at"
+    )
+    scrape_run_order_expr = (
+        f"{scrape_runs_time_column} DESC"
+        if scrape_runs_time_column != "id"
+        else "id DESC"
+    )
+    if scrape_runs_has_creator_id:
         last_run = db.execute_one(
-            "SELECT id, status, created_at FROM scrape_runs WHERE creator_handle = %s ORDER BY created_at DESC LIMIT 1",
+            f"""
+            SELECT id, {scrape_run_status_expr}, {scrape_run_created_expr}
+            FROM scrape_runs
+            WHERE creator_id = %s
+            ORDER BY {scrape_run_order_expr}
+            LIMIT 1
+            """,
+            (creator_id,),
+        )
+    elif handle and scrape_runs_has_creator_handle:
+        last_run = db.execute_one(
+            f"""
+            SELECT id, {scrape_run_status_expr}, {scrape_run_created_expr}
+            FROM scrape_runs
+            WHERE creator_handle = %s
+            ORDER BY {scrape_run_order_expr}
+            LIMIT 1
+            """,
             (handle,),
         )
 
-    counts_row = db.execute_one(
-        """
+    counts_row = None
+    scrape_items_has_creator_id = _table_column_exists("scrape_items", "creator_id")
+    scrape_items_has_creator_handle = _table_column_exists("scrape_items", "creator_handle")
+    scrape_items_has_run_id = _table_column_exists("scrape_items", "scrape_run_id")
+    scrape_items_has_review_status = _table_column_exists("scrape_items", "review_status")
+    review_status_expr = "si.review_status" if scrape_items_has_review_status else "'approved'"
+    count_select = f"""
         SELECT
-          COUNT(*) FILTER (WHERE si.review_status = 'pending')  AS pending,
-          COUNT(*) FILTER (WHERE si.review_status = 'approved') AS approved,
-          COUNT(*) FILTER (WHERE si.review_status = 'denied')   AS denied,
-          COUNT(*)                                              AS total
-        FROM scrape_items si
-        JOIN scrape_runs sr ON si.scrape_run_id = sr.id
-        WHERE sr.creator_handle = %s
-        """,
-        (handle,),
-    ) if handle else None
+          COUNT(*) FILTER (WHERE {review_status_expr} IN ('pending', 'pending_review')) AS pending,
+          COUNT(*) FILTER (WHERE {review_status_expr} = 'approved') AS approved,
+          COUNT(*) FILTER (WHERE {review_status_expr} = 'denied') AS denied,
+          COUNT(*) AS total
+    """
+    if scrape_items_has_run_id and scrape_runs_has_creator_id:
+        counts_row = db.execute_one(
+            count_select + """
+            FROM scrape_items si
+            JOIN scrape_runs sr ON si.scrape_run_id = sr.id
+            WHERE sr.creator_id = %s
+            """,
+            (creator_id,),
+        )
+    elif handle and scrape_items_has_run_id and scrape_runs_has_creator_handle:
+        counts_row = db.execute_one(
+            count_select + """
+            FROM scrape_items si
+            JOIN scrape_runs sr ON si.scrape_run_id = sr.id
+            WHERE sr.creator_handle = %s
+            """,
+            (handle,),
+        )
+    elif scrape_items_has_creator_id:
+        counts_row = db.execute_one(
+            count_select + """
+            FROM scrape_items si
+            WHERE si.creator_id = %s
+            """,
+            (creator_id,),
+        )
+    elif handle and scrape_items_has_creator_handle:
+        counts_row = db.execute_one(
+            count_select + """
+            FROM scrape_items si
+            WHERE si.creator_handle = %s
+            """,
+            (handle,),
+        )
     pending = int((counts_row or {}).get("pending") or 0)
     approved = int((counts_row or {}).get("approved") or 0)
     denied = int((counts_row or {}).get("denied") or 0)
@@ -2323,7 +2404,8 @@ async def get_creator_workflow(creator_id: int, current_user: Dict[str, Any] = D
 
     setup_complete = source_count > 0
     search_complete = bool(last_run) and total_items > 0
-    search_running = bool(last_run) and (last_run.get("status") in ("running", "queued", "pending"))
+    last_run_status = str((last_run or {}).get("status") or "").lower()
+    search_running = bool(last_run) and last_run_status in ("running", "queued", "pending")
     approve_complete = approved >= 1 and pending == 0
     persona_complete = (
         has_persona and fingerprint_built and fingerprint_status not in ("processing", "error")
@@ -2787,63 +2869,88 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
 
                 # Explicitly deepcopy conversation history to prevent frozenset cache poisoning
                 safe_history = copy.deepcopy(conversation_history) if conversation_history else []
-                async for chunk in grounded_rag_stream(
-                    creator_id=payload.creator_id,
-                    question=payload.question,
-                    thread_id=payload.thread_id,
-                    conversation_history=safe_history,
-                    user_preferences=user_prefs,
-                    user_name=user_name,
-                    user_id=current_user["id"]
-                ):
-                    if chunk == " ":
-                        # Early TTFB heartbeat
-                        yield f"data: {json.dumps({'content': ' '})}\n\n"
-                        continue
-                    if isinstance(chunk, str) and chunk.startswith("__STATUS__"):
-                        status = chunk[len("__STATUS__"):].strip().lower()
-                        if status:
-                            yield f"data: {json.dumps({'status': status})}\n\n"
-                        continue
-                    if isinstance(chunk, str) and chunk.startswith("__CARDS__"):
-                        try:
-                            cards_payload = json.loads(chunk[len("__CARDS__"):])
-                            if isinstance(cards_payload, list):
-                                explicit_cards = merge_preview_cards(explicit_cards, cards_payload, enrich_titles=True)
-                        except Exception:
-                            logger.warning("Failed to parse streamed cards payload.")
-                        continue
-                    if isinstance(chunk, str) and chunk.startswith("__CITATIONS__"):
-                        try:
-                            citations_payload = json.loads(chunk[len("__CITATIONS__"):])
-                            if isinstance(citations_payload, list):
-                                explicit_citations = citations_payload
-                        except Exception:
-                            logger.warning("Failed to parse streamed citations payload.")
-                        continue
-                    if isinstance(chunk, str) and chunk.startswith("__SUPPORT__"):
-                        try:
-                            support_payload = json.loads(chunk[len("__SUPPORT__"):])
-                            if isinstance(support_payload, list):
-                                explicit_support = support_payload
-                        except Exception:
-                            logger.warning("Failed to parse streamed support payload.")
-                        continue
-                    if isinstance(chunk, str) and chunk.startswith("__FINAL_CONTENT__"):
-                        # grounded_rag_stream detected placeholder artifacts and replaced
-                        # the answer with a clean fallback — override assembled text
-                        assembled = [chunk[len("__FINAL_CONTENT__"):]]
-                        continue
+                stream_queue: asyncio.Queue = asyncio.Queue()
 
-                    cleaned_chunk = clean_for_stream_chunk(chunk)
-                    if cleaned_chunk:
-                        pending_stream_text += cleaned_chunk
-                        emit_boundary = _find_stream_emit_boundary(pending_stream_text)
-                        if emit_boundary > 0:
-                            safe_chunk = pending_stream_text[:emit_boundary]
-                            pending_stream_text = pending_stream_text[emit_boundary:]
-                            assembled.append(safe_chunk)
-                            yield f"data: {json.dumps({'content': safe_chunk})}\n\n"
+                async def _produce_rag_chunks():
+                    try:
+                        async for produced_chunk in grounded_rag_stream(
+                            creator_id=payload.creator_id,
+                            question=payload.question,
+                            thread_id=payload.thread_id,
+                            conversation_history=safe_history,
+                            user_preferences=user_prefs,
+                            user_name=user_name,
+                            user_id=current_user["id"]
+                        ):
+                            await stream_queue.put(("chunk", produced_chunk))
+                    except Exception as producer_err:
+                        await stream_queue.put(("error", producer_err))
+                    finally:
+                        await stream_queue.put(("done", None))
+
+                producer_task = asyncio.create_task(_produce_rag_chunks())
+                try:
+                    while True:
+                        try:
+                            event_kind, chunk = await asyncio.wait_for(stream_queue.get(), timeout=15)
+                        except asyncio.TimeoutError:
+                            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+                            continue
+                        if event_kind == "done":
+                            break
+                        if event_kind == "error":
+                            raise chunk
+                        if chunk == " ":
+                            # Early TTFB heartbeat
+                            yield f"data: {json.dumps({'content': ' '})}\n\n"
+                            continue
+                        if isinstance(chunk, str) and chunk.startswith("__STATUS__"):
+                            status = chunk[len("__STATUS__"):].strip().lower()
+                            if status:
+                                yield f"data: {json.dumps({'status': status})}\n\n"
+                            continue
+                        if isinstance(chunk, str) and chunk.startswith("__CARDS__"):
+                            try:
+                                cards_payload = json.loads(chunk[len("__CARDS__"):])
+                                if isinstance(cards_payload, list):
+                                    explicit_cards = merge_preview_cards(explicit_cards, cards_payload, enrich_titles=True)
+                            except Exception:
+                                logger.warning("Failed to parse streamed cards payload.")
+                            continue
+                        if isinstance(chunk, str) and chunk.startswith("__CITATIONS__"):
+                            try:
+                                citations_payload = json.loads(chunk[len("__CITATIONS__"):])
+                                if isinstance(citations_payload, list):
+                                    explicit_citations = citations_payload
+                            except Exception:
+                                logger.warning("Failed to parse streamed citations payload.")
+                            continue
+                        if isinstance(chunk, str) and chunk.startswith("__SUPPORT__"):
+                            try:
+                                support_payload = json.loads(chunk[len("__SUPPORT__"):])
+                                if isinstance(support_payload, list):
+                                    explicit_support = support_payload
+                            except Exception:
+                                logger.warning("Failed to parse streamed support payload.")
+                            continue
+                        if isinstance(chunk, str) and chunk.startswith("__FINAL_CONTENT__"):
+                            # grounded_rag_stream detected placeholder artifacts and replaced
+                            # the answer with a clean fallback — override assembled text
+                            assembled = [chunk[len("__FINAL_CONTENT__"):]]
+                            continue
+
+                        cleaned_chunk = clean_for_stream_chunk(chunk)
+                        if cleaned_chunk:
+                            pending_stream_text += cleaned_chunk
+                            emit_boundary = _find_stream_emit_boundary(pending_stream_text)
+                            if emit_boundary > 0:
+                                safe_chunk = pending_stream_text[:emit_boundary]
+                                pending_stream_text = pending_stream_text[emit_boundary:]
+                                assembled.append(safe_chunk)
+                                yield f"data: {json.dumps({'content': safe_chunk})}\n\n"
+                finally:
+                    if not producer_task.done():
+                        producer_task.cancel()
 
                 # 4. Finalize (Post-stream)
                 # After the stream is exhausted, get cards/citations to the user
