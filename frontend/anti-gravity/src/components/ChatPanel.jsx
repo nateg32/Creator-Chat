@@ -589,15 +589,18 @@ export function ChatPanel({
             )
           );
         },
-        onToken: (token) => {
+        onToken: (token, meta = {}) => {
           setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantMessageId
-                ? (!String(token || "").trim() && !hasVisibleMessageText(msg))
-                  ? msg
-                  : { ...msg, content: msg.content + token, text: msg.text + token, status: "streaming" }
-                : msg
-            )
+            prev.map((msg) => {
+              if (msg.id !== assistantMessageId) return msg;
+              if (!String(token || "").trim() && !hasVisibleMessageText(msg)) return msg;
+
+              if (meta?.replace) {
+                return { ...msg, content: token, text: token, status: "streaming" };
+              }
+
+              return { ...msg, content: msg.content + token, text: msg.text + token, status: "streaming" };
+            })
           );
         },
         onComplete: (fullAnswer, meta = {}) => {

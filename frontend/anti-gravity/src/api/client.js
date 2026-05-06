@@ -215,7 +215,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     finalContent = fallbackAnswer;
     finalCards = fallbackCards;
     finalCitations = fallbackCitations;
-    if (onToken) onToken(fallbackAnswer);
+    if (onToken) onToken(fallbackAnswer, { replace: true });
     return { answer: fallbackAnswer, cards: fallbackCards, citations: fallbackCitations };
   };
 
@@ -274,6 +274,7 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     if (typeof data.final_content === "string") {
       finalContent = data.final_content;
       fullAnswer = data.final_content;
+      if (onToken) onToken(data.final_content, { replace: true });
     }
 
     if (typeof data.content === "string") {
