@@ -6,6 +6,7 @@ from backend.db import db
 from backend.settings import settings
 import re
 from backend.prompts.creator_base_prompt import CREATOR_BASE_SYSTEM_PROMPT
+from backend.services.llm_provider import get_gemini_provider, selected_chat_provider
 
 # In-process LRU cache for query embeddings. Keyed by (normalized_text, model).
 # Bounded so it cannot grow unbounded under load.
@@ -179,6 +180,22 @@ def generate_chat_completion(
     import logging
     logger = logging.getLogger(__name__)
 
+    if selected_chat_provider() == "gemini" and not tools and not tool_choice:
+        try:
+            return get_gemini_provider().generate_text(
+                messages=messages,
+                model=settings.GEMINI_CHAT_MODEL,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                stream=stream,
+            )
+        except Exception as e:
+            logger.error(f"Gemini chat completion failed: {e}")
+            if not allow_fallback:
+                raise
+            logger.warning("Falling back to OpenAI-compatible chat provider.")
+
     is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
     
     kwargs = {
@@ -240,6 +257,22 @@ async def generate_chat_completion_async(
     import json
     import logging
     logger = logging.getLogger(__name__)
+
+    if selected_chat_provider() == "gemini" and not tools and not tool_choice:
+        try:
+            return await get_gemini_provider().generate_text_async(
+                messages=messages,
+                model=settings.GEMINI_CHAT_MODEL,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                stream=stream,
+            )
+        except Exception as e:
+            logger.error(f"Async Gemini chat completion failed: {e}")
+            if not allow_fallback:
+                raise
+            logger.warning("Falling back to OpenAI-compatible async chat provider.")
 
     is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()
     kwargs = {

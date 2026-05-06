@@ -5995,6 +5995,34 @@ Message: {answer_text[:500]}"""
 
         if image_result and image_result.get("support_chunk"):
             support_set = [image_result["support_chunk"], *support_set]
+
+        gemini_cache_result = None
+        try:
+            from backend.services.gemini_context_cache import gemini_context_cache_service
+            router_decision = gemini_context_cache_service.should_lookup(
+                question,
+                conversation_history=conversation_history,
+            )
+            if router_decision.get("requires_lookup"):
+                gemini_cache_result = gemini_context_cache_service.lookup(
+                    creator_id,
+                    question,
+                    creator_name=creator_row.get("name") or creator_row.get("handle") or "the creator",
+                    router=router_decision,
+                )
+                if gemini_cache_result:
+                    support_set = [
+                        gemini_context_cache_service.as_support_chunk(gemini_cache_result),
+                        *support_set,
+                    ]
+                    logger.info(
+                        "Gemini cache injected fact for creator_id=%s source=%s confidence=%s",
+                        creator_id,
+                        gemini_cache_result.get("source_title"),
+                        gemini_cache_result.get("confidence"),
+                    )
+        except Exception as exc:
+            logger.warning("Gemini dynamic cache lookup skipped: %s", exc)
         support_set = shape_support_set(question, support_set, limit=4)
 
     if _should_force_resource_fallback(
@@ -6098,6 +6126,7 @@ Message: {answer_text[:500]}"""
         "quality_report": quality_report,
         "evidence_plan": evidence_plan_post.to_dict() if 'evidence_plan_post' in locals() and evidence_plan_post else (evidence_plan.to_dict() if 'evidence_plan' in locals() and evidence_plan else None),
         "contradiction_report": contradiction_report if 'contradiction_report' in locals() else None,
+        "gemini_cache_result": gemini_cache_result if 'gemini_cache_result' in locals() else None,
     }
 
     # --- Step 9: Video Recommendation (ONE ONLY) ---
@@ -6983,6 +7012,34 @@ async def grounded_rag_stream(
                 kind="video" if is_video_request else "source",
                 style_fingerprint=style_fingerprint,
             )
+        try:
+            from backend.services.gemini_context_cache import gemini_context_cache_service
+            router_decision = await asyncio.to_thread(
+                gemini_context_cache_service.should_lookup,
+                question,
+                conversation_history=conversation_history,
+            )
+            if router_decision.get("requires_lookup"):
+                gemini_cache_result = await asyncio.to_thread(
+                    gemini_context_cache_service.lookup,
+                    creator_id,
+                    question,
+                    creator_row.get("name") or creator_row.get("handle") or "the creator",
+                    router=router_decision,
+                )
+                if gemini_cache_result:
+                    support_set = [
+                        gemini_context_cache_service.as_support_chunk(gemini_cache_result),
+                        *support_set,
+                    ]
+                    logger.info(
+                        "Gemini cache injected stream fact for creator_id=%s source=%s confidence=%s",
+                        creator_id,
+                        gemini_cache_result.get("source_title"),
+                        gemini_cache_result.get("confidence"),
+                    )
+        except Exception as exc:
+            logger.warning("Gemini dynamic cache lookup skipped in stream: %s", exc)
         support_set = shape_support_set(question, support_set, limit=4)
 
         if _should_force_resource_fallback(

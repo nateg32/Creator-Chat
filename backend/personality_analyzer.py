@@ -2,8 +2,13 @@ import json
 from datetime import datetime
 
 from backend.db import db
-from backend.rag import get_chat_client
 from backend.settings import settings
+from backend.services.llm_provider import LLMProviderError, get_gemini_provider
+from backend.services.persona_prompts import (
+    CREATOR_CONTENT_ANALYSIS_SYSTEM_INSTRUCTION,
+    PersonaSynthesisResult,
+    build_creator_content_analysis_prompt,
+)
 
 
 def _default_fingerprint() -> dict:
@@ -482,11 +487,10 @@ class PersonalityAnalyzer:
             return _default_fingerprint()
 
         corpus = PersonalityAnalyzer._build_corpus(docs)
-        client = get_chat_client(settings.MODEL_PERSONA_ANALYSIS)
         name_row = db.execute_one("SELECT name, handle FROM creators WHERE id = %s", (creator_id,))
         display_name = name_row.get("name") or name_row.get("handle") or "The Creator"
 
-        system_prompt = """
+        legacy_system_prompt = """
 You are an elite creator intelligence analyst.
 Analyze the provided creator corpus and output a DEEP, contrastive style fingerprint for __CREATOR_NAME__.
 
@@ -683,17 +687,29 @@ Return JSON only with this schema:
 }
 """.replace("__CREATOR_NAME__", display_name)
 
+        prompt = build_creator_content_analysis_prompt(
+            creator_name=display_name,
+            corpus=corpus,
+            existing_schema_hint=_default_fingerprint(),
+        )
+
         try:
-            response = client.chat.completions.create(
-                model=settings.MODEL_PERSONA_ANALYSIS,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Creator Corpus:\n{corpus}"},
-                ],
-                response_format={"type": "json_object"},
+            result = get_gemini_provider().generate_json(
+                system_instruction=CREATOR_CONTENT_ANALYSIS_SYSTEM_INSTRUCTION,
+                prompt=prompt,
+                schema_model=PersonaSynthesisResult,
+                model=settings.GEMINI_ANALYSIS_MODEL,
                 temperature=0.2,
+                repair_label="creator persona synthesis",
             )
-            fingerprint = _merge_defaults(json.loads(response.choices[0].message.content), _default_fingerprint())
+            fingerprint = _merge_defaults(result.style_fingerprint, _default_fingerprint())
+            fingerprint["analysis_md"] = result.analysis_markdown
+            persona_payload = (
+                result.creator_persona.model_dump()
+                if hasattr(result.creator_persona, "model_dump")
+                else result.creator_persona.dict()
+            )
+            fingerprint["creator_persona"] = persona_payload
             fingerprint = _backfill_v3_fields(fingerprint)
             db.execute_update(
                 "UPDATE creators SET style_fingerprint = %s WHERE id = %s",
@@ -701,6 +717,9 @@ Return JSON only with this schema:
             )
             print(f"Successfully updated style fingerprint for creator {creator_id}")
             return fingerprint
+        except LLMProviderError as e:
+            print(f"Gemini persona analysis failed: {e}")
+            return _default_fingerprint()
         except Exception as e:
             print(f"Failed to analyze personality: {e}")
             return _default_fingerprint()

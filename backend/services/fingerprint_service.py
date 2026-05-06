@@ -9,7 +9,12 @@ from backend.personality_analyzer import PersonalityAnalyzer
 from backend.services.research_provider import GeminiResearchProvider
 from backend.services.corpus_state import compute_creator_corpus_checksum
 from backend.settings import settings
-from backend.rag import get_chat_client, get_async_chat_client
+from backend.services.llm_provider import LLMProviderError, get_gemini_provider
+from backend.services.persona_prompts import (
+    SOUL_MD_GENERATOR_SYSTEM_INSTRUCTION,
+    SoulCompilationResult,
+    build_soul_compiler_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +467,7 @@ def _fallback_openai_dossier(
     if not hits:
         return {}
 
+    from backend.rag import get_chat_client
     client = get_chat_client(settings.MODEL_PERSONA_ANALYSIS)
     prompt = f"""
 You are building a public-domain investigative dossier for {creator_name}.
@@ -617,7 +623,7 @@ class FingerprintService:
         voice_fingerprint: Dict[str, Any],
         persona_modifier: str = "",
     ) -> Dict[str, Any]:
-        if not settings.OPENAI_API_KEY or not approved_content:
+        if not settings.GEMINI_API_KEY or not approved_content:
             return {}
 
         modifier_block = (
@@ -698,24 +704,19 @@ APPROVED CONTENT:
 """
 
         try:
-            response = await get_async_chat_client(settings.MODEL_PERSONA_ANALYSIS).chat.completions.create(
-                model=settings.MODEL_PERSONA_ANALYSIS,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an evidence-bound linguistic analyst. "
-                            "Extract literal wording patterns, greeting signals, rhythm, and rhetorical moves. "
-                            "Return only valid JSON."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
+            parsed = await get_gemini_provider().generate_json_async(
+                system_instruction=(
+                    "You are an evidence-bound linguistic analyst. "
+                    "Extract literal wording patterns, greeting signals, rhythm, and rhetorical moves. "
+                    "Return only valid JSON."
+                ),
+                prompt=prompt,
+                model=settings.GEMINI_ANALYSIS_MODEL,
                 temperature=0.15,
+                repair_label="voice pattern packet",
             )
-            return _load_jsonish(response.choices[0].message.content)
-        except Exception as exc:
+            return parsed if isinstance(parsed, dict) else {}
+        except (Exception, LLMProviderError) as exc:
             logger.warning(f"FingerprintService: voice pattern extraction failed: {exc}")
             return {}
 
@@ -1069,22 +1070,16 @@ APPROVED CONTENT SAMPLES:
 {json.dumps((context.get("approved_content") or [])[:6])}
 """
         try:
-            response = await get_async_chat_client(settings.MODEL_PERSONA_ANALYSIS_ADVANCED).chat.completions.create(
-                model=settings.MODEL_PERSONA_ANALYSIS_ADVANCED,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You synthesize creator persona bundles. "
-                            "Everything must be grounded to the supplied evidence."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
+            parsed = await get_gemini_provider().generate_json_async(
+                system_instruction=(
+                    "You synthesize creator persona bundles. "
+                    "Everything must be grounded to the supplied evidence."
+                ),
+                prompt=prompt,
+                model=settings.GEMINI_ANALYSIS_MODEL,
                 temperature=0.2,
+                repair_label="persona bundle",
             )
-            parsed = _load_jsonish(response.choices[0].message.content)
         except Exception as exc:
             logger.warning(f"FingerprintService: persona bundle synthesis failed: {exc}")
             parsed = {}
@@ -1148,7 +1143,7 @@ APPROVED CONTENT SAMPLES:
         creator_claims: List[str],
         unknown_fields: List[str],
     ) -> Dict[str, Any]:
-        if not settings.OPENAI_API_KEY:
+        if not settings.GEMINI_API_KEY:
             return {}
 
         approved_content = self._load_approved_content_samples(creator_id, limit=8)
@@ -1214,56 +1209,49 @@ Rules:
                 stage="persona_agent",
                 message=f"Persona agent iteration {iteration}: gathering evidence and checking creator-specific signals.",
             )
-            response = await get_async_chat_client(settings.MODEL_PERSONA_ANALYSIS_ADVANCED).chat.completions.create(
-                model=settings.MODEL_PERSONA_ANALYSIS_ADVANCED,
-                messages=messages,
-                tools=self._fingerprint_agent_tools(),
-                tool_choice="auto",
-                temperature=0.2,
-            )
-            message = response.choices[0].message
-            messages.append(self._agent_message_to_payload(message))
-            tool_calls = list(getattr(message, "tool_calls", []) or [])
-            if not tool_calls:
-                break
-
-            for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                args = _load_jsonish(tool_call.function.arguments)
-                trace_entry = {
-                    "iteration": iteration,
-                    "tool": tool_name,
-                    "args": args,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-                context["tool_trace"].append(trace_entry)
-
-                if tool_name == "synthesize_persona" and non_synthesis_calls < 3:
-                    result = {
-                        "deferred": True,
-                        "reason": "Need at least three non-synthesis tool calls before synthesis.",
-                        "non_synthesis_calls": non_synthesis_calls,
-                    }
-                else:
-                    result = await self._execute_fingerprint_agent_tool(tool_name, args, context)
-                    if tool_name != "synthesize_persona":
-                        non_synthesis_calls += 1
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result),
-                    }
+            if iteration == 1:
+                result = await self._execute_fingerprint_agent_tool(
+                    "analyze_content_style",
+                    {"focus": "voice_and_tone", "notes": "Gemini direct analysis bootstrap."},
+                    context,
                 )
-
-                if tool_name == "synthesize_persona" and not result.get("deferred"):
-                    bundle = dict(result)
-                    bundle["tool_trace"] = context.get("tool_trace") or []
-                    bundle["grounding_packets"] = context.get("grounding_packets") or []
-                    bundle["fact_registry"] = bundle.get("fact_registry") or context.get("gathered_facts") or []
-                    bundle["research_quality"] = "agentic_grounded"
-                    return bundle
+                context["tool_trace"].append({
+                    "iteration": iteration,
+                    "tool": "analyze_content_style",
+                    "args": {"focus": "voice_and_tone"},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "result_preview": self._clip_text(json.dumps(result), limit=500),
+                })
+                non_synthesis_calls += 1
+            elif iteration <= 4:
+                query = f"{creator_name} official biography business background creator"
+                if iteration == 3:
+                    query = f"{creator_name} products courses books public work"
+                elif iteration == 4:
+                    query = f"{creator_name} interviews podcast controversy public consensus"
+                result = await self._execute_fingerprint_agent_tool(
+                    "search_web",
+                    {"query": query, "intent": "identity"},
+                    context,
+                )
+                context["tool_trace"].append({
+                    "iteration": iteration,
+                    "tool": "search_web",
+                    "args": {"query": query, "intent": "identity"},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "result_count": len(result.get("results") or []),
+                })
+                non_synthesis_calls += 1
+            else:
+                bundle = await self._synthesize_persona_bundle(
+                    context,
+                    gaps="Gemini direct persona agent synthesized after content and grounded search passes.",
+                )
+                bundle["tool_trace"] = context.get("tool_trace") or []
+                bundle["grounding_packets"] = context.get("grounding_packets") or []
+                bundle["fact_registry"] = bundle.get("fact_registry") or context.get("gathered_facts") or []
+                bundle["research_quality"] = "gemini_grounded_direct"
+                return bundle
 
         forced_bundle = await self._synthesize_persona_bundle(
             context,
@@ -1643,6 +1631,8 @@ Rules:
                     message="Refreshing runtime fingerprint without regenerating soul.md.",
                 )
                 soul_md = existing_soul_md
+                existing_artifacts = (cached_summary.get("persona_artifacts") or {}) if isinstance(cached_summary, dict) else {}
+                runtime_prompt_md = existing_artifacts.get("runtime_prompt_md") or ""
             else:
                 _set_fingerprint_progress(
                     creator_id,
@@ -1651,7 +1641,17 @@ Rules:
                     stage="finalizing",
                     message="Writing soul.md and locking the final fingerprint for runtime use.",
                 )
-                soul_md = await self._generate_soul_md(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
+                soul_artifacts = await self._generate_soul_artifacts(name, creator_id, research_summary, voice_fingerprint, voice_fingerprint)
+                soul_md = soul_artifacts.get("soul_md") or f"# {name}\n\nPersona anchor pending analysis."
+                runtime_prompt_md = soul_artifacts.get("runtime_prompt_md") or ""
+
+            research_summary["persona_artifacts"] = {
+                "analysis_md": voice_fingerprint.get("analysis_md") or "",
+                "soul_md_storage": "creators.soul_md",
+                "runtime_prompt_md": runtime_prompt_md,
+                "artifact_version": "gemini_split_prompt_v1",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
 
             # 7. Final DB Update
             current_corpus_checksum = content_corpus_checksum or compute_creator_corpus_checksum(creator_id)
@@ -1702,96 +1702,47 @@ Rules:
                 error=str(e),
             )
 
-    async def _generate_soul_md(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any], style_fingerprint: Dict[str, Any]) -> str:
-        """Synthesizes the deep research summary and style fingerprint into a 24-section soul.md document."""
-        logger.info(f"FingerprintService: Synthesizing 24-section soul.md for {name}...")
-
-        agentic_research = research_summary.get("agentic_research") or {}
-        persona_seed = research_summary.get("persona_seed") or {}
-
-        context_text = f"""
-        NAME: {name}
-        RESEARCH_SUMMARY: {json.dumps(research_summary)}
-        AGENTIC_RESEARCH_TRACE: {json.dumps(agentic_research)}
-        PERSONA_SEED: {json.dumps(persona_seed)}
-        VOICE_PROFILE: {json.dumps(voice)}
-        STYLE_FINGERPRINT_V3: {json.dumps(style_fingerprint)}
-        """
-
-        prompt = f"""
-        You are a master persona architect. Your goal is to create a 'soul.md' file that serves as the definitive persona anchor for {name}.
-
-        This document will be used to keep an AI assistant strictly in character.
-
-        KNOWLEDGE VS PERSONA RULE:
-        - VOICE_PROFILE defines HOW they sound.
-        - STYLE_FINGERPRINT_V3 defines what makes them DISTINCT from other creators, what they believe, what stories they repeat, what domains they own, how they reason, and how they behave under pressure.
-        - RESEARCH_SUMMARY defines WHO they are in current reality.
-        - CONFLICT RESOLUTION: if transcripts conflict with the search dossier on facts, the search dossier is the truth.
-        - DIFFERENTIAL PRIORITY: make the creator feel uniquely identifiable, not just well-described.
-
-        WRITE THESE 24 SECTIONS EXACTLY:
-        1. CORE IDENTITY LAYER
-        2. BEHAVIORAL PATTERNS LAYER
-        3. LINGUISTIC DNA LAYER
-        4. STRUCTURAL RESPONSE BLUEPRINT
-        5. COGNITIVE STYLE
-        6. HUMOR DETECTION LAYER
-        7. CONFLICT & BOUNDARY RULES
-        8. PUBLIC IDENTITY GUARDRAILS
-        9. PERSONA INTEGRITY RULES
-        10. EMOTIONAL SIGNATURE
-        11. AUDIENCE PERCEPTION MODEL
-        12. POWER DYNAMICS MODEL
-        13. DIFFERENTIAL DNA
-        14. ANTI-PERSONA RULES
-        15. MODE MATRIX
-        16. PRESSURE / STRESS BEHAVIOR
-        17. DISTINGUISHING TELLS
-        18. GOLDEN REPLIES
-        19. BELIEF GRAPH
-        20. STORY BANK
-        21. TEMPORAL VOICE
-        22. KNOWLEDGE BOUNDARIES
-        23. CONTRASTIVE NEIGHBORS
-        24. RUNTIME RESPONSE RULES
-
-        SECTION REQUIREMENTS:
-        - Sections 13-24 must draw heavily from STYLE_FINGERPRINT_V3.
-        - Use AGENTIC_RESEARCH_TRACE and PERSONA_SEED as hard evidence for runtime anchors, lexical cues, audience contract, and verified beliefs.
-        - DIFFERENTIAL DNA: what makes {name} unlike adjacent creators in the same niche.
-        - ANTI-PERSONA RULES: what would make {name} sound fake, generic, or like somebody else.
-        - MODE MATRIX: how they behave in greeting, teaching, comfort, rebuke, story, sales, debate, uncertainty, and boundary mode.
-        - PRESSURE / STRESS BEHAVIOR: how their voice changes when challenged, when the user is ashamed, when they need to convict, when they need to comfort, and when they need to protect privacy.
-        - DISTINGUISHING TELLS: specific worldview, cadence, analogy, and ending patterns that should appear naturally.
-        - GOLDEN REPLIES: 1-2 short example replies for greeting, comfort, rebuke, teaching, boundary, uncertainty, and sales.
-        - BELIEF GRAPH: what they believe, what they defend, what they attack, where they carry tension or contradiction, and which values or tradeoffs sit under those beliefs.
-        - STORY BANK: canonical stories they repeatedly return to, when each should be used, and what lesson each story proves.
-        - TEMPORAL VOICE: what stayed stable over time, what evolved, and what belongs to old versus current voice.
-        - KNOWLEDGE BOUNDARIES: what is public fact, what is only inferred, what is private, which topics need external verification, and which domains are strong, adjacent, weak, or unsafe.
-        - CONTRASTIVE NEIGHBORS: which adjacent creators they could be confused with and the exact cues that separate them.
-        - RUNTIME RESPONSE RULES: how belief graph, value model, reasoning profile, story bank, pressure behavior, and boundaries should influence live replies, especially when a question is outside direct evidence.
-
-        FINAL RULE:
-        Do not write like a biography. Write like: 'This is who this creator is. This is how they think. This is how they speak. This is how they react.'
-        It should feel like you reverse-engineered their brain.
-
-        Output the result as a raw Markdown document.
-        """
-
+    async def _generate_soul_artifacts(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any], style_fingerprint: Dict[str, Any]) -> Dict[str, str]:
+        """Compile analysis.md into soul.md plus a lightweight runtime prompt."""
+        logger.info(f"FingerprintService: Compiling soul.md and runtime_prompt.md for {name}...")
+        analysis_md = (
+            style_fingerprint.get("analysis_md")
+            or (style_fingerprint.get("creator_persona") or {}).get("source_coverage_summary")
+            or ""
+        )
+        prompt = build_soul_compiler_prompt(
+            creator_name=name,
+            creator_niche=(style_fingerprint.get("domain_map") or {}).get("creator_lane") or "",
+            analysis_markdown=analysis_md,
+            research_summary=research_summary,
+            style_fingerprint=style_fingerprint,
+        )
         try:
-            from backend.rag import generate_chat_completion
-            resp = generate_chat_completion(
-                messages=[
-                    {"role": "system", "content": "You are a master of persona synthesis. Create a deep, authentic, and strict soul.md document based on the provided research using the 24-section differential persona blueprint."},
-                    {"role": "user", "content": f"Context Data:\n{context_text}\n\n{prompt}"}
-                ],
-                model=settings.CHAT_MODEL,
-                json_mode=False
+            result = await get_gemini_provider().generate_json_async(
+                system_instruction=SOUL_MD_GENERATOR_SYSTEM_INSTRUCTION,
+                prompt=prompt,
+                schema_model=SoulCompilationResult,
+                model=settings.GEMINI_ANALYSIS_MODEL,
+                temperature=0.2,
+                repair_label="soul compilation",
             )
-            return resp
+            return {
+                "soul_md": result.soul_md,
+                "runtime_prompt_md": result.runtime_prompt_md,
+            }
         except Exception as e:
-            logger.error(f"Failed to generate soul.md: {e}")
-            return f"# {name}\n\nPersona anchor pending analysis."
+            logger.error(f"Failed to generate soul artifacts: {e}")
+            fallback = f"# {name}\n\nPersona anchor pending analysis."
+            return {
+                "soul_md": fallback,
+                "runtime_prompt_md": (
+                    f"You are an authorized AI creator-style assistant for {name}. "
+                    "Use approved creator content, preserve uncertainty, and never invent private facts."
+                ),
+            }
+
+    async def _generate_soul_md(self, name: str, creator_id: int, research_summary: Dict[str, Any], voice: Dict[str, Any], style_fingerprint: Dict[str, Any]) -> str:
+        artifacts = await self._generate_soul_artifacts(name, creator_id, research_summary, voice, style_fingerprint)
+        return artifacts.get("soul_md") or f"# {name}\n\nPersona anchor pending analysis."
 
 fingerprint_service = FingerprintService()

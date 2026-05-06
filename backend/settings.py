@@ -32,9 +32,20 @@ class Settings:
     TRANSCRIPTION_BASE_URL: str = os.getenv("TRANSCRIPTION_BASE_URL", OPENAI_BASE_URL)
 
     # Google / Gemini
-    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
+    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", GEMINI_API_KEY)
+    GEMINI_ANALYSIS_MODEL: str = os.getenv("GEMINI_ANALYSIS_MODEL", "gemini-2.5-pro")
+    GEMINI_CHAT_MODEL: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
     GEMINI_GROUNDING_MODEL: str = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
+    GEMINI_CACHE_LOOKUP_MODEL: str = os.getenv("GEMINI_CACHE_LOOKUP_MODEL", "gemini-3-pro-preview")
+    GEMINI_CACHE_ROUTER_MODEL: str = os.getenv("GEMINI_CACHE_ROUTER_MODEL", "gemini-3-flash-preview")
     GEMINI_REST_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_REST_TIMEOUT_SECONDS", "4.0"))
+    GEMINI_SAFETY_THRESHOLD: str = os.getenv("GEMINI_SAFETY_THRESHOLD", "BLOCK_MEDIUM_AND_ABOVE")
+    GEMINI_CONTEXT_CACHE_ENABLED: bool = os.getenv("GEMINI_CONTEXT_CACHE_ENABLED", "true").lower() == "true"
+    GEMINI_CONTEXT_CACHE_TTL_SECONDS: int = int(os.getenv("GEMINI_CONTEXT_CACHE_TTL_SECONDS", "86400"))
+    GEMINI_CONTEXT_CACHE_MAX_CHARS: int = int(os.getenv("GEMINI_CONTEXT_CACHE_MAX_CHARS", "800000"))
+    GEMINI_DYNAMIC_RAG_ENABLED: bool = os.getenv("GEMINI_DYNAMIC_RAG_ENABLED", "true").lower() == "true"
+    CHAT_PROVIDER: str = os.getenv("CHAT_PROVIDER", "openai").lower()
     
     # Apify
     APIFY_TOKEN: Optional[str] = os.getenv("APIFY_TOKEN", None)

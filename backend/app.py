@@ -129,6 +129,11 @@ async def app_lifespan(app: FastAPI):
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_updated_at TIMESTAMPTZ")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS content_corpus_checksum TEXT")
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS fingerprint_corpus_checksum TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS gemini_cache_name TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS gemini_cache_model TEXT")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS gemini_cache_token_count INTEGER")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS gemini_cache_expires_at TIMESTAMPTZ")
+        db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS gemini_cache_corpus_checksum TEXT")
         db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS item_archetype TEXT")
         db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_confidence FLOAT")
         db.execute_update("ALTER TABLE scrape_items ADD COLUMN IF NOT EXISTS archetype_signals JSONB")
@@ -2696,8 +2701,11 @@ async def health():
             "chat_empty_stream_fallback": True,
             "render_git_commit": os.getenv("RENDER_GIT_COMMIT", ""),
             "live_search_provider": settings.LIVE_SEARCH_PROVIDER,
-            "gemini_configured": bool(settings.GOOGLE_API_KEY),
+            "chat_provider": settings.CHAT_PROVIDER,
+            "gemini_configured": bool(settings.GEMINI_API_KEY),
             "gemini_grounding_model": settings.GEMINI_GROUNDING_MODEL,
+            "gemini_analysis_model": settings.GEMINI_ANALYSIS_MODEL,
+            "gemini_chat_model": settings.GEMINI_CHAT_MODEL,
             "model_stack": {
                 "classification": settings.MODEL_CLASSIFICATION,
                 "memory": settings.MODEL_MEMORY,
