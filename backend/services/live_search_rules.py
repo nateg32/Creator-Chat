@@ -164,6 +164,8 @@ def build_live_search_query(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
     creator_name: Optional[str] = None,
+    creator_handle: Optional[str] = None,
+    creator_niche: Optional[str] = None,
     preferred_platforms: Optional[List[str]] = None,
     require_video: bool = False,
 ) -> str:
@@ -189,6 +191,21 @@ def build_live_search_query(
         creator_lower = creator_name.lower().strip()
         if creator_lower and creator_lower not in query_lower:
             query = f"{creator_name} {query}".strip()
+            query_lower = query.lower()
+
+    if creator_handle:
+        handle = creator_handle.strip()
+        if handle:
+            bare_handle = handle.lstrip("@")
+            handle_terms = {handle.lower(), bare_handle.lower()}
+            if not any(term and term in query_lower for term in handle_terms):
+                query = f"{query} @{bare_handle}".strip()
+                query_lower = query.lower()
+
+    if creator_niche:
+        niche = re.sub(r"\s+", " ", creator_niche).strip()
+        if niche and niche.lower() not in query_lower:
+            query = f"{query} {niche}".strip()
             query_lower = query.lower()
 
     platforms = [platform for platform in (preferred_platforms or []) if platform]

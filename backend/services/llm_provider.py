@@ -62,7 +62,10 @@ def _messages_to_prompt(messages: List[Dict[str, str]]) -> tuple[str, str]:
 
 
 def _extract_text(response: Any) -> str:
-    text = getattr(response, "text", None)
+    try:
+        text = getattr(response, "text", None)
+    except Exception:
+        text = None
     if isinstance(text, str):
         return text
     parts: List[str] = []

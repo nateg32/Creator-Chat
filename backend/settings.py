@@ -34,9 +34,10 @@ class Settings:
     # Google / Gemini
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", GEMINI_API_KEY)
-    GEMINI_ANALYSIS_MODEL: str = os.getenv("GEMINI_ANALYSIS_MODEL", "gemini-2.5-pro")
-    GEMINI_CHAT_MODEL: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+    GEMINI_ANALYSIS_MODEL: str = os.getenv("GEMINI_ANALYSIS_MODEL", "gemini-3-pro-preview")
+    GEMINI_CHAT_MODEL: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-3-flash-preview")
     GEMINI_GROUNDING_MODEL: str = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
+    GEMINI_FACT_SYNTHESIS_MODEL: str = os.getenv("GEMINI_FACT_SYNTHESIS_MODEL", GEMINI_ANALYSIS_MODEL)
     GEMINI_CACHE_LOOKUP_MODEL: str = os.getenv("GEMINI_CACHE_LOOKUP_MODEL", "gemini-3-pro-preview")
     GEMINI_CACHE_ROUTER_MODEL: str = os.getenv("GEMINI_CACHE_ROUTER_MODEL", "gemini-3-flash-preview")
     GEMINI_REST_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_REST_TIMEOUT_SECONDS", "4.0"))
@@ -45,13 +46,18 @@ class Settings:
     GEMINI_CONTEXT_CACHE_TTL_SECONDS: int = int(os.getenv("GEMINI_CONTEXT_CACHE_TTL_SECONDS", "86400"))
     GEMINI_CONTEXT_CACHE_MAX_CHARS: int = int(os.getenv("GEMINI_CONTEXT_CACHE_MAX_CHARS", "800000"))
     GEMINI_DYNAMIC_RAG_ENABLED: bool = os.getenv("GEMINI_DYNAMIC_RAG_ENABLED", "true").lower() == "true"
+    GEMINI_FACT_SYNTHESIS_ENABLED: bool = os.getenv("GEMINI_FACT_SYNTHESIS_ENABLED", "true").lower() == "true"
+    AGENTIC_PARALLEL_RETRIEVAL_ENABLED: bool = os.getenv("AGENTIC_PARALLEL_RETRIEVAL_ENABLED", "true").lower() == "true"
+    AGENTIC_SEARCH_TIMEOUT_SECONDS: float = float(os.getenv("AGENTIC_SEARCH_TIMEOUT_SECONDS", "1.2"))
     CHAT_PROVIDER: str = os.getenv("CHAT_PROVIDER", "gemini").lower()
     
     # Apify
     APIFY_TOKEN: Optional[str] = os.getenv("APIFY_TOKEN", None)
     
-    # Search API (e.g. Brave Search, Google, Serper)
+    # Search API (e.g. Brave Search, Exa, Google, Serper)
     SEARCH_API_KEY: Optional[str] = os.getenv("SEARCH_API_KEY", os.getenv("SERPAPI_API_KEY"))
+    BRAVE_SEARCH_API_KEY: Optional[str] = os.getenv("BRAVE_SEARCH_API_KEY")
+    EXA_API_KEY: Optional[str] = os.getenv("EXA_API_KEY")
     LIVE_SEARCH_PROVIDER: str = os.getenv("LIVE_SEARCH_PROVIDER", "gemini").lower()
 
     # Auth / JWT

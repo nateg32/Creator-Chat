@@ -453,8 +453,8 @@ class ResearchProvider(ABC):
 
 class GeminiResearchProvider(ResearchProvider):
     def __init__(self):
-        self.enabled = bool(settings.GOOGLE_API_KEY)
-        self.api_key = settings.GOOGLE_API_KEY
+        self.enabled = bool(settings.GEMINI_API_KEY or settings.GOOGLE_API_KEY)
+        self.api_key = settings.GEMINI_API_KEY or settings.GOOGLE_API_KEY
         self.model_name = settings.GEMINI_GROUNDING_MODEL
         self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent"
 
@@ -1396,6 +1396,135 @@ Respond ONLY with the JSON array. Do not add intro or outro.
         results = self._parse_json(text) or {}
         logger.info(f"GeminiResearch: Dossier synthesized for {creator_name}. Keys found: {list(results.keys())}")
         return results
+
+
+class BraveSearchProvider(ResearchProvider):
+    def __init__(self):
+        self.api_key = settings.BRAVE_SEARCH_API_KEY
+        self.enabled = bool(self.api_key)
+        self.base_url = "https://api.search.brave.com/res/v1/web/search"
+
+    def search(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        resource_type: str = "any",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        intent_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+        creator_id = creator_profile.get("id")
+        cached = self._get_cache(int(creator_id or 0), query, "brave") if creator_id else None
+        if cached:
+            return cached
+
+        params = {
+            "q": query,
+            "count": 10,
+            "safesearch": "moderate",
+            "text_decorations": "false",
+            "spellcheck": "true",
+        }
+        headers = {
+            "Accept": "application/json",
+            "X-Subscription-Token": self.api_key or "",
+        }
+        try:
+            response = requests.get(self.base_url, params=params, headers=headers, timeout=5)
+            if response.status_code != 200:
+                logger.warning("BraveSearchProvider error %s: %s", response.status_code, response.text[:300])
+                return []
+            data = response.json()
+        except Exception as exc:
+            logger.warning("BraveSearchProvider request failed: %s", exc)
+            return []
+
+        results: List[Dict[str, Any]] = []
+        for item in ((data.get("web") or {}).get("results") or [])[:10]:
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            snippet = str(item.get("description") or item.get("snippet") or "").strip()
+            if not url or not title or not _is_safe_public_url(url):
+                continue
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet[:500],
+                "resource_type": "video" if any(host in url.lower() for host in ("youtube.com", "youtu.be", "tiktok.com", "instagram.com")) else "article",
+                "relation": "PUBLIC_FACTS",
+                "confidence": 0.72,
+                "platform": self._infer_platform_from_url(url),
+                "provider": "brave",
+            })
+
+        verified = self._enforce_cog(results, creator_profile) if results else []
+        if creator_id and verified:
+            self._save_cache(int(creator_id), query, "brave", verified)
+        return verified
+
+
+class ExaSearchProvider(ResearchProvider):
+    def __init__(self):
+        self.api_key = settings.EXA_API_KEY
+        self.enabled = bool(self.api_key)
+        self.base_url = "https://api.exa.ai/search"
+
+    def search(
+        self,
+        query: str,
+        creator_profile: Dict[str, Any],
+        resource_type: str = "any",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        intent_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+        creator_id = creator_profile.get("id")
+        cached = self._get_cache(int(creator_id or 0), query, "exa") if creator_id else None
+        if cached:
+            return cached
+
+        payload = {
+            "query": query,
+            "numResults": 10,
+            "type": "auto",
+            "contents": {"text": {"maxCharacters": 500}},
+        }
+        headers = {"x-api-key": self.api_key or "", "Content-Type": "application/json"}
+        try:
+            response = requests.post(self.base_url, json=payload, headers=headers, timeout=6)
+            if response.status_code != 200:
+                logger.warning("ExaSearchProvider error %s: %s", response.status_code, response.text[:300])
+                return []
+            data = response.json()
+        except Exception as exc:
+            logger.warning("ExaSearchProvider request failed: %s", exc)
+            return []
+
+        results: List[Dict[str, Any]] = []
+        for item in (data.get("results") or [])[:10]:
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            snippet = str(item.get("text") or item.get("summary") or "").strip()
+            if not url or not title or not _is_safe_public_url(url):
+                continue
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet[:500],
+                "resource_type": "video" if any(host in url.lower() for host in ("youtube.com", "youtu.be", "tiktok.com", "instagram.com")) else "article",
+                "relation": "PUBLIC_FACTS",
+                "confidence": 0.74,
+                "platform": self._infer_platform_from_url(url),
+                "provider": "exa",
+            })
+
+        verified = self._enforce_cog(results, creator_profile) if results else []
+        if creator_id and verified:
+            self._save_cache(int(creator_id), query, "exa", verified)
+        return verified
+
 
 class SerpApiResearchProvider(ResearchProvider):
     def __init__(self):
@@ -2505,14 +2634,22 @@ def get_research_provider() -> ResearchProvider:
     """Factory to return the appropriate research provider based on settings."""
     preferred = (settings.LIVE_SEARCH_PROVIDER or "auto").lower()
 
-    if preferred == "gemini" and settings.GOOGLE_API_KEY:
+    if preferred == "gemini" and (settings.GEMINI_API_KEY or settings.GOOGLE_API_KEY):
         return GeminiResearchProvider()
     if preferred == "openai" and settings.OPENAI_API_KEY:
         return OpenAIResearchProvider()
+    if preferred == "brave" and settings.BRAVE_SEARCH_API_KEY:
+        return BraveSearchProvider()
+    if preferred == "exa" and settings.EXA_API_KEY:
+        return ExaSearchProvider()
     if preferred in {"serpapi", "search_api"} and settings.SEARCH_API_KEY:
         return SerpApiResearchProvider()
 
-    if settings.GOOGLE_API_KEY:
+    if settings.BRAVE_SEARCH_API_KEY:
+        return BraveSearchProvider()
+    if settings.EXA_API_KEY:
+        return ExaSearchProvider()
+    if settings.GEMINI_API_KEY or settings.GOOGLE_API_KEY:
         return GeminiResearchProvider()
     if settings.OPENAI_API_KEY:
         return OpenAIResearchProvider()
@@ -2532,11 +2669,15 @@ def get_fallback_research_provider() -> Optional[ResearchProvider]:
     primary_type = type(primary).__name__
 
     # Try providers in order, skipping the one already in use
+    if primary_type != "BraveSearchProvider" and settings.BRAVE_SEARCH_API_KEY:
+        return BraveSearchProvider()
+    if primary_type != "ExaSearchProvider" and settings.EXA_API_KEY:
+        return ExaSearchProvider()
     if primary_type != "SerpApiResearchProvider" and settings.SEARCH_API_KEY:
         return SerpApiResearchProvider()
     if primary_type != "OpenAIResearchProvider" and settings.OPENAI_API_KEY:
         return OpenAIResearchProvider()
-    if primary_type != "GeminiResearchProvider" and settings.GOOGLE_API_KEY:
+    if primary_type != "GeminiResearchProvider" and (settings.GEMINI_API_KEY or settings.GOOGLE_API_KEY):
         return GeminiResearchProvider()
     return None
 

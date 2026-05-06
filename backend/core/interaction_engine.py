@@ -1971,14 +1971,14 @@ Generate InteractionPlan JSON."""
         if route == "ROUTE_0_GREETING":
             return {"max_words": 25, "max_sentences": 2, "max_paragraphs": 2, "max_tokens": 64, "detailed": False}
         if route == "ROUTE_1_SMALL_TALK":
-            return {"max_words": 30, "max_sentences": 2, "max_paragraphs": 2, "max_tokens": 64, "detailed": False}
+            return {"max_words": 45, "max_sentences": 3, "max_paragraphs": 2, "max_tokens": 160, "detailed": False}
 
         if detailed:
             if allow_lists:
                 return {"max_words": 180, "max_sentences": 6, "max_paragraphs": 4, "max_tokens": 280, "detailed": True}
             return {"max_words": 150, "max_sentences": 5, "max_paragraphs": 3, "max_tokens": 240, "detailed": True}
 
-        return {"max_words": 85, "max_sentences": 4, "max_paragraphs": 2, "max_tokens": 140, "detailed": False}
+        return {"max_words": 110, "max_sentences": 5, "max_paragraphs": 2, "max_tokens": 260, "detailed": False}
 
     @staticmethod
     def _build_length_directive(reply_budget: Dict[str, int | bool], allow_lists: bool = False) -> str:

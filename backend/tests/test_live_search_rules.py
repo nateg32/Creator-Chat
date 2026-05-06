@@ -69,6 +69,17 @@ class LiveSearchRuleTests(unittest.TestCase):
         self.assertIn("video", query.lower())
         self.assertIn("beginners", query.lower())
 
+    def test_build_live_search_query_adds_handle_and_niche(self):
+        query = live_search_rules.build_live_search_query(
+            "beliefs on risk",
+            creator_name="Alex Gonzalez",
+            creator_handle="@wayondtv",
+            creator_niche="forex trading",
+        )
+        self.assertIn("Alex Gonzalez", query)
+        self.assertIn("@wayondtv", query)
+        self.assertIn("forex trading", query)
+
 
 if __name__ == "__main__":
     unittest.main()

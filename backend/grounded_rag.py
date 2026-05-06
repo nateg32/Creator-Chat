@@ -2152,6 +2152,96 @@ def _should_speculate_live_search(
     return False
 
 
+def _creator_search_terms(creator_row: Dict[str, Any]) -> Dict[str, str]:
+    name = str(creator_row.get("name") or "").strip()
+    handle = str(
+        creator_row.get("handle")
+        or creator_row.get("youtube_handle")
+        or ""
+    ).strip()
+    niche = str(
+        creator_row.get("creator_category")
+        or creator_row.get("creator_archetype")
+        or ""
+    ).strip()
+    if not niche:
+        platform_configs = _coerce_json_dict(creator_row.get("platform_configs"))
+        enabled = [
+            key.replace("_", " ")
+            for key, cfg in platform_configs.items()
+            if isinstance(cfg, dict) and cfg.get("enabled") is True
+        ]
+        niche = " ".join(enabled[:2])
+    return {"name": name, "handle": handle, "niche": niche}
+
+
+def _synthesize_live_fact_block(
+    question: str,
+    creator_row: Dict[str, Any],
+    web_results: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not settings.GEMINI_FACT_SYNTHESIS_ENABLED or not web_results:
+        return None
+    creator_name = creator_row.get("name") or creator_row.get("handle") or "the creator"
+    result_lines = []
+    for idx, result in enumerate(web_results[:5], start=1):
+        result_lines.append(
+            f"[{idx}] {result.get('title') or 'Untitled'}\n"
+            f"URL: {result.get('url') or ''}\n"
+            f"SNIPPET: {result.get('snippet') or ''}"
+        )
+    prompt = f"""
+Creator: {creator_name}
+User question: {question}
+
+Search results:
+{chr(10).join(result_lines)}
+
+Write a 2-sentence fact block that can be injected into a creator-style chat model.
+Rules:
+- Use only the search results above.
+- Do not invent facts.
+- Mention uncertainty if the results are weak.
+- Do not write in the creator's voice; this is hidden grounding context.
+"""
+    try:
+        fact_text = rag.generate_chat_completion(
+            messages=[
+                {"role": "system", "content": "You compress search evidence into factual grounding context."},
+                {"role": "user", "content": prompt},
+            ],
+            model=settings.GEMINI_FACT_SYNTHESIS_MODEL,
+            temperature=0.0,
+            max_tokens=180,
+        )
+    except Exception as exc:
+        logger.warning("Gemini fact block synthesis failed: %s", exc)
+        return None
+    fact_text = str(fact_text or "").strip()
+    if not fact_text:
+        return None
+    primary = web_results[0]
+    return {
+        "content": f"[LIVE WEB FACT BLOCK]\n{fact_text}",
+        "title": primary.get("title") or "Live web fact block",
+        "url": primary.get("url") or "",
+        "source": "live_web_fact_block",
+        "source_type": "web_grounded",
+        "score": 0.96,
+        "confidence": 0.96,
+        "is_live_web_fact_block": True,
+        "source_ref": {
+            "title": primary.get("title") or "Live web fact block",
+            "canonical_url": primary.get("url") or "",
+            "source_type": "web_grounded",
+        },
+        "metadata": {
+            "provider": "gemini_fact_synthesis",
+            "model": settings.GEMINI_FACT_SYNTHESIS_MODEL,
+        },
+    }
+
+
 def _normalize_creator_search_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
     if normalized in {"", "hybrid"}:
@@ -2348,6 +2438,7 @@ def _run_live_web_search(
 
     rp = get_research_provider()
     web_results: List[Dict[str, Any]] = []
+    creator_terms = _creator_search_terms(creator_row)
 
     # --- Primary provider ---
     try:
@@ -2368,7 +2459,9 @@ def _run_live_web_search(
             web_query = build_live_search_query(
                 question,
                 conversation_history,
-                creator_name=creator_row.get("name") or creator_row.get("handle"),
+                creator_name=creator_terms.get("name") or creator_terms.get("handle"),
+                creator_handle=creator_terms.get("handle"),
+                creator_niche=creator_terms.get("niche"),
                 preferred_platforms=preferred_platforms,
                 require_video=is_video_request,
             )
@@ -2396,7 +2489,9 @@ def _run_live_web_search(
                 fallback_query = build_live_search_query(
                     question,
                     conversation_history,
-                    creator_name=creator_row.get("name") or creator_row.get("handle"),
+                    creator_name=creator_terms.get("name") or creator_terms.get("handle"),
+                    creator_handle=creator_terms.get("handle"),
+                    creator_niche=creator_terms.get("niche"),
                     preferred_platforms=preferred_platforms,
                     require_video=is_video_request,
                 )
@@ -5934,6 +6029,9 @@ Message: {answer_text[:500]}"""
 
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
+            fact_block = _synthesize_live_fact_block(question, creator_row, web_results)
+            if fact_block:
+                support_set = [fact_block, *support_set]
         elif fact_search_requested:
             # No web results found. Instead of returning a generic fallback
             # immediately, force a blocking live web pass for creator-public
@@ -5982,6 +6080,9 @@ Message: {answer_text[:500]}"""
 
             if web_results:
                 support_set = _inject_live_web_results(support_set, web_results)
+                fact_block = _synthesize_live_fact_block(question, creator_row, web_results)
+                if fact_block:
+                    support_set = [fact_block, *support_set]
             elif wants_link:
                 no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if (is_video_request if 'is_video_request' in locals() else False) else "source", style_fingerprint=style_fingerprint)
         elif wants_link and not has_recommendable_ingested_resource:
@@ -6280,6 +6381,24 @@ def _extract_stream_chunk_text(chunk: Any) -> str:
         return content
 
     return _coerce_content(getattr(choice, "text", None))
+
+
+def _looks_like_truncated_stream_answer(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return False
+    words = cleaned.split()
+    if len(words) > 12:
+        return False
+    if re.search(r"[.!?](['\")\]]*)$", cleaned):
+        return False
+    lowered = cleaned.lower()
+    dangling_endings = {
+        "a", "an", "and", "are", "as", "at", "because", "but", "by", "for",
+        "from", "if", "in", "into", "is", "it", "like", "of", "on", "or",
+        "so", "that", "the", "then", "to", "with", "without", "you", "your",
+    }
+    return lowered.split()[-1] in dangling_endings or len(words) <= 5
 
 async def grounded_rag_stream(
     creator_id: int,
@@ -6707,10 +6826,13 @@ async def grounded_rag_stream(
             if search_mode == "hybrid"
             else SearchDecision(False, "search_disabled", "Creator search mode disabled live search", "pre_retrieval", 1.0)
         )
+        creator_terms = _creator_search_terms(creator_row)
         web_query = build_live_search_query(
             search_question,
             conversation_history,
-            creator_name=creator_row.get("name") or creator_row.get("handle"),
+            creator_name=creator_terms.get("name") or creator_terms.get("handle"),
+            creator_handle=creator_terms.get("handle"),
+            creator_niche=creator_terms.get("niche"),
             preferred_platforms=preferred_platforms,
             require_video=is_video_request,
         )
@@ -6718,13 +6840,22 @@ async def grounded_rag_stream(
         if _decision_is_creator_public_fact(pre_search_decision):
             intent_metadata = {"intent": "PUBLIC_CREATOR_FACT"}
         speculative_web_task = None
-        # Only fire the web call up-front when the pre-retrieval decision is
-        # confident we need it (fresh facts, public-creator facts). The earlier
-        # speculative branch fired too eagerly on borderline cases, paying a
-        # Gemini API call for queries that RAG ended up satisfying. Lazy-only
-        # speculation lets the post-retrieval check decide.
-        if search_mode == "hybrid" and pre_search_decision.should_search:
-            log_search_decision(str(creator_id), question, pre_search_decision)
+        should_prefire_web = bool(
+            pre_search_decision.should_search
+            or (
+                settings.AGENTIC_PARALLEL_RETRIEVAL_ENABLED
+                and _should_speculate_live_search(
+                    question,
+                    conversation_history,
+                    explicit_link_request=wants_link,
+                    context_needs_video=is_video_request,
+                    should_run_recommender=should_run_recommender,
+                )
+            )
+        )
+        if search_mode == "hybrid" and should_prefire_web:
+            if pre_search_decision.should_search:
+                log_search_decision(str(creator_id), question, pre_search_decision)
             speculative_web_task = asyncio.create_task(
                 asyncio.to_thread(
                     _run_live_web_search,
@@ -6895,8 +7026,29 @@ async def grounded_rag_stream(
             and (_decision_is_creator_public_fact(pre_search_decision) or _decision_is_creator_public_fact(post_search_decision))
         )
 
+        if (
+            settings.AGENTIC_PARALLEL_RETRIEVAL_ENABLED
+            and speculative_web_task
+            and not web_results
+            and not needs_fallback
+        ):
+            try:
+                web_results = await asyncio.wait_for(
+                    asyncio.shield(speculative_web_task),
+                    timeout=max(0.0, settings.AGENTIC_SEARCH_TIMEOUT_SECONDS),
+                )
+                logger.info("[LATENCY] Parallel web search joined before stream with %s results.", len(web_results or []))
+            except asyncio.TimeoutError:
+                logger.info("[LATENCY] Parallel web search not ready before stream window; continuing with corpus.")
+            except Exception as exc:
+                logger.warning("[LATENCY] Parallel web search failed before stream: %s", exc)
+                web_results = []
+
         if web_results:
             support_set = _inject_live_web_results(support_set, web_results)
+            fact_block = await asyncio.to_thread(_synthesize_live_fact_block, question, creator_row, web_results)
+            if fact_block:
+                support_set = [fact_block, *support_set]
         elif fact_search_requested:
             # Before returning the fallback, await any pending speculative web search.
             # Without this, we'd bail with a canned "check my website" message even
@@ -6914,6 +7066,9 @@ async def grounded_rag_stream(
                     web_results = []
             if web_results:
                 support_set = _inject_live_web_results(support_set, web_results)
+                fact_block = await asyncio.to_thread(_synthesize_live_fact_block, question, creator_row, web_results)
+                if fact_block:
+                    support_set = [fact_block, *support_set]
                 needs_fallback = False
             else:
                 # Force a visible blocking web pass for creator-public fact
@@ -7002,6 +7157,9 @@ async def grounded_rag_stream(
         
         if needs_fallback and web_results:
             support_set = _inject_live_web_results(support_set, web_results)
+            fact_block = await asyncio.to_thread(_synthesize_live_fact_block, question, creator_row, web_results)
+            if fact_block:
+                support_set = [fact_block, *support_set]
         elif needs_fallback and wants_link:
             no_online_fallback = _build_not_online_fallback(question, creator_row.get("name") or creator_row.get("handle") or "the creator", conversation_history, kind="video" if is_video_request else "source", style_fingerprint=style_fingerprint)
         elif wants_link and not has_recommendable_ingested_resource:
@@ -7192,8 +7350,13 @@ async def grounded_rag_stream(
         len(final_stream_text),
         (time.perf_counter() - render_phase_t0) * 1000.0,
     )
-    if not final_stream_text.strip():
-        logger.warning("Streaming renderer produced empty output for route %s. Falling back to non-streaming renderer.", route)
+    if not final_stream_text.strip() or _looks_like_truncated_stream_answer(final_stream_text):
+        logger.warning(
+            "Streaming renderer produced incomplete output for route %s chars=%s text=%r. Falling back to non-streaming renderer.",
+            route,
+            len(final_stream_text),
+            final_stream_text[:160],
+        )
         plan_obj = interaction_engine.build_interaction_plan(
             question,
             conversation_history or [],
@@ -7215,7 +7378,7 @@ async def grounded_rag_stream(
             voice_chunks=voice_support_set,
         )
         if final_stream_text:
-            yield final_stream_text
+            yield f"__FINAL_CONTENT__{final_stream_text}"
 
     if no_online_fallback and _contains_placeholder_link_artifacts(final_stream_text):
         final_stream_text = no_online_fallback

@@ -182,9 +182,10 @@ def generate_chat_completion(
 
     if selected_chat_provider() == "gemini" and not tools and not tool_choice:
         try:
+            target_model = model if str(model or "").startswith("gemini-") else settings.GEMINI_CHAT_MODEL
             return get_gemini_provider().generate_text(
                 messages=messages,
-                model=settings.GEMINI_CHAT_MODEL,
+                model=target_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 json_mode=json_mode,
@@ -260,9 +261,10 @@ async def generate_chat_completion_async(
 
     if selected_chat_provider() == "gemini" and not tools and not tool_choice:
         try:
+            target_model = model if str(model or "").startswith("gemini-") else settings.GEMINI_CHAT_MODEL
             return await get_gemini_provider().generate_text_async(
                 messages=messages,
-                model=settings.GEMINI_CHAT_MODEL,
+                model=target_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 json_mode=json_mode,

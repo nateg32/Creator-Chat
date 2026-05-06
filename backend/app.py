@@ -94,6 +94,21 @@ _IS_PRODUCTION = os.getenv("RENDER", "") != "" or os.getenv("ENV", "").lower() =
 _DEFAULT_JWT_SECRET = "change-me-before-prod"
 
 
+def _safe_chat_error_message(exc: Exception) -> str:
+    raw = str(exc or "")
+    lowered = raw.lower()
+    if (
+        "api_key_invalid" in lowered
+        or "api key not valid" in lowered
+        or "invalid api key" in lowered
+        or "generativelanguage.googleapis.com" in lowered
+    ):
+        return "The AI provider key is invalid or missing. Check GEMINI_API_KEY on the backend service and redeploy."
+    if "unauthorized" in lowered or "authentication" in lowered:
+        return "The AI provider rejected the request. Check the backend provider credentials and redeploy."
+    return "The chat service hit an internal error. Please try again."
+
+
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     print("[STARTUP] Backend ready", flush=True)
@@ -2964,7 +2979,10 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                         if isinstance(chunk, str) and chunk.startswith("__FINAL_CONTENT__"):
                             # grounded_rag_stream detected placeholder artifacts and replaced
                             # the answer with a clean fallback — override assembled text
-                            assembled = [chunk[len("__FINAL_CONTENT__"):]]
+                            replacement = chunk[len("__FINAL_CONTENT__"):]
+                            assembled = [replacement]
+                            pending_stream_text = ""
+                            yield f"data: {json.dumps({'final_content': replacement})}\n\n"
                             continue
 
                         cleaned_chunk = clean_for_stream_chunk(chunk)
@@ -3038,7 +3056,7 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                 )
             except Exception as stream_err:
                 logger.error(f"Error mid-stream: {stream_err}", exc_info=True)
-                yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
+                yield f"data: {json.dumps({'error': _safe_chat_error_message(stream_err)})}\n\n"
 
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
 
