@@ -129,6 +129,31 @@ export function ask({ creator_id, question, top_k, max_distance, messages, debug
   return postJson("/ask", body);
 }
 
+function looksLikeIncompleteStreamAnswer(text = "") {
+  const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return false;
+  const words = cleaned.split(/\s+/);
+  if (words.length > 24) return false;
+  if (/[.!?]['")\]]*$/.test(cleaned)) return false;
+
+  const lowered = cleaned.toLowerCase();
+  const lastWord = lowered.split(/\s+/).pop()?.replace(/[,;:]$/, "") || "";
+  const danglingEndings = new Set([
+    "a", "an", "and", "are", "as", "at", "because", "but", "by", "for",
+    "from", "if", "in", "into", "is", "it", "like", "of", "on", "or",
+    "so", "that", "the", "then", "to", "with", "without", "you", "your",
+    "over", "under", "after", "before", "between", "through", "within",
+    "against", "than", "not", "just", "this", "these", "those", "their",
+    "his", "her", "our", "my", "who", "where", "when",
+  ]);
+
+  if (danglingEndings.has(lastWord)) return true;
+  if (words.length <= 5) return true;
+  if (words.length <= 12 && /\b(?:over|under|for|after|before|since|around|about)\s+\d+(?:[,.]?\d+)?$/.test(lowered)) return true;
+  if (words.length <= 12 && /\b\d+(?:[,.]?\d+)?$/.test(lowered)) return true;
+  return false;
+}
+
 export async function askStream({ creator_id, question, top_k, max_distance, messages, thread_id, images, onToken, onComplete, onError, onStatus }) {
   const body = { creator_id, question, top_k, max_distance, messages, thread_id, images };
 
@@ -221,7 +246,8 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
 
   const completeStream = async () => {
     let completedAnswer = finalContent || fullAnswer;
-    if (!String(completedAnswer || "").trim()) {
+    if (!String(completedAnswer || "").trim() || (!finalContent && looksLikeIncompleteStreamAnswer(completedAnswer))) {
+      if (onStatus) onStatus("repairing");
       const recovered = await recoverWithNonStreamingAsk();
       if (recovered) {
         completedAnswer = recovered.answer;
@@ -319,6 +345,15 @@ export async function askStream({ creator_id, question, top_k, max_distance, mes
     }
   } catch (err) {
     if (err.name === "AbortError") {
+      try {
+        if (onStatus) onStatus("repairing");
+        const recovered = await recoverWithNonStreamingAsk();
+        if (recovered) {
+          return completeStream();
+        }
+      } catch {
+        // Fall through to the timeout error if the recovery request also fails.
+      }
       const timeoutErr = new Error(timeoutMessage);
       if (onError) onError(timeoutErr);
       else throw timeoutErr;

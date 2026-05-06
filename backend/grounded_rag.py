@@ -6388,7 +6388,7 @@ def _looks_like_truncated_stream_answer(text: str) -> bool:
     if not cleaned:
         return False
     words = cleaned.split()
-    if len(words) > 12:
+    if len(words) > 24:
         return False
     if re.search(r"[.!?](['\")\]]*)$", cleaned):
         return False
@@ -6397,8 +6397,20 @@ def _looks_like_truncated_stream_answer(text: str) -> bool:
         "a", "an", "and", "are", "as", "at", "because", "but", "by", "for",
         "from", "if", "in", "into", "is", "it", "like", "of", "on", "or",
         "so", "that", "the", "then", "to", "with", "without", "you", "your",
+        "over", "under", "after", "before", "between", "through", "within",
+        "against", "than", "not", "just", "this", "these", "those", "their",
+        "his", "her", "our", "my", "who", "where", "when",
     }
-    return lowered.split()[-1] in dangling_endings or len(words) <= 5
+    last_word = lowered.split()[-1].strip(",;:")
+    if last_word in dangling_endings:
+        return True
+    if len(words) <= 5:
+        return True
+    if len(words) <= 12 and re.search(r"\b(?:over|under|for|after|before|since|around|about)\s+\d+(?:[,.]?\d+)?$", lowered):
+        return True
+    if len(words) <= 12 and re.search(r"\b\d+(?:[,.]?\d+)?$", lowered):
+        return True
+    return False
 
 async def grounded_rag_stream(
     creator_id: int,

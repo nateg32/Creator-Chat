@@ -2862,7 +2862,8 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                     if not image_question or not image_question.strip():
                         image_question = "Describe this image and point out anything important."
 
-                    result = grounded_rag_ask(
+                    image_answer_task = asyncio.create_task(asyncio.to_thread(
+                        grounded_rag_ask,
                         creator_id=payload.creator_id,
                         question=image_question,
                         thread_id=payload.thread_id,
@@ -2875,7 +2876,16 @@ async def ask_stream_endpoint(request: Request, payload: AskRequest, background_
                         creator_name=creator_name,
                         images=images_payload,
                         user_id=current_user["id"],
-                    )
+                    ))
+                    while not image_answer_task.done():
+                        try:
+                            result = await asyncio.wait_for(asyncio.shield(image_answer_task), timeout=10)
+                            break
+                        except asyncio.TimeoutError:
+                            yield f"data: {json.dumps({'status': 'analyzing'})}\n\n"
+                    else:
+                        result = await image_answer_task
+
                     cards = merge_preview_cards(result.get("cards") or [], enrich_titles=True)
                     citations = result.get("citations") or []
                     full_answer = prepare_chat_response(
