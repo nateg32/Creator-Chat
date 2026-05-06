@@ -42,8 +42,8 @@ class OpenAIStyleStreamChunk:
 
 
 def selected_chat_provider() -> str:
-    provider = (settings.CHAT_PROVIDER or "openai").strip().lower()
-    return provider if provider in {"gemini", "openai"} else "openai"
+    provider = (settings.CHAT_PROVIDER or "gemini").strip().lower()
+    return provider if provider in {"gemini", "openai"} else "gemini"
 
 
 def _messages_to_prompt(messages: List[Dict[str, str]]) -> tuple[str, str]:

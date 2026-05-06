@@ -72,6 +72,8 @@ def test_selected_chat_provider(monkeypatch):
     monkeypatch.setattr(settings, "CHAT_PROVIDER", "gemini")
     assert selected_chat_provider() == "gemini"
     monkeypatch.setattr(settings, "CHAT_PROVIDER", "bogus")
+    assert selected_chat_provider() == "gemini"
+    monkeypatch.setattr(settings, "CHAT_PROVIDER", "openai")
     assert selected_chat_provider() == "openai"
 
 
@@ -240,3 +242,22 @@ def test_gemini_cache_support_chunk_shapes_fact_block():
     assert "GEMINI CACHED CORPUS RESULT" in chunk["content"]
     assert "Burnout isn't about working too hard" in chunk["content"]
     assert chunk["source_ref"]["timestamp"] == "12:02"
+
+
+def test_creator_memory_v2_migration_defines_transcript_persona_cache_tables():
+    from pathlib import Path
+
+    sql = Path("backend/migrations/013_creator_memory_v2.sql").read_text(encoding="utf-8")
+
+    for table_name in [
+        "content_documents",
+        "transcript_segments",
+        "content_chunks",
+        "content_embeddings",
+        "persona_analyses",
+        "soul_versions",
+        "runtime_prompts",
+        "gemini_context_caches",
+        "retrieval_events",
+    ]:
+        assert f"CREATE TABLE IF NOT EXISTS {table_name}" in sql

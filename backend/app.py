@@ -73,6 +73,7 @@ from backend.services.evidence_router import recent_evidence_activity
 from backend.services.fact_registry import fact_registry
 from backend.services.stream_fact_recovery import recover_streamed_creator_fact_answer
 from backend.services.recommendation_feedback_service import recommendation_feedback_service
+from backend.services.schema_migrations import apply_sql_migration
 from backend.services.corpus_state import (
     compute_item_ingest_checksum,
     delete_document_corpus,
@@ -116,6 +117,11 @@ async def app_lifespan(app: FastAPI):
         print("[STARTUP] DB connection OK")
     except Exception as e:
         print(f"[STARTUP] DB connection warning: {e}")
+
+    try:
+        apply_sql_migration("013_creator_memory_v2.sql")
+    except Exception as e:
+        print(f"[STARTUP] Creator memory v2 migration warning: {e}")
 
     try:
         db.execute_update("ALTER TABLE creators ADD COLUMN IF NOT EXISTS profile_picture_url TEXT")

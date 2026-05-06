@@ -45,7 +45,7 @@ class Settings:
     GEMINI_CONTEXT_CACHE_TTL_SECONDS: int = int(os.getenv("GEMINI_CONTEXT_CACHE_TTL_SECONDS", "86400"))
     GEMINI_CONTEXT_CACHE_MAX_CHARS: int = int(os.getenv("GEMINI_CONTEXT_CACHE_MAX_CHARS", "800000"))
     GEMINI_DYNAMIC_RAG_ENABLED: bool = os.getenv("GEMINI_DYNAMIC_RAG_ENABLED", "true").lower() == "true"
-    CHAT_PROVIDER: str = os.getenv("CHAT_PROVIDER", "openai").lower()
+    CHAT_PROVIDER: str = os.getenv("CHAT_PROVIDER", "gemini").lower()
     
     # Apify
     APIFY_TOKEN: Optional[str] = os.getenv("APIFY_TOKEN", None)
