@@ -151,6 +151,7 @@ function looksLikeIncompleteStreamAnswer(text = "") {
   if (words.length <= 5) return true;
   if (words.length <= 12 && /\b(?:over|under|for|after|before|since|around|about)\s+\d+(?:[,.]?\d+)?$/.test(lowered)) return true;
   if (words.length <= 12 && /\b\d+(?:[,.]?\d+)?$/.test(lowered)) return true;
+  if (words.length <= 16 && !/[.!?;:]['")\]]*$/.test(cleaned)) return true;
   return false;
 }
 

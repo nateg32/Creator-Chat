@@ -28,6 +28,7 @@ class _Delta:
 @dataclass
 class _Choice:
     delta: _Delta
+    finish_reason: Optional[str] = None
 
 
 @dataclass
@@ -35,10 +36,11 @@ class OpenAIStyleStreamChunk:
     """Tiny adapter so existing stream extraction works for Gemini chunks."""
 
     text: str
+    finish_reason: Optional[str] = None
 
     @property
     def choices(self) -> List[_Choice]:
-        return [_Choice(delta=_Delta(content=self.text))]
+        return [_Choice(delta=_Delta(content=self.text), finish_reason=self.finish_reason)]
 
 
 def selected_chat_provider() -> str:
@@ -198,8 +200,17 @@ class GeminiLLMProvider:
     def _stream_text(self, client: Any, model: str, contents: str, config: Dict[str, Any]) -> Iterable[OpenAIStyleStreamChunk]:
         for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
             text = _extract_text(chunk)
-            if text:
-                yield OpenAIStyleStreamChunk(text=text)
+            finish_reason = None
+            try:
+                candidates = getattr(chunk, "candidates", []) or []
+                if candidates:
+                    finish_reason = getattr(candidates[0], "finish_reason", None)
+                    if finish_reason is not None:
+                        finish_reason = getattr(finish_reason, "name", finish_reason)
+            except Exception:
+                finish_reason = None
+            if text or finish_reason:
+                yield OpenAIStyleStreamChunk(text=text, finish_reason=str(finish_reason) if finish_reason else None)
 
     async def generate_text_async(self, **kwargs: Any) -> Any:
         if kwargs.get("stream"):

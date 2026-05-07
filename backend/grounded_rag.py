@@ -6383,6 +6383,28 @@ def _extract_stream_chunk_text(chunk: Any) -> str:
     return _coerce_content(getattr(choice, "text", None))
 
 
+def _extract_stream_finish_reason(chunk: Any) -> str:
+    """Best-effort finish reason extraction across provider stream chunk shapes."""
+    choices = getattr(chunk, "choices", None) or []
+    if choices:
+        reason = getattr(choices[0], "finish_reason", None)
+        if reason:
+            return str(getattr(reason, "name", reason)).lower()
+
+    candidates = getattr(chunk, "candidates", None) or []
+    if candidates:
+        reason = getattr(candidates[0], "finish_reason", None)
+        if reason:
+            return str(getattr(reason, "name", reason)).lower()
+
+    reason = getattr(chunk, "finish_reason", None)
+    return str(getattr(reason, "name", reason)).lower() if reason else ""
+
+
+def _stream_stopped_for_length(finish_reasons: List[str]) -> bool:
+    return any(reason in {"length", "max_tokens", "max_output_tokens"} for reason in finish_reasons or [])
+
+
 def _looks_like_truncated_stream_answer(text: str) -> bool:
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     if not cleaned:
@@ -6409,6 +6431,8 @@ def _looks_like_truncated_stream_answer(text: str) -> bool:
     if len(words) <= 12 and re.search(r"\b(?:over|under|for|after|before|since|around|about)\s+\d+(?:[,.]?\d+)?$", lowered):
         return True
     if len(words) <= 12 and re.search(r"\b\d+(?:[,.]?\d+)?$", lowered):
+        return True
+    if len(words) <= 16 and not re.search(r"[.!?;:](['\")\]]*)$", cleaned):
         return True
     return False
 
@@ -6855,7 +6879,7 @@ async def grounded_rag_stream(
         should_prefire_web = bool(
             pre_search_decision.should_search
             or (
-                settings.AGENTIC_PARALLEL_RETRIEVAL_ENABLED
+                getattr(settings, "AGENTIC_PARALLEL_RETRIEVAL_ENABLED", False)
                 and _should_speculate_live_search(
                     question,
                     conversation_history,
@@ -7039,7 +7063,7 @@ async def grounded_rag_stream(
         )
 
         if (
-            settings.AGENTIC_PARALLEL_RETRIEVAL_ENABLED
+            getattr(settings, "AGENTIC_PARALLEL_RETRIEVAL_ENABLED", False)
             and speculative_web_task
             and not web_results
             and not needs_fallback
@@ -7047,7 +7071,7 @@ async def grounded_rag_stream(
             try:
                 web_results = await asyncio.wait_for(
                     asyncio.shield(speculative_web_task),
-                    timeout=max(0.0, settings.AGENTIC_SEARCH_TIMEOUT_SECONDS),
+                    timeout=max(0.0, getattr(settings, "AGENTIC_SEARCH_TIMEOUT_SECONDS", 1.2)),
                 )
                 logger.info("[LATENCY] Parallel web search joined before stream with %s results.", len(web_results or []))
             except asyncio.TimeoutError:
@@ -7338,8 +7362,12 @@ async def grounded_rag_stream(
     )
 
     streamed_parts: List[str] = []
+    finish_reasons: List[str] = []
     first_content_logged = False
     async for chunk in stream:
+        finish_reason = _extract_stream_finish_reason(chunk)
+        if finish_reason:
+            finish_reasons.append(finish_reason)
         content = _extract_stream_chunk_text(chunk)
         if content:
             if not first_content_logged:
@@ -7362,11 +7390,16 @@ async def grounded_rag_stream(
         len(final_stream_text),
         (time.perf_counter() - render_phase_t0) * 1000.0,
     )
-    if not final_stream_text.strip() or _looks_like_truncated_stream_answer(final_stream_text):
+    if (
+        not final_stream_text.strip()
+        or _stream_stopped_for_length(finish_reasons)
+        or _looks_like_truncated_stream_answer(final_stream_text)
+    ):
         logger.warning(
-            "Streaming renderer produced incomplete output for route %s chars=%s text=%r. Falling back to non-streaming renderer.",
+            "Streaming renderer produced incomplete output for route %s chars=%s finish_reasons=%s text=%r. Falling back to non-streaming renderer.",
             route,
             len(final_stream_text),
+            finish_reasons,
             final_stream_text[:160],
         )
         plan_obj = interaction_engine.build_interaction_plan(
