@@ -62,9 +62,12 @@ async def test_register_and_login_normalize_email(monkeypatch):
         )
     assert register.status_code == 200
     assert records["users"]["user@example.com"]["email"] == "user@example.com"
-    assert register.json()["access_token"]
     assert login.status_code == 200
     assert login.json()["user_id"] == records["users"]["user@example.com"]["id"]
+    assert "session_id" not in register.json()
+    assert "access_token" not in register.json()
+    assert "session_id" not in login.json()
+    assert "access_token" not in login.json()
 
 
 @pytest.mark.anyio

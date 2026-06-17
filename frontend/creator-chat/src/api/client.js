@@ -5,7 +5,6 @@ import {
 } from "../config";
 
 const USER_ID_KEY = "user_id";
-const ACCESS_TOKEN_KEY = "access_token";
 const BACKEND_STATUS_EVENT = "backend-status";
 
 function emitBackendStatus(detail) {
@@ -22,23 +21,12 @@ function emitBackendReachable(path, status) {
   emitBackendStatus({ status: "reachable", path, http_status: status });
 }
 
-function getStoredAccessToken() {
-  try {
-    return localStorage.getItem(ACCESS_TOKEN_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
 function persistAuthPayload(payload) {
   if (!payload || typeof payload !== "object") return;
 
   try {
     if (payload.user_id != null) {
       localStorage.setItem(USER_ID_KEY, String(payload.user_id));
-    }
-    if (typeof payload.access_token === "string" && payload.access_token.trim()) {
-      localStorage.setItem(ACCESS_TOKEN_KEY, payload.access_token.trim());
     }
   } catch {
     // Ignore storage failures.
@@ -48,7 +36,6 @@ function persistAuthPayload(payload) {
 function clearStoredAuth() {
   try {
     localStorage.removeItem(USER_ID_KEY);
-    localStorage.removeItem(ACCESS_TOKEN_KEY);
   } catch {
     // Ignore storage failures.
   }
@@ -68,13 +55,7 @@ function handleUnauthorizedResponse(res) {
 }
 
 function buildHeaders(headers = {}) {
-  // Prefer the HttpOnly session_id cookie, but also send the persisted bearer token as a fallback.
-  const nextHeaders = { ...headers };
-  const accessToken = getStoredAccessToken();
-  if (accessToken && !nextHeaders.Authorization) {
-    nextHeaders.Authorization = `Bearer ${accessToken}`;
-  }
-  return nextHeaders;
+  return { ...headers };
 }
 
 function normalizeErrorDetails(data, fallback = null) {
@@ -710,7 +691,6 @@ export function getScrapeProgress(scrape_id) {
 }
 
 // Auth functions
-// Auth prefers the HttpOnly session_id cookie, with bearer-token fallback for cross-site deployments.
 export async function login(email, password) {
   return postJson("/auth/login", { email, password });
 }

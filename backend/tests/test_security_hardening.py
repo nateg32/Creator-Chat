@@ -176,3 +176,44 @@ async def test_session_auth_rejects_untrusted_origin(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Invalid request origin"
+
+
+@pytest.mark.anyio
+async def test_login_response_does_not_expose_session_credentials(monkeypatch):
+    password_hash = app_module.hash_password("super-secret")
+
+    def fake_execute_one(query, params=None):
+        normalized = " ".join(str(query).strip().lower().split())
+        if normalized.startswith("select id, password_hash from users where email = %s"):
+            return {"id": 7, "password_hash": password_hash}
+        raise AssertionError(f"Unexpected execute_one query: {query}")
+
+    monkeypatch.setattr("backend.db.db.execute_one", fake_execute_one)
+    monkeypatch.setattr("backend.app.create_session", lambda user_id: f"session-{user_id}")
+
+    transport = httpx.ASGITransport(app=app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/auth/login",
+            json={"email": "user@example.com", "password": "super-secret"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"user_id": 7}
+    assert response.cookies.get("session_id") == "session-7"
+
+
+@pytest.mark.anyio
+async def test_security_headers_include_csp_and_hsts(monkeypatch):
+    def fake_execute_query(query, params=None):
+        return [{"ok": 1}]
+
+    monkeypatch.setattr("backend.db.db.execute_query", fake_execute_query)
+
+    transport = httpx.ASGITransport(app=app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/health", headers={"X-Forwarded-Proto": "https"})
+
+    assert response.headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"

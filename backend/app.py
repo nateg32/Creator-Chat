@@ -283,6 +283,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        if (request.headers.get("x-forwarded-proto") or "").lower() == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
 
@@ -1347,10 +1351,7 @@ async def login(request: Request, payload: LoginRequest, response: Response):
         )
         
         return LoginResponse(
-            session_id=session_id,
             user_id=user["id"],
-            access_token=create_access_token(user["id"], email),
-            token_type="bearer",
         )
     except HTTPException:
         raise
@@ -1386,10 +1387,7 @@ async def register(request: Request, payload: LoginRequest, response: Response):
         )
         
         return LoginResponse(
-            session_id=session_id,
             user_id=user_id,
-            access_token=create_access_token(user_id, email),
-            token_type="bearer",
         )
     except HTTPException:
         raise
