@@ -1,0 +1,73 @@
+# Environment variables
+.env
+backend/.env
+
+# Python
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+*.sqlite
+*.sqlite3
+*.db
+error_log.txt
+panic_log.txt
+
+# Node.js
+node_modules/
+dist/
+dist-ssr/
+*.local
+.tools/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results
+search_result.txt
+.vercel
+
+# Local diagnostics / generated probes
+check_*.py
+debug_*.py
+diagnose_*.py
+inspect_*.py
+tmp_*.py
+trace*.log
+trace*.txt
+error*.log
+error*.txt
+out*.txt
+out*.json
+search_*.txt
+search_*.log
+fp_out*.txt
+*_out.txt
+*_out.json
+db_url*.txt
+db_url*.json
+greeting_output.txt
+decision_output.txt
+panic_log.txt
+backend/cache_dump.json
+backend/chunks.txt
+backend/current_soul.md
+backend/mem0_history.db
+backend/mem0_simple_store.json
+backend/mem0_vector_db/
+backend/raw_search_results.json
+backend/serpapi_debug.json
+backend/schema_out*.txt
+backend/test_output.*

@@ -1,0 +1,449 @@
+import importlib.util
+import unittest
+from pathlib import Path
+
+
+def _load_module():
+    module_path = Path(__file__).resolve().parents[1] / "services" / "text_sanitizer.py"
+    spec = importlib.util.spec_from_file_location("text_sanitizer", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+text_sanitizer = _load_module()
+
+
+class TextSanitizerTests(unittest.TestCase):
+    def test_removes_compound_hyphens(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Pick one high-income skill."),
+            "Pick one high income skill.",
+        )
+
+    def test_replaces_clause_dashes_with_commas(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Do the work - then raise your price."),
+            "Do the work, then raise your price.",
+        )
+
+    def test_preserves_numeric_percent_ranges(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I usually risk 1-3% of the account on a trade."),
+            "I usually risk 1-3% of the account on a trade.",
+        )
+
+    def test_preserves_numeric_word_ranges(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("That usually takes 3-4 years if you stay consistent."),
+            "That usually takes 3-4 years if you stay consistent.",
+        )
+
+    def test_preserves_leading_bullets(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("- Keep going"),
+            "- Keep going",
+        )
+
+    def test_preserves_multiline_bullets_after_colon(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens('Examples that sell:\n- "We book 20 calls."\n- "We revive old leads."'),
+            'Examples that sell:\n- "We book 20 calls."\n- "We revive old leads."',
+        )
+
+    def test_replaces_tight_em_dash_clauses(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("If prompt engineering does not work in every case—as models can be unpredictable—you can post process it."),
+            "If prompt engineering does not work in every case, as models can be unpredictable, you can post process it.",
+        )
+
+    def test_preserves_urls(self):
+        text = "Use https://example.com or [this link](https://example.com) for approval."
+        self.assertEqual(text_sanitizer.strip_mid_sentence_hyphens(text), text)
+
+    def test_streaming_sanitizer_cleans_split_em_dash(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer()
+        parts = [
+            sanitizer.feed("If prompt engineering does not work in every case"),
+            sanitizer.feed("—as models can be unpredictable—you can "),
+            sanitizer.feed("post process it."),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "If prompt engineering does not work in every case, as models can be unpredictable, you can post process it.",
+        )
+
+    def test_streaming_sanitizer_preserves_chunk_spaces(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer(tail_size=12)
+        parts = [
+            sanitizer.feed("If you're thinking "),
+            sanitizer.feed("about going to "),
+            sanitizer.feed("ACCESS, go for the right reason."),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "If you're thinking about going to ACCESS, go for the right reason.",
+        )
+
+    def test_inserts_space_before_bible_verse_reference(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("It is built around Matthew28:19, which matters."),
+            "It is built around Matthew 28:19, which matters.",
+        )
+
+    def test_inserts_space_before_bare_domain(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("1. Check2819Church.org for details."),
+            "1. Check 2819Church.org for details.",
+        )
+
+    def test_inserts_space_between_word_and_number(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Send50 messages a day. Call20 businesses a day. Walk in to5 places a day."),
+            "Send 50 messages a day. Call 20 businesses a day. Walk in to 5 places a day.",
+        )
+
+    def test_inserts_space_before_year(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("We got married in2017."),
+            "We got married in 2017.",
+        )
+
+    def test_inserts_space_before_frequency_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Lift or do hard exercise3x a week."),
+            "Lift or do hard exercise 3x a week.",
+        )
+
+    def test_inserts_space_before_age_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Watch How to disappoint your dad in your20s."),
+            "Watch How to disappoint your dad in your 20s.",
+        )
+
+    def test_does_not_repair_split_word_fragments(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Buyer: Yo u tur n long videos into clips."),
+            "Buyer: Yo u tur n long videos into clips.",
+        )
+
+    def test_does_not_repair_line_start_split_word_fragments(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Perfect.\nB uyer: agencies and coaches"),
+            "Perfect.\nB uyer: agencies and coaches",
+        )
+
+    def test_does_not_repair_merged_common_word_pairs(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Are you asking because you want to decide whatyou believe?"),
+            "Are you asking because you want to decide whatyou believe?",
+        )
+
+    def test_streaming_sanitizer_does_not_invent_missing_boundary_space(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer(tail_size=12)
+        parts = [
+            sanitizer.feed("Are you asking because you want to decide what"),
+            sanitizer.feed("you believe, or because you're"),
+            sanitizer.feed(" wrestling with something right now?"),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "Are you asking because you want to decide whatyou believe, or because you're wrestling with something right now?",
+        )
+
+    def test_does_not_repair_merged_connector_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("What do you selland what's your current price?"),
+            "What do you selland what's your current price?",
+        )
+
+    def test_does_not_repair_split_mean_fragment_after_modal(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("This could me an automating more tasks."),
+            "This could me an automating more tasks.",
+        )
+
+    def test_does_not_repair_observed_split_word_artifacts(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "I ndividual company revenues with in that group. So me of the companies scale fast."
+            ),
+            "I ndividual company revenues with in that group. So me of the companies scale fast.",
+        )
+
+    def test_strips_creator_ai_identity_disclosure(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "I appreciate that. Just so you know, I am an AI creator style assistant trained on Alex's content. What are you building?"
+            ),
+            "I appreciate that. What are you building?",
+        )
+
+    def test_preserves_real_word_mean(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("This could mean automating more tasks."),
+            "This could mean automating more tasks.",
+        )
+
+    def test_preserves_normal_me_an_phrase(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Give me an example."),
+            "Give me an example.",
+        )
+
+    def test_repairs_dangling_preposition_sentence_end(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I'm Alex Hormozi. I'm the founder and managing partner of. I focus on growth."),
+            "I'm Alex Hormozi. I'm the founder and managing partner. I focus on growth.",
+        )
+
+    def test_repairs_dangling_preposition_before_where_clause(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "I'm the founder and managing partner of, where I focus on helping businesses scale."
+            ),
+            "I'm the founder and managing partner, and I focus on helping businesses scale.",
+        )
+
+    def test_preserves_real_words_that_end_with_and(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("The command line matters."),
+            "The command line matters.",
+        )
+
+    def test_does_not_repair_split_suffix_fragment(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("That just ifies 2 to 10x pricing."),
+            "That just ifies 2 to 10x pricing.",
+        )
+
+    def test_does_not_repair_short_split_suffix_fragment(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "It is the cleanest step by step blueprint and us ing simple automation tools."
+            ),
+            "It is the cleanest step by step blueprint and us ing simple automation tools.",
+        )
+
+    def test_does_not_repair_merged_single_letter_heads(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I'm Dan Martell. Ibuild and Icoach founders."),
+            "I'm Dan Martell. Ibuild and Icoach founders.",
+        )
+
+    def test_streaming_sanitizer_does_not_invent_i_break_boundary(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer(tail_size=12)
+        parts = [
+            sanitizer.feed("I"),
+            sanitizer.feed("break down the approach in that podcast."),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "Ibreak down the approach in that podcast.",
+        )
+
+    def test_streaming_sanitizer_does_not_split_real_i_prefixed_word(self):
+        sanitizer = text_sanitizer.StreamingTextSanitizer(tail_size=12)
+        parts = [
+            sanitizer.feed("I"),
+            sanitizer.feed("nstagram is where I post updates."),
+            sanitizer.flush(),
+        ]
+        self.assertEqual(
+            "".join(parts),
+            "Instagram is where I post updates.",
+        )
+
+    def test_does_not_split_real_words_that_start_with_a(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Amazon is where I sell it."),
+            "Amazon is where I sell it.",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Alex Hormozi said it clearly."),
+            "Alex Hormozi said it clearly.",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Alright, let's get into it."),
+            "Alright, let's get into it.",
+        )
+
+    def test_does_not_repair_merged_common_heads(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("Myfirst real business taught me a lot. Youkeep going."),
+            "Myfirst real business taught me a lot. Youkeep going.",
+        )
+
+    def test_does_not_repair_merged_trailing_common_words(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("What kind of businessare you trying to start?"),
+            "What kind of businessare you trying to start?",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("A free trialwill just create support load."),
+            "A free trialwill just create support load.",
+        )
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "Designingyour weeks around your highest leverage activities matters."
+            ),
+            "Designingyour weeks around your highest leverage activities matters.",
+        )
+
+    def test_does_not_repair_split_prefix_with_merged_suffix(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens(
+                "If you tell me what you do right now, I'll tra nslatethe main framework into a plan."
+            ),
+            "If you tell me what you do right now, I'll tra nslatethe main framework into a plan.",
+        )
+
+    def test_does_not_repair_contraction_boundary_with_merged_word(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("I'lltranslate that into a plan."),
+            "I'lltranslate that into a plan.",
+        )
+
+    def test_inserts_missing_space_after_sentence_punctuation(self):
+        self.assertEqual(
+            text_sanitizer.strip_mid_sentence_hyphens("1 Offer.1 customer type.1 acquisition channel."),
+            "1 Offer. 1 customer type. 1 acquisition channel.",
+        )
+
+    def test_strips_youtube_id_fragments_when_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "I attached both below.\nnp YUmc\nns RU",
+                [{"url": "https://youtu.be/npYUmcnsRU"}],
+            ),
+            "I attached it below.",
+        )
+
+    def test_strips_single_line_youtube_id_fragments_when_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "Iattached it below.\nAYfwX 4 bkY",
+                [{"url": "https://youtu.be/AYfwX4bkY"}],
+            ),
+            "Iattached it below.",
+        )
+
+    def test_strips_partial_youtube_id_fragments_when_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "Here it is, attached below\nxi W9h M",
+                [{"url": "https://youtu.be/AAxiW9hMbb1"}],
+            ),
+            "Here it is, attached below",
+        )
+
+    def test_rewrites_plural_attachment_language_when_only_one_card_exists(self):
+        self.assertEqual(
+            text_sanitizer.strip_card_attachment_artifacts(
+                "I attached both below.",
+                [{"url": "https://youtu.be/AAxiW9hMbb1"}],
+            ),
+            "I attached it below.",
+        )
+
+    def test_strips_duplicate_episode_title_handoff_tail(self):
+        cleaned = text_sanitizer.strip_card_attachment_artifacts(
+            (
+                "I attached Ep 690 if you want the longer version.\n\n"
+                '"How to Keep Pushing Hard Years Later... | Ep 690" if you want the longer version.\n\n'
+                "if you want to listen to the full breakdown.\n\n"
+                "Are you feeling it?"
+            ),
+            [
+                {
+                    "url": "https://podcasts.apple.com/example",
+                    "title": "How to Keep Pushing Hard Years Later... | Ep 690",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            cleaned,
+            "I attached Ep 690 if you want the longer version.\n\nAre you feeling it?",
+        )
+
+    def test_finalize_generated_text_does_not_run_model_spacing_fix(self):
+        original = text_sanitizer._run_final_spacing_cleanup_model
+        calls = []
+
+        def fail_if_called(text):
+            calls.append(text)
+            return "That feels conversational and natural."
+
+        text_sanitizer._run_final_spacing_cleanup_model = fail_if_called
+        try:
+            self.assertEqual(
+                text_sanitizer.finalize_generated_text("That feels convers ational and natural."),
+                "That feels convers ational and natural.",
+            )
+            self.assertEqual(calls, [])
+        finally:
+            text_sanitizer._run_final_spacing_cleanup_model = original
+
+    def test_finalize_generated_text_skips_model_for_clean_text(self):
+        original = text_sanitizer._run_final_spacing_cleanup_model
+        calls = []
+
+        def fail_if_called(text):
+            calls.append(text)
+            return "I re commend this."
+
+        text_sanitizer._run_final_spacing_cleanup_model = fail_if_called
+        try:
+            self.assertEqual(
+                text_sanitizer.finalize_generated_text("I recommend this."),
+                "I recommend this.",
+            )
+            self.assertEqual(calls, [])
+        finally:
+            text_sanitizer._run_final_spacing_cleanup_model = original
+
+    def test_finalize_generated_text_rejects_cleanup_that_adds_word_breaks(self):
+        original = text_sanitizer._run_final_spacing_cleanup_model
+        text_sanitizer._run_final_spacing_cleanup_model = lambda text: "That feels con versational and natural."
+        try:
+            self.assertEqual(
+                text_sanitizer.finalize_generated_text("That feels convers ational and natural."),
+                "That feels convers ational and natural.",
+            )
+        finally:
+            text_sanitizer._run_final_spacing_cleanup_model = original
+
+    def test_artifact_score_does_not_flag_word_fragments(self):
+        self.assertEqual(text_sanitizer.formatting_artifact_score("I re commend this."), 0)
+        self.assertEqual(text_sanitizer.formatting_artifact_score("That feels convers ational."), 0)
+        self.assertEqual(text_sanitizer.formatting_artifact_score("I finish I ronmans."), 0)
+        self.assertEqual(text_sanitizer.formatting_artifact_score("I recommend this."), 0)
+        self.assertEqual(text_sanitizer.formatting_artifact_score("A business works."), 0)
+        self.assertEqual(text_sanitizer.formatting_artifact_score("pro athlete mindset"), 0)
+
+    def test_finalize_generated_text_preserves_ironman_split(self):
+        self.assertEqual(
+            text_sanitizer.finalize_generated_text("I build companies and finish I ronmans.", allow_model_cleanup=False),
+            "I build companies and finish I ronmans.",
+        )
+
+    def test_finalize_generated_text_rejects_rewrite(self):
+        original = text_sanitizer._run_final_spacing_cleanup_model
+        text_sanitizer._run_final_spacing_cleanup_model = lambda text: "This is a total rewrite with different words."
+        try:
+            self.assertEqual(
+                text_sanitizer.finalize_generated_text("That feels convers ational and natural."),
+                "That feels convers ational and natural.",
+            )
+        finally:
+            text_sanitizer._run_final_spacing_cleanup_model = original
+
+
+if __name__ == "__main__":
+    unittest.main()

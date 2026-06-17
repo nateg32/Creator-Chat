@@ -1,0 +1,174 @@
+services:
+  - type: web
+    name: creator-chat-api
+    runtime: python
+    plan: starter
+    region: oregon
+    rootDir: backend
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: PYTHONPATH=/opt/render/project/src python -m uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: EMBEDDING_API_KEY
+        sync: false
+      - key: EMBEDDING_BASE_URL
+        sync: false
+      - key: TRANSCRIPTION_API_KEY
+        sync: false
+      - key: TRANSCRIPTION_BASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: CHAT_PROVIDER
+        value: gemini
+      - key: GEMINI_CHAT_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_ANALYSIS_MODEL
+        value: gemini-3-pro-preview
+      - key: MODEL_CLASSIFICATION
+        value: gemini-3-flash-preview
+      - key: MODEL_MEMORY
+        value: gemini-3-flash-preview
+      - key: MODEL_VERIFY
+        value: gemini-3-pro-preview
+      - key: MODEL_SYNTHESIS
+        value: gemini-3-flash-preview
+      - key: MODEL_MAIN_REPLY
+        value: gemini-3-flash-preview
+      - key: MODEL_FAST_REPLY
+        value: gemini-3-flash-preview
+      - key: MODEL_PERSONA_ANALYSIS
+        value: gemini-3-pro-preview
+      - key: MODEL_PERSONA_ANALYSIS_ADVANCED
+        value: gemini-3-pro-preview
+      - key: MODEL_FALLBACK_FAST
+        value: gemini-3-flash-preview
+      - key: MODEL_FALLBACK_SMART
+        value: gemini-3-pro-preview
+      - key: APIFY_TOKEN
+        sync: false
+      - key: SEARCH_API_KEY
+        sync: false
+      - key: BRAVE_SEARCH_API_KEY
+        sync: false
+      - key: EXA_API_KEY
+        sync: false
+      - key: THREAD_CONTEXT_CACHE_REDIS_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: FRONTEND_URLS
+        sync: false
+      - key: SCRAPE_MAX_PLATFORMS_PER_SEARCH
+        value: "8"
+      - key: SCRAPE_MAX_ITEMS_PER_PLATFORM
+        value: "25000"
+      - key: SCRAPE_MAX_ITEMS_PER_SEARCH
+        value: "25000"
+      - key: SCRAPE_MAX_CREATORS
+        value: "250"
+      - key: SCRAPE_MONTHLY_ITEM_ALLOWANCE
+        value: "25000"
+      - key: DB_POOL_MAX_SIZE
+        value: "10"
+      - key: TRANSCRIBE_ON_INGEST
+        value: "false"
+
+  - type: worker
+    name: creator-chat-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    rootDir: backend
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: PYTHONPATH=/opt/render/project/src python -m backend.services.system_worker
+    numInstances: 2
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: EMBEDDING_API_KEY
+        sync: false
+      - key: EMBEDDING_BASE_URL
+        sync: false
+      - key: TRANSCRIPTION_API_KEY
+        sync: false
+      - key: TRANSCRIPTION_BASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: CHAT_PROVIDER
+        value: gemini
+      - key: GEMINI_CHAT_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_ANALYSIS_MODEL
+        value: gemini-3-pro-preview
+      - key: MODEL_CLASSIFICATION
+        value: gemini-3-flash-preview
+      - key: MODEL_MEMORY
+        value: gemini-3-flash-preview
+      - key: MODEL_VERIFY
+        value: gemini-3-pro-preview
+      - key: MODEL_SYNTHESIS
+        value: gemini-3-flash-preview
+      - key: MODEL_MAIN_REPLY
+        value: gemini-3-flash-preview
+      - key: MODEL_FAST_REPLY
+        value: gemini-3-flash-preview
+      - key: MODEL_PERSONA_ANALYSIS
+        value: gemini-3-pro-preview
+      - key: MODEL_PERSONA_ANALYSIS_ADVANCED
+        value: gemini-3-pro-preview
+      - key: MODEL_FALLBACK_FAST
+        value: gemini-3-flash-preview
+      - key: MODEL_FALLBACK_SMART
+        value: gemini-3-pro-preview
+      - key: APIFY_TOKEN
+        sync: false
+      - key: SEARCH_API_KEY
+        sync: false
+      - key: BRAVE_SEARCH_API_KEY
+        sync: false
+      - key: EXA_API_KEY
+        sync: false
+      - key: THREAD_CONTEXT_CACHE_REDIS_URL
+        sync: false
+      - key: DB_POOL_MAX_SIZE
+        value: "4"
+      - key: EMBED_BATCH_SIZE
+        value: "96"
+      - key: TRANSCRIPT_CONCURRENCY
+        value: "2"
+      - key: YOUTUBE_TRANSCRIPT_CONCURRENCY
+        value: "4"
+      - key: SYSTEM_JOB_STALE_AFTER_MINUTES
+        value: "45"
+      - key: SYSTEM_JOB_MAX_RETRIES
+        value: "2"
+      - key: TRANSCRIBE_ON_INGEST
+        value: "false"

@@ -1,0 +1,558 @@
+.persona-setup-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 24px 8px 32px;
+  max-width: 980px;
+  margin: 0 auto;
+  box-shadow: none;
+}
+
+.persona-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.persona-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8a94a6;
+}
+
+.persona-header h2 {
+  margin: 0;
+  font-size: 42px;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  color: #101828;
+}
+
+.persona-subtitle {
+  margin: 0;
+  max-width: 560px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #667085;
+}
+
+.persona-form.read-only {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.muted-notice {
+  margin: 0;
+  padding: 18px 20px;
+  border-radius: 8px;
+  background: #fbfbfc;
+  border: 1px solid #ececf1;
+  color: #667085;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.persona-empty-action {
+  padding: 18px 0;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  background: transparent;
+}
+
+.persona-empty-action h3 {
+  margin: 10px 0 0;
+  color: #101828;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.persona-empty-action p {
+  max-width: 560px;
+  margin: 8px 0 0;
+  color: #667085;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.go-to-approve-button {
+  min-height: 42px;
+  margin-top: 16px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid #111827;
+  background: #111827;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.go-to-approve-button:hover {
+  background: #0f172a;
+}
+
+.persona-cta-container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.finish-btn {
+  min-width: 220px;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 15px;
+  background: #111827;
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
+}
+
+.finish-btn:hover:not(:disabled) {
+  background: #0f172a;
+}
+
+.finish-btn:disabled {
+  background: #e5e7eb;
+  color: #98a2b3;
+  cursor: not-allowed;
+}
+
+.persona-block-hint {
+  font-size: 13px;
+  color: #667085;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.go-to-approve-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.go-to-approve-link:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .persona-setup-card {
+    padding: 22px 14px 28px;
+    border-radius: 10px;
+  }
+
+  .persona-header h2 {
+    font-size: 34px;
+  }
+
+  .persona-cta-container {
+    align-items: stretch;
+  }
+
+  .finish-btn {
+    width: 100%;
+  }
+}
+
+
+/* ============================================================
+ * Fingerprint progress - minimal vibe edition
+ * Single accent (--fp-accent), monochrome surface, one rotating
+ * scan arc. Respects prefers-reduced-motion.
+ * ============================================================ */
+
+.fp-card {
+  --fp-accent: #0f172a;
+  --fp-ink: #0f172a;
+  --fp-mute: #6b7280;
+  --fp-faint: #d1d5db;
+  --fp-line: #e5e7eb;
+  --fp-bg: #ffffff;
+
+  position: relative;
+  background: var(--fp-bg);
+  border: 1px solid var(--fp-line);
+  border-radius: 10px;
+  padding: 24px 24px 18px;
+  overflow: hidden;
+}
+
+.fp-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--fp-accent) 50%, transparent 100%);
+  opacity: 0.55;
+}
+
+.fp-card-grid {
+  display: grid;
+  grid-template-columns: 124px 1fr;
+  gap: 22px;
+  align-items: center;
+}
+
+@media (max-width: 520px) {
+  .fp-card-grid { grid-template-columns: 1fr; justify-items: start; gap: 18px; }
+}
+
+.fp-dial {
+  position: relative;
+  width: 124px;
+  height: 124px;
+}
+
+.fp-dial-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.fp-dial-track {
+  fill: none;
+  stroke: var(--fp-line);
+  stroke-width: 2;
+}
+
+.fp-dial-progress {
+  fill: none;
+  stroke: var(--fp-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fp-dial-scan {
+  fill: none;
+  stroke: var(--fp-accent);
+  stroke-width: 1;
+  stroke-linecap: round;
+  /* Tiny tick that orbits the dial, kept short so it can't be mistaken
+   * for additional progress on the ring. */
+  stroke-dasharray: 3 324;
+  transform-origin: 60px 60px;
+  animation: fp-scan 4.8s linear infinite;
+  opacity: 0.28;
+}
+
+@keyframes fp-scan {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.fp-dial-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  /* Vertically center the readout block as a unit so it sits in the
+   * middle of the dial regardless of glyph metrics. */
+  padding-bottom: calc(50% - 16px);
+  font-feature-settings: "tnum" 1;
+}
+
+.fp-dial-percent {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  color: var(--fp-ink);
+  line-height: 1;
+}
+
+.fp-dial-percent-mark {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fp-mute);
+  line-height: 1;
+  /* Sit flush on the number's baseline (no superscript look). */
+}
+
+.fp-meta { min-width: 0; }
+
+.fp-station {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fp-mute);
+  margin-bottom: 10px;
+}
+
+.fp-station-num { color: var(--fp-ink); font-weight: 600; }
+
+.fp-station-dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--fp-accent);
+  display: inline-block;
+}
+
+.fp-message {
+  margin: 0 0 8px;
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  color: var(--fp-ink);
+  font-weight: 600;
+}
+
+.fp-ticker {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fp-mute);
+  /* Reserve space for up to two lines so layout doesn't jump as the
+   * ticker rotates between short and long messages. */
+  min-height: 3em;
+}
+
+.fp-ticker-cursor {
+  color: var(--fp-accent);
+  font-size: 11px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.fp-ticker-line {
+  animation: fp-fade 380ms ease-out;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
+  min-width: 0;
+}
+
+@keyframes fp-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fp-tape {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 16px 0 4px;
+  border-top: 1px dashed var(--fp-line);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 18px;
+  align-items: stretch;
+}
+
+.fp-tape-row {
+  display: grid;
+  grid-template-columns: 10px 22px 1fr;
+  align-items: start;
+  gap: 8px;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--fp-faint);
+  padding: 4px 0;
+  min-height: 32px;
+  line-height: 1.35;
+}
+
+.fp-tape-mark {
+  width: 6px; height: 6px;
+  border-radius: 1px;
+  background: var(--fp-line);
+  flex-shrink: 0;
+  /* Align the square with the cap-height of the index/label text. */
+  margin-top: 5px;
+}
+
+.fp-tape-row.complete { color: var(--fp-mute); }
+.fp-tape-row.complete .fp-tape-mark { background: var(--fp-mute); }
+
+.fp-tape-row.current { color: var(--fp-ink); }
+.fp-tape-row.current .fp-tape-mark {
+  background: var(--fp-accent);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+  animation: fp-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes fp-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08); }
+  50%      { box-shadow: 0 0 0 6px rgba(15, 23, 42, 0.04); }
+}
+
+.fp-tape-index {
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.fp-tape-label {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.fp-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--fp-line);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fp-mute);
+}
+
+.fp-foot > span:first-child { color: var(--fp-ink); font-weight: 600; }
+
+.fp-foot-divider {
+  width: 1px;
+  height: 10px;
+  background: var(--fp-line);
+  flex-shrink: 0;
+}
+
+.creator-current-profile {
+  padding: 24px 28px 28px;
+  border-radius: 12px;
+  border: 1px solid #e6eaf0;
+  background: #ffffff;
+}
+
+.creator-current-profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.persona-language-pill {
+  flex-shrink: 0;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid #e0e7ff;
+  background: #f8fbff;
+  color: #3157d5;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 22px;
+}
+
+.current-profile-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.current-profile-list li {
+  position: relative;
+  margin: 0;
+  padding: 18px 0 18px 20px;
+  border-bottom: 1px solid #edf0f5;
+  color: #101828;
+  font-size: 17px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.current-profile-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.current-profile-list li::before {
+  position: absolute;
+  top: 1.7em;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #255bdc;
+  content: "";
+}
+
+.current-profile-fallback {
+  margin: 16px 0 0;
+  color: #445066;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.identity-kicker {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  letter-spacing: 0;
+  display: block;
+  color: #7f8a9c;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+@media (max-width: 560px) {
+  .persona-header h2 {
+    font-size: 30px;
+  }
+
+  .fp-card {
+    padding: 18px;
+  }
+
+  .creator-current-profile {
+    grid-template-columns: 1fr;
+  }
+
+  .creator-current-profile {
+    padding: 20px;
+  }
+
+  .current-profile-list li {
+    font-size: 15px;
+    padding-top: 15px;
+    padding-bottom: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fp-dial-scan { animation: none; opacity: 0; }
+  .fp-tape-row.current .fp-tape-mark { animation: none; }
+  .fp-ticker-line { animation: none; }
+  .fp-dial-progress { transition: none; }
+
+}
+
+

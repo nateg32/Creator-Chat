@@ -1,0 +1,271 @@
+.scrape-progress-container {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  min-height: 240px;
+  padding: 32px 8px;
+  background: transparent;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+  max-width: 520px;
+  margin: 48px auto;
+  text-align: left;
+  animation: scrape-card-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes scrape-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.scrape-progress-container.error {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: #ffffff;
+}
+
+.progress-content {
+  width: 100%;
+}
+
+.progress-content h2 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text, #0f172a);
+  margin: 0 0 4px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+}
+
+.title-dots {
+  display: inline-flex;
+  margin-left: 2px;
+}
+
+.title-dots span {
+  opacity: 0.25;
+  animation: title-dot 1.2s ease-in-out infinite;
+}
+.title-dots span:nth-child(2) { animation-delay: 0.18s; }
+.title-dots span:nth-child(3) { animation-delay: 0.36s; }
+
+@keyframes title-dot {
+  0%, 60%, 100% { opacity: 0.2; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-1px); }
+}
+
+.status-message {
+  font-size: 13px;
+  color: var(--text-soft, #64748b);
+  margin: 0 0 14px;
+  min-height: 1.2em;
+  animation: status-fade 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.scrape-stage-rail {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.scrape-stage-rail li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: rgba(100, 116, 139, 0.72);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.scrape-stage-rail li span {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.14);
+  flex: 0 0 auto;
+}
+
+.scrape-stage-rail li.active {
+  color: var(--text, #0f172a);
+}
+
+.scrape-stage-rail li.active span {
+  background: var(--text, #0f172a);
+  box-shadow: none;
+}
+
+.scrape-stage-rail li.done {
+  color: rgba(15, 23, 42, 0.5);
+}
+
+.scrape-stage-rail li.done span {
+  background: var(--text, #0f172a);
+}
+
+@keyframes status-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.progress-bar-container.large {
+  width: 100%;
+  height: 4px;
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 12px;
+  position: relative;
+}
+
+/* Slow, subtle indeterminate sweep on the empty track. Reads as "alive",
+   not as marketing shimmer. Disabled once we're effectively complete. */
+.progress-bar-container.large::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(15, 23, 42, 0.08) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: track-sweep 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.progress-bar-container.large.is-complete::before {
+  animation: none;
+  opacity: 0;
+}
+
+@keyframes track-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--text, #0f172a);
+  border-radius: 3px;
+  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+  z-index: 1;
+}
+
+.progress-bar-fill::after {
+  content: none;
+}
+
+.progress-stats {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.percentage {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted, #94a3b8);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  transition: color 240ms ease;
+}
+
+.percentage.is-active {
+  color: var(--text-soft, #64748b);
+}
+
+.items-found-tag {
+  display: inline-block;
+  background: transparent;
+  color: var(--text-soft, #64748b);
+  padding: 0;
+  margin-left: 0;
+  font-size: 12px;
+  font-weight: 500;
+  animation: status-fade 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.error-icon {
+  font-size: 20px;
+  margin-bottom: 8px;
+  color: #dc2626;
+}
+
+.progress-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(15, 23, 42, 0.08);
+  border-top-color: var(--text, #0f172a);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 0 16px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.secondary-button {
+  margin-top: 20px;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  color: var(--text, #0f172a);
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.secondary-button:hover {
+  background: var(--surface-soft, #f8fafc);
+  border-color: var(--border-strong, #cbd5e1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrape-progress-container { animation: none; }
+  .progress-bar-fill { transition: none; }
+  .progress-spinner { animation-duration: 1.6s; }
+  .progress-bar-container.large::before { animation: none; opacity: 0; }
+  .title-dots span { animation: none; opacity: 0.6; }
+  .status-message { animation: none; }
+  .scrape-stage-rail li.active span { box-shadow: none; }
+}
+
+@media (max-width: 560px) {
+  .scrape-progress-container {
+    min-height: 180px;
+    margin: 28px auto;
+    padding: 28px 2px;
+  }
+
+  .scrape-stage-rail {
+    display: flex;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .scrape-stage-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scrape-stage-rail li {
+    flex: 0 0 auto;
+  }
+}

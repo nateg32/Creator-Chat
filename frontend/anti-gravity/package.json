@@ -1,0 +1,7 @@
+{
+  "name": "creator-chat-vercel-compat",
+  "private": true,
+  "scripts": {
+    "build": "node build-compat.mjs"
+  }
+}

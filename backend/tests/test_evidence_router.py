@@ -1,0 +1,482 @@
+"""Tests for EvidencePlan routing across creator memory, creator world, and live world."""
+
+import importlib.util
+import pathlib
+import sys
+import types
+import unittest
+
+
+BASE_DIR = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _stub_module(name: str, **attrs):
+    module = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    sys.modules[name] = module
+    return module
+
+
+def _load_module(name: str, relative_path: str):
+    module_path = BASE_DIR / relative_path
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_evidence_router():
+    _stub_module(
+        "backend.db",
+        db=types.SimpleNamespace(
+            execute_one=lambda *args, **kwargs: None,
+            execute_query=lambda *args, **kwargs: [],
+            execute_update=lambda *args, **kwargs: None,
+        ),
+    )
+    _load_module("backend.services.decision_service", pathlib.Path("services") / "decision_service.py")
+    _load_module("backend.services.creator_entity_service", pathlib.Path("services") / "creator_entity_service.py")
+    _load_module("backend.services.creator_fact_policy", pathlib.Path("services") / "creator_fact_policy.py")
+    module = _load_module("backend.services.evidence_router", pathlib.Path("services") / "evidence_router.py")
+    return module
+
+
+class EvidenceRouterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        module = _load_evidence_router()
+        cls.EvidenceRouter = module.EvidenceRouter
+        cls.detect_evidence_contradiction = staticmethod(module.detect_evidence_contradiction)
+
+    def setUp(self):
+        self.creator = {
+            "id": 1,
+            "name": "Dan Martell",
+            "identity_fingerprint": 'Author of "Buy Back Your Time". Creator of a course called "High Performance CEO".',
+            "soul_md": 'You built SaaS companies and wrote "Buy Back Your Time".',
+            "platform_configs": {"youtube": {"handle": "danmartell"}},
+            "official_domains": ["danmartell.com"],
+        }
+        self.router = self.EvidenceRouter(self.creator)
+
+    def test_creator_world_plan_for_public_book_fact(self):
+        plan = self.router.build_plan("when was your book published")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertFalse(plan.should_search_corpus)
+        self.assertTrue(plan.should_verify)
+        self.assertIn(plan.answer_mode, {"direct_fact", "hybrid"})
+        self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
+    def test_identity_query_routes_to_web_first_creator_world(self):
+        plan = self.router.build_plan("what's your full name?")
+        self.assertEqual(plan.query_goal, "identity_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertEqual(plan.answer_mode, "direct_fact")
+        self.assertTrue(plan.should_search_web)
+        self.assertFalse(plan.should_search_corpus)
+        self.assertTrue(plan.should_verify)
+
+    def test_public_profile_fact_routes_to_verified_creator_world(self):
+        plan = self.router.build_plan("are you married?")
+        self.assertEqual(plan.query_goal, "identity_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertEqual(plan.answer_mode, "direct_fact")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_verify)
+
+    def test_misus_slang_routes_to_verified_identity_lookup(self):
+        plan = self.router.build_plan("do you have a misus")
+        self.assertEqual(plan.query_goal, "identity_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertEqual(plan.answer_mode, "direct_fact")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_verify)
+
+    def test_role_query_routes_to_profile_and_creator_world(self):
+        plan = self.router.build_plan("what do u manage again?")
+        self.assertEqual(plan.query_goal, "role_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertEqual(plan.answer_mode, "direct_fact")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertTrue(plan.should_verify)
+
+    def test_resource_lookup_enables_web_search(self):
+        plan = self.router.build_plan("whats a key video youd recommend if i wanna start day trading from the basics")
+        self.assertEqual(plan.query_goal, "resource_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertEqual(plan.search_strategy, "resource_web_plus_corpus")
+
+    def test_live_world_plan_for_current_stat(self):
+        plan = self.router.build_plan("how many followers do you have right now")
+        self.assertEqual(plan.primary_world, "live_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertEqual(plan.freshness_required, "high")
+        self.assertIn("stats", plan.risk_flags)
+
+    def test_revenue_now_routes_to_live_public_stat(self):
+        plan = self.router.build_plan("whats Acquisition.com's revenue now")
+        self.assertEqual(plan.query_goal, "current_stat_lookup")
+        self.assertEqual(plan.primary_world, "live_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_verify)
+        self.assertIn("stats", plan.risk_flags)
+        self.assertIn("fresh", plan.risk_flags)
+
+    def test_sales_script_followup_does_not_route_as_public_stat(self):
+        plan = self.router.build_plan(
+            "im using a sales script",
+            conversation_history=[
+                {
+                    "role": "assistant",
+                    "content": "Are you using a specific sales script right now or just winging the calls?",
+                }
+            ],
+        )
+
+        self.assertNotIn(plan.query_goal, {"stat_lookup", "current_stat_lookup"})
+        self.assertFalse(plan.should_search_web)
+        self.assertNotIn("stats", plan.risk_flags)
+
+    def test_gemini_turn_brain_overrides_old_router_for_current_revenue(self):
+        decision = types.SimpleNamespace(
+            route="ROUTE_2_TASK",
+            response_mode="answer",
+            question_type="creator_fact",
+            query_goal="current_stat_lookup",
+            needs_web=True,
+            needs_sources=True,
+            needs_corpus=False,
+            is_creator_fact=True,
+            entity_subject="Acquisition.com",
+            query_plan=["Alex Hormozi Acquisition.com revenue now"],
+            confidence=0.96,
+        )
+
+        plan = self.router.build_plan(
+            "whats acquisitions revenue now",
+            smart_decision=decision,
+        )
+
+        self.assertEqual(plan.plan_version, "gemini_turn_brain_v1")
+        self.assertEqual(plan.query_goal, "current_stat_lookup")
+        self.assertEqual(plan.primary_world, "live_world")
+        self.assertEqual(plan.resolved_query, "Alex Hormozi Acquisition.com revenue now")
+        self.assertFalse(plan.should_search_corpus)
+        self.assertTrue(plan.should_search_web)
+
+    def test_gemini_domain_advice_metric_overrides_price_regex(self):
+        decision = types.SimpleNamespace(
+            route="ROUTE_2_TASK",
+            response_mode="answer",
+            question_type="domain_advice",
+            query_goal="general",
+            needs_web=False,
+            needs_sources=False,
+            needs_corpus=True,
+            is_creator_fact=False,
+            resolved_user_message="The user sells software and pays $100 to acquire a customer.",
+            confidence=0.94,
+        )
+
+        plan = self.router.build_plan(
+            "im selling software and it costs me 100 dollars for a customer",
+            smart_decision=decision,
+        )
+
+        self.assertEqual(plan.plan_version, "gemini_turn_brain_v1")
+        self.assertEqual(plan.query_goal, "general")
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertEqual(plan.search_strategy, "turn_brain_domain_advice")
+        self.assertEqual(plan.answer_mode, "creator_take")
+        self.assertFalse(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertNotIn("pricing", plan.risk_flags)
+
+    def test_gemini_memory_packet_resolution_becomes_plan_query(self):
+        decision = types.SimpleNamespace(
+            route="ROUTE_2_TASK",
+            response_mode="answer",
+            question_type="personal_bio",
+            query_goal="journey_lookup",
+            needs_web=True,
+            needs_sources=True,
+            needs_corpus=True,
+            is_creator_fact=True,
+            resolved_user_message="What made Dan Martell turn his life around after the broad background story?",
+            query_plan=[],
+            confidence=0.94,
+        )
+
+        plan = self.router.build_plan(
+            "what made u turn your life around?",
+            smart_decision=decision,
+        )
+
+        self.assertEqual(plan.plan_version, "gemini_turn_brain_v1")
+        self.assertEqual(plan.query_goal, "journey_lookup")
+        self.assertEqual(
+            plan.resolved_query,
+            "What made Dan Martell turn his life around after the broad background story?",
+        )
+        self.assertTrue(plan.should_search_web)
+
+    def test_creator_memory_plan_skips_web_when_rag_is_strong(self):
+        plan = self.router.build_plan(
+            "what's your best advice for a new entrepreneur",
+            top_score=0.86,
+        )
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertTrue(plan.should_search_corpus)
+        self.assertFalse(plan.should_search_web)
+
+    def test_followup_resolution_updates_resolved_query(self):
+        plan = self.router.build_plan(
+            "when did u write it?",
+            conversation_history=[
+                {"role": "user", "content": "do you have a book?"},
+                {"role": "assistant", "content": "Yeah. I wrote a book called Buy Back Your Time."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertIn("Buy Back Your Time", plan.resolved_query)
+        self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
+    def test_why_write_book_routes_to_journey_not_timeline(self):
+        plan = self.router.build_plan("why did you write Buy Back Your Time")
+
+        self.assertEqual(plan.query_goal, "journey_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertNotIn("date", plan.risk_flags)
+
+    def test_when_write_book_still_routes_to_timeline(self):
+        plan = self.router.build_plan("when did you write Buy Back Your Time")
+
+        self.assertEqual(plan.query_goal, "timeline_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertIn("date", plan.risk_flags)
+
+    def test_focusless_creator_start_followup_keeps_recent_subject(self):
+        plan = self.router.build_plan(
+            "when did u start",
+            conversation_history=[
+                {"role": "user", "content": "why did u start trading?"},
+                {"role": "assistant", "content": "I got into trading because I wanted leverage."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertEqual(plan.resolved_query, "When did you start trading?")
+        self.assertEqual(plan.query_goal, "timeline_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+
+    def test_gym_launch_motivation_question_routes_to_journey_web_not_timeline(self):
+        plan = self.router.build_plan(
+            "what inspired you to start acquisition, why didnt u just retire after scaling gym launch"
+        )
+
+        self.assertEqual(plan.query_goal, "journey_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertNotIn("date", plan.risk_flags)
+
+    def test_turning_point_question_routes_to_journey_web(self):
+        plan = self.router.build_plan("what made u turn your life around?")
+
+        self.assertEqual(plan.query_goal, "journey_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertNotIn("date", plan.risk_flags)
+
+    def test_turn_it_around_followup_resolves_before_routing(self):
+        plan = self.router.build_plan(
+            "what made u turn it around?",
+            conversation_history=[
+                {"role": "user", "content": "your story"},
+                {
+                    "role": "assistant",
+                    "content": "My journey started in a dark place and I turned my life around through entrepreneurship.",
+                },
+            ],
+        )
+
+        self.assertEqual(plan.resolved_query, "What made you turn your life around?")
+        self.assertEqual(plan.query_goal, "journey_lookup")
+        self.assertTrue(plan.should_search_web)
+
+    def test_subject_swap_followup_restores_timeline_lookup(self):
+        plan = self.router.build_plan(
+            "what about trading",
+            conversation_history=[
+                {"role": "user", "content": "when did u start"},
+                {"role": "assistant", "content": "I started Tjr in 2017."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertEqual(plan.resolved_query, "When did you start trading?")
+        self.assertEqual(plan.query_goal, "timeline_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+
+    def test_entity_confirmation_uses_entity_graph_before_web(self):
+        plan = self.router.build_plan("do you know the book buy your time")
+        self.assertEqual(plan.query_goal, "entity_confirmation")
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertFalse(plan.should_search_web)
+        self.assertEqual(plan.search_strategy, "entity_graph_first")
+        self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
+    def test_yes_no_book_identity_query_is_entity_confirmation(self):
+        plan = self.router.build_plan("is buy back your time your book?")
+        self.assertEqual(plan.query_goal, "entity_confirmation")
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertFalse(plan.should_search_web)
+        self.assertEqual(plan.entity_subject, "Buy Back Your Time")
+
+    def test_plural_book_query_routes_to_entity_catalog_lookup(self):
+        plan = self.router.build_plan("have u written any books?")
+        self.assertEqual(plan.query_goal, "entity_catalog_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertEqual(plan.entity_type, "book")
+
+    def test_how_many_books_query_routes_to_entity_catalog_lookup(self):
+        plan = self.router.build_plan("how many books u written?")
+        self.assertEqual(plan.query_goal, "entity_catalog_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertEqual(plan.entity_type, "book")
+
+    def test_user_partner_business_question_stays_creator_memory(self):
+        plan = self.router.build_plan(
+            "what would u reccomend if i have a partner who doesnt like my business?"
+        )
+        self.assertEqual(plan.primary_world, "creator_memory")
+        self.assertEqual(plan.query_goal, "creator_take")
+        self.assertEqual(plan.answer_mode, "creator_take")
+        self.assertFalse(plan.should_search_web)
+
+    def test_wdym_followup_resolves_to_contextual_clarification(self):
+        plan = self.router.build_plan(
+            "wdymean?",
+            conversation_history=[
+                {
+                    "role": "user",
+                    "content": "what would u reccomend if i have a partner who doesnt like my business?",
+                },
+                {"role": "assistant", "content": "I keep that side of my life private."},
+            ],
+        )
+        self.assertTrue(plan.user_is_followup)
+        self.assertIn("clarify what you meant", plan.resolved_query.lower())
+        self.assertIn("partner who doesnt like my business", plan.resolved_query.lower())
+
+    def test_availability_lookup_prefers_official_urls_before_search(self):
+        plan = self.router.build_plan("where can i buy your book")
+        self.assertEqual(plan.query_goal, "availability_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertFalse(plan.should_search_web)
+        self.assertEqual(plan.search_strategy, "official_urls_first")
+
+    def test_detect_evidence_contradiction_for_dates(self):
+        report = self.detect_evidence_contradiction(
+            "when was your book published",
+            corpus_chunks=[{"content": "Buy Back Your Time was published in 2022."}],
+            web_results=[{"snippet": "Buy Back Your Time was published in September 2023."}],
+        )
+        self.assertTrue(report.get("has_contradiction"))
+        self.assertEqual(report.get("kind"), "date")
+
+    # ── Content-reference routing tests ──────────────────────────────
+
+    def test_creator_context_reference_routes_to_web_plus_corpus(self):
+        """'you spent a million bucks' should trigger creator_context_reference with web search."""
+        plan = self.router.build_plan("why did you spend a million bucks")
+        self.assertEqual(plan.query_goal, "creator_context_reference")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+        self.assertEqual(plan.search_strategy, "context_ref_web_plus_corpus")
+
+    def test_which_video_routes_to_resource_lookup(self):
+        """'which video did you talk about motivation in' should match resource_lookup."""
+        plan = self.router.build_plan("which video did you talk about motivation in")
+        self.assertEqual(plan.query_goal, "resource_lookup")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+
+    def test_what_did_you_talk_about_routes_with_web(self):
+        """'what did you talk about in your trading basics video' should enable web search."""
+        plan = self.router.build_plan("what did you talk about in your trading basics video")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+
+    def test_named_podcast_content_routes_to_resource_lookup_with_web(self):
+        plan = self.router.build_plan("what do you talk about in the love logically and go all in podcast?")
+        self.assertEqual(plan.query_goal, "resource_lookup")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+
+    def test_public_wife_identity_routes_to_creator_world(self):
+        plan = self.router.build_plan("wait whos your wife")
+        self.assertEqual(plan.query_goal, "identity_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+
+    def test_public_first_date_story_routes_to_creator_world(self):
+        plan = self.router.build_plan("where was your first date")
+        self.assertEqual(plan.query_goal, "identity_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+
+    def test_smart_boundary_does_not_block_public_resource_lookup(self):
+        plan = self.router.build_plan(
+            "what do you talk about in the love logically and go all in podcast?",
+            smart_decision={
+                "query_goal": "resource_lookup",
+                "route": "ROUTE_2_TASK",
+                "question_type": "personal_bio",
+                "response_mode": "boundary",
+                "needs_corpus": True,
+                "needs_web": False,
+                "needs_sources": False,
+                "is_creator_fact": False,
+                "confidence": 0.92,
+            },
+        )
+        self.assertEqual(plan.query_goal, "resource_lookup")
+        self.assertEqual(plan.primary_world, "creator_world")
+        self.assertTrue(plan.should_search_web)
+        self.assertTrue(plan.should_search_corpus)
+
+    def test_you_mentioned_triggers_creator_context(self):
+        """'you mentioned something about risk management' should trigger creator_context_reference."""
+        plan = self.router.build_plan("you mentioned something about risk management")
+        self.assertEqual(plan.query_goal, "creator_context_reference")
+        self.assertTrue(plan.should_search_web)
+
+    def test_remember_when_you_triggers_creator_context(self):
+        """'remember when you lost 50k in a day' should trigger creator_context_reference."""
+        plan = self.router.build_plan("remember when you lost 50k in a day")
+        self.assertEqual(plan.query_goal, "creator_context_reference")
+        self.assertTrue(plan.should_search_web)
+
+    def test_your_video_triggers_creator_world_hints(self):
+        """'your video' should now trigger _CREATOR_WORLD_HINTS."""
+        plan = self.router.build_plan("what was your video about")
+        self.assertTrue(plan.should_search_web)
+
+
+if __name__ == "__main__":
+    unittest.main()

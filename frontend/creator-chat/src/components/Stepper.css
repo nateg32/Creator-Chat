@@ -1,0 +1,209 @@
+.global-nav-stepper {
+  display: grid;
+  grid-template-columns: minmax(36px, auto) minmax(0, 1fr) minmax(36px, auto);
+  align-items: center;
+  gap: clamp(8px, 1.4vw, 12px);
+  width: min(1240px, calc(100% - clamp(16px, 3vw, 32px)));
+  margin: clamp(8px, 1.4vw, 10px) auto 0;
+  padding: clamp(7px, 1.2vw, 9px) clamp(10px, 1.6vw, 14px);
+  border: 1px solid rgba(15, 23, 42, 0.055);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.025);
+  position: sticky;
+  top: 8px;
+  z-index: 50;
+}
+
+.app-branding {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: transparent;
+  flex-shrink: 0;
+  transition: opacity 180ms ease, transform 180ms ease;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.app-branding:hover {
+  opacity: 0.9;
+}
+
+.app-branding-mark {
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  object-fit: cover;
+}
+
+.nav-steps-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(4px, 0.8vw, 6px);
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  padding: 2px;
+}
+
+.nav-steps-container::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  scroll-snap-align: center;
+  min-height: clamp(34px, 3vw, 38px);
+  padding: 0 clamp(9px, 1.25vw, 13px);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(71, 85, 105, 0.78);
+  font-size: clamp(12px, 1.2vw, 13px);
+  font-weight: 600;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  outline: none;
+}
+
+.nav-step:hover:not(.disabled) {
+  background: rgba(15, 23, 42, 0.035);
+  color: var(--text);
+}
+
+.nav-step.active:not(.disabled) {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(15, 23, 42, 0.075);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.nav-step.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nav-step-label {
+  white-space: nowrap;
+}
+
+.step-progress-inline {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-right-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 36px;
+}
+
+.user-profile-btn {
+  width: clamp(34px, 3vw, 38px);
+  height: clamp(34px, 3vw, 38px);
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+  color: var(--text-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.user-profile-btn:hover {
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--text);
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+.user-avatar-small {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+@media (max-width: 720px) {
+  .global-nav-stepper {
+    border-radius: 12px;
+    width: min(1240px, calc(100% - 12px));
+    top: 6px;
+  }
+
+  .app-branding {
+    width: 34px;
+    height: 34px;
+  }
+
+  .nav-steps-container {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .global-nav-stepper {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    width: calc(100% - 8px);
+    gap: 5px;
+    padding: 5px;
+    border-radius: 11px;
+  }
+
+  .app-branding,
+  .app-branding-mark {
+    width: 30px;
+    height: 30px;
+  }
+
+  .nav-steps-container {
+    gap: 2px;
+    padding: 1px;
+  }
+
+  .nav-step {
+    min-height: 32px;
+    padding: 0 9px;
+    font-size: 11.5px;
+    border-radius: 7px;
+  }
+
+  .nav-right-actions {
+    gap: 3px;
+  }
+
+  .user-profile-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+  }
+
+  .user-profile-btn svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .wf-count-pill {
+    display: none;
+  }
+}
